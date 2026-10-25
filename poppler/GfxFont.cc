@@ -605,12 +605,19 @@ std::unique_ptr<CharCodeToUnicode> GfxFont::readToUnicodeCMap(const Dict &fontDi
     std::string buf;
     toUnicodeStream->fillString(buf);
     toUnicodeStream->close();
+    // Only claim to have a ToUnicode CMap if it contributed at least one
+    // mapping. A broken stream must not make callers treat the (absent)
+    // map as authoritative.
     if (ctu) {
-        ctu->mergeCMap(buf, nBits);
+        if (ctu->mergeCMap(buf, nBits)) {
+            hasToUnicode = true;
+        }
     } else {
         ctu = CharCodeToUnicode::parseCMap(buf, nBits);
+        if (ctu) {
+            hasToUnicode = true;
+        }
     }
-    hasToUnicode = true;
     return ctu;
 }
 
@@ -1750,7 +1757,13 @@ GfxCIDFont::GfxCIDFont(std::string_view tagA, Ref idA, std::optional<std::string
     }
 
     // look for a ToUnicode CMap
-    if (!(ctu = readToUnicodeCMap(fontDict, 16, nullptr))) {
+    if ((ctu = readToUnicodeCMap(fontDict, 16, nullptr))) {
+        // the CID-to-Unicode table of the character collection, if available
+        // (not for Adobe-Identity/Adobe-UCS, where CIDs are not Unicode)
+        if (collection->toStr() != "Adobe-Identity" && collection->toStr() != "Adobe-UCS") {
+            cidCtu = globalParams->getCIDToUnicode(collection->toStr());
+        }
+    } else {
         ctuUsesCharCode = false;
 
         // use an identity mapping for the "Adobe-Identity" and
@@ -1789,6 +1802,14 @@ GfxCIDFont::GfxCIDFont(std::string_view tagA, Ref idA, std::optional<std::string
     }
     if (!(cMap = CMap::parse(collection->toStr(), &obj1))) {
         return;
+    }
+    // With Identity-H/V or an embedded CMap stream the "CIDs" are very often
+    // glyph ids of a subset font, whatever CIDSystemInfo claims, so the
+    // collection's CID-to-Unicode table would turn a missing mapping into a
+    // wrong character. Only fill ToUnicode holes for the predefined
+    // collection CMaps, where CIDs are genuine collection CIDs.
+    if (cidCtu && (!obj1.isName() || obj1.isName("Identity-H") || obj1.isName("Identity-V"))) {
+        cidCtu.reset();
     }
     if (cMap->getCMapName()) {
         encodingName = cMap->getCMapName()->toStr();
@@ -1937,13 +1958,18 @@ int GfxCIDFont::getNextChar(const char *s, int len, CharCode *code, Unicode cons
 
     *code = static_cast<CharCode>(cid = cMap->getCID(s, len, &dummy, &n));
     if (ctu) {
-        if (hasToUnicode) {
+        if (ctuUsesCharCode) {
             int i = 0, c = 0;
             while (i < n) {
                 c = (c << 8) + (s[i] & 0xff);
                 ++i;
             }
             *uLen = ctu->mapToUnicode(c, u);
+            // a partial ToUnicode CMap leaves some codes unmapped: let the
+            // character collection fill in the holes, like the 8-bit path
+            if (*uLen == 0 && cidCtu) {
+                *uLen = cidCtu->mapToUnicode(cid, u);
+            }
         } else {
             *uLen = ctu->mapToUnicode(cid, u);
         }

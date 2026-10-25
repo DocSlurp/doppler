@@ -2647,7 +2647,8 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
 
     // subtract char and word spacing from the dx,dy values
     sp = state->getCharSpace();
-    if (c == static_cast<CharCode>(0x20)) {
+    // word spacing only applies to the single-byte code 32 (see Gfx::doShowText)
+    if (nBytes == 1 && c == static_cast<CharCode>(0x20)) {
         sp += state->getWordSpace();
     }
     state->textTransformDelta(sp * state->getHorizScaling(), 0, &dx2, &dy2);
@@ -2736,6 +2737,22 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         lastCharOverlap = overlap;
     } else {
         lastCharOverlap = false;
+    }
+
+    // Decompose the Latin ligatures U+FB00..U+FB06 into their letters, the
+    // way Gfx8BitFont does for glyph names but which ToUnicode CMaps and CID
+    // fonts bypass. Each letter gets its own character box (the bbox is split
+    // across uLen below, as for any multi-code-point glyph).
+    Unicode ligature[3];
+    if (uLen == 1 && u[0] >= 0xfb00 && u[0] <= 0xfb06) {
+        static constexpr char ligatureLetters[7][4] = { "ff", "fi", "fl", "ffi", "ffl", "st", "st" };
+        const char *letters = ligatureLetters[u[0] - 0xfb00];
+        uLen = 0;
+        while (letters[uLen]) {
+            ligature[uLen] = static_cast<Unicode>(letters[uLen]);
+            ++uLen;
+        }
+        u = ligature;
     }
 
     if (uLen != 0) {
