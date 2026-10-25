@@ -23,6 +23,7 @@
 #include "PDFDoc.h"
 #include "Dict.h"
 
+#include <algorithm>
 #include <cassert>
 
 class GfxState;
@@ -425,6 +426,14 @@ static const struct TypeMapEntry
     { .type = StructElement::Form, .name = "Form", .elementType = elementTypeUndefined, .attributes = attributeMapIllustration },
     { .type = StructElement::TOC, .name = "TOC", .elementType = elementTypeGrouping, .attributes = attributeMapShared },
     { .type = StructElement::TOCI, .name = "TOCI", .elementType = elementTypeGrouping, .attributes = attributeMapShared },
+    { .type = StructElement::DocumentFragment, .name = "DocumentFragment", .elementType = elementTypeGrouping, .attributes = attributeMapShared },
+    { .type = StructElement::Aside, .name = "Aside", .elementType = elementTypeGrouping, .attributes = attributeMapColumns },
+    { .type = StructElement::Title, .name = "Title", .elementType = elementTypeBlock, .attributes = attributeMapBlock },
+    { .type = StructElement::FENote, .name = "FENote", .elementType = elementTypeGrouping, .attributes = attributeMapInline },
+    { .type = StructElement::Sub, .name = "Sub", .elementType = elementTypeInline, .attributes = attributeMapInline },
+    { .type = StructElement::Em, .name = "Em", .elementType = elementTypeInline, .attributes = attributeMapInline },
+    { .type = StructElement::Strong, .name = "Strong", .elementType = elementTypeInline, .attributes = attributeMapInline },
+    { .type = StructElement::Artifact, .name = "Artifact", .elementType = elementTypeGrouping, .attributes = attributeMapShared },
 };
 
 //------------------------------------------------------------------------
@@ -690,7 +699,12 @@ StructElement::StructElement(Dict *element, StructTreeRoot *treeRootA, StructEle
     assert(element);
 
     parse(element);
-    parseChildren(element, seen);
+
+    // An invalid element is discarded together with its children, do not
+    // register them in the ParentTree, it would be left pointing to freed memory.
+    if (isOk()) {
+        parseChildren(element, seen);
+    }
 }
 
 StructElement::StructElement(int mcid, StructTreeRoot *treeRootA, StructElement *parentA) : type(MCID), treeRoot(treeRootA), parent(parentA), c(new ContentData(mcid))
@@ -762,6 +776,9 @@ bool StructElement::getStmRef(Ref &ref) const
 
 const char *StructElement::getTypeName() const
 {
+    if (!isContent() && type != Unknown && !s->typeName.empty()) {
+        return s->typeName.c_str();
+    }
     return typeToName(type);
 }
 
@@ -819,8 +836,7 @@ const Attribute *StructElement::findAttribute(Attribute::Type attributeType, boo
 GooString *StructElement::appendSubTreeText(GooString *string, bool recursive) const
 {
     if (isContent() && !isObjectRef()) {
-        MarkedContentOutputDev mcdev(getMCID(), stmRef);
-        const TextSpanArray &spans(getTextSpansInternal(mcdev));
+        const TextSpanArray &spans(getTextSpansInternal());
 
         if (!string) {
             string = new GooString();
@@ -849,25 +865,46 @@ GooString *StructElement::appendSubTreeText(GooString *string, bool recursive) c
     return string;
 }
 
-const TextSpanArray &StructElement::getTextSpansInternal(MarkedContentOutputDev &mcdev) const
+TextSpanArray StructElement::getTextSpans() const
+{
+    if (!isContent() || isObjectRef()) {
+        return TextSpanArray();
+    }
+    return getTextSpansInternal();
+}
+
+const TextSpanArray &StructElement::getTextSpansInternal() const
 {
     assert(isContent());
 
-    int startPage = 0, endPage = 0;
+    static const TextSpanArray noSpans;
 
+    PDFDoc *doc = treeRoot->getDoc();
+
+    // The page is found from /Pg in this element or the closest ancestor
+    // that has it, otherwise from the ParentTree.
+    int pageNum = 0;
     Ref ref;
     if (getPageRef(ref)) {
-        startPage = endPage = treeRoot->getDoc()->findPage(ref);
+        pageNum = doc->findPage(ref);
     }
 
-    if (!(startPage && endPage)) {
-        startPage = 1;
-        endPage = treeRoot->getDoc()->getNumPages();
+    Ref stm = Ref::INVALID();
+    if (stmRef.isRef()) {
+        stm = stmRef.getRef();
     }
 
-    treeRoot->getDoc()->displayPages(&mcdev, startPage, endPage, 72.0, 72.0, 0, true, false, false);
-    return mcdev.getTextSpans();
+    if (pageNum == 0) {
+        pageNum = treeRoot->findMarkedContentPage(parent, stm, getMCID());
+    }
+
+    if (pageNum == 0) {
+        return noSpans;
+    }
+
+    return treeRoot->getMarkedContentSpans(pageNum, stm, getMCID());
 }
+
 static StructElement::Type roleMapResolve(Dict *roleMap, std::string_view name)
 {
     Object resolved = roleMap->lookup(name);
@@ -933,10 +970,17 @@ void StructElement::parse(Dict *element)
         type = nameToType(obj.getNameString());
     }
 
-    // At this point either the type name must have been resolved.
     if (type == Unknown) {
-        error(errSyntaxError, -1, "StructElem object is wrong type ({0:s})", obj.getName());
-        return;
+        // Headings below H6 ("Hn" in the specification).
+        const std::string &name = obj.getNameString();
+        if (name.size() > 1 && name[0] == 'H' && std::all_of(name.begin() + 1, name.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+            type = H;
+        } else {
+            // Not a standard type and not resolved through the RoleMap: keep
+            // the element and its children as a generic grouping element.
+            type = NonStruct;
+        }
+        s->typeName = name;
     }
 
     // Object ID (optional), to be looked at the IDTree in the tree root.

@@ -17,6 +17,7 @@
 #include "StructTreeRoot.h"
 #include "StructElement.h"
 #include "PDFDoc.h"
+#include "Page.h"
 #include "Object.h"
 #include "Dict.h"
 #include <cassert>
@@ -189,4 +190,95 @@ void StructTreeRoot::parentTreeAdd(const Ref objectRef, StructElement *element)
     for (auto it = range.first; it != range.second; ++it) {
         it->second->element = element;
     }
+}
+
+const MarkedContentOutputDev::CollectedSpans &StructTreeRoot::getPageSpans(int pageNum)
+{
+    const std::scoped_lock lock(cacheMutex);
+    auto it = pageSpans.find(pageNum);
+    if (it == pageSpans.end()) {
+        // Interpret the page once and keep the text of all its MCIDs.
+        MarkedContentOutputDev mcdev;
+        doc->displayPages(&mcdev, pageNum, pageNum, 72.0, 72.0, 0, true, false, false);
+        it = pageSpans.emplace(pageNum, mcdev.takeCollectedSpans()).first;
+    }
+    return it->second;
+}
+
+const TextSpanArray &StructTreeRoot::getMarkedContentSpans(int pageNum, Ref stm, int mcid)
+{
+    const std::scoped_lock lock(cacheMutex);
+    static const TextSpanArray noSpans;
+
+    if (pageNum < 1 || pageNum > doc->getNumPages()) {
+        return noSpans;
+    }
+    const MarkedContentOutputDev::CollectedSpans &spans = getPageSpans(pageNum);
+    auto it = spans.find(MarkedContentOutputDev::Key(stm, mcid));
+    return it == spans.end() ? noSpans : it->second;
+}
+
+void StructTreeRoot::buildReverseIndex()
+{
+    reverseIndexBuilt = true;
+    for (const auto &[key, parents] : parentTree) {
+        for (size_t mcid = 0; mcid < parents.size(); mcid++) {
+            if (parents[mcid].element) {
+                mcidToKeys[std::make_pair(static_cast<const StructElement *>(parents[mcid].element), static_cast<int>(mcid))].push_back(key);
+            }
+        }
+    }
+    for (int i = 1; i <= doc->getNumPages(); i++) {
+        const Page *page = doc->getPage(i);
+        if (page && page->getStructParents() >= 0) {
+            structParentsToPage.emplace(page->getStructParents(), i);
+        }
+    }
+}
+
+int StructTreeRoot::findMarkedContentPage(const StructElement *parent, Ref stm, int mcid)
+{
+    const std::scoped_lock lock(cacheMutex);
+    const int numPages = doc->getNumPages();
+    if (numPages == 1) {
+        return 1;
+    }
+
+    // The ParentTree maps the StructParents key of a page (and the MCID) to
+    // the structure element which holds the marked content.
+    if (parent && stm == Ref::INVALID()) {
+        if (!reverseIndexBuilt) {
+            buildReverseIndex();
+        }
+        auto it = mcidToKeys.find(std::make_pair(parent, mcid));
+        if (it != mcidToKeys.end()) {
+            int found = 0;
+            for (int key : it->second) {
+                auto pageIt = structParentsToPage.find(key);
+                if (pageIt != structParentsToPage.end()) {
+                    if (found && found != pageIt->second) {
+                        found = 0;
+                        break;
+                    }
+                    found = pageIt->second;
+                }
+            }
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    // Last resort: accept the only page which has this marked content.
+    int found = 0;
+    for (int i = 1; i <= numPages; i++) {
+        const MarkedContentOutputDev::CollectedSpans &spans = getPageSpans(i);
+        if (spans.find(MarkedContentOutputDev::Key(stm, mcid)) != spans.end()) {
+            if (found) {
+                return 0;
+            }
+            found = i;
+        }
+    }
+    return found;
 }

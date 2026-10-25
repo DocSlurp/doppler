@@ -20,25 +20,42 @@
 #include "GfxState.h"
 #include "GfxFont.h"
 #include "Annot.h"
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
-MarkedContentOutputDev::MarkedContentOutputDev(int mcidA, const Object &stmObj) : currentFont(nullptr), currentText(nullptr), mcid(mcidA)
+MarkedContentOutputDev::MarkedContentOutputDev(int mcidA, const Object &stmObj) : collectAll(false), mcid(mcidA)
 {
     stmRef = stmObj.copy();
-    currentColor.r = currentColor.g = currentColor.b = 0;
 }
+
+MarkedContentOutputDev::MarkedContentOutputDev() : collectAll(true) { }
 
 MarkedContentOutputDev::~MarkedContentOutputDev() = default;
 
-void MarkedContentOutputDev::endSpan()
+void MarkedContentOutputDev::endSpan(Accumulator &acc)
 {
-    if (currentText && !currentText->empty()) {
+    if (acc.currentText && !acc.currentText->empty()) {
         // The TextSpan takes ownership of currentText and
         // increases the reference count for currentFont.
-        textSpans.push_back(TextSpan(std::move(currentText), currentFont, currentColor));
+        acc.textSpans.push_back(TextSpan(std::move(acc.currentText), acc.currentFont, acc.currentColor));
     }
-    currentText.reset();
+    acc.currentText.reset();
+}
+
+MarkedContentOutputDev::CollectedSpans MarkedContentOutputDev::takeCollectedSpans()
+{
+    CollectedSpans result;
+    for (auto &[key, acc] : accumulators) {
+        endSpan(acc);
+        if (!acc.textSpans.empty()) {
+            result.emplace(key, std::move(acc.textSpans));
+        }
+    }
+    accumulators.clear();
+    markStack.clear();
+    activeCount = 0;
+    return result;
 }
 
 void MarkedContentOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
@@ -84,30 +101,51 @@ void MarkedContentOutputDev::beginMarkedContent(const std::string & /*name*/, Di
         properties->lookupInt("MCID", {}, &id);
     }
 
-    if (id == -1) {
-        return;
+    // Every begin is recorded so that it can be paired with its end, even
+    // when it carries no MCID. Otherwise the end of nested marked content
+    // without MCID (e.g. /Span, /OC) would pop the enclosing MCID.
+    Accumulator *acc = nullptr;
+    if (id != -1) {
+        if (collectAll) {
+            acc = &accumulators[Key(formStack.empty() ? Ref::INVALID() : formStack.back(), id)];
+        } else if (id == mcid && contentStreamMatch()) {
+            acc = &single;
+        }
+        // Text of nested marked content is already added to the enclosing
+        // one, avoid adding it twice if both refer to the same MCID.
+        if (acc && std::find(markStack.begin(), markStack.end(), acc) != markStack.end()) {
+            acc = nullptr;
+        }
+        // In single MCID mode text is collected only for the outermost match
+        if (acc && !collectAll && inMarkedContent()) {
+            acc = nullptr;
+        }
     }
-
-    // The stack keep track of MCIDs of nested marked content.
-    if (inMarkedContent() || (id == mcid && contentStreamMatch())) {
-        mcidStack.push_back(id);
+    markStack.push_back(acc);
+    if (acc) {
+        activeCount++;
     }
 }
 
 void MarkedContentOutputDev::endMarkedContent(GfxState * /*state*/)
 {
-    if (inMarkedContent()) {
-        mcidStack.pop_back();
-        // The outer marked content sequence MCID was popped, ensure
-        // that the last piece of text collected ends up in a TextSpan.
-        if (!inMarkedContent()) {
-            endSpan();
-        }
+    if (markStack.empty()) {
+        return;
+    }
+
+    Accumulator *acc = markStack.back();
+    markStack.pop_back();
+    if (acc) {
+        activeCount--;
+        // The marked content sequence ended, ensure that the last piece
+        // of text collected ends up in a TextSpan.
+        endSpan(*acc);
     }
 }
 
-bool MarkedContentOutputDev::needFontChange(const std::shared_ptr<const GfxFont> &font) const
+bool MarkedContentOutputDev::needFontChange(const Accumulator &acc, const std::shared_ptr<const GfxFont> &font) const
 {
+    const std::shared_ptr<GfxFont> &currentFont = acc.currentFont;
     if (currentFont == font) {
         return false;
     }
@@ -137,7 +175,6 @@ void MarkedContentOutputDev::drawChar(GfxState *state, double xx, double yy, dou
     // Color changes are tracked here so the color can be chosen depending on
     // the render mode (for mode 1 stroke color is used), so there is no need
     // to implement both updateFillColor() and updateStrokeColor().
-    bool colorChange = false;
     GfxRGB color;
     if ((state->getRender() & 3) == 1) {
         state->getStrokeRGB(&color);
@@ -145,23 +182,30 @@ void MarkedContentOutputDev::drawChar(GfxState *state, double xx, double yy, dou
         state->getFillRGB(&color);
     }
 
-    colorChange = (color.r != currentColor.r || color.g != currentColor.g || color.b != currentColor.b);
+    const std::shared_ptr<GfxFont> font = state->getFont();
 
-    // Check also for font changes.
-    bool fontChange = needFontChange(state->getFont());
+    // Save a span with the current changes, and perform the color/font
+    // changes, in every sequence collecting text.
+    for (Accumulator *acc : markStack) {
+        if (!acc) {
+            continue;
+        }
+        const bool colorChange = (color.r != acc->currentColor.r || color.g != acc->currentColor.g || color.b != acc->currentColor.b);
 
-    // Save a span with the current changes.
-    if (colorChange || fontChange) {
-        endSpan();
-    }
+        // Check also for font changes.
+        bool fontChange = needFontChange(*acc, font);
 
-    // Perform the color/font changes.
-    if (colorChange) {
-        currentColor = color;
-    }
+        if (colorChange || fontChange) {
+            endSpan(*acc);
+        }
 
-    if (fontChange) {
-        currentFont = state->getFont();
+        if (colorChange) {
+            acc->currentColor = color;
+        }
+
+        if (fontChange) {
+            acc->currentFont = font;
+        }
     }
 
     double sp, dx2, dy2, w1, h1, x1, y1;
@@ -186,6 +230,7 @@ void MarkedContentOutputDev::drawChar(GfxState *state, double xx, double yy, dou
         return;
     }
 
+    std::string utf8;
     for (int i = 0; i < uLen; i++) {
         // Soft hyphen markers are skipped, as they are invisible unless
         // rendering is done to an actual device and the hyphenation hint
@@ -199,16 +244,25 @@ void MarkedContentOutputDev::drawChar(GfxState *state, double xx, double yy, dou
             char buf[8];
             int n = unicodeMap->mapUnicode(u[i], buf, sizeof(buf));
             if (n > 0) {
-                if (currentText == nullptr) {
-                    currentText = std::make_unique<GooString>();
-                }
-                currentText->append(buf, n);
+                utf8.append(buf, n);
             }
+        }
+    }
+
+    if (utf8.empty()) {
+        return;
+    }
+    for (Accumulator *acc : markStack) {
+        if (acc) {
+            if (acc->currentText == nullptr) {
+                acc->currentText = std::make_unique<GooString>();
+            }
+            acc->currentText->append(utf8);
         }
     }
 }
 
 const TextSpanArray &MarkedContentOutputDev::getTextSpans() const
 {
-    return textSpans;
+    return single.textSpans;
 }

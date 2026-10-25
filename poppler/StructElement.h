@@ -224,6 +224,18 @@ public:
         Figure,
         Formula,
         Form, // Illustration-like elements
+
+        // Types introduced by PDF 2.0
+        DocumentFragment,
+        Aside,
+        Title,
+        FENote,
+        Sub,
+        Em,
+        Strong,
+
+        // Not a standard structure type, but written by some producers
+        Artifact,
     };
 
     static const Ref InvalidRef;
@@ -324,20 +336,13 @@ public:
     //
     GooString *getText(bool recursive = true) const { return appendSubTreeText(nullptr, recursive); }
 
-    TextSpanArray getTextSpans() const
-    {
-        if (!isContent()) {
-            return TextSpanArray();
-        }
-        MarkedContentOutputDev mcdev(getMCID(), stmRef);
-        return getTextSpansInternal(mcdev);
-    }
+    TextSpanArray getTextSpans() const;
 
     ~StructElement();
 
 private:
     GooString *appendSubTreeText(GooString *string, bool recursive) const;
-    const TextSpanArray &getTextSpansInternal(MarkedContentOutputDev &mcdev) const;
+    const TextSpanArray &getTextSpansInternal() const;
 
     using AttrPtrArray = std::vector<Attribute *>;
     using ElemPtrArray = std::vector<StructElement *>;
@@ -345,6 +350,7 @@ private:
     struct StructData
     {
         Ref parentRef;
+        std::string typeName; // /S as written, when it is not the standard name of the type
         std::unique_ptr<GooString> altText;
         std::unique_ptr<GooString> actualText;
         std::unique_ptr<GooString> id;

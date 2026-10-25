@@ -302,7 +302,7 @@ static void printStruct(const StructElement *element, unsigned indent)
 
     if (!element->isContent()) {
         printIndent(indent);
-        printf("%s", element->getTypeName());
+        putSanitized(element->getTypeName(), strlen(element->getTypeName()), stdout);
         if (element->getID()) {
             printf(" <");
             putSanitized(element->getID()->c_str(), element->getID()->size(), stdout);

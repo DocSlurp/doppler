@@ -3588,6 +3588,9 @@ void CairoOutputDev::beginMarkedContent(const std::string &name, Dict *propertie
     }
 
     if (mcid == -1) {
+        // Nothing is emitted for this marked content, but record it so the
+        // matching endMarkedContent() does not close an enclosing tag.
+        markedContentStack.emplace_back();
         return;
     }
 
@@ -3611,7 +3614,10 @@ void CairoOutputDev::endMarkedContent(GfxState * /*state*/)
         return;
     }
 
-    cairo_tag_end(cairo, markedContentStack.back().c_str());
+    // An empty entry stands for marked content that did not emit a tag.
+    if (!markedContentStack.back().empty()) {
+        cairo_tag_end(cairo, markedContentStack.back().c_str());
+    }
     markedContentStack.pop_back();
 }
 
