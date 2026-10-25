@@ -552,7 +552,7 @@ static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *
     }
 }
 
-static void printLine(FILE *f, const TextLine *line)
+static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
 {
     double xMin, yMin, xMax, yMax;
     double lineXMin = 0, lineYMin = 0, lineXMax = 0, lineYMax = 0;
@@ -576,7 +576,7 @@ static void printLine(FILE *f, const TextLine *line)
             lineYMax = yMax;
         }
 
-        const std::unique_ptr<std::string> wordText = word->getText();
+        const std::unique_ptr<std::string> wordText = word->getText(uMap);
         const std::string myString = myXmlTokenReplace(wordText->c_str());
         wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\">" << myString << "</word>\n";
     }
@@ -591,6 +591,8 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     const TextFlow *flow;
     const TextBlock *blk;
     const TextLine *line;
+    // look up the output encoding once, not for every word
+    const UnicodeMap *uMap = globalParams->getTextEncoding();
 
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
@@ -605,7 +607,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                 blk->getBBox(&xMin, &yMin, &xMax, &yMax);
                 fprintf(f, "      <block xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", xMin, yMin, xMax, yMax);
                 for (line = blk->getLines(); line; line = line->getNext()) {
-                    printLine(f, line);
+                    printLine(f, line, uMap);
                 }
                 fprintf(f, "      </block>\n");
             }
@@ -628,6 +630,8 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     const int wordLevel = 5;
     const int metaConf = -1;
     const int wordConf = 100;
+    // look up the output encoding once, not for every word
+    const UnicodeMap *uMap = globalParams->getTextEncoding();
 
     fputs("level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n", f);
 
@@ -677,7 +681,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                         }
 
                         GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}\n", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
-                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getText()->c_str()).c_str());
+                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getText(uMap)->c_str()).c_str());
                         wordNum++;
                     }
 
@@ -695,6 +699,8 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
 
 void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int last)
 {
+    // look up the output encoding once, not for every word
+    const UnicodeMap *uMap = globalParams->getTextEncoding();
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
@@ -711,7 +717,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
             for (const TextWord *word : words) {
                 double xMinA, yMinA, xMaxA, yMaxA;
                 word->getBBox(&xMinA, &yMinA, &xMaxA, &yMaxA);
-                const std::string myString = myXmlTokenReplace(word->getText()->c_str());
+                const std::string myString = myXmlTokenReplace(word->getText(uMap)->c_str());
                 fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, myString.c_str());
             }
         }

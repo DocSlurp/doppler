@@ -185,7 +185,12 @@ public:
 
     int getLength() const { return chars.size(); }
     const Unicode *getChar(int idx) const { return &chars[idx].text; }
+    // Text of the word in the current text encoding (globalParams->getTextEncoding()).
+    // This looks the encoding up (taking a lock) on every call: when converting many
+    // words, get the UnicodeMap once and use the overload below.
     std::unique_ptr<std::string> getText() const;
+    // Text of the word in the encoding given by <uMap> (null gives an empty string).
+    std::unique_ptr<std::string> getText(const UnicodeMap *uMap) const;
     const GooString *getFontName(int idx) const { return chars[idx].font->fontName; }
     void getColor(double *r, double *g, double *b) const
     {

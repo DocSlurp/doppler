@@ -410,8 +410,10 @@ std::vector<text_box> page::text_list(int opt_flag) const
 
     const std::vector<TextWord *> &words = word_list->getWords();
     output_list.reserve(words.size());
+    // look up the text encoding once rather than for every word
+    const UnicodeMap *uMap = globalParams->getTextEncoding();
     for (const TextWord *word : words) {
-        const std::unique_ptr<std::string> wordText = word->getText();
+        const std::unique_ptr<std::string> wordText = word->getText(uMap);
         const ustring ustr = ustring::from_utf8(wordText->c_str());
 
         double xMin, yMin, xMax, yMax;

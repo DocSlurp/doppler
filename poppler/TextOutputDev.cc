@@ -819,11 +819,15 @@ bool TextWord::cmpYX(const TextWord *const word1, const TextWord *const word2)
 
 std::unique_ptr<std::string> TextWord::getText() const
 {
-    const UnicodeMap *uMap;
+    return getText(globalParams->getTextEncoding());
+}
+
+std::unique_ptr<std::string> TextWord::getText(const UnicodeMap *uMap) const
+{
     char buf[8];
 
     auto s = std::make_unique<std::string>();
-    if (!(uMap = globalParams->getTextEncoding())) {
+    if (!uMap) {
         return s;
     }
     for (size_t i = 0; i < len(); ++i) {
