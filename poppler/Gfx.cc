@@ -1113,6 +1113,10 @@ void Gfx::opSetExtGState(Object args[], int /*numArgs*/)
     if (!obj2.isNull()) {
         if (obj2.isName("None")) {
             out->clearSoftMask(state);
+        } else if (obj2.isDict() && !out->needNonText()) {
+            // A soft mask only affects painting.  Its group is a content
+            // stream, so interpreting it would pass the mask's own text to
+            // a text extraction device as if it were visible page content.
         } else if (obj2.isDict()) {
             Object obj3 = obj2.dictLookup("S");
             alpha = obj3.isName("Alpha");
