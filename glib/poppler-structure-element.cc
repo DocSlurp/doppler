@@ -203,6 +203,21 @@ PopplerStructureElementKind poppler_structure_element_get_kind(PopplerStructureE
     case StructElement::Form:
         return POPPLER_STRUCTURE_ELEMENT_FORM;
 
+    /* Types added by PDF 2.0 are reported as the closest older kind */
+    case StructElement::DocumentFragment:
+    case StructElement::Aside:
+        return POPPLER_STRUCTURE_ELEMENT_DIV;
+    case StructElement::Title:
+        return POPPLER_STRUCTURE_ELEMENT_HEADING;
+    case StructElement::FENote:
+        return POPPLER_STRUCTURE_ELEMENT_NOTE;
+    case StructElement::Sub:
+    case StructElement::Em:
+    case StructElement::Strong:
+        return POPPLER_STRUCTURE_ELEMENT_SPAN;
+    case StructElement::Artifact:
+        return POPPLER_STRUCTURE_ELEMENT_NONSTRUCT;
+
     /* There should never be elements of type StructElement::Unknown */
     case StructElement::Unknown:
         g_assert_not_reached();
