@@ -40,4 +40,13 @@ t.check(out.startswith("い"), "valid ToUnicode keeps precedence (U+3042 -> U+30
 # a partial ToUnicode (only U+3042 mapped) leaves U+65E5 to the collection map
 out = extract(VALID)
 t.check(out == "\u3044\u65e5", "partial ToUnicode: unmapped codes filled from the collection map", repr(out))
+
+# With Identity-H the "CIDs" are usually glyph ids even when CIDSystemInfo claims Adobe-Japan1,
+# so holes in a partial ToUnicode must stay holes rather than become collection characters
+# (Adobe-Japan1 CID 2 is "!").
+IDENTITY_PARTIAL = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n1 begincodespacerange <0000> <ffff> endcodespacerange\n1 beginbfchar <0001> <0041> endbfchar\nendcmap end end"
+pdf = f.type0_page(b"BT /F1 24 Tf 72 700 Td <00010002> Tj ET", "Identity-H", IDENTITY_PARTIAL)
+with t.TempDir() as d:
+    out = utils.run("pdftotext", d.write("identity.pdf", pdf), "-").strip()
+t.check(out == "A", "Identity-H partial ToUnicode: no collection fallback for glyph-id CIDs", repr(out))
 t.finish()

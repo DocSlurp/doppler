@@ -1803,6 +1803,14 @@ GfxCIDFont::GfxCIDFont(std::string_view tagA, Ref idA, std::optional<std::string
     if (!(cMap = CMap::parse(collection->toStr(), &obj1))) {
         return;
     }
+    // With Identity-H/V or an embedded CMap stream the "CIDs" are very often
+    // glyph ids of a subset font, whatever CIDSystemInfo claims, so the
+    // collection's CID-to-Unicode table would turn a missing mapping into a
+    // wrong character. Only fill ToUnicode holes for the predefined
+    // collection CMaps, where CIDs are genuine collection CIDs.
+    if (cidCtu && (!obj1.isName() || obj1.isName("Identity-H") || obj1.isName("Identity-V"))) {
+        cidCtu.reset();
+    }
     if (cMap->getCMapName()) {
         encodingName = cMap->getCMapName()->toStr();
     } else {
