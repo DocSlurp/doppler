@@ -324,20 +324,13 @@ public:
     //
     GooString *getText(bool recursive = true) const { return appendSubTreeText(nullptr, recursive); }
 
-    TextSpanArray getTextSpans() const
-    {
-        if (!isContent()) {
-            return TextSpanArray();
-        }
-        MarkedContentOutputDev mcdev(getMCID(), stmRef);
-        return getTextSpansInternal(mcdev);
-    }
+    TextSpanArray getTextSpans() const;
 
     ~StructElement();
 
 private:
     GooString *appendSubTreeText(GooString *string, bool recursive) const;
-    const TextSpanArray &getTextSpansInternal(MarkedContentOutputDev &mcdev) const;
+    const TextSpanArray &getTextSpansInternal() const;
 
     using AttrPtrArray = std::vector<Attribute *>;
     using ElemPtrArray = std::vector<StructElement *>;

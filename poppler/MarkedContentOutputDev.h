@@ -20,6 +20,8 @@
 #include "OutputDev.h"
 #include "GfxState.h"
 #include "GfxFont.h"
+#include <map>
+#include <utility>
 #include <vector>
 
 class Dict;
@@ -71,7 +73,15 @@ using TextSpanArray = std::vector<TextSpan>;
 class POPPLER_PRIVATE_EXPORT MarkedContentOutputDev : public OutputDev
 {
 public:
+    // Collects the text of the marked content sequence with MCID <mcidA>
+    // found in the content stream <stmObj> (the page content if it is not
+    // a reference to a form XObject).
     explicit MarkedContentOutputDev(int mcidA, const Object &stmObj);
+
+    // Collects the text of every marked content sequence with an MCID in a
+    // single pass, see getCollectedSpans().
+    MarkedContentOutputDev();
+
     ~MarkedContentOutputDev() override;
 
     virtual bool isOk() { return true; }
@@ -92,21 +102,43 @@ public:
     void beginMarkedContent(const std::string &name, Dict *properties) override;
     void endMarkedContent(GfxState *state) override;
 
+    // Spans of the MCID given to the constructor.
     const TextSpanArray &getTextSpans() const;
 
-private:
-    void endSpan();
-    bool inMarkedContent() const { return !mcidStack.empty(); }
-    bool contentStreamMatch();
-    bool needFontChange(const std::shared_ptr<const GfxFont> &font) const;
+    // Key of the text collected by the default constructor: the form XObject
+    // containing the marked content (Ref::INVALID() for the page content) and
+    // the MCID.
+    using Key = std::pair<Ref, int>;
+    using CollectedSpans = std::map<Key, TextSpanArray>;
 
-    std::shared_ptr<GfxFont> currentFont;
-    std::unique_ptr<GooString> currentText;
-    GfxRGB currentColor;
-    TextSpanArray textSpans;
-    int mcid;
-    std::vector<int> mcidStack;
-    std::vector<bool> trackedStack; // one entry per open marked content: did it push onto mcidStack?
+    // Spans of all the MCIDs seen so far (default-constructed device only).
+    CollectedSpans takeCollectedSpans();
+
+private:
+    // Text being gathered for one MCID.
+    struct Accumulator
+    {
+        std::shared_ptr<GfxFont> currentFont;
+        std::unique_ptr<GooString> currentText;
+        GfxRGB currentColor;
+        TextSpanArray textSpans;
+
+        Accumulator() { currentColor.r = currentColor.g = currentColor.b = 0; }
+    };
+
+    static void endSpan(Accumulator &acc);
+    bool inMarkedContent() const { return activeCount > 0; }
+    bool contentStreamMatch();
+    bool needFontChange(const Accumulator &acc, const std::shared_ptr<const GfxFont> &font) const;
+
+    bool collectAll;
+    Accumulator single; // used when collecting a single MCID
+    std::map<Key, Accumulator> accumulators; // used when collecting all MCIDs
+    // One entry per open marked content sequence; nullptr for sequences
+    // which do not collect text (no MCID, or nested in a collecting one).
+    std::vector<Accumulator *> markStack;
+    int activeCount = 0; // number of non-null entries in markStack
+    int mcid = -1;
     std::vector<Ref> formStack;
     double pageWidth = 0.0;
     double pageHeight = 0.0;

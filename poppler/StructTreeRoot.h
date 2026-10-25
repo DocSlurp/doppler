@@ -45,6 +45,18 @@ public:
         }
     }
 
+    // Text of the marked content sequence with the given MCID, in the
+    // content stream <stm> (Ref::INVALID() for page content) of page
+    // <pageNum>. The content of each page is interpreted at most once, the
+    // result is kept for the lifetime of the tree. Empty if there is none.
+    const TextSpanArray &getMarkedContentSpans(int pageNum, Ref stm, int mcid);
+
+    // Page number to which the marked content <mcid> of the structure
+    // element <parent> belongs, deduced when /Pg is missing: from the
+    // ParentTree if possible, otherwise from the only page that has such
+    // marked content. Zero if it cannot be determined.
+    int findMarkedContentPage(const StructElement *parent, Ref stm, int mcid);
+
     const StructElement *findParentElement(int key, unsigned mcid = 0) const
     {
         auto it = parentTree.find(key);
@@ -73,6 +85,16 @@ private:
     ElemPtrArray elements;
     std::map<int, std::vector<Parent>> parentTree;
     std::multimap<Ref, Parent *> refToParentMap;
+
+    // Text of marked content, per page (see getMarkedContentSpans())
+    std::map<int, MarkedContentOutputDev::CollectedSpans> pageSpans;
+    // Reverse ParentTree: (element, mcid) -> ParentTree keys; built on demand
+    std::map<std::pair<const StructElement *, int>, std::vector<int>> mcidToKeys;
+    std::map<int, int> structParentsToPage;
+    bool reverseIndexBuilt = false;
+
+    const MarkedContentOutputDev::CollectedSpans &getPageSpans(int pageNum);
+    void buildReverseIndex();
 
     void parse(const Dict &rootDict);
     void parseNumberTreeNode(const Dict &node, RefRecursionChecker &usedParents);

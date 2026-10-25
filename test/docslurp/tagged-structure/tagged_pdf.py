@@ -16,10 +16,11 @@ import docslurp_testlib as t  # noqa: E402
 class MC:
     """Marked-content reference kid. ``mcr`` selects the /MCR dictionary form (with /Pg)."""
 
-    def __init__(self, page, mcid, mcr=True):
+    def __init__(self, page, mcid, mcr=True, stm=None):
         self.page = page
         self.mcid = mcid
         self.mcr = mcr
+        self.stm = stm  # index into ``forms`` of build_tagged(), for content inside a form XObject
 
 
 class Elem:
@@ -32,18 +33,20 @@ class Elem:
         self.extra = extra
 
 
-def build_tagged(pages, root, role_map="", structparents=True, page_resources=""):
+def build_tagged(pages, root, role_map="", structparents=True, page_resources="", forms=()):
     """Build a tagged PDF.
 
     pages: list of content-stream byte strings (page i uses /StructParents i).
     root:  Elem used as the single child of /StructTreeRoot.
+    forms: content streams of form XObjects /Fm0, /Fm1, ... available to every page.
     """
     n = len(pages)
     objs = {}
     font_num = 3
     page_num = [4 + 2 * i for i in range(n)]
     cont_num = [5 + 2 * i for i in range(n)]
-    next_num = [4 + 2 * n]
+    form_num = [4 + 2 * n + i for i in range(len(forms))]
+    next_num = [4 + 2 * n + len(forms)]
     root_num = next_num[0]
     next_num[0] += 1
     parent_tree_num = next_num[0]
@@ -61,10 +64,12 @@ def build_tagged(pages, root, role_map="", structparents=True, page_resources=""
             if isinstance(k, MC):
                 pg = k.page
                 if k.mcr:
-                    kid_items.append("<< /Type /MCR /Pg %d 0 R /MCID %d >>" % (page_num[pg], k.mcid))
+                    stm = (" /Stm %d 0 R" % form_num[k.stm]) if k.stm is not None else ""
+                    kid_items.append("<< /Type /MCR /Pg %d 0 R /MCID %d%s >>" % (page_num[pg], k.mcid, stm))
                 else:
                     kid_items.append("%d" % k.mcid)
-                entries.setdefault(pg, {})[k.mcid] = num
+                if k.stm is None:
+                    entries.setdefault(pg, {})[k.mcid] = num
             else:
                 kid_items.append("%d 0 R" % walk(k, num))
         body = "<< /Type /StructElem /S /%s /P %d 0 R " % (e.s, parent_num)
@@ -91,8 +96,10 @@ def build_tagged(pages, root, role_map="", structparents=True, page_resources=""
     objs[font_num] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
     for i, c in enumerate(pages):
         objs[page_num[i]] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> %s >> /Contents %d 0 R %s>>" % (
-            page_resources, cont_num[i], ("/StructParents %d " % i) if structparents else "")
+            page_resources + (" /XObject << %s >>" % " ".join("/Fm%d %d 0 R" % (j, form_num[j]) for j in range(len(forms))) if forms else ""), cont_num[i], ("/StructParents %d " % i) if structparents else "")
         objs[cont_num[i]] = t.stream("", c)
+    for j, c in enumerate(forms):
+        objs[form_num[j]] = t.stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >>", c)
     rm = (" /RoleMap << %s >>" % role_map) if role_map else ""
     objs[root_num] = "<< /Type /StructTreeRoot /K %d 0 R /ParentTree %d 0 R%s >>" % (top, parent_tree_num, rm)
     objs[parent_tree_num] = "<< /Nums [%s] >>" % " ".join(nums)

@@ -819,8 +819,7 @@ const Attribute *StructElement::findAttribute(Attribute::Type attributeType, boo
 GooString *StructElement::appendSubTreeText(GooString *string, bool recursive) const
 {
     if (isContent() && !isObjectRef()) {
-        MarkedContentOutputDev mcdev(getMCID(), stmRef);
-        const TextSpanArray &spans(getTextSpansInternal(mcdev));
+        const TextSpanArray &spans(getTextSpansInternal());
 
         if (!string) {
             string = new GooString();
@@ -849,25 +848,46 @@ GooString *StructElement::appendSubTreeText(GooString *string, bool recursive) c
     return string;
 }
 
-const TextSpanArray &StructElement::getTextSpansInternal(MarkedContentOutputDev &mcdev) const
+TextSpanArray StructElement::getTextSpans() const
+{
+    if (!isContent() || isObjectRef()) {
+        return TextSpanArray();
+    }
+    return getTextSpansInternal();
+}
+
+const TextSpanArray &StructElement::getTextSpansInternal() const
 {
     assert(isContent());
 
-    int startPage = 0, endPage = 0;
+    static const TextSpanArray noSpans;
 
+    PDFDoc *doc = treeRoot->getDoc();
+
+    // The page is found from /Pg in this element or the closest ancestor
+    // that has it, otherwise from the ParentTree.
+    int pageNum = 0;
     Ref ref;
     if (getPageRef(ref)) {
-        startPage = endPage = treeRoot->getDoc()->findPage(ref);
+        pageNum = doc->findPage(ref);
     }
 
-    if (!(startPage && endPage)) {
-        startPage = 1;
-        endPage = treeRoot->getDoc()->getNumPages();
+    Ref stm = Ref::INVALID();
+    if (stmRef.isRef()) {
+        stm = stmRef.getRef();
     }
 
-    treeRoot->getDoc()->displayPages(&mcdev, startPage, endPage, 72.0, 72.0, 0, true, false, false);
-    return mcdev.getTextSpans();
+    if (pageNum == 0) {
+        pageNum = treeRoot->findMarkedContentPage(parent, stm, getMCID());
+    }
+
+    if (pageNum == 0) {
+        return noSpans;
+    }
+
+    return treeRoot->getMarkedContentSpans(pageNum, stm, getMCID());
 }
+
 static StructElement::Type roleMapResolve(Dict *roleMap, std::string_view name)
 {
     Object resolved = roleMap->lookup(name);
