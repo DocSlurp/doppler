@@ -45,12 +45,13 @@ OCGs::OCGs(const Object &ocgObject, XRef *xref) : m_xref(xref)
     for (int i = 0; i < ocgsArray->getLength(); ++i) {
         Object ocgDict = ocgsArray->get(i);
         if (!ocgDict.isDict()) {
-            break;
+            // skip bad entries (e.g. null) instead of dropping all later groups
+            continue;
         }
         auto thisOptionalContentGroup = std::make_unique<OptionalContentGroup>(ocgDict.getDict());
         const Object &ocgRef = ocgsArray->getNF(i);
         if (!ocgRef.isRef()) {
-            break;
+            continue;
         }
         thisOptionalContentGroup->setRef(ocgRef.getRef());
         // the default is ON - we change state later, depending on BaseState, ON and OFF
@@ -80,12 +81,12 @@ OCGs::OCGs(const Object &ocgObject, XRef *xref) : m_xref(xref)
             const Object &reference = onArray->getNF(i);
             if (!reference.isRef()) {
                 // there can be null entries
-                break;
+                continue;
             }
             OptionalContentGroup *group = findOcgByRef(reference.getRef());
             if (!group) {
                 error(errSyntaxWarning, -1, "Couldn't find group for reference");
-                break;
+                continue;
             }
             group->setState(OptionalContentGroup::On);
         }
@@ -99,12 +100,12 @@ OCGs::OCGs(const Object &ocgObject, XRef *xref) : m_xref(xref)
             const Object &reference = offArray->getNF(i);
             if (!reference.isRef()) {
                 // there can be null entries
-                break;
+                continue;
             }
             OptionalContentGroup *group = findOcgByRef(reference.getRef());
             if (!group) {
                 error(errSyntaxWarning, -1, "Couldn't find group for reference to set OFF");
-                break;
+                continue;
             }
             group->setState(OptionalContentGroup::Off);
         }

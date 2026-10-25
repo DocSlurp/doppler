@@ -1217,7 +1217,9 @@ int EmbedStream::getChar()
     }
     int c = str->getChar();
     --length;
-    if (reusable) {
+    // Don't record EOF: it isn't data, and a caller that keeps reading
+    // past the end of the stream would otherwise grow the buffer forever.
+    if (reusable && c != EOF) {
         bufData[bufLen] = c;
         bufLen++;
         if (bufLen >= bufMax) {
@@ -1265,7 +1267,7 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
     }
     const int len = str->doGetChars(nChars, buffer);
     length -= len;
-    if (reusable) {
+    if (reusable && len > 0) {
         if (bufLen + len >= bufMax) {
             while (bufLen + len >= bufMax) {
                 bufMax *= 2;

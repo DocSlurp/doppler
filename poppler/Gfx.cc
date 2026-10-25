@@ -1113,6 +1113,10 @@ void Gfx::opSetExtGState(Object args[], int /*numArgs*/)
     if (!obj2.isNull()) {
         if (obj2.isName("None")) {
             out->clearSoftMask(state);
+        } else if (obj2.isDict() && !out->needNonText()) {
+            // A soft mask only affects painting.  Its group is a content
+            // stream, so interpreting it would pass the mask's own text to
+            // a text extraction device as if it were visible page content.
         } else if (obj2.isDict()) {
             Object obj3 = obj2.dictLookup("S");
             alpha = obj3.isName("Alpha");
@@ -2388,6 +2392,12 @@ void Gfx::opShFill(Object args[], int /*numArgs*/)
     double xMin, yMin, xMax, yMax;
 
     if (!ocState) {
+        return;
+    }
+
+    // shadings only paint; skip the (potentially very expensive) evaluation
+    // when the device ignores non-text content
+    if (!out->needNonText()) {
         return;
     }
 
@@ -4194,6 +4204,23 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     }
 }
 
+// Read and discard up to n bytes from str, in bulk.  The declared image
+// size is attacker controlled (up to INT_MAX bytes), so stop as soon as
+// the stream reports EOF instead of spinning on getChar() == EOF.
+static void skipStreamBytes(Stream *str, int64_t n)
+{
+    unsigned char buf[4096];
+
+    while (n > 0) {
+        const int toRead = static_cast<int>(std::min<int64_t>(n, sizeof(buf)));
+        const int nRead = str->doGetChars(toRead, buf);
+        if (nRead <= 0) {
+            break;
+        }
+        n -= nRead;
+    }
+}
+
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 {
     Dict *dict, *maskDict;
@@ -4342,10 +4369,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
                 error(errSyntaxError, getPos(), "Bad image parameters");
                 return;
             }
-            const int n = height * ((width + 7) / 8);
-            for (int i = 0; i < n; ++i) {
-                str->getChar();
-            }
+            skipStreamBytes(str, static_cast<int64_t>(height) * ((width + 7) / 8));
             str->close();
 
             // draw it
@@ -4676,10 +4700,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
                 error(errSyntaxError, getPos(), "Bad image parameters");
                 return;
             }
-            const int n = static_cast<int>(byteCount);
-            for (int i = 0; i < n; ++i) {
-                str->getChar();
-            }
+            skipStreamBytes(str, byteCount);
             str->close();
 
             // draw it
