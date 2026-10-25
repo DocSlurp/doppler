@@ -194,6 +194,7 @@ void StructTreeRoot::parentTreeAdd(const Ref objectRef, StructElement *element)
 
 const MarkedContentOutputDev::CollectedSpans &StructTreeRoot::getPageSpans(int pageNum)
 {
+    const std::scoped_lock lock(cacheMutex);
     auto it = pageSpans.find(pageNum);
     if (it == pageSpans.end()) {
         // Interpret the page once and keep the text of all its MCIDs.
@@ -206,6 +207,7 @@ const MarkedContentOutputDev::CollectedSpans &StructTreeRoot::getPageSpans(int p
 
 const TextSpanArray &StructTreeRoot::getMarkedContentSpans(int pageNum, Ref stm, int mcid)
 {
+    const std::scoped_lock lock(cacheMutex);
     static const TextSpanArray noSpans;
 
     if (pageNum < 1 || pageNum > doc->getNumPages()) {
@@ -236,6 +238,7 @@ void StructTreeRoot::buildReverseIndex()
 
 int StructTreeRoot::findMarkedContentPage(const StructElement *parent, Ref stm, int mcid)
 {
+    const std::scoped_lock lock(cacheMutex);
     const int numPages = doc->getNumPages();
     if (numPages == 1) {
         return 1;

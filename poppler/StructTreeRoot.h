@@ -17,6 +17,7 @@
 #include "Object.h"
 #include "StructElement.h"
 #include <map>
+#include <mutex>
 #include <vector>
 
 class Dict;
@@ -86,6 +87,10 @@ private:
     std::map<int, std::vector<Parent>> parentTree;
     std::multimap<Ref, Parent *> refToParentMap;
 
+    // Guards the lazily filled caches below: StructElement::getText() is
+    // const and may be called from several threads on the same document.
+    // Recursive because findMarkedContentPage() fills pageSpans too.
+    std::recursive_mutex cacheMutex;
     // Text of marked content, per page (see getMarkedContentSpans())
     std::map<int, MarkedContentOutputDev::CollectedSpans> pageSpans;
     // Reverse ParentTree: (element, mcid) -> ParentTree keys; built on demand
