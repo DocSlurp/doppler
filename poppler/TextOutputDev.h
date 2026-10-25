@@ -654,6 +654,11 @@ public:
     // Get the head of the linked list of TextFlows.
     const TextFlow *getFlows() const { return flows; }
 
+    // Size of the last page, in the same (rotated, scaled) device space as
+    // the word coordinates.
+    double getPageWidth() const { return pageWidth; }
+    double getPageHeight() const { return pageHeight; }
+
     // If true, will combine characters when a base and combining
     // character are drawn on eachother.
     void setMergeCombining(bool merge);
@@ -881,6 +886,12 @@ public:
     // Get the head of the linked list of TextFlows for the
     // last rasterized page.
     const TextFlow *getFlows() const;
+
+    // Size of the last rasterized page in the coordinate space of the word
+    // bounding boxes: it honours the page /Rotate, the resolution, and
+    // whether the media box or crop box was used.
+    double getPageWidth() const;
+    double getPageHeight() const;
 
     void setTextEOL(EndOfLineKind textEOLA) { textEOL = textEOLA; }
     void setTextPageBreaks(bool textPageBreaksA) { textPageBreaks = textPageBreaksA; }

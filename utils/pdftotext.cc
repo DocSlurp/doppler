@@ -553,10 +553,11 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
 
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
-        const double wid = useCropBox ? doc->getPageCropWidth(page) : doc->getPageMediaWidth(page);
-        const double hgt = useCropBox ? doc->getPageCropHeight(page) : doc->getPageMediaHeight(page);
-        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
+        // The page size must be in the same space as the word coordinates (rotated and scaled)
+        const double wid = textOut->getPageWidth();
+        const double hgt = textOut->getPageHeight();
+        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
         for (flow = textOut->getFlows(); flow; flow = flow->getNext()) {
             fprintf(f, "    <flow>\n");
             for (blk = flow->getBlocks(); blk; blk = blk->getNext()) {
@@ -590,11 +591,12 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     fputs("level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n", f);
 
     for (int page = first; page <= last; ++page) {
-        const double wid = useCropBox ? doc->getPageCropWidth(page) : doc->getPageMediaWidth(page);
-        const double hgt = useCropBox ? doc->getPageCropHeight(page) : doc->getPageMediaHeight(page);
+        doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
+        // The page size must be in the same space as the word coordinates (rotated and scaled)
+        const double wid = textOut->getPageWidth();
+        const double hgt = textOut->getPageHeight();
 
         fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###PAGE###\n", pageLevel, page, 0, 0, 0, 0, 0.0, 0.0, wid, hgt, metaConf);
-        doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
 
         double xMin = 0, yMin = 0, xMax = 0, yMax = 0;
         int flowNum = 0;
@@ -654,10 +656,11 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
 {
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
-        double wid = useCropBox ? doc->getPageCropWidth(page) : doc->getPageMediaWidth(page);
-        double hgt = useCropBox ? doc->getPageCropHeight(page) : doc->getPageMediaHeight(page);
-        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
+        // The page size must be in the same space as the word coordinates (rotated and scaled)
+        const double wid = textOut->getPageWidth();
+        const double hgt = textOut->getPageHeight();
+        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
         const std::unique_ptr<TextWordList> wordlist = textOut->makeWordList();
         const std::vector<TextWord *> &words = wordlist->getWords();
 

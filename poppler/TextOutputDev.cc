@@ -5976,3 +5976,13 @@ const TextFlow *TextOutputDev::getFlows() const
 {
     return text->getFlows();
 }
+
+double TextOutputDev::getPageWidth() const
+{
+    return text->getPageWidth();
+}
+
+double TextOutputDev::getPageHeight() const
+{
+    return text->getPageHeight();
+}
