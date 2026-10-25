@@ -363,6 +363,11 @@ void HtmlPage::addChar(GfxState *state, double x, double y, double dx, double dy
             std::cerr << "text " << print_matrix(state->getTextMat());
         }
     }
+    // Note: the two conditions below are deliberately combined with &&, not ||. The font of an
+    // unrotated string has a zero rotation matrix, which never equals the text matrix, so for
+    // normal text a gap alone starts a new string. The x gap is meaningless for rotated text, whose
+    // font carries its rotation matrix; there a matching rotation keeps the string together
+    // (with || every few characters of rotated text would become its own string).
     if (n > 0 && // don't start a new string, unless there is already a string
                  // TODO: the following line assumes that text is flowing left to
                  // right, which will not necessarily be the case, e.g. if rotated;

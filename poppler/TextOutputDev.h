@@ -185,7 +185,12 @@ public:
 
     int getLength() const { return chars.size(); }
     const Unicode *getChar(int idx) const { return &chars[idx].text; }
+    // Text of the word in the current text encoding (globalParams->getTextEncoding()).
+    // This looks the encoding up (taking a lock) on every call: when converting many
+    // words, get the UnicodeMap once and use the overload below.
     std::unique_ptr<std::string> getText() const;
+    // Text of the word in the encoding given by <uMap> (null gives an empty string).
+    std::unique_ptr<std::string> getText(const UnicodeMap *uMap) const;
     const GooString *getFontName(int idx) const { return chars[idx].font->fontName; }
     void getColor(double *r, double *g, double *b) const
     {
@@ -209,6 +214,8 @@ public:
     int getCharLen() const { return chars.empty() ? 0 : chars.back().charPos - chars.front().charPos; }
     bool getSpaceAfter() const { return spaceAfter; }
     bool isUnderlined() const { return underlined; }
+    // True if the word is invisible text (render mode 3), such as an OCR text layer.
+    bool isInvisible() const { return invisible; }
     const AnnotLink *getLink() const { return link; }
     double getEdge(int i) const { return chars[i].edge; }
     double getBaseline() const { return base; }
@@ -541,10 +548,21 @@ public:
     int getBegin() const { return begin; }
     int getEnd() const { return end; }
 
+    // True if this is the last word of a table cell that is followed by
+    // another cell of the same table row in the selected text. A cell
+    // separator (a tab) is emitted after it in the selection text.
+    bool endsTableCell() const { return cellEnd; }
+
+    // True if one character (a space or a table cell separator) follows this
+    // word in the selection text when another word follows it on the line.
+    bool hasSeparatorAfter() const { return word->hasSpaceAfter() || cellEnd; }
+
 private:
     const TextWord *word;
     int begin;
     int end;
+    bool cellStart = false; // first word of a cell that follows another cell in its row
+    bool cellEnd = false; // last word of a cell that precedes another cell in its row
 
     friend class TextSelectionPainter;
     friend class TextSelectionDumper;
@@ -653,6 +671,11 @@ public:
 
     // Get the head of the linked list of TextFlows.
     const TextFlow *getFlows() const { return flows; }
+
+    // Size of the last page, in the same (rotated, scaled) device space as
+    // the word coordinates.
+    double getPageWidth() const { return pageWidth; }
+    double getPageHeight() const { return pageHeight; }
 
     // If true, will combine characters when a base and combining
     // character are drawn on eachother.
@@ -881,6 +904,12 @@ public:
     // Get the head of the linked list of TextFlows for the
     // last rasterized page.
     const TextFlow *getFlows() const;
+
+    // Size of the last rasterized page in the coordinate space of the word
+    // bounding boxes: it honours the page /Rotate, the resolution, and
+    // whether the media box or crop box was used.
+    double getPageWidth() const;
+    double getPageHeight() const;
 
     void setTextEOL(EndOfLineKind textEOLA) { textEOL = textEOLA; }
     void setTextPageBreaks(bool textPageBreaksA) { textPageBreaks = textPageBreaksA; }

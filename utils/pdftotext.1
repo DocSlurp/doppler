@@ -95,17 +95,70 @@ headers.
 .B \-bbox
 Generate an XHTML file containing bounding box information for each
 word in the file.
+The page width and height are given in the same coordinate space as the word
+boxes: they are rotated by the page's /Rotate entry and scaled by \-r.
+Word text is XML-escaped; ASCII control characters (which are not allowed in
+XML 1.0, and include tabs and line breaks that can appear in ActualText) are
+replaced by a space.
 .TP
 .B \-bbox-layout
 Generate an XHTML file containing bounding box information for each
 block, line, and word in the file.
+Page size and text escaping are as for \-bbox.
 .TP
 .B \-tsv
 Generate a TSV file containing the bounding box information for each
 block, line, and word in the file.
+Page size is as for \-bbox.
+Every ASCII control character in the text column (in particular tab, carriage
+return and line feed, which ActualText can contain) and the Unicode line
+separators U+0085, U+2028 and U+2029 is replaced by a single space, so each
+word is exactly one row of twelve tab-separated columns.
+No quoting or backslash escaping is used.
+.TP
+.B \-wordmeta
+Used together with \-bbox, \-bbox-layout or \-tsv: output additional metadata for
+every word. Without this option the output is unchanged.
+With \-bbox and \-bbox-layout each <word> element gets these extra attributes
+after yMax:
+.IR fontName ,
+.IR fontSize ,
+.IR rotation ,
+.IR spaceAfter ,
+.IR invisible ,
+.I color
+and
+.IR baseline .
+With \-tsv these are seven extra trailing columns after the text column, named
+.IR font_name ,
+.IR font_size ,
+.IR rotation ,
+.IR space_after ,
+.IR invisible ,
+.I color
+and
+.IR baseline ;
+page, block and line rows have these columns empty.
+The font name is that of the word's first character, as stored in the PDF
+(including any subset prefix such as ABCDEF+).
+The font size is in the same coordinate space as the bounding boxes.
+.I rotation
+is 0 to 3 (multiples of 90 degrees, as for the text direction).
+.I spaceAfter
+is 1 if a space follows the word on its line, otherwise 0.
+.I invisible
+is 1 for invisible text (text render mode 3), such as the hidden text layer of
+OCRed documents, otherwise 0.
+.I color
+is the colour the word is painted with, as #rrggbb (the stroke colour for
+stroke-only text render modes).
+.I baseline
+is the y coordinate of the baseline for horizontal text (rotation 0 and 2) or
+the x coordinate for vertical text (rotation 1 and 3), in the same space as the
+bounding boxes.
 .TP
 .B \-cropbox
-Use the crop box rather than the media box with \-bbox and \-bbox-layout.
+Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.
 .TP
 .BI \-colspacing " number"
 Specifies how much spacing we allow after a word before considering adjacent text to be a new column, measured as a fraction of the font size. Current default is 0.7, old releases had a 0.3 default.

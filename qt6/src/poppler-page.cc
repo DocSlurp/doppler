@@ -767,8 +767,10 @@ std::vector<std::unique_ptr<TextBox>> Page::textList(Rotation rotate, ShouldAbor
 
     const std::vector<TextWord *> &words = word_list->getWords();
     output_list.reserve(words.size());
+    // look up the text encoding once rather than for every word
+    const UnicodeMap *uMap = globalParams->getTextEncoding();
     for (const TextWord *word : words) {
-        const std::unique_ptr<std::string> wordText = word->getText();
+        const std::unique_ptr<std::string> wordText = word->getText(uMap);
         const QString string = QString::fromUtf8(wordText->c_str());
         double xMin, yMin, xMax, yMax;
         word->getBBox(&xMin, &yMin, &xMax, &yMax);

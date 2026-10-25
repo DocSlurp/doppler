@@ -819,11 +819,15 @@ bool TextWord::cmpYX(const TextWord *const word1, const TextWord *const word2)
 
 std::unique_ptr<std::string> TextWord::getText() const
 {
-    const UnicodeMap *uMap;
+    return getText(globalParams->getTextEncoding());
+}
+
+std::unique_ptr<std::string> TextWord::getText(const UnicodeMap *uMap) const
+{
     char buf[8];
 
     auto s = std::make_unique<std::string>();
-    if (!(uMap = globalParams->getTextEncoding())) {
+    if (!uMap) {
         return s;
     }
     for (size_t i = 0; i < len(); ++i) {
@@ -4260,6 +4264,7 @@ private:
     std::vector<std::unique_ptr<TextWordSelection>> words;
     int tableId;
     TextBlock *currentBlock;
+    bool startsCell = false; // the next word begins a new cell of the current table row
 };
 
 TextSelectionDumper::TextSelectionDumper(TextPage *p) : TextSelectionVisitor(p)
@@ -4274,6 +4279,7 @@ void TextSelectionDumper::startLine()
 {
     finishLine();
     words.clear();
+    startsCell = false;
 }
 
 void TextSelectionDumper::finishLine()
@@ -4282,6 +4288,14 @@ void TextSelectionDumper::finishLine()
         // Reverse word order for RTL text. Fixes #53 for glib backend (Evince)
         if (!page->primaryLR) {
             std::ranges::reverse(words);
+        }
+
+        // Words of different cells of one table row share a line: remember where one
+        // cell ends, so that getText() and the layout code can separate the cells.
+        // A cell's first word is flagged in logical order, so after the reversal above
+        // the flag belongs to the word that precedes the cell boundary for RTL text.
+        for (size_t i = 0; i + 1 < words.size(); i++) {
+            words[i]->cellEnd = page->primaryLR ? words[i + 1]->cellStart : words[i]->cellStart;
         }
 
         lines.push_back(std::move(words));
@@ -4313,6 +4327,8 @@ void TextSelectionDumper::visitLine(TextLine *line, TextWord * /*begin*/, TextWo
         } else { // another block
             if (currentBlock->tableEnd) { // previous block ended its row
                 startLine();
+            } else { // the next cell of the same row
+                startsCell = true;
             }
             currentBlock = frag.line->blk;
         }
@@ -4323,7 +4339,10 @@ void TextSelectionDumper::visitLine(TextLine *line, TextWord * /*begin*/, TextWo
 
 void TextSelectionDumper::visitWord(TextWord *word, int begin, int end, const PDFRectangle & /*selection*/)
 {
-    words.push_back(std::make_unique<TextWordSelection>(word, begin, end));
+    auto sel = std::make_unique<TextWordSelection>(word, begin, end);
+    sel->cellStart = startsCell && !words.empty();
+    startsCell = false;
+    words.push_back(std::move(sel));
 }
 
 void TextSelectionDumper::endPage()
@@ -4335,15 +4354,21 @@ GooString TextSelectionDumper::getText()
 {
     GooString text;
     const UnicodeMap *uMap;
-    char space[8], eol[16];
-    int spaceLen, eolLen;
+    char space[8], tab[8], eol[16];
+    int spaceLen, tabLen, eolLen;
 
     if (!(uMap = globalParams->getTextEncoding())) {
         return text;
     }
 
     spaceLen = uMap->mapUnicode(0x20, space, sizeof(space));
+    tabLen = uMap->mapUnicode(0x09, tab, sizeof(tab));
     eolLen = uMap->mapUnicode(0x0a, eol, sizeof(eol));
+    if (tabLen <= 0) {
+        // the output encoding has no tab: use a space
+        memcpy(tab, space, spaceLen);
+        tabLen = spaceLen;
+    }
 
     std::vector<Unicode> uText;
     for (size_t i = 0; i < lines.size(); i++) {
@@ -4355,8 +4380,13 @@ GooString TextSelectionDumper::getText()
             std::transform(sel->word->chars.begin() + sel->begin, sel->word->chars.begin() + sel->end, uText.begin(), [](auto &c) { return c.text; });
             page->dumpFragment(uText.data(), uText.size(), uMap, &text);
 
-            if (j < line.size() - 1 && sel->word->spaceAfter) {
-                text.append(space, spaceLen);
+            if (j < line.size() - 1) {
+                if (sel->cellEnd) {
+                    // cells of a table row are separated by a tab (also when the word ends in a space)
+                    text.append(tab, tabLen);
+                } else if (sel->word->spaceAfter) {
+                    text.append(space, spaceLen);
+                }
             }
         }
         if (i < lines.size() - 1) {
@@ -5407,7 +5437,9 @@ void TextPage::dump(void *outputStream, TextOutputFunc outputFunc, bool physLayo
             for (TextBlock *blk = flow->blocks; blk; blk = blk->next) {
                 for (TextLine *line = blk->lines; line; line = line->next) {
                     const bool suppressHyphen = [&] -> bool {
-                        if (!line->next && !blk->next) {
+                        // Only join across a hyphen within a block: the last line of a
+                        // block ends a paragraph even if another block follows in the flow
+                        if (!line->next) {
                             return false;
                         }
                         if (hyphenMode == EndOfLineHyphenMode::Keep) {
@@ -5975,4 +6007,14 @@ void TextOutputDev::setInlineLinkURIs(bool inlineLinkURIsA)
 const TextFlow *TextOutputDev::getFlows() const
 {
     return text->getFlows();
+}
+
+double TextOutputDev::getPageWidth() const
+{
+    return text->getPageWidth();
+}
+
+double TextOutputDev::getPageHeight() const
+{
+    return text->getPageHeight();
 }
