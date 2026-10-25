@@ -84,19 +84,29 @@ void MarkedContentOutputDev::beginMarkedContent(const std::string & /*name*/, Di
         properties->lookupInt("MCID", {}, &id);
     }
 
-    if (id == -1) {
-        return;
+    // Every begin is recorded so that it can be paired with its end, even
+    // when it carries no MCID. Otherwise the end of nested marked content
+    // without MCID (e.g. /Span, /OC) would pop the enclosing MCID.
+    bool track = false;
+    if (id != -1) {
+        // The stack keep track of MCIDs of nested marked content.
+        if (inMarkedContent() || (id == mcid && contentStreamMatch())) {
+            mcidStack.push_back(id);
+            track = true;
+        }
     }
-
-    // The stack keep track of MCIDs of nested marked content.
-    if (inMarkedContent() || (id == mcid && contentStreamMatch())) {
-        mcidStack.push_back(id);
-    }
+    trackedStack.push_back(track);
 }
 
 void MarkedContentOutputDev::endMarkedContent(GfxState * /*state*/)
 {
-    if (inMarkedContent()) {
+    if (trackedStack.empty()) {
+        return;
+    }
+
+    const bool tracked = trackedStack.back();
+    trackedStack.pop_back();
+    if (tracked && inMarkedContent()) {
         mcidStack.pop_back();
         // The outer marked content sequence MCID was popped, ensure
         // that the last piece of text collected ends up in a TextSpan.

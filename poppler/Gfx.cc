@@ -575,6 +575,11 @@ Gfx::~Gfx()
     while (!stateGuards.empty()) {
         popStateGuard();
     }
+    // Close marked content left open by the content stream, so that the
+    // begin/end notifications received by the device stay balanced.
+    while (mcStack) {
+        opEndMarkedContent(nullptr, 0);
+    }
     if (!subPage) {
         out->endPage();
     }
@@ -586,9 +591,6 @@ Gfx::~Gfx()
     delete state;
     while (res) {
         popResources();
-    }
-    while (mcStack) {
-        popMarkedContent();
     }
 }
 
@@ -5156,21 +5158,31 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
         } else {
             error(errSyntaxError, getPos(), "insufficient arguments for Marked Content");
         }
-    } else if (numArgs == 2 && name0 == "Span") {
-        Object dictToUse;
-        if (args[1].isDict()) {
-            dictToUse = args[1].copy();
-        } else if (args[1].isName()) {
-            dictToUse = res->lookupMarkedContentNF(args[1].getNameString()).fetch(xref);
-        }
+    }
 
-        if (dictToUse.isDict()) {
-            Object obj = dictToUse.dictLookup("ActualText");
-            if (obj.isString()) {
-                out->beginActualText(state, obj.getString());
-                MarkedContentStack *mc = mcStack;
-                mc->kind = gfxMCActualText;
+    // The property list of BDC is either an inline dictionary or the name of
+    // an entry in the /Properties resource subdictionary. It is needed by both
+    // the ActualText handling below and by the output device.
+    Object propertiesObj;
+    Dict *properties = nullptr;
+    if (numArgs == 2) {
+        if (args[1].isDict()) {
+            properties = args[1].getDict();
+        } else if (args[1].isName() && name0 != "OC") {
+            propertiesObj = res->lookupMarkedContentNF(args[1].getNameString()).fetch(xref);
+            if (propertiesObj.isDict()) {
+                properties = propertiesObj.getDict();
             }
+        }
+    }
+
+    // /ActualText may be attached to the property list of any marked-content
+    // tag (ISO 32000-1, 14.9.4), not only to /Span.
+    if (properties && mcStack->kind == gfxMCOther) {
+        Object obj = properties->lookup("ActualText");
+        if (obj.isString()) {
+            out->beginActualText(state, obj.getString());
+            mcStack->kind = gfxMCActualText;
         }
     }
 
@@ -5184,11 +5196,10 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
     }
     ocState = !contentIsHidden();
 
-    if (numArgs == 2 && args[1].isDict()) {
-        out->beginMarkedContent(name0, args[1].getDict());
-    } else if (numArgs == 1) {
-        out->beginMarkedContent(name0, nullptr);
-    }
+    // Always notify the device, so that its begin/end calls stay balanced with
+    // the EMC operators, even for content without properties or with a
+    // property list that was not an inline dictionary.
+    out->beginMarkedContent(name0, properties);
 }
 
 void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)

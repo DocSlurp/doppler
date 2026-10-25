@@ -106,6 +106,7 @@ private:
     TextSpanArray textSpans;
     int mcid;
     std::vector<int> mcidStack;
+    std::vector<bool> trackedStack; // one entry per open marked content: did it push onto mcidStack?
     std::vector<Ref> formStack;
     double pageWidth = 0.0;
     double pageHeight = 0.0;
