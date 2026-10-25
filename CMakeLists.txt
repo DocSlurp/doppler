@@ -871,6 +871,9 @@ endif()
 if(ENABLE_CPP)
   add_subdirectory(cpp)
 endif()
+if(ENABLE_UTILS)
+  add_subdirectory(test/docslurp)
+endif()
 
 # Install .pc files for packagers
 if(PKG_CONFIG_EXECUTABLE)
