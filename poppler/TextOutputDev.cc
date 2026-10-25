@@ -5407,7 +5407,9 @@ void TextPage::dump(void *outputStream, TextOutputFunc outputFunc, bool physLayo
             for (TextBlock *blk = flow->blocks; blk; blk = blk->next) {
                 for (TextLine *line = blk->lines; line; line = line->next) {
                     const bool suppressHyphen = [&] -> bool {
-                        if (!line->next && !blk->next) {
+                        // Only join across a hyphen within a block: the last line of a
+                        // block ends a paragraph even if another block follows in the flow
+                        if (!line->next) {
                             return false;
                         }
                         if (hyphenMode == EndOfLineHyphenMode::Keep) {
