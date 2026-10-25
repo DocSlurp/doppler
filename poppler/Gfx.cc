@@ -4194,6 +4194,23 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     }
 }
 
+// Read and discard up to n bytes from str, in bulk.  The declared image
+// size is attacker controlled (up to INT_MAX bytes), so stop as soon as
+// the stream reports EOF instead of spinning on getChar() == EOF.
+static void skipStreamBytes(Stream *str, int64_t n)
+{
+    unsigned char buf[4096];
+
+    while (n > 0) {
+        const int toRead = static_cast<int>(std::min<int64_t>(n, sizeof(buf)));
+        const int nRead = str->doGetChars(toRead, buf);
+        if (nRead <= 0) {
+            break;
+        }
+        n -= nRead;
+    }
+}
+
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 {
     Dict *dict, *maskDict;
@@ -4342,10 +4359,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
                 error(errSyntaxError, getPos(), "Bad image parameters");
                 return;
             }
-            const int n = height * ((width + 7) / 8);
-            for (int i = 0; i < n; ++i) {
-                str->getChar();
-            }
+            skipStreamBytes(str, static_cast<int64_t>(height) * ((width + 7) / 8));
             str->close();
 
             // draw it
@@ -4676,10 +4690,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
                 error(errSyntaxError, getPos(), "Bad image parameters");
                 return;
             }
-            const int n = static_cast<int>(byteCount);
-            for (int i = 0; i < n; ++i) {
-                str->getChar();
-            }
+            skipStreamBytes(str, byteCount);
             str->close();
 
             // draw it
