@@ -541,10 +541,21 @@ public:
     int getBegin() const { return begin; }
     int getEnd() const { return end; }
 
+    // True if this is the last word of a table cell that is followed by
+    // another cell of the same table row in the selected text. A cell
+    // separator (a tab) is emitted after it in the selection text.
+    bool endsTableCell() const { return cellEnd; }
+
+    // True if one character (a space or a table cell separator) follows this
+    // word in the selection text when another word follows it on the line.
+    bool hasSeparatorAfter() const { return word->hasSpaceAfter() || cellEnd; }
+
 private:
     const TextWord *word;
     int begin;
     int end;
+    bool cellStart = false; // first word of a cell that follows another cell in its row
+    bool cellEnd = false; // last word of a cell that precedes another cell in its row
 
     friend class TextSelectionPainter;
     friend class TextSelectionDumper;
