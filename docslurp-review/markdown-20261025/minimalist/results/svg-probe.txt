@@ -1,0 +1,6 @@
+# system pdftocairo 26.10.0; best of 3 wall seconds; bytes; <symbol/<g id=glyph count; <text count
+synth 0.076s 82111 glyphs 102 text 0 viewBox 0 0 612 792
+aapl-p28 0.486s 505426 glyphs 142 text 0 viewBox 0 0 612 792
+uscode-p3 0.223s 521654 glyphs 96 text 0 viewBox 0 0 612 792
+png72 aapl28 0.897s
+pdftoppm crop 500x150 @72 0.200s

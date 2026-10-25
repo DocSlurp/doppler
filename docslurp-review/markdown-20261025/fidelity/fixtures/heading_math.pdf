@@ -1,0 +1,77 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /F4 8 0 R /F5 9 0 R /F6 10 0 R >>  >> >>
+endobj
+4 0 obj
+<< /Length 989 >>
+stream
+BT /F2 20 Tf 72 740 Td (1 Introduction) Tj ET
+BT /F2 14 Tf 72 700 Td (1.1 Background of the study) Tj ET
+BT /F1 10 Tf 72 675 Td (Body text 10pt regular followed by ) Tj ET
+BT /F2 10 Tf 238 675 Td (bold) Tj ET
+BT /F1 10 Tf 262 675 Td ( and ) Tj ET
+BT /F3 10 Tf 285 675 Td (italic) Tj ET
+BT /F1 10 Tf 312 675 Td ( runs; footnote marker) Tj ET
+BT /F1 6 Tf 425 679 Td (1) Tj ET
+BT /F4 11 Tf 72 650 Td (Inline math: E = mc) Tj ET
+BT /F4 7 Tf 150 655 Td (2) Tj ET
+BT /F4 11 Tf 160 650 Td ( and x) Tj ET
+BT /F4 7 Tf 185 646 Td (i) Tj ET
+BT /F4 11 Tf 192 650 Td ( + y) Tj ET
+BT /F4 8 Tf 250 580 Td (n) Tj ET
+BT /F5 24 Tf 248 560 Td (\345) Tj ET
+BT /F4 8 Tf 248 548 Td (i=1) Tj ET
+BT /F4 12 Tf 280 560 Td (x) Tj ET
+BT /F4 8 Tf 288 556 Td (i) Tj ET
+BT /F4 12 Tf 300 560 Td (=) Tj ET
+BT /F4 12 Tf 316 566 Td (a) Tj ET
+0.6 w 314 563 m 328 563 l S
+BT /F4 12 Tf 316 553 Td (b) Tj ET
+BT /F1 9 Tf 72 500 Td (Equation (1)) Tj ET
+BT /F4 11 Tf 520 560 Td ((1)) Tj ET
+BT /F2 20 Tf 72 470 Td (2 Methods) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000293 00000 n 
+0000001333 00000 n 
+0000001403 00000 n 
+0000001478 00000 n 
+0000001556 00000 n 
+0000001628 00000 n 
+0000001695 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1764
+%%EOF

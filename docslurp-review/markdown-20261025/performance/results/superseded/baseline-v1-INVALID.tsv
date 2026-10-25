@@ -1,0 +1,34 @@
+# system poppler pdftotext version 26.10.0 pkg Version         : 26.10.0-1 ; 2026-10-25T12:51:52-06:00
+pdfinfo:USCODE-2024-title1	wall=0.013	user=0.009	sys=0.003	maxrssMB=16	stdout=577	rc=0
+pdftotext-raw:USCODE-2024-title1	wall=0.047	user=0.041	sys=0.005	maxrssMB=18	stdout=135946	rc=0
+pdftotext-layout:USCODE-2024-title1	wall=0.053	user=0.047	sys=0.005	maxrssMB=18	stdout=180572	rc=0
+pdftotext-reading:USCODE-2024-title1	wall=0.056	user=0.049	sys=0.006	maxrssMB=18	stdout=135308	rc=0
+pdftotext-bbox-layout:USCODE-2024-title1	wall=0.141	user=0.131	sys=0.009	maxrssMB=19	stdout=2644133	rc=0
+pdftotext-tsv:USCODE-2024-title1	wall=0.188	user=0.177	sys=0.009	maxrssMB=18	stdout=1325559	rc=0
+pdftohtml-xml-noimg:USCODE-2024-title1	wall=0.067	user=0.059	sys=0.007	maxrssMB=18	stdout=404158	rc=0
+pdftohtml-xml-img:USCODE-2024-title1	wall=0.081	user=0.056	sys=0.012	maxrssMB=17	stdout=404158	rc=0
+pdfimages-list:USCODE-2024-title1	wall=0.046	user=0.039	sys=0.006	maxrssMB=17	stdout=186	rc=0
+pdftoppm-r72-gray:USCODE-2024-title1	wall=0.023	user=0.017	sys=0.006	maxrssMB=20	stdout=0	rc=1
+pdffonts:USCODE-2024-title1	wall=0.023	user=0.015	sys=0.007	maxrssMB=16	stdout=470	rc=0
+pdfinfo:aapl-10k-fy2025-as-filed	wall=0.016	user=0.013	sys=0.003	maxrssMB=16	stdout=610	rc=0
+pdftotext-raw:aapl-10k-fy2025-as-filed	wall=0.198	user=0.184	sys=0.013	maxrssMB=19	stdout=275199	rc=0
+pdftotext-layout:aapl-10k-fy2025-as-filed	wall=0.191	user=0.175	sys=0.015	maxrssMB=20	stdout=338661	rc=0
+pdftotext-reading:aapl-10k-fy2025-as-filed	wall=0.180	user=0.171	sys=0.008	maxrssMB=19	stdout=277765	rc=0
+pdftotext-bbox-layout:aapl-10k-fy2025-as-filed	wall=0.302	user=0.284	sys=0.016	maxrssMB=20	stdout=5189889	rc=0
+pdftotext-tsv:aapl-10k-fy2025-as-filed	wall=0.269	user=0.254	sys=0.013	maxrssMB=19	stdout=2643373	rc=0
+pdftohtml-xml-noimg:aapl-10k-fy2025-as-filed	wall=0.380	user=0.368	sys=0.009	maxrssMB=20	stdout=687857	rc=0
+pdftohtml-xml-img:aapl-10k-fy2025-as-filed	wall=0.379	user=0.363	sys=0.014	maxrssMB=20	stdout=688010	rc=0
+pdfimages-list:aapl-10k-fy2025-as-filed	wall=0.135	user=0.126	sys=0.008	maxrssMB=18	stdout=279	rc=0
+pdftoppm-r72-gray:aapl-10k-fy2025-as-filed	wall=0.019	user=0.012	sys=0.007	maxrssMB=20	stdout=0	rc=1
+pdffonts:aapl-10k-fy2025-as-filed	wall=0.042	user=0.039	sys=0.003	maxrssMB=18	stdout=1880	rc=0
+pdfinfo:inauguralofourfi00newy	wall=0.009	user=0.005	sys=0.004	maxrssMB=16	stdout=694	rc=0
+pdftotext-raw:inauguralofourfi00newy	wall=0.023	user=0.016	sys=0.006	maxrssMB=18	stdout=27107	rc=0
+pdftotext-layout:inauguralofourfi00newy	wall=0.025	user=0.021	sys=0.004	maxrssMB=17	stdout=35556	rc=0
+pdftotext-reading:inauguralofourfi00newy	wall=0.025	user=0.020	sys=0.005	maxrssMB=18	stdout=27274	rc=0
+pdftotext-bbox-layout:inauguralofourfi00newy	wall=0.035	user=0.029	sys=0.006	maxrssMB=18	stdout=578546	rc=0
+pdftotext-tsv:inauguralofourfi00newy	wall=0.040	user=0.036	sys=0.003	maxrssMB=18	stdout=293935	rc=0
+pdftohtml-xml-noimg:inauguralofourfi00newy	wall=4.829	user=4.283	sys=0.504	maxrssMB=93	stdout=5179	rc=0
+Terminated                 $B pdftohtml-xml-img:$n -- pdftohtml -xml -stdout -q $P
+pdfimages-list:inauguralofourfi00newy	wall=27.707	user=6.617	sys=0.803	maxrssMB=93	stdout=7440	rc=0
+pdftoppm-r72-gray:inauguralofourfi00newy	wall=1.847	user=0.528	sys=0.049	maxrssMB=87	stdout=0	rc=1
+pdffonts:inauguralofourfi00newy	wall=0.120	user=0.023	sys=0.010	maxrssMB=19	stdout=282	rc=0

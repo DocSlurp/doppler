@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="68 108 280 56" width="280" height="56" role="img" aria-label="fig1">
+<path d="M 72 152 L 162 152 L 162 112 L 72 112 Z M 72 152" fill="rgb(79.998779%, 89.99939%, 100%)" stroke-width="1" stroke="rgb(0%, 0%, 0%)"/>
+<path d="M 232 152 L 322 152 L 322 112 L 232 112 Z M 232 152" fill="rgb(79.998779%, 89.99939%, 100%)" stroke-width="1" stroke="rgb(0%, 0%, 0%)"/>
+<path d="M 162 132 L 232 132" fill="none" stroke-width="1.5" stroke="rgb(0%, 0%, 0%)"/>
+<path d="M 232 132 L 224 128 L 224 136" fill="rgb(0%, 0%, 0%)"/>
+<text x="88" y="137" font-family="Helvetica,Arial,sans-serif" font-size="10">Parse</text>
+<text x="244" y="137" font-family="Helvetica,Arial,sans-serif" font-size="10">Classify</text>
+</svg>

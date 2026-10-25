@@ -1,0 +1,62 @@
+%PDF-1.5
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Length 327 >>
+stream
+BT /F1 12 Tf 1 0 0 1 100 700 Tm (horizontal) Tj ET
+BT /F1 12 Tf 0.866025 0.500000 -0.500000 0.866025 100 600 Tm (thirty degrees) Tj ET
+BT /F1 12 Tf 0 1 -1 0 300 400 Tm (ninety up) Tj ET
+q 2 0 0 -1 50 300 cm BT /F1 10 Tf 1 0 0 1 10 10 Tm (cm scaled and flipped) Tj ET Q
+q 0.866 0.5 -0.5 0.866 300 600 cm 0.5 w 0 0 m 100 0 l S Q
+
+endstream
+endobj
+3 0 obj
+<< /Length 83 >>
+stream
+BT /F1 12 Tf 1 0 0 1 100 700 Tm (page rotate 90) Tj ET
+0.5 w 100 690 m 300 690 l S
+
+endstream
+endobj
+4 0 obj
+<< /Length 55 >>
+stream
+BT /F1 12 Tf -1 0 0 1 300 700 Tm (mirrored text) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 8 0 R /MediaBox [0 0 612 792] /Contents 2 0 R /Resources << /Font << /F1 1 0 R >> >> >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 8 0 R /MediaBox [0 0 612 792] /Rotate 90 /Contents 3 0 R /Resources << /Font << /F1 1 0 R >> >> >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 8 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 1 0 R >> >> >>
+endobj
+8 0 obj
+<< /Type /Pages /Kids [5 0 R 6 0 R 7 0 R] /Count 3 >>
+endobj
+9 0 obj
+<< /Type /Catalog /Pages 8 0 R >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000457 00000 n 
+0000000590 00000 n 
+0000000695 00000 n 
+0000000821 00000 n 
+0000000958 00000 n 
+0000001084 00000 n 
+0000001153 00000 n 
+trailer
+<< /Size 10 /Root 9 0 R >>
+startxref
+1202
+%%EOF

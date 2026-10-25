@@ -1,0 +1,24 @@
+# user_s sys_s wall_s ; system load avg ~11-16 on 8 cores at time of run (council concurrent) => wall noisy, user CPU more stable
+rec-nocache null 0.246 0.013 0.512
+rec-nocache null 0.245 0.014 0.516
+rec-nocache null 0.240 0.018 0.653
+rec-nocache text 0.936 0.029 1.829
+rec-nocache text 0.959 0.030 1.839
+rec-nocache text 0.993 0.030 1.988
+rec-nocache full 0.995 0.030 2.287
+rec-nocache full 1.010 0.022 1.732
+rec-nocache full 0.984 0.027 2.186
+rec-cache null 0.258 0.017 0.419
+rec-cache null 0.303 0.015 0.530
+rec-cache null 0.245 0.023 0.320
+rec-cache text 0.976 0.021 1.841
+rec-cache text 1.087 0.027 2.912
+rec-cache text 1.065 0.029 2.382
+rec-cache full 0.991 0.033 1.791
+rec-cache full 1.032 0.026 2.615
+rec-cache full 1.008 0.022 2.318
+pdftotext-system 0.341 0.022 0.905
+pdftotext-bbox-layout-system 0.508 0.016 1.216
+rec-cache-NOEMIT text 0.236 0.024 0.687
+rec-cache-NOEMIT text 0.258 0.017 0.954
+rec-cache-NOEMIT text 0.250 0.022 0.632

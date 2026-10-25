@@ -1,0 +1,6 @@
+# scanned 26pp (LuraDocument): user sys wall (load noisy)
+rec-cache null 0.038 0.006 0.127
+rec-cache text 0.045 0.011 0.288
+rec-cache full 6.708 0.783 22.268
+pdftohtml-xml-i page1only 0.274 0.042 0.630
+pdftotext all 0.038 0.008 0.096

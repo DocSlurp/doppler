@@ -1,0 +1,21 @@
+# system tools: pdftotext 26.10.0 (/usr/bin); probe = out-of-tree EvidenceDev vs libpoppler 26.10.0; best/median of 3 wall s
+## aapl-10k-fy2025-as-filed.pdf bytes 1858048
+pdftotext -raw                           best  0.723  median  1.519
+pdftotext -layout                        best  0.754  median  1.212
+pdftotext -bbox-layout                   best  2.432  median  2.463
+pdftohtml -xml                           best  2.700  median  2.836
+probe text-only (needNonText=0)          best  1.361  median  2.000
+probe +images/paths (needNonText=1)      best  1.482  median  2.288
+evidence bytes 10658762
+md.py(python) gfm: 3.153s, md bytes 403237
+md.py(python) rich: 2.358s, md bytes 443055
+## USCODE-2024-title1.pdf bytes 203815
+pdftotext -raw                           best  0.260  median  0.285
+pdftotext -layout                        best  0.320  median  0.324
+pdftotext -bbox-layout                   best  0.665  median  0.702
+pdftohtml -xml                           best  0.110  median  0.192
+probe text-only (needNonText=0)          best  0.504  median  0.645
+probe +images/paths (needNonText=1)      best  0.474  median  0.485
+evidence bytes 4943697
+md.py(python) gfm: 1.247s, md bytes 138116
+md.py(python) rich: 1.258s, md bytes 138390

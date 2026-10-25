@@ -1,0 +1,2442 @@
+{
+  "schema_version": 1,
+  "scorer_version": "1.0.0",
+  "parser_version": "4.0.0",
+  "scorer_sha256": "5f38124d160c37189181e1cc0ed8d859728860a97ef1089b6b6e20b742f80a41",
+  "python_version": "3.14.8",
+  "normalization": "NFC + whitespace + currency/percent spacing; case-sensitive data; tokenized case-insensitive headers",
+  "results": [
+    {
+      "reference_id": "minimalist-synth",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 8,
+        "expected": 8,
+        "actual": 8,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        4
+      ],
+      "actual_shape": [
+        2,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../minimalist/results/synth.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/minimalist-synth.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "456016141d2e645a73875bfbfb874504e63a7fc1492cd01dbe027766c20c18da",
+      "reference_sha256": "0171b43eef3cd4e85eff011dda83a231980994cb29d95987b822f7f9ef8c10fe",
+      "case_id": "minimalist-synthetic",
+      "notes": ""
+    },
+    {
+      "reference_id": "architect-tagged",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../architect/results/tagged.gfm.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/architect-tagged.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "a0d9fe364eb9db5c709227334777af5524c430d15704062a19938f1cea9dd670",
+      "reference_sha256": "be64cbaa69aa583eaa99ce8877aafbc18d80007e9b7e025e86bb803a6c51bd37",
+      "case_id": "architect-tagged-gfm",
+      "notes": ""
+    },
+    {
+      "reference_id": "architect-tagged",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../architect/results/tagged.rich.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/architect-tagged.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "ff289101085d5fba3202d2efaa198f926a126395a9be2affe47f623eec4d2817",
+      "reference_sha256": "be64cbaa69aa583eaa99ce8877aafbc18d80007e9b7e025e86bb803a6c51bd37",
+      "case_id": "architect-tagged-rich",
+      "notes": ""
+    },
+    {
+      "reference_id": "architect-untagged",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../architect/results/untagged.gfm.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/architect-untagged.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "a0d9fe364eb9db5c709227334777af5524c430d15704062a19938f1cea9dd670",
+      "reference_sha256": "7b112435a0e2dfc4e828ba9332d0e1a51b03c3a2406c00aae210e87ea1bacb61",
+      "case_id": "architect-untagged-gfm",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-ruled",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/synthetic-2p.strict.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-ruled.json",
+      "table_index": 0,
+      "tables_found": 2,
+      "candidate_sha256": "5fc249226f741a0a28eb97d58b59f6cfece2af5b002cd5e363f007cf6ff3c5e0",
+      "reference_sha256": "320223326ed382502b3e6dc6b6008e557b910ed36c8caee2421c4e8dac65db18",
+      "case_id": "radical-ruled-strict",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-borderless",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/synthetic-2p.strict.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-borderless.json",
+      "table_index": 1,
+      "tables_found": 2,
+      "candidate_sha256": "5fc249226f741a0a28eb97d58b59f6cfece2af5b002cd5e363f007cf6ff3c5e0",
+      "reference_sha256": "e68a3f44e683eba3972e1f0d5559583414f564a93e5c0dfc35b1eae5acabe3df",
+      "case_id": "radical-borderless-strict",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-span",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8,
+      "passed": false,
+      "headers": {
+        "matched": 2,
+        "expected": 3,
+        "actual": 2,
+        "precision": 1.0,
+        "recall": 0.6666666666666666,
+        "f1": 0.8
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 1,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [
+        {
+          "column": 2,
+          "label": "revenue"
+        }
+      ],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/span-table-1p.strict.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-span.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "349adfe47affb61da8d17a0a344625d3bbb200c18d9b76207e8562b844f08293",
+      "reference_sha256": "8fd07e2165652f4f3b83f0ff15d7e3ecb031176aa1b64e71d6b684095b719169",
+      "case_id": "radical-span-strict",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-span",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 1,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/span-table-1p.strict-coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-span.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "fdc5bd465230350361338567d7f6f1ae47adfec9cb5116f2170ba499b8fc06eb",
+      "reference_sha256": "8fd07e2165652f4f3b83f0ff15d7e3ecb031176aa1b64e71d6b684095b719169",
+      "case_id": "radical-span-strict-coverage",
+      "notes": "GFM flattening after the header-coverage fix: spanning text repeated in each covered column."
+    },
+    {
+      "reference_id": "radical-ruled",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/synthetic-2p.rich.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-ruled.json",
+      "table_index": 0,
+      "tables_found": 2,
+      "candidate_sha256": "9f4249fb277215810e2002acbf342e68554b92e595826559e8069e23944a1093",
+      "reference_sha256": "320223326ed382502b3e6dc6b6008e557b910ed36c8caee2421c4e8dac65db18",
+      "case_id": "radical-ruled-rich",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-borderless",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/synthetic-2p.rich.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-borderless.json",
+      "table_index": 1,
+      "tables_found": 2,
+      "candidate_sha256": "9f4249fb277215810e2002acbf342e68554b92e595826559e8069e23944a1093",
+      "reference_sha256": "e68a3f44e683eba3972e1f0d5559583414f564a93e5c0dfc35b1eae5acabe3df",
+      "case_id": "radical-borderless-rich",
+      "notes": ""
+    },
+    {
+      "reference_id": "radical-span",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 6,
+        "expected": 6,
+        "actual": 6,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 1,
+        "expected": 1,
+        "actual": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        2,
+        3
+      ],
+      "actual_shape": [
+        2,
+        3
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../radical/results/span-table-1p.rich.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/radical-span.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "aa8925f4451915f6679a101fa6964041eb9d4df4a40497ae7ab98aa77e41b4a0",
+      "reference_sha256": "8fd07e2165652f4f3b83f0ff15d7e3ecb031176aa1b64e71d6b684095b719169",
+      "case_id": "radical-span-rich",
+      "notes": ""
+    },
+    {
+      "reference_id": "fidelity-borderless",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 12,
+        "expected": 12,
+        "actual": 12,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        3,
+        4
+      ],
+      "actual_shape": [
+        3,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/borderless.proto.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-borderless.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "a0cdffc7c39c98ac492356f29b06802e4e783565174fafcd48fd3d0dabf83de1",
+      "reference_sha256": "3c9f5d28e11525231b556b5be2f1fc0e55760219eba1c5c0e7e7845153aff03b",
+      "case_id": "fidelity-borderless",
+      "notes": ""
+    },
+    {
+      "reference_id": "fidelity-ruled-drawn",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8666666666666667,
+      "passed": false,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 13,
+        "expected": 15,
+        "actual": 15,
+        "precision": 0.8666666666666667,
+        "recall": 0.8666666666666667,
+        "f1": 0.8666666666666667
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 3,
+        "expected": 4,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 2,
+          "expected": "980.2 -1.2%",
+          "actual": "980.2"
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "980.2 -1.2%",
+          "actual": "-1.2%"
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-drawn.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "29a59a9327dbd4dc1ec8e4a1d1979a2e0e2cea018a0d4760c6a78c6ce866a658",
+      "reference_sha256": "01680afb4abd4620b630ef614566e1b87fbc02f380c7d178efcd1cbdcd2b4c91",
+      "case_id": "fidelity-rich-repair-vs-drawn",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-repaired",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 15,
+        "expected": 15,
+        "actual": 15,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-repaired.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "29a59a9327dbd4dc1ec8e4a1d1979a2e0e2cea018a0d4760c6a78c6ce866a658",
+      "reference_sha256": "5f3b00f7d33b6f99399e9b579b55546209b9b7e5cada235b053088569aead356",
+      "case_id": "fidelity-rich-repair-vs-repaired",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-drawn",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 15,
+        "expected": 15,
+        "actual": 15,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.norepair.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-drawn.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "206d581416e9431b2fffeea8ed698cea10982177da0fb8e49d91c0692419faf5",
+      "reference_sha256": "01680afb4abd4620b630ef614566e1b87fbc02f380c7d178efcd1cbdcd2b4c91",
+      "case_id": "fidelity-rich-rules-vs-drawn",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-repaired",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8666666666666667,
+      "passed": false,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 13,
+        "expected": 15,
+        "actual": 15,
+        "precision": 0.8666666666666667,
+        "recall": 0.8666666666666667,
+        "f1": 0.8666666666666667
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 4,
+        "precision": 0.75,
+        "recall": 1.0,
+        "f1": 0.8571428571428571
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 2,
+          "expected": "980.2",
+          "actual": "980.2 -1.2%"
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "-1.2%",
+          "actual": "980.2 -1.2%"
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.norepair.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-repaired.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "206d581416e9431b2fffeea8ed698cea10982177da0fb8e49d91c0692419faf5",
+      "reference_sha256": "5f3b00f7d33b6f99399e9b579b55546209b9b7e5cada235b053088569aead356",
+      "case_id": "fidelity-rich-rules-vs-repaired",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-drawn",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8571428571428571,
+      "passed": false,
+      "headers": {
+        "matched": 3,
+        "expected": 4,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571
+      },
+      "data": {
+        "matched": 12,
+        "expected": 15,
+        "actual": 12,
+        "precision": 1.0,
+        "recall": 0.8,
+        "f1": 0.8888888888888888
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 4,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [
+        {
+          "column": 2,
+          "label": "2025 revenue usd m"
+        }
+      ],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 1,
+          "candidate_row": 1,
+          "column": 0,
+          "expected": "EMEA",
+          "actual": ""
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "980.2 -1.2%",
+          "actual": ""
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": 3,
+          "column": 3,
+          "expected": "+3.9%",
+          "actual": ""
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.gfm.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-drawn.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "d83c6747ed05e273e8198dddec0aa8e699521fb2b7980b63e139b32db9999970",
+      "reference_sha256": "01680afb4abd4620b630ef614566e1b87fbc02f380c7d178efcd1cbdcd2b4c91",
+      "case_id": "fidelity-gfm-vs-drawn",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-drawn",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8666666666666667,
+      "passed": false,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 13,
+        "expected": 15,
+        "actual": 15,
+        "precision": 0.8666666666666667,
+        "recall": 0.8666666666666667,
+        "f1": 0.8666666666666667
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 4,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 2,
+          "expected": "980.2 -1.2%",
+          "actual": "980.2"
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "980.2 -1.2%",
+          "actual": "-1.2%"
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.gfm-coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-drawn.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "18e56b349cc9a3793ab56426cb7c72bcde55ac938eb7f8cc604f18913df743a3",
+      "reference_sha256": "01680afb4abd4620b630ef614566e1b87fbc02f380c7d178efcd1cbdcd2b4c91",
+      "case_id": "fidelity-gfm-coverage-vs-drawn",
+      "notes": "GFM after the header-coverage and repaired-grid fixes. Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-repaired",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.8148148148148148,
+      "passed": false,
+      "headers": {
+        "matched": 3,
+        "expected": 4,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 0.75,
+        "f1": 0.8571428571428571
+      },
+      "data": {
+        "matched": 11,
+        "expected": 15,
+        "actual": 12,
+        "precision": 0.9166666666666666,
+        "recall": 0.7333333333333333,
+        "f1": 0.8148148148148148
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 3,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [
+        {
+          "column": 2,
+          "label": "2025 revenue usd m"
+        }
+      ],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 1,
+          "candidate_row": 1,
+          "column": 0,
+          "expected": "EMEA",
+          "actual": ""
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 2,
+          "expected": "980.2",
+          "actual": "980.2 -1.2%"
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "-1.2%",
+          "actual": ""
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": 3,
+          "column": 3,
+          "expected": "+3.9%",
+          "actual": ""
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.gfm.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-repaired.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "d83c6747ed05e273e8198dddec0aa8e699521fb2b7980b63e139b32db9999970",
+      "reference_sha256": "5f3b00f7d33b6f99399e9b579b55546209b9b7e5cada235b053088569aead356",
+      "case_id": "fidelity-gfm-vs-repaired",
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "fidelity-ruled-repaired",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 4,
+        "expected": 4,
+        "actual": 4,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 15,
+        "expected": 15,
+        "actual": 15,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 3,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        4,
+        4
+      ],
+      "actual_shape": [
+        4,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/ruled_merged.proto.gfm-coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/fidelity-ruled-repaired.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "18e56b349cc9a3793ab56426cb7c72bcde55ac938eb7f8cc604f18913df743a3",
+      "reference_sha256": "5f3b00f7d33b6f99399e9b579b55546209b9b7e5cada235b053088569aead356",
+      "case_id": "fidelity-gfm-coverage-vs-repaired",
+      "notes": "GFM after the header-coverage and repaired-grid fixes. Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "reference_id": "aapl-tax-p28",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.0,
+      "passed": false,
+      "headers": {
+        "matched": 0,
+        "expected": 3,
+        "actual": 3,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "data": {
+        "matched": 9,
+        "expected": 12,
+        "actual": 15,
+        "precision": 0.6,
+        "recall": 0.75,
+        "f1": 0.6666666666666666
+      },
+      "shape_score": 0.5714285714285714,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [
+        {
+          "column": 1,
+          "label": "2025"
+        },
+        {
+          "column": 2,
+          "label": "2024"
+        },
+        {
+          "column": 3,
+          "label": "2023"
+        }
+      ],
+      "unexpected_headers": [
+        {
+          "column": 0,
+          "label": "2025"
+        },
+        {
+          "column": 1,
+          "label": "2024"
+        },
+        {
+          "column": 2,
+          "label": "2023"
+        }
+      ],
+      "expected_shape": [
+        3,
+        4
+      ],
+      "actual_shape": [
+        3,
+        7
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 1,
+          "expected": "$20,719",
+          "actual": "$"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 2,
+          "expected": "$29,749",
+          "actual": "20,719"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 3,
+          "expected": "$16,741",
+          "actual": "$"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 4,
+          "expected": null,
+          "actual": "29,749"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 5,
+          "expected": null,
+          "actual": "$"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 0,
+          "column": 6,
+          "expected": null,
+          "actual": "16,741"
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 1,
+          "column": 4,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 1,
+          "column": 5,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 1,
+          "column": 6,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 4,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 5,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 2,
+          "column": 6,
+          "expected": null,
+          "actual": ""
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../minimalist/results/aapl-p28.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-tax-p28.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "10e8325e36deebe49678273c0a7d7ae9e5167e1293a22c99b140133b3cb94323",
+      "reference_sha256": "247fe98ffd0115bb6c32dac89594130aad3b453dc8ce06a4730ae54b3952e364",
+      "case_id": "minimalist-aapl-tax",
+      "notes": ""
+    },
+    {
+      "reference_id": "aapl-tax-p28",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 3,
+        "expected": 3,
+        "actual": 3,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 12,
+        "expected": 12,
+        "actual": 12,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": {
+        "matched": 0,
+        "expected": 0,
+        "actual": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        3,
+        4
+      ],
+      "actual_shape": [
+        3,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../minimalist/results/aapl-p28.coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-tax-p28.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "d5ba88fb995c46570529eb79694640afea6ee600e6d022140b17b509a84e05d3",
+      "reference_sha256": "247fe98ffd0115bb6c32dac89594130aad3b453dc8ce06a4730ae54b3952e364",
+      "case_id": "minimalist-aapl-tax-coverage",
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "reference_id": "aapl-ops-p32",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 9,
+        "expected": 9,
+        "actual": 9,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 81,
+        "expected": 81,
+        "actual": 81,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": null,
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        24,
+        4
+      ],
+      "actual_shape": [
+        24,
+        4
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../minimalist/results/aapl-p32.coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-ops-p32.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "e1cc08d384acdc8dd6a72b91b69d08d3bd332b591600970512e9ec81b6b227db",
+      "reference_sha256": "823640fa417ae8ce832a0ccb72f6f455dd1108ecacc2f27ff9b2769423d26bb6",
+      "case_id": "minimalist-aapl-ops-coverage",
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "reference_id": "aapl-products-p26",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 1.0,
+      "passed": true,
+      "headers": {
+        "matched": 5,
+        "expected": 5,
+        "actual": 5,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "data": {
+        "matched": 36,
+        "expected": 36,
+        "actual": 36,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "shape_score": 1.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": null,
+      "missing_headers": [],
+      "unexpected_headers": [],
+      "expected_shape": [
+        6,
+        6
+      ],
+      "actual_shape": [
+        6,
+        6
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../minimalist/results/aapl-p26.coverage.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-products-p26.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "31d833c1cf707e23c80471da60916cff19561f232cb9d179ebf2a5025c8d723a",
+      "reference_sha256": "00d96d1f08bb3849f230715b55a01af361121eb2c6ca797fbfe7e13fa5593a6e",
+      "case_id": "minimalist-aapl-products-coverage",
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "reference_id": "aapl-ops-p32",
+      "status": "scored",
+      "table_found": true,
+      "semantic_score": 0.16666666666666666,
+      "passed": false,
+      "headers": {
+        "matched": 1,
+        "expected": 9,
+        "actual": 3,
+        "precision": 0.3333333333333333,
+        "recall": 0.1111111111111111,
+        "f1": 0.16666666666666666
+      },
+      "data": {
+        "matched": 24,
+        "expected": 81,
+        "actual": 46,
+        "precision": 0.5217391304347826,
+        "recall": 0.2962962962962963,
+        "f1": 0.3779527559055118
+      },
+      "shape_score": 0.4444444444444444,
+      "empty_cell_accuracy": 0.3333333333333333,
+      "topology": null,
+      "missing_headers": [
+        {
+          "column": 1,
+          "label": "2025"
+        },
+        {
+          "column": 1,
+          "label": "years ended"
+        },
+        {
+          "column": 2,
+          "label": "2024"
+        },
+        {
+          "column": 2,
+          "label": "september 28"
+        },
+        {
+          "column": 2,
+          "label": "years ended"
+        },
+        {
+          "column": 3,
+          "label": "2023"
+        },
+        {
+          "column": 3,
+          "label": "september 30"
+        },
+        {
+          "column": 3,
+          "label": "years ended"
+        }
+      ],
+      "unexpected_headers": [
+        {
+          "column": 1,
+          "label": "september 28"
+        },
+        {
+          "column": 1,
+          "label": "september 30"
+        }
+      ],
+      "expected_shape": [
+        24,
+        4
+      ],
+      "actual_shape": [
+        27,
+        2
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": null,
+          "candidate_row": 0,
+          "column": 0,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": null,
+          "candidate_row": 0,
+          "column": 1,
+          "expected": null,
+          "actual": "2025 2024 2023"
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 1,
+          "column": 2,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": 1,
+          "column": 3,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 2,
+          "column": 1,
+          "expected": "$307,003",
+          "actual": "$307,003 $294,866 $298,085"
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 2,
+          "column": 2,
+          "expected": "$294,866",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": 2,
+          "column": 3,
+          "expected": "$298,085",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 3,
+          "column": 1,
+          "expected": "109,158",
+          "actual": "109,158 96,169 85,200"
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 3,
+          "column": 2,
+          "expected": "96,169",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": 3,
+          "column": 3,
+          "expected": "85,200",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": 4,
+          "column": 1,
+          "expected": "416,161",
+          "actual": "416,161 391,035 383,285"
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": 4,
+          "column": 2,
+          "expected": "391,035",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": 4,
+          "column": 3,
+          "expected": "383,285",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": 5,
+          "column": 2,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": 5,
+          "column": 3,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": 6,
+          "column": 1,
+          "expected": "194,116",
+          "actual": "194,116 185,233 189,282"
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": 6,
+          "column": 2,
+          "expected": "185,233",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": 6,
+          "column": 3,
+          "expected": "189,282",
+          "actual": null
+        },
+        {
+          "reference_row": 6,
+          "candidate_row": 7,
+          "column": 1,
+          "expected": "26,844",
+          "actual": "26,844 25,119 24,855"
+        },
+        {
+          "reference_row": 6,
+          "candidate_row": 7,
+          "column": 2,
+          "expected": "25,119",
+          "actual": null
+        },
+        {
+          "reference_row": 6,
+          "candidate_row": 7,
+          "column": 3,
+          "expected": "24,855",
+          "actual": null
+        },
+        {
+          "reference_row": 7,
+          "candidate_row": 8,
+          "column": 1,
+          "expected": "220,960",
+          "actual": "220,960 210,352 214,137"
+        },
+        {
+          "reference_row": 7,
+          "candidate_row": 8,
+          "column": 2,
+          "expected": "210,352",
+          "actual": null
+        },
+        {
+          "reference_row": 7,
+          "candidate_row": 8,
+          "column": 3,
+          "expected": "214,137",
+          "actual": null
+        },
+        {
+          "reference_row": 8,
+          "candidate_row": 9,
+          "column": 1,
+          "expected": "195,201",
+          "actual": "195,201 180,683 169,148"
+        },
+        {
+          "reference_row": 8,
+          "candidate_row": 9,
+          "column": 2,
+          "expected": "180,683",
+          "actual": null
+        },
+        {
+          "reference_row": 8,
+          "candidate_row": 9,
+          "column": 3,
+          "expected": "169,148",
+          "actual": null
+        },
+        {
+          "reference_row": 9,
+          "candidate_row": 10,
+          "column": 2,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 9,
+          "candidate_row": 10,
+          "column": 3,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 10,
+          "candidate_row": 11,
+          "column": 1,
+          "expected": "34,550",
+          "actual": "34,550 31,370 29,915"
+        },
+        {
+          "reference_row": 10,
+          "candidate_row": 11,
+          "column": 2,
+          "expected": "31,370",
+          "actual": null
+        },
+        {
+          "reference_row": 10,
+          "candidate_row": 11,
+          "column": 3,
+          "expected": "29,915",
+          "actual": null
+        },
+        {
+          "reference_row": 11,
+          "candidate_row": 12,
+          "column": 1,
+          "expected": "27,601",
+          "actual": "27,601 26,097 24,932"
+        },
+        {
+          "reference_row": 11,
+          "candidate_row": 12,
+          "column": 2,
+          "expected": "26,097",
+          "actual": null
+        },
+        {
+          "reference_row": 11,
+          "candidate_row": 12,
+          "column": 3,
+          "expected": "24,932",
+          "actual": null
+        },
+        {
+          "reference_row": 12,
+          "candidate_row": 13,
+          "column": 1,
+          "expected": "62,151",
+          "actual": "62,151 57,467 54,847"
+        },
+        {
+          "reference_row": 12,
+          "candidate_row": 13,
+          "column": 2,
+          "expected": "57,467",
+          "actual": null
+        },
+        {
+          "reference_row": 12,
+          "candidate_row": 13,
+          "column": 3,
+          "expected": "54,847",
+          "actual": null
+        },
+        {
+          "reference_row": 13,
+          "candidate_row": 14,
+          "column": 1,
+          "expected": "133,050",
+          "actual": "133,050 123,216 114,301"
+        },
+        {
+          "reference_row": 13,
+          "candidate_row": 14,
+          "column": 2,
+          "expected": "123,216",
+          "actual": null
+        },
+        {
+          "reference_row": 13,
+          "candidate_row": 14,
+          "column": 3,
+          "expected": "114,301",
+          "actual": null
+        },
+        {
+          "reference_row": 14,
+          "candidate_row": 15,
+          "column": 1,
+          "expected": "(321)",
+          "actual": "(321) 269 (565)"
+        },
+        {
+          "reference_row": 14,
+          "candidate_row": 15,
+          "column": 2,
+          "expected": "269",
+          "actual": null
+        },
+        {
+          "reference_row": 14,
+          "candidate_row": 15,
+          "column": 3,
+          "expected": "(565)",
+          "actual": null
+        },
+        {
+          "reference_row": 15,
+          "candidate_row": 16,
+          "column": 1,
+          "expected": "132,729",
+          "actual": "132,729 123,485 113,736"
+        },
+        {
+          "reference_row": 15,
+          "candidate_row": 16,
+          "column": 2,
+          "expected": "123,485",
+          "actual": null
+        },
+        {
+          "reference_row": 15,
+          "candidate_row": 16,
+          "column": 3,
+          "expected": "113,736",
+          "actual": null
+        },
+        {
+          "reference_row": 16,
+          "candidate_row": 17,
+          "column": 1,
+          "expected": "20,719",
+          "actual": "20,719 29,749 16,741"
+        },
+        {
+          "reference_row": 16,
+          "candidate_row": 17,
+          "column": 2,
+          "expected": "29,749",
+          "actual": null
+        },
+        {
+          "reference_row": 16,
+          "candidate_row": 17,
+          "column": 3,
+          "expected": "16,741",
+          "actual": null
+        },
+        {
+          "reference_row": 17,
+          "candidate_row": 18,
+          "column": 1,
+          "expected": "$112,010",
+          "actual": "$112,010 $93,736 $96,995"
+        },
+        {
+          "reference_row": 17,
+          "candidate_row": 18,
+          "column": 2,
+          "expected": "$93,736",
+          "actual": null
+        },
+        {
+          "reference_row": 17,
+          "candidate_row": 18,
+          "column": 3,
+          "expected": "$96,995",
+          "actual": null
+        },
+        {
+          "reference_row": 18,
+          "candidate_row": 19,
+          "column": 2,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 18,
+          "candidate_row": 19,
+          "column": 3,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 19,
+          "candidate_row": 20,
+          "column": 1,
+          "expected": "$7.49",
+          "actual": "$7.49 $6.11 $6.16"
+        },
+        {
+          "reference_row": 19,
+          "candidate_row": 20,
+          "column": 2,
+          "expected": "$6.11",
+          "actual": null
+        },
+        {
+          "reference_row": 19,
+          "candidate_row": 20,
+          "column": 3,
+          "expected": "$6.16",
+          "actual": null
+        },
+        {
+          "reference_row": 20,
+          "candidate_row": 21,
+          "column": 1,
+          "expected": "$7.46",
+          "actual": "$7.46 $6.08 $6.13"
+        },
+        {
+          "reference_row": 20,
+          "candidate_row": 21,
+          "column": 2,
+          "expected": "$6.08",
+          "actual": null
+        },
+        {
+          "reference_row": 20,
+          "candidate_row": 21,
+          "column": 3,
+          "expected": "$6.13",
+          "actual": null
+        },
+        {
+          "reference_row": 21,
+          "candidate_row": 22,
+          "column": 2,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 21,
+          "candidate_row": 22,
+          "column": 3,
+          "expected": "",
+          "actual": null
+        },
+        {
+          "reference_row": 22,
+          "candidate_row": 23,
+          "column": 1,
+          "expected": "14,948,500",
+          "actual": "14,948,500 15,343,783 15,744,231"
+        },
+        {
+          "reference_row": 22,
+          "candidate_row": 23,
+          "column": 2,
+          "expected": "15,343,783",
+          "actual": null
+        },
+        {
+          "reference_row": 22,
+          "candidate_row": 23,
+          "column": 3,
+          "expected": "15,744,231",
+          "actual": null
+        },
+        {
+          "reference_row": 23,
+          "candidate_row": 24,
+          "column": 1,
+          "expected": "15,004,697",
+          "actual": "15,004,697 15,408,095 15,812,547"
+        },
+        {
+          "reference_row": 23,
+          "candidate_row": 24,
+          "column": 2,
+          "expected": "15,408,095",
+          "actual": null
+        },
+        {
+          "reference_row": 23,
+          "candidate_row": 24,
+          "column": 3,
+          "expected": "15,812,547",
+          "actual": null
+        },
+        {
+          "reference_row": null,
+          "candidate_row": 25,
+          "column": 0,
+          "expected": null,
+          "actual": "See accompanying Notes to Consolidated Financial Statements."
+        },
+        {
+          "reference_row": null,
+          "candidate_row": 25,
+          "column": 1,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": null,
+          "candidate_row": 26,
+          "column": 0,
+          "expected": null,
+          "actual": ""
+        },
+        {
+          "reference_row": null,
+          "candidate_row": 26,
+          "column": 1,
+          "expected": null,
+          "actual": "Apple Inc. | 2025 Form 10-K | 29"
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../fidelity/results/real_aapl_ops_page.proto.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-ops-p32.json",
+      "table_index": 0,
+      "tables_found": 1,
+      "candidate_sha256": "a91af48f9253102b849b765fa115fcd793f9c712c286e36720e016e7ec0c22c1",
+      "reference_sha256": "823640fa417ae8ce832a0ccb72f6f455dd1108ecacc2f27ff9b2769423d26bb6",
+      "case_id": "fidelity-aapl-operations",
+      "notes": ""
+    },
+    {
+      "reference_id": "aapl-products-p26",
+      "status": "scored",
+      "table_found": false,
+      "semantic_score": 0.0,
+      "passed": false,
+      "headers": {
+        "matched": 0,
+        "expected": 5,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "data": {
+        "matched": 0,
+        "expected": 36,
+        "actual": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "shape_score": 0.0,
+      "empty_cell_accuracy": 1.0,
+      "topology": null,
+      "missing_headers": [
+        {
+          "column": 1,
+          "label": "2025"
+        },
+        {
+          "column": 2,
+          "label": "change"
+        },
+        {
+          "column": 3,
+          "label": "2024"
+        },
+        {
+          "column": 4,
+          "label": "change"
+        },
+        {
+          "column": 5,
+          "label": "2023"
+        }
+      ],
+      "unexpected_headers": [],
+      "expected_shape": [
+        6,
+        6
+      ],
+      "actual_shape": [
+        0,
+        0
+      ],
+      "repeated_or_supplemental_header_rows": [],
+      "mismatches": [
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "iPhone",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "$209,586",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "4%",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "$201,183",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "—%",
+          "actual": null
+        },
+        {
+          "reference_row": 0,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "$200,583",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "Mac",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "33,708",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "12%",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "29,984",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "2%",
+          "actual": null
+        },
+        {
+          "reference_row": 1,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "29,357",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "iPad",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "28,023",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "5%",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "26,694",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "(6)%",
+          "actual": null
+        },
+        {
+          "reference_row": 2,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "28,300",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "Wearables, Home and Accessories",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "35,686",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "(4)%",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "37,005",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "(7)%",
+          "actual": null
+        },
+        {
+          "reference_row": 3,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "39,845",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "Services (1)",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "109,158",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "14%",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "96,169",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "13%",
+          "actual": null
+        },
+        {
+          "reference_row": 4,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "85,200",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 0,
+          "expected": "Total net sales",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 1,
+          "expected": "$416,161",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 2,
+          "expected": "6%",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 3,
+          "expected": "$391,035",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 4,
+          "expected": "2%",
+          "actual": null
+        },
+        {
+          "reference_row": 5,
+          "candidate_row": null,
+          "column": 5,
+          "expected": "$383,285",
+          "actual": null
+        }
+      ],
+      "mismatch_details_truncated": false,
+      "candidate": "docslurp-review/markdown-20261025/table-eval/../performance/results/samples/aapl-p26-table-failure.md",
+      "reference": "docslurp-review/markdown-20261025/table-eval/references/aapl-products-p26.json",
+      "table_index": 0,
+      "tables_found": 0,
+      "candidate_sha256": "3ac20a73f99707e665594568363cdc7112125d8b985266dc7c0bc32683c6f20b",
+      "reference_sha256": "00d96d1f08bb3849f230715b55a01af361121eb2c6ca797fbfe7e13fa5593a6e",
+      "case_id": "performance-aapl-products-excerpt",
+      "notes": "Truncated retained excerpt, no detected table; not a full-document evaluation."
+    }
+  ],
+  "summary": {
+    "cases": 26,
+    "passed": 17,
+    "failed": 9,
+    "invalid": 0
+  }
+}

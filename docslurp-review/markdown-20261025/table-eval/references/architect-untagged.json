@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "architect-untagged",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/architect/fixtures/untagged.pdf",
+    "sha256": "71527180cb9f342d64f74c7b83921733dd1d981937edfdff47566eac40fdb6e6",
+    "description": "Verified against architect/src/mkfixtures.py cells array."
+  },
+  "headers": [
+    [
+      "Item"
+    ],
+    [
+      "Qty"
+    ],
+    [
+      "Price"
+    ]
+  ],
+  "rows": [
+    [
+      "Apple",
+      "10",
+      "1.20"
+    ],
+    [
+      "Pear",
+      "4",
+      "2.05"
+    ]
+  ],
+  "notes": "",
+  "spans": []
+}

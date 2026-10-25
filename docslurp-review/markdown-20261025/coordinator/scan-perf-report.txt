@@ -1,0 +1,116 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 434  of event 'cpu-clock:u'
+# Event count (approx.): 2180904250
+#
+# Overhead  Shared Object          Symbol                                   IPC   [IPC Coverage]
+# ........  .....................  .......................................  ....................
+#
+    24.88%  libpoppler.so.165.0.0  [.] JPXStream::init()                    -      -            
+            |          
+            |--16.13%--adjustComp (inlined)
+            |          JPXStream::init()
+            |          
+             --8.76%--JPXStream::init()
+
+    22.12%  libopenjp2.so.2.5.4    [.] opj_dwt_decode_real                  -      -            
+            |
+            ---opj_dwt_decode_real
+               opj_tcd_decode_tile
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+    19.12%  libopenjp2.so.2.5.4    [.] opj_tcd_decode_tile                  -      -            
+            |
+            ---opj_tcd_decode_tile
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+     7.37%  libm.so.6              [.] llrintf32                            -      -            
+            |
+            ---llrintf32
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+     3.46%  libopenjp2.so.2.5.4    [.] opj_mct_decode_real                  -      -            
+            |
+            ---opj_mct_decode_real
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+     3.46%  libopenjp2.so.2.5.4    [.] 0x000000000004cdcb                   -      -            
+            |
+            ---0x79b2537d8dcb
+               opj_thread_pool_submit_job
+               opj_t1_decode_cblks
+               opj_tcd_decode_tile
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+     1.15%  libopenjp2.so.2.5.4    [.] 0x000000000000ab24                   -      -            
+            |
+            ---0x79b253796b24
+               opj_dwt_decode_real
+               opj_tcd_decode_tile
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+     1.15%  libopenjp2.so.2.5.4    [.] 0x000000000004cdc5                   -      -            
+            |
+            ---0x79b2537d8dc5
+               opj_thread_pool_submit_job
+               opj_t1_decode_cblks
+               opj_tcd_decode_tile
+               opj_j2k_decode_tile
+               0x79b2537b8130
+               0x79b2537b097f
+               opj_j2k_decode
+               opj_jp2_decode
+               JPXStreamPrivate::init2(CODEC_FORMAT, unsigned char const*, int, bool)
+               opj_jp2_decode
+               0x4853544155415641
+
+
+
+#
+# (Tip: To compare hot regions in two workloads use perf record -b -o file ... ; perf diff --stream file1 file2)
+#

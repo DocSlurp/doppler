@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "id": "fidelity-ruled-drawn",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/fidelity/fixtures/ruled_merged.pdf",
+    "sha256": "0f20f098e44ff50be137302d76d667a989a0fd6de9af4e3e95a05f232e37b658",
+    "description": "Drawn-rule interpretation; verified against generator, rule coordinates and coordinator/table-detail.png."
+  },
+  "headers": [
+    [
+      "Region"
+    ],
+    [
+      "2025 revenue (USD m)"
+    ],
+    [
+      "2025 revenue (USD m)"
+    ],
+    [
+      "Growth"
+    ]
+  ],
+  "rows": [
+    [
+      "EMEA",
+      "Q1",
+      "1,204.5",
+      "+4.1%"
+    ],
+    [
+      "EMEA",
+      "Q2",
+      "1,311.0",
+      "+8.9%"
+    ],
+    [
+      "APAC",
+      "Q1",
+      "980.2 -1.2%",
+      "980.2 -1.2%"
+    ],
+    [
+      "Total (colspan 3)",
+      "",
+      "+3.9%",
+      "+3.9%"
+    ]
+  ],
+  "notes": "Ambiguous fixture. Vertical x372 ends before APAC. Footer rules at x172/x272 survive white fills. Duplicate paint of Total is one visible label. Span-expanded values repeat in covered slots. Not a universal semantic truth.",
+  "spans": [
+    [
+      "header",
+      0,
+      1,
+      1,
+      2
+    ],
+    [
+      "body",
+      0,
+      0,
+      2,
+      1
+    ],
+    [
+      "body",
+      2,
+      2,
+      1,
+      2
+    ],
+    [
+      "body",
+      3,
+      2,
+      1,
+      2
+    ]
+  ]
+}

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pdf2xml SYSTEM "pdf2xml.dtd">
+
+<pdf2xml producer="poppler" version="26.10.0">
+<page number="1" position="absolute" top="0" left="0" height="792" width="612">
+	<fontspec id="0" size="14" family="Helvetica" color="#000000"/>
+	<fontspec id="1" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="2" size="10" family="Helvetica" color="#000000"/>
+<text top="42" left="72" width="176" height="13" font="0"><b>Table 1. Quarterly revenue</b></text>
+<text top="103" left="78" width="34" height="9" font="1"><b>Region</b></text>
+<text top="103" left="178" width="106" height="9" font="1"><b>2025 revenue (USD m)</b></text>
+<text top="103" left="378" width="35" height="9" font="1"><b>Growth</b></text>
+<text top="133" left="78" width="28" height="9" font="2">EMEA</text>
+<text top="133" left="178" width="13" height="9" font="2">Q1</text>
+<text top="133" left="278" width="33" height="9" font="2">1,204.5</text>
+<text top="133" left="378" width="29" height="9" font="2">+4.1%</text>
+<text top="163" left="178" width="13" height="9" font="2">Q2</text>
+<text top="163" left="278" width="33" height="9" font="2">1,311.0</text>
+<text top="163" left="378" width="29" height="9" font="2">+8.9%</text>
+<text top="193" left="78" width="27" height="9" font="2">APAC</text>
+<text top="193" left="178" width="13" height="9" font="2">Q1</text>
+<text top="193" left="278" width="25" height="9" font="2">980.2</text>
+<text top="193" left="378" width="26" height="9" font="2">-1.2%</text>
+<text top="223" left="78" width="79" height="9" font="1"><b>Total (colspan 3)</b></text>
+<text top="223" left="378" width="29" height="9" font="1"><b>+3.9%</b></text>
+<text top="223" left="78" width="79" height="9" font="1"><b>Total (colspan 3)</b></text>
+</page>
+</pdf2xml>

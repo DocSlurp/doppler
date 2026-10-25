@@ -1,0 +1,6 @@
+{"words":42111,"noMcid":551,"inForm":46,"firstLastCharKeyDiffers":3,"pagesWithEndWithoutBegin":80,"begins":3736,"ends":3937}
+
+real	0m0.871s
+user	0m0.335s
+sys	0m0.016s
+{"words":22437,"noMcid":22437,"inForm":0,"firstLastCharKeyDiffers":0,"pagesWithEndWithoutBegin":1,"begins":0,"ends":1}

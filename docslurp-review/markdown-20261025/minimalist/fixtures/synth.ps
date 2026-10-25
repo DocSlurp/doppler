@@ -1,0 +1,31 @@
+%!PS
+/Helvetica findfont 12 scalefont setfont
+/H {/Helvetica-Bold findfont exch scalefont setfont} def
+/T {/Times-Roman findfont exch scalefont setfont} def
+/I {/Times-Italic findfont exch scalefont setfont} def
+/C {/Courier findfont exch scalefont setfont} def
+/S {3 1 roll moveto show} def
+24 H 72 720 (Quarterly Report Title) S
+16 H 72 690 (1. Introduction) S
+11 T 72 670 (This paragraph has normal text, ) S
+11 I 250 670 (italic text) S
+11 T 310 670 ( and a link: https://example.com/spec) S
+11 T 72 656 (second line of the same paragraph wraps here and continues onward.) S
+% table with rules
+11 H 72 620 (Region) S 200 620 (Q1) S 280 620 (Q2) S 360 620 (Total) S
+11 T 72 604 (North) S 200 604 (10) S 280 604 (12) S 360 604 (22) S
+72 588 (South) S 200 588 (7) S 280 588 (9) S 360 588 (16) S
+0.5 setlinewidth 70 632 moveto 420 632 lineto stroke 70 614 moveto 420 614 lineto stroke 70 582 moveto 420 582 lineto stroke
+% math-ish
+11 T 72 550 (E = mc) S 11 T 120 556 (2) S
+11 C 72 520 (code_block(); // monospace) S
+% shape
+0.8 0.2 0.2 setrgbcolor 72 420 100 60 rectfill 0 setgray
+11 T 72 400 (Figure 1: a red rectangle) S
+% image
+gsave 300 420 translate 80 60 scale 8 8 8 [8 0 0 -8 0 8] {<ff0000ff00ff0000ff00ff0000ff00ff>} false 1 colorimage grestore
+% link annotation
+[ /Rect [72 656 300 668] /Border [0 0 0] /Action << /Subtype /URI /URI (https://example.com/spec) >> /Subtype /Link /ANN pdfmark
+[ /Title (Intro) /Page 1 /OUT pdfmark
+[ /Title (Synthetic) /Author (Dan) /DOCINFO pdfmark
+showpage

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "fidelity-borderless",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/fidelity/fixtures/borderless.pdf",
+    "sha256": "91f581774c0b69881fe33f9ddce7644afe5be900fd1abd7009b1573d2e82e776",
+    "description": "fidelity/src/mkfixtures.py and retained page render; wrapped description belongs to Widget beta."
+  },
+  "headers": [
+    [
+      "Item"
+    ],
+    [
+      "Units"
+    ],
+    [
+      "Unit price"
+    ],
+    [
+      "Total"
+    ]
+  ],
+  "rows": [
+    [
+      "Widget alpha",
+      "12",
+      "3.50",
+      "42.00"
+    ],
+    [
+      "Widget beta with a long description wrapped",
+      "7",
+      "10.25",
+      "71.75"
+    ],
+    [
+      "Gadget",
+      "100",
+      "0.99",
+      "99.00"
+    ]
+  ],
+  "notes": "",
+  "spans": []
+}

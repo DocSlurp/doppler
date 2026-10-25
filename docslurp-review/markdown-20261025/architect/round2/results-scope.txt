@@ -1,0 +1,11 @@
+begins=9 ends=10
+word        cp naive(mcid)            scoped(formRef,invocation,mcid)
+PAGE0        0 mcid=0                 form=0 inv=0 mcid=0
+FORM0        5 mcid=0                 form=6 inv=1 mcid=0
+FORM0       10 mcid=0                 form=6 inv=2 mcid=0
+fi          15 mcid=1                 form=0 inv=0 mcid=1
+tail        18 mcid=1                 form=0 inv=0 mcid=1
+YY          22 mcid=2                 form=0 inv=0 mcid=2
+after       25 mcid=-1                form=0 inv=0 mcid=-1
+ligX        30 mcid=3                 form=0 inv=0 mcid=3
+end         38 mcid=3                 form=0 inv=0 mcid=3

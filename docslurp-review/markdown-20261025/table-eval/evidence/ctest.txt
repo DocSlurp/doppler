@@ -1,0 +1,7 @@
+Test project /home/dan/code/oss/poppler/build
+    Start 119: docslurp-table-scorer
+1/1 Test #119: docslurp-table-scorer ............   Passed    4.16 sec
+
+100% tests passed out of 1
+
+Total Test time (real) =   4.19 sec

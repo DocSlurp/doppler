@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pdf2xml SYSTEM "pdf2xml.dtd">
+
+<pdf2xml producer="poppler" version="26.10.0">
+<page number="1" position="absolute" top="0" left="0" height="792" width="612">
+	<fontspec id="0" size="12" family="Helvetica" color="#000000"/>
+	<fontspec id="1" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="2" size="8" family="Helvetica" color="#000000"/>
+<text top="43" left="72" width="149" height="11" font="0"><b>Figure 1. Pipeline diagram</b></text>
+<text top="130" left="88" width="26" height="9" font="1">Parse</text>
+<text top="130" left="244" width="35" height="9" font="1">Classify</text>
+<text top="348" left="100" width="5" height="7" font="2">A</text>
+<text top="348" left="150" width="5" height="7" font="2">B</text>
+<text top="348" left="200" width="6" height="7" font="2">C</text>
+</page>
+</pdf2xml>

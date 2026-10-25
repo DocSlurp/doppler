@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pdf2xml SYSTEM "pdf2xml.dtd">
+
+<pdf2xml producer="poppler" version="26.10.0">
+<page number="1" position="absolute" top="0" left="0" height="792" width="612">
+	<fontspec id="0" size="20" family="Helvetica" color="#000000"/>
+	<fontspec id="1" size="14" family="Helvetica" color="#000000"/>
+	<fontspec id="2" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="3" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="4" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="5" size="6" family="Helvetica" color="#000000"/>
+	<fontspec id="6" size="11" family="Times" color="#000000"/>
+	<fontspec id="7" size="7" family="Times" color="#000000"/>
+	<fontspec id="8" size="8" family="Times" color="#000000"/>
+	<fontspec id="9" size="24" family="Symbol" color="#000000"/>
+	<fontspec id="10" size="12" family="Times" color="#000000"/>
+	<fontspec id="11" size="9" family="Helvetica" color="#000000"/>
+<text top="38" left="72" width="133" height="19" font="0"><b>1 Introduction</b></text>
+<text top="82" left="72" width="188" height="13" font="1"><b>1.1 Background of the study</b></text>
+<text top="110" left="72" width="153" height="9" font="2">Body text 10pt regular followed by </text>
+<text top="110" left="238" width="172" height="9" font="3"><b>bold </b> and <i>italic </i> runs; footnote marker</text>
+<text top="109" left="425" width="3" height="6" font="5">1</text>
+<text top="134" left="72" width="88" height="10" font="6">Inline math: E = mc</text>
+<text top="132" left="150" width="4" height="6" font="7">2</text>
+<text top="134" left="160" width="27" height="10" font="6"> and x</text>
+<text top="141" left="185" width="2" height="6" font="7">i</text>
+<text top="134" left="192" width="17" height="10" font="6"> + y</text>
+<text top="207" left="250" width="4" height="7" font="8">n</text>
+<text top="208" left="248" width="17" height="31" font="9">∑</text>
+<text top="239" left="248" width="11" height="7" font="8">i=1</text>
+<text top="224" left="280" width="6" height="11" font="10">x</text>
+<text top="231" left="288" width="2" height="7" font="8">i</text>
+<text top="224" left="300" width="7" height="11" font="10">=</text>
+<text top="218" left="316" width="5" height="11" font="10">a</text>
+<text top="231" left="316" width="6" height="11" font="10">b</text>
+<text top="286" left="72" width="49" height="8" font="11">Equation (1)</text>
+<text top="224" left="520" width="13" height="10" font="6">(1)</text>
+<text top="308" left="72" width="99" height="19" font="0"><b>2 Methods</b></text>
+</page>
+</pdf2xml>

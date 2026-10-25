@@ -1,0 +1,45 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Fm1 6 0 R >> /Properties << /MCA << /ActualText (YY) >> >> >> >>
+endobj
+4 0 obj
+<< /Length 452 >>
+stream
+/P <</MCID 0>> BDC BT /F1 12 Tf 72 700 Td (PAGE0) Tj ET EMC
+q 1 0 0 1 72 650 cm /Fm1 Do Q
+q 1 0 0 1 72 600 cm /Fm1 Do Q
+/P <</MCID 1>> BDC BT /F1 12 Tf 72 550 Td /Span <</ActualText (fi)>> BDC (ab) Tj EMC ( tail) Tj ET EMC
+/P <</MCID 2>> BDC BT /F1 12 Tf 72 520 Td /Span /MCA BDC (zz) Tj EMC ( after) Tj ET EMC
+/P <</MCID 3>> BDC BT /F1 12 Tf 72 490 Td (lig) Tj /Span <</ActualText (X)>> BDC (ab) Tj /P <</MCID 4>> BDC (cd) Tj EMC EMC ( end) Tj ET EMC
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+6 0 obj
+<< /Type /XObject /Subtype /Form /BBox [0 0 300 50] /Resources << /Font << /F1 5 0 R >> >> /Length 56 >>
+stream
+/P <</MCID 0>> BDC BT /F1 12 Tf 0 0 Td (FORM0) Tj ET EMC
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000313 00000 n 
+0000000816 00000 n 
+0000000888 00000 n 
+trailer
+<< /Size 7 /Root 1 0 R >>
+startxref
+1082
+%%EOF

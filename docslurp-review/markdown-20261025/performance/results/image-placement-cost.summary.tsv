@@ -1,0 +1,3 @@
+label	runs_ok/total	cpu_med_s	cpu_min_s	wall_med_s	maxrss_mb	stdout_bytes	load1_max
+proto-null:scanned	3/3	0.018	0.018	0.038	17	0	18.45
+proto-imgs:scanned	3/3	2.353	2.310	4.557	84	0	18.51

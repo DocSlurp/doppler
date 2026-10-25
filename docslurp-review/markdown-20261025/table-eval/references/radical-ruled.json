@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "radical-ruled",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/radical/fixtures/synthetic-2p.pdf",
+    "sha256": "81a4237edf5d1881c65ddee0149e73e4eb0faa11ca53ac93866f26e6f0de31ad",
+    "description": "Page 1 ruled table; verified against radical/src/make_fixture.py."
+  },
+  "headers": [
+    [
+      "Region"
+    ],
+    [
+      "Q1"
+    ],
+    [
+      "Q2"
+    ]
+  ],
+  "rows": [
+    [
+      "North",
+      "10.5",
+      "12.0"
+    ],
+    [
+      "South",
+      "8.1",
+      "9.7"
+    ]
+  ],
+  "notes": "",
+  "spans": []
+}

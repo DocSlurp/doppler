@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pdf2xml SYSTEM "pdf2xml.dtd">
+
+<pdf2xml producer="poppler" version="26.10.0">
+<page number="1" position="absolute" top="0" left="0" height="792" width="612">
+	<fontspec id="0" size="14" family="Helvetica" color="#000000"/>
+	<fontspec id="1" size="10" family="Helvetica" color="#000000"/>
+	<fontspec id="2" size="10" family="Helvetica" color="#000000"/>
+<text top="42" left="72" width="177" height="13" font="0"><b>Borderless table (no rules)</b></text>
+<text top="105" left="76" width="21" height="9" font="1"><b>Item</b></text>
+<text top="105" left="275" width="25" height="9" font="1"><b>Units</b></text>
+<text top="105" left="320" width="46" height="9" font="1"><b>Unit price</b></text>
+<text top="105" left="445" width="24" height="9" font="1"><b>Total</b></text>
+<text top="123" left="76" width="58" height="9" font="2">Widget alpha</text>
+<text top="123" left="290" width="11" height="9" font="2">12</text>
+<text top="123" left="350" width="19" height="9" font="2">3.50</text>
+<text top="123" left="445" width="25" height="9" font="2">42.00</text>
+<text top="141" left="76" width="104" height="9" font="2">Widget beta with a long</text>
+<text top="141" left="295" width="6" height="9" font="2">7</text>
+<text top="141" left="345" width="25" height="9" font="2">10.25</text>
+<text top="141" left="445" width="25" height="9" font="2">71.75</text>
+<text top="159" left="76" width="89" height="9" font="2">description wrapped</text>
+<text top="177" left="76" width="33" height="9" font="2">Gadget</text>
+<text top="177" left="285" width="17" height="9" font="2">100</text>
+<text top="177" left="350" width="19" height="9" font="2">0.99</text>
+<text top="177" left="445" width="25" height="9" font="2">99.00</text>
+</page>
+</pdf2xml>

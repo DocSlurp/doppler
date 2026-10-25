@@ -1,0 +1,25 @@
+1 Introduction
+
+1.1 Background of the study
+                                                                             1
+Body text 10pt regular followed by   bold and italic runs; footnote marker
+
+                 2
+Inline math: E = mc and xi + y
+
+
+
+
+                                       n
+
+                                       ∑ x = abi                                 (1)
+                                       i=1
+
+
+
+
+Equation (1)
+
+
+2 Methods
+

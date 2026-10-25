@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "radical-span",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/radical/fixtures/span-table-1p.pdf",
+    "sha256": "5980660cc56effebe11cbd400932188b11b8bcb3651203e78feeefbd06599d24",
+    "description": "Header Revenue spans columns 1 and 2; radical/src/make_fixture_span.py."
+  },
+  "headers": [
+    [
+      "Region"
+    ],
+    [
+      "Revenue"
+    ],
+    [
+      "Revenue"
+    ]
+  ],
+  "rows": [
+    [
+      "North",
+      "10.5",
+      "12.0"
+    ],
+    [
+      "South",
+      "8.1",
+      "9.7"
+    ]
+  ],
+  "notes": "No child period labels exist in this source: do not invent Q1/Q2.",
+  "spans": [
+    [
+      "header",
+      0,
+      1,
+      1,
+      2
+    ]
+  ]
+}

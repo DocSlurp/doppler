@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "minimalist-synthetic",
+      "reference": "references/minimalist-synth.json",
+      "candidate": "../minimalist/results/synth.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "architect-tagged-gfm",
+      "reference": "references/architect-tagged.json",
+      "candidate": "../architect/results/tagged.gfm.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "architect-tagged-rich",
+      "reference": "references/architect-tagged.json",
+      "candidate": "../architect/results/tagged.rich.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "architect-untagged-gfm",
+      "reference": "references/architect-untagged.json",
+      "candidate": "../architect/results/untagged.gfm.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "radical-ruled-strict",
+      "reference": "references/radical-ruled.json",
+      "candidate": "../radical/results/synthetic-2p.strict.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "radical-borderless-strict",
+      "reference": "references/radical-borderless.json",
+      "candidate": "../radical/results/synthetic-2p.strict.md",
+      "table_index": 1,
+      "notes": ""
+    },
+    {
+      "id": "radical-span-strict",
+      "reference": "references/radical-span.json",
+      "candidate": "../radical/results/span-table-1p.strict.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "radical-span-strict-coverage",
+      "reference": "references/radical-span.json",
+      "candidate": "../radical/results/span-table-1p.strict-coverage.md",
+      "table_index": 0,
+      "notes": "GFM flattening after the header-coverage fix: spanning text repeated in each covered column."
+    },
+    {
+      "id": "radical-ruled-rich",
+      "reference": "references/radical-ruled.json",
+      "candidate": "../radical/results/synthetic-2p.rich.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "radical-borderless-rich",
+      "reference": "references/radical-borderless.json",
+      "candidate": "../radical/results/synthetic-2p.rich.md",
+      "table_index": 1,
+      "notes": ""
+    },
+    {
+      "id": "radical-span-rich",
+      "reference": "references/radical-span.json",
+      "candidate": "../radical/results/span-table-1p.rich.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "fidelity-borderless",
+      "reference": "references/fidelity-borderless.json",
+      "candidate": "../fidelity/results/borderless.proto.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "fidelity-rich-repair-vs-drawn",
+      "reference": "references/fidelity-ruled-drawn.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-rich-repair-vs-repaired",
+      "reference": "references/fidelity-ruled-repaired.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-rich-rules-vs-drawn",
+      "reference": "references/fidelity-ruled-drawn.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.norepair.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-rich-rules-vs-repaired",
+      "reference": "references/fidelity-ruled-repaired.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.norepair.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-gfm-vs-drawn",
+      "reference": "references/fidelity-ruled-drawn.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.gfm.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-gfm-coverage-vs-drawn",
+      "reference": "references/fidelity-ruled-drawn.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.gfm-coverage.md",
+      "table_index": 0,
+      "notes": "GFM after the header-coverage and repaired-grid fixes. Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-gfm-vs-repaired",
+      "reference": "references/fidelity-ruled-repaired.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.gfm.md",
+      "table_index": 0,
+      "notes": "Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "fidelity-gfm-coverage-vs-repaired",
+      "reference": "references/fidelity-ruled-repaired.json",
+      "candidate": "../fidelity/results/ruled_merged.proto.gfm-coverage.md",
+      "table_index": 0,
+      "notes": "GFM after the header-coverage and repaired-grid fixes. Ambiguous reference sensitivity analysis; not independent trials."
+    },
+    {
+      "id": "minimalist-aapl-tax",
+      "reference": "references/aapl-tax-p28.json",
+      "candidate": "../minimalist/results/aapl-p28.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "minimalist-aapl-tax-coverage",
+      "reference": "references/aapl-tax-p28.json",
+      "candidate": "../minimalist/results/aapl-p28.coverage.md",
+      "table_index": 0,
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "id": "minimalist-aapl-ops-coverage",
+      "reference": "references/aapl-ops-p32.json",
+      "candidate": "../minimalist/results/aapl-p32.coverage.md",
+      "table_index": 0,
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "id": "minimalist-aapl-products-coverage",
+      "reference": "references/aapl-products-p26.json",
+      "candidate": "../minimalist/results/aapl-p26.coverage.md",
+      "table_index": 0,
+      "notes": "xml2md.py after the header-coverage changes (x-position columns, currency merge, folded/repeated header lines); pdftohtml -xml from system Poppler 26.10.0, single page."
+    },
+    {
+      "id": "fidelity-aapl-operations",
+      "reference": "references/aapl-ops-p32.json",
+      "candidate": "../fidelity/results/real_aapl_ops_page.proto.md",
+      "table_index": 0,
+      "notes": ""
+    },
+    {
+      "id": "performance-aapl-products-excerpt",
+      "reference": "references/aapl-products-p26.json",
+      "candidate": "../performance/results/samples/aapl-p26-table-failure.md",
+      "table_index": 0,
+      "notes": "Truncated retained excerpt, no detected table; not a full-document evaluation."
+    }
+  ]
+}

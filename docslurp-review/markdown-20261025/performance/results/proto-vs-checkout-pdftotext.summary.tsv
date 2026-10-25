@@ -1,0 +1,17 @@
+label	runs_ok/total	cpu_med_s	cpu_min_s	wall_med_s	maxrss_mb	stdout_bytes	load1_max
+co-pdftotext-layout:aapl-10k-fy2025-as-filed	5/5	0.339	0.331	0.428	19	338661	16.88
+co-pdftotext-bbox-layout:aapl-10k-fy2025-as-filed	5/5	0.516	0.504	0.616	27	5189889	16.49
+proto-null-j1:aapl-10k-fy2025-as-filed	5/5	0.420	0.400	0.802	20	0	18.14
+proto-text-j1:aapl-10k-fy2025-as-filed	5/5	0.439	0.408	0.729	20	281375	18.14
+proto-md-notables-j1:aapl-10k-fy2025-as-filed	5/5	0.478	0.456	1.211	20	284423	18.59
+proto-md-j1:aapl-10k-fy2025-as-filed	5/5	0.474	0.472	1.332	20	284423	19.03
+proto-md-j4:aapl-10k-fy2025-as-filed	5/5	0.509	0.503	0.768	18	284423	19.51
+proto-md-j8:aapl-10k-fy2025-as-filed	5/5	0.558	0.547	0.543	17	284423	19.79
+co-pdftotext-layout:USCODE-2024-title1	5/5	0.097	0.092	0.229	17	180572	19.79
+co-pdftotext-bbox-layout:USCODE-2024-title1	5/5	0.181	0.174	0.650	20	2644133	19.79
+proto-null-j1:USCODE-2024-title1	5/5	0.125	0.113	0.438	17	0	19.56
+proto-text-j1:USCODE-2024-title1	5/5	0.116	0.115	0.367	18	138254	19.68
+proto-md-notables-j1:USCODE-2024-title1	5/5	0.148	0.133	0.476	18	137878	19.68
+proto-md-j1:USCODE-2024-title1	5/5	0.146	0.143	0.371	18	137878	19.68
+proto-md-j4:USCODE-2024-title1	5/5	0.169	0.157	0.239	17	137878	19.46
+proto-md-j8:USCODE-2024-title1	5/5	0.186	0.185	0.192	18	137878	19.46

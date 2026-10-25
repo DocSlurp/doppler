@@ -1,0 +1,36 @@
+{
+ "file": "aapl-10k-fy2025-as-filed.evidence.jsonl",
+ "pages": 80,
+ "pages_with_end_without_begin": 80,
+ "words": 42111,
+ "words_with_mcid": 41560,
+ "words_joined_to_struct": 41527,
+ "artifact_words": 33,
+ "struct_leaves": 3758,
+ "top_roles": [
+  [
+   "TD",
+   1853
+  ],
+  [
+   "P",
+   1221
+  ],
+  [
+   "LBody",
+   301
+  ],
+  [
+   "Link",
+   242
+  ],
+  [
+   "Lbl",
+   133
+  ],
+  [
+   "TH",
+   6
+  ]
+ ]
+}

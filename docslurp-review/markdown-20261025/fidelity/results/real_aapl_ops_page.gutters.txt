@@ -1,0 +1,2 @@
+words 176 numeric 65 right-edge column candidates (x1,count): [(420.9, 20), (489.7, 20), (558.9, 20)]
+rows with >=2 numeric column hits: 20 of 32

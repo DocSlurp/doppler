@@ -1,0 +1,32 @@
+-- Could NOT find WrapVulkanHeaders (missing: Vulkan_INCLUDE_DIR) 
+-- Found lcms version 2.19, /usr/lib/liblcms2.so
+-- Skipping optional table scorer tests: install test/docslurp/table_scoring/requirements.txt and set DOCSLURP_TABLE_SCORER_PYTHON
+Building Poppler with support for:
+  font configuration:   fontconfig
+  font subsetting:      yes
+  use boost (Splash):   yes
+  cairo output:         yes
+  qt5 wrapper:          no
+  qt6 wrapper:          yes
+  glib wrapper:         yes
+    introspection:      yes
+    gtk-doc:            no
+  cpp wrapper:          yes
+  use libjpeg:          yes
+  use libpng:           yes
+  use libtiff:          yes
+  use brotli:           yes
+  use zlib uncompress:  no
+  use nss3:             yes
+  use gpg:              yes
+    default signature backend:          NSS
+    enable pgp signatures in gpg backend by default:                                no
+  use curl:             yes
+  use libopenjpeg2:     yes
+  use lcms2:            yes
+  command line utils:   yes
+  fuzz target:          no
+  test data dir:        /home/dan/code/oss/poppler-test
+-- Configuring done (1.0s)
+-- Generating done (0.4s)
+-- Build files have been written to: /home/dan/code/oss/poppler/build

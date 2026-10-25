@@ -1,0 +1,6 @@
+# 2026-10-25T12:56:09-06:00 load=25.62 12.58 8.40 (shared machine; trust user= over wall=)
+pdftohtml-xml-img-p1-3:scanned	wall=148.410	user=37.816	sys=0.347	maxrssMB=84	stdout=2302	rc=0
+pdftohtml-xml-noimg-p1-3:scanned	wall=1.790	user=0.811	sys=0.097	maxrssMB=84	stdout=1352	rc=0
+pdftotext-layout-p1-3:scanned	wall=0.019	user=0.010	sys=0.008	maxrssMB=17	stdout=275	rc=0
+pdfimages-list-scanned	wall=16.686	user=6.625	sys=0.780	maxrssMB=93	stdout=7440	rc=0
+pdfimages-list-scanned-p1-3	wall=2.281	user=0.788	sys=0.104	maxrssMB=84	stdout=1023	rc=0

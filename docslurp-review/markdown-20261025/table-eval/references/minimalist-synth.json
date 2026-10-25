@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "minimalist-synth",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/minimalist/fixtures/synth.pdf",
+    "sha256": "6f0bd74b01ed838f3e7bba537aff1ecc56c44662d6258cc81e477ad2792b6193",
+    "description": "Hand annotation verified against minimalist/fixtures/synth.ps table instructions."
+  },
+  "headers": [
+    [
+      "Region"
+    ],
+    [
+      "Q1"
+    ],
+    [
+      "Q2"
+    ],
+    [
+      "Total"
+    ]
+  ],
+  "rows": [
+    [
+      "North",
+      "10",
+      "12",
+      "22"
+    ],
+    [
+      "South",
+      "7",
+      "9",
+      "16"
+    ]
+  ],
+  "notes": "",
+  "spans": []
+}

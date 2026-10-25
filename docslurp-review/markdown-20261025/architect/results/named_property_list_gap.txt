@@ -1,0 +1,10 @@
+== tagged
+    ""
+  P (block)
+    "E = mc"
+{"t":"page","n":1,"w":612.00,"h":792.00,"mcBegin":13,"mcEnd":14,"mcUnderflow":1}
+== tagged_inline_only
+    "Revenue grew 12% year over year; see the"
+  P (block)
+    "E = mc"
+{"t":"page","n":1,"w":612.00,"h":792.00,"mcBegin":14,"mcEnd":14,"mcUnderflow":0}

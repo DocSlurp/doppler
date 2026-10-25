@@ -1,0 +1,83 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /F4 8 0 R /F5 9 0 R /F6 10 0 R >>  >> >>
+endobj
+4 0 obj
+<< /Length 1094 >>
+stream
+0 0 0 RG
+BT /F2 14 Tf 72 740 Td (Table 1. Quarterly revenue) Tj ET
+0.8 w 72 700 m 472 700 l S
+0.8 w 72 670 m 472 670 l S
+0.8 w 172 640 m 472 640 l S
+0.8 w 72 610 m 472 610 l S
+0.8 w 72 580 m 472 580 l S
+0.8 w 72 550 m 472 550 l S
+0.8 w 72 700 m 72 550 l S
+0.8 w 172 700 m 172 550 l S
+0.8 w 272 670 m 272 550 l S
+0.8 w 372 700 m 372 610 l S
+0.8 w 472 700 m 472 550 l S
+BT /F2 10 Tf 78 682 Td (Region) Tj ET
+BT /F2 10 Tf 178 682 Td (2025 revenue (USD m)) Tj ET
+BT /F2 10 Tf 378 682 Td (Growth) Tj ET
+BT /F1 10 Tf 78 652 Td (EMEA) Tj ET
+BT /F1 10 Tf 178 652 Td (Q1) Tj ET
+BT /F1 10 Tf 278 652 Td (1,204.5) Tj ET
+BT /F1 10 Tf 378 652 Td (+4.1%) Tj ET
+BT /F1 10 Tf 178 622 Td (Q2) Tj ET
+BT /F1 10 Tf 278 622 Td (1,311.0) Tj ET
+BT /F1 10 Tf 378 622 Td (+8.9%) Tj ET
+BT /F1 10 Tf 78 592 Td (APAC) Tj ET
+BT /F1 10 Tf 178 592 Td (Q1) Tj ET
+BT /F1 10 Tf 278 592 Td (980.2) Tj ET
+BT /F1 10 Tf 378 592 Td (-1.2%) Tj ET
+BT /F2 10 Tf 78 562 Td (Total (colspan 3)) Tj ET
+BT /F2 10 Tf 378 562 Td (+3.9%) Tj ET
+1 1 1 rg 173 551 98 28 re f 273 551 98 28 re f 0 g
+BT /F2 10 Tf 78 562 Td (Total (colspan 3)) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000293 00000 n 
+0000001439 00000 n 
+0000001509 00000 n 
+0000001584 00000 n 
+0000001662 00000 n 
+0000001734 00000 n 
+0000001801 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1870
+%%EOF

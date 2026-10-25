@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "id": "fidelity-ruled-repaired",
+  "source": {
+    "path": "/home/dan/code/oss/poppler/docslurp-review/markdown-20261025/fidelity/fixtures/ruled_merged.pdf",
+    "sha256": "0f20f098e44ff50be137302d76d667a989a0fd6de9af4e3e95a05f232e37b658",
+    "description": "Alternative annotation: APAC text clusters split despite absent ruling; footer follows visible geometry."
+  },
+  "headers": [
+    [
+      "Region"
+    ],
+    [
+      "2025 revenue (USD m)"
+    ],
+    [
+      "2025 revenue (USD m)"
+    ],
+    [
+      "Growth"
+    ]
+  ],
+  "rows": [
+    [
+      "EMEA",
+      "Q1",
+      "1,204.5",
+      "+4.1%"
+    ],
+    [
+      "EMEA",
+      "Q2",
+      "1,311.0",
+      "+8.9%"
+    ],
+    [
+      "APAC",
+      "Q1",
+      "980.2",
+      "-1.2%"
+    ],
+    [
+      "Total (colspan 3)",
+      "",
+      "+3.9%",
+      "+3.9%"
+    ]
+  ],
+  "notes": "Explicit plausible alternative, not unquestioned gold. Both scores must be shown; do not pick the best after seeing output.",
+  "spans": [
+    [
+      "header",
+      0,
+      1,
+      1,
+      2
+    ],
+    [
+      "body",
+      0,
+      0,
+      2,
+      1
+    ],
+    [
+      "body",
+      3,
+      2,
+      1,
+      2
+    ]
+  ]
+}

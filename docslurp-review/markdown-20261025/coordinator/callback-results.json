@@ -1,0 +1,128 @@
+{
+  "observed": "2026-10-25T12:54:11.990072-06:00",
+  "library": "system libpoppler 26.10.0",
+  "results": [
+    {
+      "fixture": "named-properties",
+      "mode": [
+        "expanded"
+      ],
+      "runs": [
+        {
+          "stdout": "end\nbegin P mcid=8\nend\nchars=45 fills=0 patterns=0 begins=1 ends=2 elapsed_us=1799\n",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "fixture": "named-properties",
+      "mode": [
+        "marked"
+      ],
+      "runs": [
+        {
+          "stdout": "MCID7 text=\n",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "fixture": "nested-marked",
+      "mode": [
+        "expanded"
+      ],
+      "runs": [
+        {
+          "stdout": "begin P mcid=7\nbegin Span mcid=-1\nend\nend\nchars=19 fills=0 patterns=0 begins=2 ends=2 elapsed_us=481\n",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "fixture": "nested-marked",
+      "mode": [
+        "marked"
+      ],
+      "runs": [
+        {
+          "stdout": "MCID7 text=Before inside \n",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "fixture": "pattern-grid",
+      "mode": [
+        "expanded"
+      ],
+      "runs": [
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=290127\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=585713\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=199858\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=122945\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=141554\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=317593\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=31304 patterns=0 begins=0 ends=0 elapsed_us=313393\n",
+          "stderr": ""
+        }
+      ],
+      "median_us": 290127
+    },
+    {
+      "fixture": "pattern-grid",
+      "mode": [
+        "opaque"
+      ],
+      "runs": [
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=1933\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=604\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=1851\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=485\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=486\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=503\n",
+          "stderr": ""
+        },
+        {
+          "stdout": "chars=28 fills=0 patterns=1 begins=0 ends=0 elapsed_us=5875\n",
+          "stderr": ""
+        }
+      ],
+      "median_us": 604
+    }
+  ]
+}

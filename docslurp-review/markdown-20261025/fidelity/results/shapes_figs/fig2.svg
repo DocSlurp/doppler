@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="86 198 200 156" width="200" height="156" role="img" aria-label="fig2">
+<path d="M 100 342 L 130 342 L 130 262 L 100 262 Z M 100 342" fill="rgb(19.999695%, 39.99939%, 79.998779%)"/>
+<path d="M 150 342 L 180 342 L 180 222 L 150 222 Z M 150 342" fill="rgb(19.999695%, 39.99939%, 79.998779%)"/>
+<path d="M 200 342 L 230 342 L 230 302 L 200 302 Z M 200 342" fill="rgb(19.999695%, 39.99939%, 79.998779%)"/>
+<path d="M 90 342 L 260 342" fill="none" stroke-width="0.8" stroke="rgb(0%, 0%, 0%)"/>
+<path d="M 90 342 L 90 202" fill="none" stroke-width="0.8" stroke="rgb(0%, 0%, 0%)"/>
+<text x="100" y="353" font-family="Helvetica,Arial,sans-serif" font-size="8">A</text>
+<text x="150" y="353" font-family="Helvetica,Arial,sans-serif" font-size="8">B</text>
+<text x="200" y="353" font-family="Helvetica,Arial,sans-serif" font-size="8">C</text>
+</svg>

@@ -1,0 +1,9 @@
+# system poppler 26.10.0 (/usr/bin), single run each (not medians), machine under concurrent council load
+10K(80p) pdftotext-plain wall=0.803 user=0.351 sys=0.017
+10K(80p) pdftotext-layout wall=0.711 user=0.330 sys=0.018
+10K(80p) pdftotext-bbox-layout wall=1.094 user=0.482 sys=0.049
+10K(80p) pdftohtml-xml-zoom1 wall=1.393 user=0.627 sys=0.019
+10K(p1-20) pdftocairo-svg wall=4.073 user=1.461 sys=0.205
+10K(80p) pdfimages-list wall=0.630 user=0.234 sys=0.016
+USC1(21p) pdftotext-layout wall=0.292 user=0.088 sys=0.009
+USC1(21p) pdftohtml-xml wall=0.143 user=0.060 sys=0.009

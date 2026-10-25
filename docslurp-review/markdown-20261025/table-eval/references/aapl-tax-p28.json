@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "aapl-tax-p28",
+  "source": {
+    "path": "/home/dan/.cache/docslurp/pricing-samples-2026-10-21/sec-10k/aapl-10k-fy2025-as-filed.pdf",
+    "sha256": "3eb270b22acb7d8d8e9c32a43dc221dec3345f8e4bca02755fdbc1ee16c823de",
+    "description": "PDF page 28 / printed page25, Provision for Income Taxes. Hand checked against evidence/aapl-page28.png."
+  },
+  "headers": [
+    [],
+    [
+      "2025"
+    ],
+    [
+      "2024"
+    ],
+    [
+      "2023"
+    ]
+  ],
+  "rows": [
+    [
+      "Provision for income taxes",
+      "$20,719",
+      "$29,749",
+      "$16,741"
+    ],
+    [
+      "Effective tax rate",
+      "15.6%",
+      "24.1%",
+      "14.7%"
+    ],
+    [
+      "Statutory federal income tax rate",
+      "21%",
+      "21%",
+      "21%"
+    ]
+  ],
+  "notes": "Currency symbols are part of numeric cells, not standalone columns. The row-label column has no printed header.",
+  "spans": []
+}

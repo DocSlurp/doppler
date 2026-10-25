@@ -1,0 +1,21 @@
+pdf	cmd	median_ms	runs_ms
+aapl-10k-fy2025-as-filed.pdf	pdftotext PDF -	545	510 423 607 692 545
+aapl-10k-fy2025-as-filed.pdf	pdftotext -layout PDF -	748	552 751 748 662 779
+aapl-10k-fy2025-as-filed.pdf	pdftotext -bbox-layout PDF -	1112	932 1173 1112 1214 894
+aapl-10k-fy2025-as-filed.pdf	pdftohtml -xml -i -stdout -nodrm PDF	1498	1028 1361 1810 2191 1498
+aapl-10k-fy2025-as-filed.pdf	pdftocairo -svg PDF /dev/null	7444	7361 7666 7226 8509 7444
+aapl-10k-fy2025-as-filed.pdf	/home/dan/tmp/agents/radical-build/recorder null PDF	545	535 582 468 545 590
+aapl-10k-fy2025-as-filed.pdf	/home/dan/tmp/agents/radical-build/recorder text PDF	2221	1920 2577 1616 2221 2639
+aapl-10k-fy2025-as-filed.pdf	/home/dan/tmp/agents/radical-build/recorder full PDF	3836	3469 3836 5132 4841 3235
+USCODE-2024-title1.pdf	pdftotext PDF -	486	592 591 360 486 441
+USCODE-2024-title1.pdf	pdftotext -layout PDF -	320	465 222 386 206 320
+USCODE-2024-title1.pdf	pdftotext -bbox-layout PDF -	842	734 927 911 615 842
+USCODE-2024-title1.pdf	pdftohtml -xml -i -stdout -nodrm PDF	337	356 361 193 337 322
+USCODE-2024-title1.pdf	pdftocairo -svg PDF /dev/null	2213	1675 2429 2217 2213 2172
+USCODE-2024-title1.pdf	/home/dan/tmp/agents/radical-build/recorder null PDF	141	149 113 303 61 141
+USCODE-2024-title1.pdf	/home/dan/tmp/agents/radical-build/recorder text PDF	390	390 420 481 211 355
+USCODE-2024-title1.pdf	/home/dan/tmp/agents/radical-build/recorder full PDF	311	311 350 281 214 359
+inauguralofourfi00newy.pdf	pdftotext PDF -	119	66 56 119 192 234
+inauguralofourfi00newy.pdf	pdftotext -layout PDF -	254	327 254 142 341 186
+inauguralofourfi00newy.pdf	pdftotext -bbox-layout PDF -	273	402 273 249 194 368
+inauguralofourfi00newy.pdf	pdftohtml -xml -i -stdout -nodrm PDF	32026	32026 27541 34188 34870 27366

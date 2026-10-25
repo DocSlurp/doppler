@@ -1,0 +1,74 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R /F4 8 0 R /F5 9 0 R /F6 10 0 R >>  >> >>
+endobj
+4 0 obj
+<< /Length 881 >>
+stream
+BT /F2 14 Tf 72 740 Td (Borderless table (no rules)) Tj ET
+0.93 g 72 676 400 18 re f 72 640 400 18 re f 0 g
+BT /F2 10 Tf 76 680 Td (Item) Tj ET
+BT /F2 10 Tf 275 680 Td (Units) Tj ET
+BT /F2 10 Tf 320 680 Td (Unit price) Tj ET
+BT /F2 10 Tf 445 680 Td (Total) Tj ET
+BT /F1 10 Tf 76 662 Td (Widget alpha) Tj ET
+BT /F1 10 Tf 290 662 Td (12) Tj ET
+BT /F1 10 Tf 350 662 Td (3.50) Tj ET
+BT /F1 10 Tf 445 662 Td (42.00) Tj ET
+BT /F1 10 Tf 76 644 Td (Widget beta with a long) Tj ET
+BT /F1 10 Tf 295 644 Td (7) Tj ET
+BT /F1 10 Tf 345 644 Td (10.25) Tj ET
+BT /F1 10 Tf 445 644 Td (71.75) Tj ET
+BT /F1 10 Tf 76 626 Td (description wrapped) Tj ET
+BT /F1 10 Tf 300 626 Td () Tj ET
+BT /F1 10 Tf 370 626 Td () Tj ET
+BT /F1 10 Tf 470 626 Td () Tj ET
+BT /F1 10 Tf 76 608 Td (Gadget) Tj ET
+BT /F1 10 Tf 285 608 Td (100) Tj ET
+BT /F1 10 Tf 350 608 Td (0.99) Tj ET
+BT /F1 10 Tf 445 608 Td (99.00) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+10 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 11
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000293 00000 n 
+0000001225 00000 n 
+0000001295 00000 n 
+0000001370 00000 n 
+0000001448 00000 n 
+0000001520 00000 n 
+0000001587 00000 n 
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+1656
+%%EOF

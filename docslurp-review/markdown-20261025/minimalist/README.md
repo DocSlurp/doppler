@@ -1,0 +1,3 @@
+# Minimalist: rationale (see report.md)
+Build `utils/pdftomd.cc` as a subclass of `TextOutputDev` that walks the existing flow→block→line→word tree (fonts, links, baseline) and records rule/rect/image geometry via fill/stroke/drawImage overrides. No libpoppler change for tier 1. Tagged-PDF structure, figure crops and HTML/SVG rich fragments are opt-in tiers. Prototype `xml2md.py` and system-Poppler 26.10.0 timings are evidence; the C++ tool is NOT built.
+Reproduce: `python3 bench.py "" results/x.tsv`; `pdftohtml -xml -stdout -i -zoom 1 fixtures/synth.pdf > s.xml && python3 xml2md.py s.xml > out.md`.

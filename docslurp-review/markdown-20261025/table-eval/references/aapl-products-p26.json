@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "id": "aapl-products-p26",
+  "source": {
+    "path": "/home/dan/.cache/docslurp/pricing-samples-2026-10-21/sec-10k/aapl-10k-fy2025-as-filed.pdf",
+    "sha256": "3eb270b22acb7d8d8e9c32a43dc221dec3345f8e4bca02755fdbc1ee16c823de",
+    "description": "PDF page26 / printed23; source layout text evidence/aapl-pages26-28.txt. Expected table presence and dimensions."
+  },
+  "headers": [
+    [],
+    [
+      "2025"
+    ],
+    [
+      "Change"
+    ],
+    [
+      "2024"
+    ],
+    [
+      "Change"
+    ],
+    [
+      "2023"
+    ]
+  ],
+  "rows": [
+    [
+      "iPhone",
+      "$209,586",
+      "4%",
+      "$201,183",
+      "—%",
+      "$200,583"
+    ],
+    [
+      "Mac",
+      "33,708",
+      "12%",
+      "29,984",
+      "2%",
+      "29,357"
+    ],
+    [
+      "iPad",
+      "28,023",
+      "5%",
+      "26,694",
+      "(6)%",
+      "28,300"
+    ],
+    [
+      "Wearables, Home and Accessories",
+      "35,686",
+      "(4)%",
+      "37,005",
+      "(7)%",
+      "39,845"
+    ],
+    [
+      "Services (1)",
+      "109,158",
+      "14%",
+      "96,169",
+      "13%",
+      "85,200"
+    ],
+    [
+      "Total net sales",
+      "$416,161",
+      "6%",
+      "$391,035",
+      "2%",
+      "$383,285"
+    ]
+  ],
+  "notes": "Candidate is a retained truncated failure excerpt. No table exists there; score is table detection failure, not a full-page content-loss estimate."
+}
