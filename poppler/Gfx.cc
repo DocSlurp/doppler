@@ -2391,6 +2391,12 @@ void Gfx::opShFill(Object args[], int /*numArgs*/)
         return;
     }
 
+    // shadings only paint; skip the (potentially very expensive) evaluation
+    // when the device ignores non-text content
+    if (!out->needNonText()) {
+        return;
+    }
+
     if (!(shading = res->lookupShading(args[0].getNameString(), out, state))) {
         return;
     }
