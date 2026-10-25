@@ -23,7 +23,7 @@ times = {label: [] for label, _ in bins}
 for i in range(runs + 1):  # first round is a warm-up
     for label, binary in bins:
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
-        subprocess.run([binary] + extra + [pdf, os.devnull if False else "-"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run([binary] + extra + [pdf, "-"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         if i:
             times[label].append(after.ru_utime - before.ru_utime)
