@@ -37,6 +37,7 @@
 #include <poppler-config.h>
 #include <cstdio>
 #include "parseargs.h"
+#include "pngopt.h"
 #include "goo/GooString.h"
 #include "GlobalParams.h"
 #include "Catalog.h"
@@ -51,6 +52,8 @@ static int firstPage = 1;
 static int lastPage = 0;
 static bool listImages = false;
 static bool enablePNG = false;
+static GooString pngOpt;
+static int pngCompression = -1;
 static bool enableTiff = false;
 static bool dumpJPEG = false;
 static bool dumpJP2 = false;
@@ -71,6 +74,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
 #if ENABLE_LIBPNG
                                    { .arg = "-png", .kind = argFlag, .val = &enablePNG, .size = 0, .usage = "change the default output format to PNG" },
+                                   { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9>" },
 #endif
 #if ENABLE_LIBTIFF
                                    { .arg = "-tiff", .kind = argFlag, .val = &enableTiff, .size = 0, .usage = "change the default output format to TIFF" },
@@ -119,6 +123,16 @@ int main(int argc, char *argv[])
     auto *fileName = new GooString(argv[1]);
     if (!listImages) {
         imgRoot = argv[2];
+    }
+
+    if (!pngOpt.empty()) {
+        if (!enablePNG && !allFormats) {
+            fprintf(stderr, "Error: -pngopt may only be used with png output.\n");
+            return 99;
+        }
+        if (!parsePngOptions(pngOpt.c_str(), &pngCompression)) {
+            return 99;
+        }
     }
 
     // read config file
@@ -174,6 +188,7 @@ int main(int argc, char *argv[])
     auto *imgOut = new ImageOutputDev(imgRoot, pageNames, listImages);
     imgOut->setMinHeight(minHeight);
     imgOut->setMinWidth(minWidth);
+    imgOut->setPngCompression(pngCompression);
     if (imgOut->isOk()) {
         if (allFormats) {
             imgOut->enablePNG(true);

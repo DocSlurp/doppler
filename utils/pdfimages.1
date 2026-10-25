@@ -43,6 +43,11 @@ Specifies the last page to scan.
 .B \-png
 Change the default output format to PNG.
 .TP
+.BI \-pngopt " compression=N"
+Set the zlib compression level used for PNG output, an integer between 0 (fastest, largest files) and 9
+(slowest, smallest files). Only valid together with \-png or \-all. The decoded pixels are identical at every level.
+The default is 1.
+.TP
 .B \-tiff
 Change the default output format to TIFF.
 .TP

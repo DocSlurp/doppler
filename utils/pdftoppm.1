@@ -113,6 +113,11 @@ to the ICC profile stored in defaultcmykprofilefile.
 .B \-png
 Generates a PNG file instead a PPM file.
 .TP
+.BI \-pngopt " png-options"
+When used with \-png, takes a list of options to control the PNG compression. See
+.B PNG OPTIONS
+for the available options.
+.TP
 .B \-jpeg
 Generates a JPEG file instead a PPM file.
 .TP
@@ -197,6 +202,14 @@ Error related to PDF permissions.
 .TP
 99
 Other error.
+.SH PNG OPTIONS
+When PNG output is specified, the \-pngopt option can be used to control the PNG compression parameters.
+It takes a string of the form "<opt>=<val>[,<opt>=<val>]". Currently the available options are:
+.TP
+.BI compression
+Selects the zlib compression level used for the image data. The value must be an integer between 0 and 9.
+Lower levels are faster and produce larger files, higher levels are slower and produce smaller files; the
+decoded pixels are identical at every level. Level 0 stores the data uncompressed. The default is 1.
 .SH JPEG OPTIONS
 When JPEG output is specified, the \-jpegopt option can be used to control the JPEG compression parameters.
 It takes a string of the form "<opt>=<val>[,<opt>=<val>]". Currently the available options are:
