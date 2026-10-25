@@ -439,6 +439,8 @@ private:
     std::shared_ptr<CharCodeToUnicode> ctu; // CID --> Unicode
     bool ctuUsesCharCode; // true: ctu maps char code to Unicode;
                           //   false: ctu maps CID to Unicode
+    std::shared_ptr<CharCodeToUnicode> cidCtu; // CID --> Unicode from the character collection;
+                                               //   fills in codes missing from a partial ToUnicode CMap
     GfxFontCIDWidths widths; // character widths
     std::vector<int> cidToGID; // CID --> GID mapping (for embedded
                                //   TrueType fonts)

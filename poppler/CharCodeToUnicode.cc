@@ -190,10 +190,10 @@ std::unique_ptr<CharCodeToUnicode> CharCodeToUnicode::parseCMapFromFile(const st
     return ctu;
 }
 
-void CharCodeToUnicode::mergeCMap(const std::string &buf, int nBits)
+bool CharCodeToUnicode::mergeCMap(const std::string &buf, int nBits)
 {
     const char *p = buf.c_str();
-    parseCMap1(&getCharFromString, static_cast<void *>(&p), nBits);
+    return parseCMap1(&getCharFromString, static_cast<void *>(&p), nBits);
 }
 
 bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int nBits)

@@ -73,8 +73,8 @@ public:
     static std::unique_ptr<CharCodeToUnicode> parseCMapFromFile(const std::string &fileName, int nBits);
 
     // Parse a ToUnicode CMap for an 8- or 16-bit font, merging it into
-    // <this>.
-    void mergeCMap(const std::string &buf, int nBits);
+    // <this>. Returns false if the CMap contained no usable mappings.
+    bool mergeCMap(const std::string &buf, int nBits);
 
     ~CharCodeToUnicode() = default;
 
