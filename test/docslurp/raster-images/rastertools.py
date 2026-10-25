@@ -1,7 +1,17 @@
 """Helpers shared by the raster-images regression tests."""
 
+import os
 import struct
 import zlib
+
+import docslurp_testlib as t
+
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def fixture(name):
+    with open(os.path.join(FIXTURES, name), "rb") as f:
+        return f.read()
 
 
 def png_chunks(data):
@@ -74,3 +84,31 @@ def pnm_read(data):
             pos += 1
         fields.append(int(data[start:pos]))
     return magic, fields[0], fields[1], data[pos + 1:]
+
+
+def jpx_image_pdf(jpx, width, height, colorspace="", extra=""):
+    """One-page PDF drawing a JPXDecode image over most of the page."""
+    img = t.stream("/Type /XObject /Subtype /Image /Width %d /Height %d /Filter /JPXDecode %s %s" % (width, height, colorspace, extra), jpx)
+    content = b"q 200 0 0 150 50 50 cm /Im0 Do Q"
+    return t.simple_page_pdf(content, resources="<< /XObject << /Im0 6 0 R >> >>", extra_objects=[img], mediabox=(0, 0, 300, 250))
+
+
+def box(kind, payload):
+    return struct.pack(">I", 8 + len(payload)) + kind + payload
+
+
+def palette_jp2(gray_codestream, width, height):
+    """Wrap a 1-component codestream in a JP2 whose pclr/cmap boxes expand it to RGB."""
+    sig = box(b"jP  ", b"\x0d\x0a\x87\x0a")
+    ftyp = box(b"ftyp", b"jp2 " + struct.pack(">I", 0) + b"jp2 ")
+    ihdr = box(b"ihdr", struct.pack(">IIHBBBB", height, width, 1, 7, 7, 0, 0))
+    colr = box(b"colr", bytes([1, 0, 0]) + struct.pack(">I", 16))
+    entries = 256
+    pal = struct.pack(">HB", entries, 3) + bytes([7, 7, 7])
+    for i in range(entries):
+        pal += bytes([i, 255 - i, (i * 7) & 255])
+    pclr = box(b"pclr", pal)
+    cmap = box(b"cmap", b"".join(struct.pack(">HBB", 0, 1, c) for c in range(3)))
+    jp2h = box(b"jp2h", ihdr + colr + pclr + cmap)
+    jp2c = box(b"jp2c", gray_codestream)
+    return sig + ftyp + jp2h + jp2c

@@ -24,6 +24,9 @@
 #include "config.h"
 #include "JPEG2000Stream.h"
 #include <openjpeg.h>
+#include <cstdint>
+#include <cstring>
+#include <vector>
 
 struct JPXStreamPrivate
 {
@@ -34,6 +37,10 @@ struct JPXStreamPrivate
     int ncomps = 0;
     bool inited = false;
     void init2(OPJ_CODEC_FORMAT format, const unsigned char *buf, int length, bool indexed);
+    // Component count and colour space as reported by the codestream/JP2 header,
+    // without decoding the image.  Returns false when the header alone does not
+    // tell what a full decode would produce; callers must then decode.
+    bool readHeaderOnly(const unsigned char *buf, int length, int *numcomps, OPJ_COLOR_SPACE *colorSpace);
 };
 
 static inline unsigned char adjustComp(int r, int adjust, int depth, int sgndcorr, bool indexed)
@@ -160,26 +167,45 @@ bool JPXStream::isBinary(bool /*last*/) const
 
 void JPXStream::getImageParams(int *bitsPerComponent, StreamColorSpaceMode *csMode, bool *hasAlpha)
 {
-    if (unlikely(priv->inited == false)) {
+    // Callers such as Gfx::doImage ask for the image parameters of every
+    // image, including ones that are never read (pdfimages -list, invisible
+    // optional content, singular matrices).  A header read is enough to answer,
+    // so only decode when the header cannot tell the final component layout.
+    // The full decode still happens lazily on the first read of pixel data.
+    int numComps = 1;
+    OPJ_COLOR_SPACE colorSpace = OPJ_CLRSPC_UNSPECIFIED;
+    bool haveParams = false;
+    if (priv->inited) {
+        if (priv->image) {
+            numComps = priv->image->numcomps;
+            colorSpace = priv->image->color_space;
+        }
+        haveParams = true;
+    } else {
+        const std::vector<unsigned char> buf = str->toUnsignedChars(streamBufferSize());
+        haveParams = priv->readHeaderOnly(buf.data(), static_cast<int>(buf.size()), &numComps, &colorSpace);
+    }
+    if (!haveParams) {
         init();
+        if (priv->image) {
+            numComps = priv->image->numcomps;
+            colorSpace = priv->image->color_space;
+        }
     }
 
     *bitsPerComponent = 8;
     *hasAlpha = false;
-    int numComps = (priv->image) ? priv->image->numcomps : 1;
-    if (priv->image) {
-        if (priv->image->color_space == OPJ_CLRSPC_SRGB && numComps == 4) {
-            numComps = 3;
-            *hasAlpha = true;
-        } else if (priv->image->color_space == OPJ_CLRSPC_SYCC && numComps == 4) {
-            numComps = 3;
-            *hasAlpha = true;
-        } else if (numComps == 2) {
-            numComps = 1;
-        } else if (numComps > 4) {
-            *hasAlpha = true;
-            numComps = 4;
-        }
+    if (colorSpace == OPJ_CLRSPC_SRGB && numComps == 4) {
+        numComps = 3;
+        *hasAlpha = true;
+    } else if (colorSpace == OPJ_CLRSPC_SYCC && numComps == 4) {
+        numComps = 3;
+        *hasAlpha = true;
+    } else if (numComps == 2) {
+        numComps = 1;
+    } else if (numComps > 4) {
+        *hasAlpha = true;
+        numComps = 4;
     }
     if (numComps == 3) {
         *csMode = streamCSDeviceRGB;
@@ -245,19 +271,132 @@ static OPJ_BOOL jpxSeek_callback(OPJ_OFF_T seek_pos, void *p_user_data)
     return OPJ_TRUE;
 }
 
+static uint32_t jpxBE32(const unsigned char *p)
+{
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+enum class JP2BoxScan
+{
+    NoPalette, // well-formed header without a palette: the codestream component count is final
+    Palette, // a pclr box is present: decoding expands the palette into more components
+    Unknown // anything unexpected: let the full decoder sort it out
+};
+
+// Walk the boxes in [pos, end) looking for a palette ("pclr") box. When
+// descend is true, a jp2h super box is searched recursively. Stops at the
+// codestream box, which must come after the JP2 header box.
+static JP2BoxScan scanJP2Boxes(const unsigned char *buf, size_t pos, size_t end, bool descend, bool *sawHeader)
+{
+    while (pos + 8 <= end) {
+        uint64_t boxLen = jpxBE32(buf + pos);
+        const uint32_t boxType = jpxBE32(buf + pos + 4);
+        size_t hdrLen = 8;
+        if (boxLen == 1) {
+            if (pos + 16 > end) {
+                return JP2BoxScan::Unknown;
+            }
+            boxLen = (static_cast<uint64_t>(jpxBE32(buf + pos + 8)) << 32) | jpxBE32(buf + pos + 12);
+            hdrLen = 16;
+        } else if (boxLen == 0) {
+            boxLen = end - pos;
+        }
+        if (boxLen < hdrLen || boxLen > end - pos) {
+            return JP2BoxScan::Unknown;
+        }
+        if (boxType == 0x70636c72) { // 'pclr'
+            return JP2BoxScan::Palette;
+        }
+        if (boxType == 0x6a703268) { // 'jp2h'
+            if (!descend) {
+                return JP2BoxScan::Unknown;
+            }
+            *sawHeader = true;
+            const JP2BoxScan r = scanJP2Boxes(buf, pos + hdrLen, pos + boxLen, false, sawHeader);
+            if (r != JP2BoxScan::NoPalette) {
+                return r;
+            }
+        } else if (boxType == 0x6a703263) { // 'jp2c'
+            return *sawHeader ? JP2BoxScan::NoPalette : JP2BoxScan::Unknown;
+        }
+        pos += boxLen;
+    }
+    // Inside jp2h, running out of boxes means there is no palette. At the top
+    // level the codestream box must have been found first.
+    return descend ? JP2BoxScan::Unknown : JP2BoxScan::NoPalette;
+}
+
+bool JPXStreamPrivate::readHeaderOnly(const unsigned char *buf, int length, int *numcomps, OPJ_COLOR_SPACE *colorSpace)
+{
+    static const unsigned char jp2Signature[12] = { 0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a };
+
+    OPJ_CODEC_FORMAT format;
+    if (length >= 12 && memcmp(buf, jp2Signature, 12) == 0) {
+        bool sawHeader = false;
+        if (scanJP2Boxes(buf, 12, length, true, &sawHeader) != JP2BoxScan::NoPalette) {
+            return false;
+        }
+        format = OPJ_CODEC_JP2;
+    } else if (length >= 4 && buf[0] == 0xff && buf[1] == 0x4f && buf[2] == 0xff && buf[3] == 0x51) {
+        format = OPJ_CODEC_J2K;
+    } else {
+        return false;
+    }
+
+    JPXData jpxData;
+    jpxData.data = buf;
+    jpxData.pos = 0;
+    jpxData.size = length;
+
+    opj_stream_t *stream = opj_stream_default_create(OPJ_TRUE);
+    opj_stream_set_user_data(stream, &jpxData, nullptr);
+    opj_stream_set_read_function(stream, jpxRead_callback);
+    opj_stream_set_skip_function(stream, jpxSkip_callback);
+    opj_stream_set_seek_function(stream, jpxSeek_callback);
+    opj_stream_set_user_data_length(stream, length);
+
+    bool ok = false;
+    opj_codec_t *decoder = opj_create_decompress(format);
+    if (decoder != nullptr) {
+        // Stay silent: if the header is unusable the caller falls back to the
+        // full decode, which reports the problem.
+        opj_dparameters_t parameters;
+        opj_set_default_decoder_parameters(&parameters);
+        opj_image_t *hdrImage = nullptr;
+        if (opj_setup_decoder(decoder, &parameters) && opj_read_header(stream, decoder, &hdrImage) && hdrImage != nullptr) {
+            *numcomps = hdrImage->numcomps;
+            *colorSpace = hdrImage->color_space;
+            ok = true;
+        }
+        if (hdrImage != nullptr) {
+            opj_image_destroy(hdrImage);
+        }
+        opj_destroy_codec(decoder);
+    }
+    opj_stream_destroy(stream);
+    return ok;
+}
+
+int JPXStream::streamBufferSize()
+{
+    if (getDict()) {
+        const Object oLen = getDict()->lookup("Length");
+        if (oLen.isInt() && oLen.getInt() > 0) {
+            return oLen.getInt();
+        }
+    }
+    return BUFFER_INITIAL_SIZE;
+}
+
 void JPXStream::init()
 {
-    Object oLen, cspace, smaskInDataObj;
+    Object cspace, smaskInDataObj;
     if (getDict()) {
-        oLen = getDict()->lookup("Length");
         cspace = getDict()->lookup("ColorSpace");
         smaskInDataObj = getDict()->lookup("SMaskInData");
     }
 
-    int bufSize = BUFFER_INITIAL_SIZE;
-    if (oLen.isInt() && oLen.getInt() > 0) {
-        bufSize = oLen.getInt();
-    }
+    const int bufSize = streamBufferSize();
 
     bool indexed = false;
     if (cspace.isArrayOfLengthAtLeast(1)) {

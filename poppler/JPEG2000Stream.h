@@ -57,6 +57,7 @@ private:
     bool handleJPXtransparency;
 
     void init();
+    int streamBufferSize();
     bool hasGetChars() override { return true; }
     int getChars(int nChars, unsigned char *buffer) override;
 };
