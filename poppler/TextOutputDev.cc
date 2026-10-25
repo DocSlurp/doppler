@@ -5579,6 +5579,7 @@ ActualText::ActualText(TextPage *out)
 {
     text = out;
     actualTextNBytes = 0;
+    actualTextDepth = 0;
 }
 
 ActualText::~ActualText() = default;
@@ -5602,6 +5603,11 @@ void ActualText::addChar(const GfxState *state, double x, double y, double dx, d
 
 void ActualText::begin(const GfxState * /*state*/, const std::string &t)
 {
+    // ActualText nested in another ActualText: the outermost replacement
+    // wins and the glyphs inside are already suppressed, so just track depth.
+    if (actualTextDepth++ > 0) {
+        return;
+    }
     actualText = t;
     actualTextNBytes = 0;
 }
@@ -5610,6 +5616,11 @@ void ActualText::end(const GfxState *state)
 {
     // ActualText span closed. Output the span text and the
     // extents of all the glyphs inside the span
+
+    if (actualTextDepth == 0 || --actualTextDepth > 0) {
+        // unbalanced end, or end of a nested ActualText
+        return;
+    }
 
     if (actualTextNBytes) {
         // now that we have the position info for all of the text inside

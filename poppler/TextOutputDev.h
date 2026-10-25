@@ -747,6 +747,7 @@ private:
     double actualTextX1;
     double actualTextY1;
     int actualTextNBytes;
+    int actualTextDepth; // nesting level of ActualText spans
 };
 
 //------------------------------------------------------------------------
