@@ -66,6 +66,7 @@
 #include "UnicodeMap.h"
 #include "PDFDocEncoding.h"
 #include "Error.h"
+#include <algorithm>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -105,6 +106,7 @@ static bool printVersion = false;
 static bool printHelp = false;
 static bool printEnc = false;
 static bool tsvMode = false;
+static bool wordMeta = false;
 static char hyphenModeStr[16] = "";
 
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
@@ -121,6 +123,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
                                    { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
                                    { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
+                                   { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
                                    { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
                                    { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
                                    { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
@@ -211,6 +214,47 @@ static std::string myTsvFieldReplace(const char *inString)
     return result;
 }
 
+// "#rrggbb" for a colour with components in 0..1
+static std::string hexColor(double r, double g, double b)
+{
+    const auto byte = [](double c) { return static_cast<int>(std::clamp(c, 0.0, 1.0) * 255.0 + 0.5); };
+    char buf[8];
+    snprintf(buf, sizeof(buf), "#%02x%02x%02x", byte(r), byte(g), byte(b));
+    return buf;
+}
+
+// The name of the font of the word (its first character), or "" if unknown.
+static std::string wordFontName(const TextWord *word)
+{
+    const GooString *name = word->getLength() > 0 ? word->getFontName(0) : nullptr;
+    return name ? name->toStr() : std::string();
+}
+
+// -wordmeta: extra attributes of a <word> element, each preceded by a space.
+static std::string wordMetaXmlAttributes(const TextWord *word)
+{
+    double r, g, b;
+    word->getColor(&r, &g, &b);
+    char buf[256];
+    snprintf(buf, sizeof(buf), " fontSize=\"%f\" rotation=\"%d\" spaceAfter=\"%d\" invisible=\"%d\" color=\"%s\" baseline=\"%f\"", word->getFontSize(), word->getRotation(), word->hasSpaceAfter() ? 1 : 0, word->isInvisible() ? 1 : 0,
+             hexColor(r, g, b).c_str(), word->getBaseline());
+    return " fontName=\"" + myXmlTokenReplace(wordFontName(word).c_str()) + "\"" + buf;
+}
+
+// -wordmeta: extra TSV columns of a word row (starting with a tab), after the text column.
+// Rows of other levels get the same number of empty columns.
+static const char tsvWordMetaHeader[] = "\tfont_name\tfont_size\trotation\tspace_after\tinvisible\tcolor\tbaseline";
+static const char tsvWordMetaEmpty[] = "\t\t\t\t\t\t\t";
+
+static std::string wordMetaTsvColumns(const TextWord *word)
+{
+    double r, g, b;
+    word->getColor(&r, &g, &b);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "\t%.2f\t%d\t%d\t%d\t%s\t%.2f", word->getFontSize(), word->getRotation(), word->hasSpaceAfter() ? 1 : 0, word->isInvisible() ? 1 : 0, hexColor(r, g, b).c_str(), word->getBaseline());
+    return "\t" + myTsvFieldReplace(wordFontName(word).c_str()) + buf;
+}
+
 static constexpr EndOfLineKind defaultEndOfLine()
 {
 #ifdef _WIN32
@@ -243,6 +287,10 @@ int main(int argc, char *argv[])
     }
     if (colspacing <= 0 || colspacing > 10) {
         error(errCommandLine, -1, "Bogus value provided for -colspacing");
+        return 99;
+    }
+    if (wordMeta && !(bbox || tsvMode)) {
+        error(errCommandLine, -1, "'-wordmeta' needs -bbox, -bbox-layout or -tsv");
         return 99;
     }
     if (printURLs && (htmlMeta || tsvMode)) {
@@ -578,7 +626,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
 
         const std::unique_ptr<std::string> wordText = word->getText(uMap);
         const std::string myString = myXmlTokenReplace(wordText->c_str());
-        wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\">" << myString << "</word>\n";
+        wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\"" << (wordMeta ? wordMetaXmlAttributes(word) : std::string()) << ">" << myString << "</word>\n";
     }
     fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", lineXMin, lineYMin, lineXMax, lineYMax);
     fputs(wordXML.str().c_str(), f);
@@ -633,7 +681,9 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     // look up the output encoding once, not for every word
     const UnicodeMap *uMap = globalParams->getTextEncoding();
 
-    fputs("level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n", f);
+    // with -wordmeta every row has the extra columns (empty for page, block and line rows)
+    const char *const metaEmpty = wordMeta ? tsvWordMetaEmpty : "";
+    fprintf(f, "level\tpage_num\tpar_num\tblock_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext%s\n", wordMeta ? tsvWordMetaHeader : "");
 
     for (int page = first; page <= last; ++page) {
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
@@ -641,7 +691,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
 
-        fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###PAGE###\n", pageLevel, page, 0, 0, 0, 0, 0.0, 0.0, wid, hgt, metaConf);
+        fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###PAGE###%s\n", pageLevel, page, 0, 0, 0, 0, 0.0, 0.0, wid, hgt, metaConf, metaEmpty);
 
         double xMin = 0, yMin = 0, xMax = 0, yMax = 0;
         int flowNum = 0;
@@ -656,7 +706,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                 int lineNum = 0;
 
                 blk->getBBox(&xMin, &yMin, &xMax, &yMax);
-                fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###FLOW###\n", blockLevel, page, flowNum, blockNum, lineNum, 0, xMin, yMin, xMax - xMin, yMax - yMin, metaConf);
+                fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###FLOW###%s\n", blockLevel, page, flowNum, blockNum, lineNum, 0, xMin, yMin, xMax - xMin, yMax - yMin, metaConf, metaEmpty);
 
                 for (line = blk->getLines(); line; line = line->getNext()) {
                     int wordNum = 0;
@@ -680,13 +730,17 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                             lyMax = yMax;
                         }
 
-                        GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}\n", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
+                        GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
                                            yMax - yMin, wordConf, myTsvFieldReplace(word->getText(uMap)->c_str()).c_str());
+                        if (wordMeta) {
+                            lineWordsBuffer += wordMetaTsvColumns(word);
+                        }
+                        lineWordsBuffer += '\n';
                         wordNum++;
                     }
 
                     // Print Link Bounding Box info
-                    fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###LINE###\n", lineLevel, page, flowNum, blockNum, lineNum, 0, lxMin, lyMin, lxMax - lxMin, lyMax - lyMin, metaConf);
+                    fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###LINE###%s\n", lineLevel, page, flowNum, blockNum, lineNum, 0, lxMin, lyMin, lxMax - lxMin, lyMax - lyMin, metaConf, metaEmpty);
                     fprintf(f, "%s", lineWordsBuffer.c_str());
                     lineNum++;
                 }
@@ -718,7 +772,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
                 double xMinA, yMinA, xMaxA, yMaxA;
                 word->getBBox(&xMinA, &yMinA, &xMaxA, &yMaxA);
                 const std::string myString = myXmlTokenReplace(word->getText(uMap)->c_str());
-                fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, myString.c_str());
+                fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\"%s>%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, wordMeta ? wordMetaXmlAttributes(word).c_str() : "", myString.c_str());
             }
         }
         fprintf(f, "  </page>\n");

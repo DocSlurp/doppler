@@ -214,6 +214,8 @@ public:
     int getCharLen() const { return chars.empty() ? 0 : chars.back().charPos - chars.front().charPos; }
     bool getSpaceAfter() const { return spaceAfter; }
     bool isUnderlined() const { return underlined; }
+    // True if the word is invisible text (render mode 3), such as an OCR text layer.
+    bool isInvisible() const { return invisible; }
     const AnnotLink *getLink() const { return link; }
     double getEdge(int i) const { return chars[i].edge; }
     double getBaseline() const { return base; }
