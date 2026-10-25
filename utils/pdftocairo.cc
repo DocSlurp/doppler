@@ -60,6 +60,7 @@
 #    include <io.h> // for _setmode
 #endif
 #include "parseargs.h"
+#include "pngopt.h"
 #include "goo/gmem.h"
 #include "goo/GooString.h"
 #include "goo/ImgWriter.h"
@@ -141,6 +142,8 @@ static bool quiet = false;
 static bool printVersion = false;
 static bool printHelp = false;
 
+static GooString pngOpt;
+static int pngCompression = -1;
 static GooString jpegOpt;
 static int jpegQuality = -1;
 static bool jpegProgressive = false;
@@ -155,6 +158,7 @@ static bool setupdlg = false;
 static const ArgDesc argDesc[] = {
 #if ENABLE_LIBPNG
     { .arg = "-png", .kind = argFlag, .val = &png, .size = 0, .usage = "generate a PNG file" },
+    { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9>" },
 #endif
 #if ENABLE_LIBJPEG
     { .arg = "-jpeg", .kind = argFlag, .val = &jpeg, .size = 0, .usage = "generate a JPEG file" },
@@ -369,6 +373,9 @@ static void writePageImage(GooString *filename)
             static_cast<PNGWriter *>(writer)->setSRGBProfile();
         }
 #    endif
+        if (pngCompression >= 0) {
+            static_cast<PNGWriter *>(writer)->setCompressionLevel(pngCompression);
+        }
 #endif
 
     } else if (jpeg) {
@@ -1014,6 +1021,16 @@ int main(int argc, char *argv[])
     if (mono && !(png || tiff)) {
         fprintf(stderr, "Error: -mono may only be used with png or tiff output.\n");
         exit(99);
+    }
+
+    if (!pngOpt.empty()) {
+        if (!png) {
+            fprintf(stderr, "Error: -pngopt may only be used with png output.\n");
+            exit(99);
+        }
+        if (!parsePngOptions(pngOpt.c_str(), &pngCompression)) {
+            exit(99);
+        }
     }
 
     if (!jpegOpt.empty()) {

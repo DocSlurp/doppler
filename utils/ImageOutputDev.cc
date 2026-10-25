@@ -654,6 +654,10 @@ void ImageOutputDev::writeImage(GfxState * /*state*/, Object * /*ref*/, Stream *
             format = imgRGB;
         }
 
+        if (pngCompression >= 0) {
+            static_cast<PNGWriter *>(writer)->setCompressionLevel(pngCompression);
+        }
+
         writeImageFile(writer, format, "png", str, width, height, colorMap);
 
         delete writer;

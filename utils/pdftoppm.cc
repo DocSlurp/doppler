@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cmath>
 #include "parseargs.h"
+#include "pngopt.h"
 #include "goo/GooString.h"
 #include "GlobalParams.h"
 #include "PDFDoc.h"
@@ -119,6 +120,8 @@ static bool png = false;
 static bool jpeg = false;
 static bool jpegcmyk = false;
 static bool tiff = false;
+static GooString pngOpt;
+static int pngCompression = -1;
 static GooString jpegOpt;
 static int jpegQuality = -1;
 static bool jpegProgressive = false;
@@ -178,6 +181,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-forcenum", .kind = argFlag, .val = &forceNum, .size = 0, .usage = "force page number even if there is only one page " },
 #if ENABLE_LIBPNG
                                    { .arg = "-png", .kind = argFlag, .val = &png, .size = 0, .usage = "generate a PNG file" },
+                                   { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9>" },
 #endif
 #if ENABLE_LIBJPEG
                                    { .arg = "-jpeg", .kind = argFlag, .val = &jpeg, .size = 0, .usage = "generate a JPEG file" },
@@ -298,12 +302,13 @@ static void savePageSlice(PDFDoc *doc, SplashOutputDev *splashOut, int pg, int x
     params.jpegProgressive = jpegProgressive;
     params.jpegOptimize = jpegOptimize;
     params.tiffCompression = TiffCompressionStr;
+    params.pngCompression = pngCompression;
 
     if (ppmFile != nullptr) {
         SplashError e;
 
         if (png) {
-            e = bitmap->writeImgFile(splashFormatPng, ppmFile, x_resolution, y_resolution);
+            e = bitmap->writeImgFile(splashFormatPng, ppmFile, x_resolution, y_resolution, &params);
         } else if (jpeg) {
             e = bitmap->writeImgFile(splashFormatJpeg, ppmFile, x_resolution, y_resolution, &params);
         } else if (jpegcmyk) {
@@ -323,7 +328,7 @@ static void savePageSlice(PDFDoc *doc, SplashOutputDev *splashOut, int pg, int x
 #endif
 
         if (png) {
-            bitmap->writeImgFile(splashFormatPng, stdout, x_resolution, y_resolution);
+            bitmap->writeImgFile(splashFormatPng, stdout, x_resolution, y_resolution, &params);
         } else if (jpeg) {
             bitmap->writeImgFile(splashFormatJpeg, stdout, x_resolution, y_resolution, &params);
         } else if (tiff) {
@@ -453,6 +458,15 @@ int main(int argc, char *argv[])
     if (vectorAntialiasStr[0]) {
         if (!GlobalParams::parseYesNo2(vectorAntialiasStr, &vectorAntialias)) {
             fprintf(stderr, "Bad '-aaVector' value on command line\n");
+        }
+    }
+
+    if (!pngOpt.empty()) {
+        if (!png) {
+            fprintf(stderr, "Warning: -pngopt only valid with png output.\n");
+        }
+        if (!parsePngOptions(pngOpt.c_str(), &pngCompression)) {
+            return kOtherError;
         }
     }
 

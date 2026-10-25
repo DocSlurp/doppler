@@ -74,6 +74,10 @@ public:
     // Use PNG format for output
     void enablePNG(bool png) { outputPNG = png; }
 
+    // Set the zlib level (0..9) used for PNG output; negative selects the
+    // PNGWriter default.
+    void setPngCompression(int level) { pngCompression = level; }
+
     // Use TIFF format for output
     void enableTiff(bool tiff) { outputTiff = tiff; }
 
@@ -154,6 +158,7 @@ private:
     bool dumpJBIG2; // set to dump native JBIG2 files
     bool dumpCCITT; // set to dump native CCITT files
     bool outputPNG; // set to output in PNG format
+    int pngCompression = -1; // zlib level for PNG output, negative = writer default
     bool outputTiff; // set to output in TIFF format
     bool pageNames; // set to include page number in file names
     bool printFilenames; // set to print image filenames to stdout after writing

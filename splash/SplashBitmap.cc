@@ -378,6 +378,9 @@ SplashError SplashBitmap::writeImgFile(SplashImageFileFormat format, FILE *f, do
 #if ENABLE_LIBPNG
     case splashFormatPng:
         writer = new PNGWriter();
+        if (params && params->pngCompression >= 0) {
+            static_cast<PNGWriter *>(writer)->setCompressionLevel(params->pngCompression);
+        }
         break;
 #endif
 
