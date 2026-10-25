@@ -32,6 +32,7 @@
 #ifndef CHARCODETOUNICODE_H
 #define CHARCODETOUNICODE_H
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -103,10 +104,16 @@ private:
     bool parseCMap1(int (*getCharFunc)(void *), void *data, int nBits);
     void addMapping(CharCode code, char *uStr, int n, int offset);
     void addMappingInt(CharCode code, Unicode u);
+    void setStringMapping(CharCode c, std::vector<Unicode> &&u);
 
     const std::optional<std::string> tag;
     std::vector<Unicode> map;
+    // Multi-code-point mappings; at most one entry per code, so a later
+    // CMap entry replaces an earlier one. sMapIndex[c] is 1 + the slot of
+    // code c in sMap, or 0 if there is none; it is allocated on demand and
+    // may be shorter than map.
     std::vector<CharCodeToUnicodeString> sMap;
+    std::vector<uint32_t> sMapIndex;
     bool isIdentity;
 };
 
