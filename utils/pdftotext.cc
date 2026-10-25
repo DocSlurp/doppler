@@ -144,30 +144,71 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
                                    {} };
 
-static std::string myStringReplace(const std::string &inString, const std::string &oldToken, const std::string &newToken)
+// Escape text for use in XML element content or attribute values. Besides the
+// five predefined entities, control characters (which are either illegal in
+// XML 1.0 or, for \t \n \r, would make a word span several lines) and the
+// noncharacters U+FFFE/U+FFFF are replaced by a space, so the output is always
+// well-formed.
+static std::string myXmlTokenReplace(const char *inString)
 {
-    std::string result = inString;
-    size_t foundLoc;
-    int advance = 0;
-    do {
-        foundLoc = result.find(oldToken, advance);
-        if (foundLoc != std::string::npos) {
-            result.replace(foundLoc, oldToken.length(), newToken);
-            advance = foundLoc + newToken.length();
+    std::string result;
+    result.reserve(strlen(inString) + 8);
+    for (const char *p = inString; *p; ++p) {
+        const unsigned char c = *p;
+        switch (c) {
+        case '&':
+            result += "&amp;";
+            break;
+        case '\'':
+            result += "&apos;";
+            break;
+        case '"':
+            result += "&quot;";
+            break;
+        case '<':
+            result += "&lt;";
+            break;
+        case '>':
+            result += "&gt;";
+            break;
+        default:
+            if (c < 0x20 || c == 0x7f) {
+                result += ' ';
+            } else if (c == 0xef && static_cast<unsigned char>(p[1]) == 0xbf && (static_cast<unsigned char>(p[2]) == 0xbe || static_cast<unsigned char>(p[2]) == 0xbf)) {
+                result += ' ';
+                p += 2;
+            } else {
+                result += static_cast<char>(c);
+            }
         }
-    } while (foundLoc != std::string::npos);
+    }
     return result;
 }
 
-static std::string myXmlTokenReplace(const char *inString)
+// Make text safe for a single TSV field. Text such as ActualText can contain
+// tabs and line breaks, which would split the field or the row, so every ASCII
+// control character (including \t \r \n \f \v) and the Unicode line
+// separators U+0085, U+2028 and U+2029 (in UTF-8) is replaced by one space.
+// Nothing is quoted or backslash-escaped, so ordinary text is unchanged.
+static std::string myTsvFieldReplace(const char *inString)
 {
-    std::string myString(inString);
-    myString = myStringReplace(myString, "&", "&amp;");
-    myString = myStringReplace(myString, "'", "&apos;");
-    myString = myStringReplace(myString, "\"", "&quot;");
-    myString = myStringReplace(myString, "<", "&lt;");
-    myString = myStringReplace(myString, ">", "&gt;");
-    return myString;
+    std::string result;
+    result.reserve(strlen(inString) + 8);
+    for (const char *p = inString; *p; ++p) {
+        const unsigned char c = *p;
+        if (c < 0x20 || c == 0x7f) {
+            result += ' ';
+        } else if (c == 0xc2 && static_cast<unsigned char>(p[1]) == 0x85) {
+            result += ' ';
+            p += 1;
+        } else if (c == 0xe2 && static_cast<unsigned char>(p[1]) == 0x80 && (static_cast<unsigned char>(p[2]) == 0xa8 || static_cast<unsigned char>(p[2]) == 0xa9)) {
+            result += ' ';
+            p += 2;
+        } else {
+            result += static_cast<char>(c);
+        }
+    }
+    return result;
 }
 
 static constexpr EndOfLineKind defaultEndOfLine()
@@ -636,7 +677,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                         }
 
                         GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}\n", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
-                                           yMax - yMin, wordConf, word->getText()->c_str());
+                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getText()->c_str()).c_str());
                         wordNum++;
                     }
 
