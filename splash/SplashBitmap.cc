@@ -377,7 +377,19 @@ SplashError SplashBitmap::writeImgFile(SplashImageFileFormat format, FILE *f, do
     switch (format) {
 #if ENABLE_LIBPNG
     case splashFormatPng:
-        writer = new PNGWriter();
+        switch (mode) {
+        case splashModeMono1:
+            writer = new PNGWriter(PNGWriter::MONOCHROME);
+            imageWriterFormat = splashModeMono1;
+            break;
+        case splashModeMono8:
+            writer = new PNGWriter(PNGWriter::GRAY);
+            imageWriterFormat = splashModeMono8;
+            break;
+        default:
+            writer = new PNGWriter();
+            break;
+        }
         if (params && params->pngCompression >= 0) {
             static_cast<PNGWriter *>(writer)->setCompressionLevel(params->pngCompression);
         }
