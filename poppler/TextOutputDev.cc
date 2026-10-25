@@ -2647,7 +2647,8 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
 
     // subtract char and word spacing from the dx,dy values
     sp = state->getCharSpace();
-    if (c == static_cast<CharCode>(0x20)) {
+    // word spacing only applies to the single-byte code 32 (see Gfx::doShowText)
+    if (nBytes == 1 && c == static_cast<CharCode>(0x20)) {
         sp += state->getWordSpace();
     }
     state->textTransformDelta(sp * state->getHorizScaling(), 0, &dx2, &dy2);
