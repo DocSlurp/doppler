@@ -344,7 +344,12 @@ struct Scan {
 
 impl Scan {
     fn new() -> Scan {
-        Scan { gt: Next::default(), newline: Next::default(), word_close: Next::default(), finder: memmem::Finder::new(b"</word>") }
+        Scan {
+            gt: Next::default(),
+            newline: Next::default(),
+            word_close: Next::default(),
+            finder: memmem::Finder::new(b"</word>"),
+        }
     }
 
     fn gt(&mut self, b: &[u8], from: usize) -> Option<usize> {
@@ -490,7 +495,12 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
             Tag::Open("page", attrs) => {
                 a.parse_into(attrs);
                 let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
-                pages.push(Page { width: dim(WIDTH, 612.0), height: dim(HEIGHT, 792.0), lines: Vec::new(), rules: Vec::new() });
+                pages.push(Page {
+                    width: dim(WIDTH, 612.0),
+                    height: dim(HEIGHT, 792.0),
+                    lines: Vec::new(),
+                    rules: Vec::new(),
+                });
             }
             Tag::Open("flow", _) => flow += 1,
             Tag::Open("block", _) => block += 1,
@@ -500,7 +510,9 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
             }
             Tag::Close(name) => {
                 if name == "line" && have_page && in_line && !words.is_empty() {
-                    // exact-size copy out of the reused buffer
+                    // exact-size copy out of the reused buffer (mem::take would hand the line
+                    // the grown buffer and regrow a new one for every line)
+                    #[allow(clippy::drain_collect)]
                     let ws: Vec<Word> = words.drain(..).collect();
                     in_line = false;
                     if let Some(pg) = pages.last_mut() {
@@ -562,7 +574,10 @@ mod tests {
         }
         assert_eq!(key_index("xmin"), None);
         let a = Attrs::parse(r#"x xMin="1" é="2" color="a" color="b" fontName="F"x="3" bad= "4" yMin="5"#);
-        assert_eq!((a.get("xMin"), a.get("color"), a.get("fontName"), a.get("yMin")), (Some("1"), Some("b"), Some("F"), None));
+        assert_eq!(
+            (a.get("xMin"), a.get("color"), a.get("fontName"), a.get("yMin")),
+            (Some("1"), Some("b"), Some("F"), None)
+        );
         // an unterminated value ends the scan (linear even for a huge tag of `a="` repeats)
         let open = "a=\"".repeat(200_000);
         assert!(Attrs::parse(&format!("color=\"x\" {open}")).get("color") == Some("x"));

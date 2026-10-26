@@ -429,12 +429,7 @@ struct Group {
 }
 
 /// Tables outlined by vector rules (doppler -rules): [(members, grid, bbox)].
-pub fn ruled_tables(
-    page: &Page,
-    ids: &[usize],
-    body: f64,
-    p: &Params,
-) -> Vec<RuledTable> {
+pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<RuledTable> {
     if page.rules.is_empty() {
         return Vec::new();
     }
