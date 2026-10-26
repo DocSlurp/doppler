@@ -54,7 +54,7 @@ public:
 
     // zlib compression level: 0 (store) .. 9 (smallest). Output is lossless at
     // every level. Values outside 0..9 are clamped. Must be called before init().
-    static constexpr int defaultCompressionLevel = 1;
+    static constexpr int defaultCompressionLevel = 6;
     void setCompressionLevel(int level);
 
     bool init(FILE *f, int width, int height, double hDPI, double vDPI) override;

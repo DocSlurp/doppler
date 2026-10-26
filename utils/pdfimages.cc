@@ -74,7 +74,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
 #if ENABLE_LIBPNG
                                    { .arg = "-png", .kind = argFlag, .val = &enablePNG, .size = 0, .usage = "change the default output format to PNG" },
-                                   { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9>" },
+                                   { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9> (default 6)" },
 #endif
 #if ENABLE_LIBTIFF
                                    { .arg = "-tiff", .kind = argFlag, .val = &enableTiff, .size = 0, .usage = "change the default output format to TIFF" },
