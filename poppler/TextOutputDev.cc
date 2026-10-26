@@ -2588,7 +2588,15 @@ void TextPage::updateFont(const GfxState *state)
     // adjust the font size
     GfxFont *const gfxFont = state->getFont().get();
     curFontSize = state->getTransformedFontSize();
-    if (gfxFont && gfxFont->getType() == fontType3) {
+    // A Type 3 font with the conventional 1000-unit glyph space (FontMatrix
+    // [0.001 0 0 +-0.001 0 0], as Ghostscript and most converters write) already has
+    // a meaningful size; the guess below would, for example, double a CJK subset whose
+    // only glyphs are full-width.
+    const bool standardType3Matrix = gfxFont && gfxFont->getType() == fontType3 && [&] {
+        const std::array<double, 6> &m = gfxFont->getFontMatrix();
+        return fabs(fabs(m[0]) - 0.001) < 1e-9 && fabs(fabs(m[3]) - 0.001) < 1e-9 && m[1] == 0 && m[2] == 0;
+    }();
+    if (gfxFont && gfxFont->getType() == fontType3 && !standardType3Matrix) {
         // This is a hack which makes it possible to deal with some Type 3
         // fonts.  The problem is that it's impossible to know what the
         // base coordinate system used in the font is without actually
