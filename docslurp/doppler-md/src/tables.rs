@@ -64,9 +64,30 @@ pub fn numeric(text: &str) -> bool {
 pub struct Row {
     pub base: f64,
     pub ids: Vec<usize>,
-    pub cells: Vec<Line>,
+    /// a line that does not split is its own (shared) cell
+    pub cells: Vec<Rc<Line>>,
     pub size: f64,
     pub multi: bool,
+}
+
+/// Whether the gap after word `a` (before `b`) splits a line into cells.
+fn cell_break(a: &Word, b: &Word, p: &Params) -> bool {
+    let sz = if a.size != 0.0 { a.size } else { a.y1 - a.y0 };
+    b.x0 - a.x1 > p.cell_gap * pmax(sz, 1.0)
+}
+
+/// `len(segments(line))` without building the cells.
+pub fn segment_count(line: &Line, p: &Params) -> usize {
+    1 + line.words.windows(2).filter(|w| cell_break(&w[0], &w[1], p)).count()
+}
+
+/// [`segments`] sharing the line itself when it has no cell gap (the common case): the cell
+/// Python builds from all of a line's words equals the line.
+pub fn segments_rc(line: &Rc<Line>, p: &Params) -> Vec<Rc<Line>> {
+    if line.words.windows(2).all(|w| !cell_break(&w[0], &w[1], p)) {
+        return vec![line.clone()];
+    }
+    segments(line, p).into_iter().map(Rc::new).collect()
 }
 
 /// Split a line into cells at gaps wider than cell_gap x font size.
@@ -75,8 +96,7 @@ pub fn segments(line: &Line, p: &Params) -> Vec<Line> {
     let mut cur: Vec<Word> = line.words.first().cloned().into_iter().collect();
     for w in line.words.windows(2) {
         let (a, b) = (&w[0], &w[1]);
-        let sz = if a.size != 0.0 { a.size } else { a.y1 - a.y0 };
-        if b.x0 - a.x1 > p.cell_gap * pmax(sz, 1.0) {
+        if cell_break(a, b, p) {
             out.push(std::mem::take(&mut cur));
         }
         cur.push(b.clone());
@@ -102,7 +122,7 @@ pub fn visual_rows(page: &Page, ids: &[usize], p: &Params) -> Vec<Row> {
         .into_iter()
         .map(|(base, mut ids)| {
             ids.sort_by(|&a, &b| fcmp(lines[a].x0, lines[b].x0));
-            let cells: Vec<Line> = ids.iter().flat_map(|&i| segments(&lines[i], p)).collect();
+            let cells: Vec<Rc<Line>> = ids.iter().flat_map(|&i| segments_rc(&lines[i], p)).collect();
             let size = median(cells.iter().map(|c| c.size()).collect());
             let long = cells.iter().filter(|c| c.words.len() as f64 >= p.long_cell_words).count();
             let multi = cells.len() >= 2 && long < 2;
@@ -533,7 +553,7 @@ pub fn ruled_tables(
                 let mx = (l.x0 + l.x1) / 2.0;
                 if a < my && my < b && g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0 {
                     any = true;
-                    if segments(l, p).len() != 1 {
+                    if segment_count(l, p) != 1 {
                         return false;
                     }
                 }
