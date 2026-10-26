@@ -84,7 +84,24 @@ pub fn table_like(left: &[Elem], right: &[Elem], lines: &[Rc<Line>], p: &Params)
     }
     let mut bases: Vec<f64> = left.iter().map(|l| l.base()).collect();
     bases.sort_by(|a, b| fcmp(*a, *b));
-    let aligned = right.iter().filter(|l| near_any(&bases, l.base(), p.row_tol * pmax(l.size(), 1.0))).count();
+    // right-side baselines in ascending order too, so the neighbour search is one merge pass
+    let mut queries: Vec<(f64, f64)> = right.iter().map(|l| (l.base(), p.row_tol * pmax(l.size(), 1.0))).collect();
+    queries.sort_by(|a, b| fcmp(a.0, b.0));
+    let nan = bases.first().is_some_and(|b| b.is_nan()) || bases.last().is_some_and(|b| b.is_nan());
+    let mut k = 0;
+    let mut aligned = 0usize;
+    for (x, tol) in queries {
+        if nan || !x.is_finite() {
+            aligned += near_any(&bases, x, tol) as usize;
+            continue;
+        }
+        // k = bases.partition_point(|&b| b < x), monotone in x
+        while k < bases.len() && bases[k] < x {
+            k += 1;
+        }
+        let hit = bases.get(k).is_some_and(|&b| (x - b).abs() <= tol) || (k > 0 && (x - bases[k - 1]).abs() <= tol);
+        aligned += hit as usize;
+    }
     aligned as f64 >= p.table_align * right.len() as f64
 }
 
@@ -145,7 +162,6 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
         for (mut a, mut b) in gs {
             // follow the gutter down; elements reaching into it from one side narrow it
             let mut j = i;
-            let mut members: Vec<Elem> = Vec::new();
             let mut multi = 0usize;
             while j < bs.len() {
                 let band = &bs[j];
@@ -166,14 +182,18 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
                 }
                 a = na;
                 b = nb;
-                members.extend_from_slice(band);
                 multi += !band_gutters[j].is_empty() as usize;
                 j += 1;
             }
-            let left: Vec<Elem> = members.iter().copied().filter(|e| e.x1 <= a + 1.0).collect();
-            let right: Vec<Elem> = members.iter().copied().filter(|e| e.x0 >= b - 1.0).collect();
-            if multi as f64 >= p.column_min_bands
-                && left.len() >= 2
+            // the members are bands i..j; nothing below depends on them unless enough bands
+            // carry a gutter (each band start used to copy every member, O(n^2) on tall pages)
+            if (multi as f64) < p.column_min_bands {
+                continue;
+            }
+            let members = bs[i..j].iter().flatten();
+            let left: Vec<Elem> = members.clone().copied().filter(|e| e.x1 <= a + 1.0).collect();
+            let right: Vec<Elem> = members.copied().filter(|e| e.x0 >= b - 1.0).collect();
+            if left.len() >= 2
                 && right.len() >= 2
                 && !table_like(&left, &right, lines, p)
             {
