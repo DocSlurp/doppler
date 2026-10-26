@@ -210,8 +210,33 @@ const KEYS: [&str; 11] =
     ["xMin", "yMin", "xMax", "yMax", "fontName", "fontSize", "spaceAfter", "color", "baseline", "width", "height"];
 
 fn key_index(name: &str) -> Option<usize> {
-    KEYS.iter().position(|k| *k == name)
+    // (a match compiles to a switch on length, then one comparison)
+    Some(match name {
+        "xMin" => 0,
+        "yMin" => 1,
+        "xMax" => 2,
+        "yMax" => 3,
+        "fontName" => 4,
+        "fontSize" => 5,
+        "spaceAfter" => 6,
+        "color" => 7,
+        "baseline" => 8,
+        "width" => 9,
+        "height" => 10,
+        _ => return None,
+    })
 }
+
+/// ASCII bytes in `re` `\w` (alphanumerics and underscore).
+static ASCII_WORD: [bool; 128] = {
+    let mut t = [false; 128];
+    let mut c = 0;
+    while c < 128 {
+        t[c] = (c as u8).is_ascii_alphanumeric() || c == b'_' as usize;
+        c += 1;
+    }
+    t
+};
 
 /// `dict(ATTR_RE.findall(s))` with `(\w+)="([^"]*)"`, keeping only the names in [`KEYS`];
 /// later duplicates win, as in the dict.
@@ -236,7 +261,7 @@ impl<'a> Attrs<'a> {
             while j < b.len() {
                 let c = b[j];
                 if c < 0x80 {
-                    if c.is_ascii_alphanumeric() || c == b'_' {
+                    if ASCII_WORD[c as usize] {
                         j += 1;
                         continue;
                     }
@@ -474,4 +499,19 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
         }
     }
     pages
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_index_matches_keys() {
+        for (i, k) in KEYS.iter().enumerate() {
+            assert_eq!(key_index(k), Some(i));
+        }
+        assert_eq!(key_index("xmin"), None);
+        let a = Attrs::parse(r#"x xMin="1" é="2" color="a" color="b" fontName="F"x="3" bad= "4" yMin="5"#);
+        assert_eq!((a.get("xMin"), a.get("color"), a.get("fontName"), a.get("yMin")), (Some("1"), Some("b"), Some("F"), None));
+    }
 }
