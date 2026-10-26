@@ -219,23 +219,50 @@ pub fn cp_slice(s: &str, a: usize, b: usize) -> &str {
     &s[start..end]
 }
 
+/// Keys a counter holds before it builds a hash index; below this a linear scan is cheaper.
+const COUNTER_SCAN: usize = 8;
+
 /// `collections.Counter` with `most_common(1)` semantics: the largest count, earliest insertion
 /// on ties. Adding zero still inserts the key, as `c[k] += 0` does.
+///
+/// Most counters see a handful of keys, usually the same key many times in a row (the colour of
+/// consecutive words), so a key is first compared with the last one added, then looked up by a
+/// linear scan, and only past `COUNTER_SCAN` keys through a (DoS-resistant, std) hash index.
 pub struct Counter<K> {
-    index: HashMap<K, usize>,
+    /// built once the counter outgrows a linear scan
+    index: Option<HashMap<K, usize>>,
     items: Vec<(K, i64)>,
+    last: usize,
 }
 
 impl<K: Hash + Eq + Clone> Counter<K> {
     pub fn new() -> Self {
-        Counter { index: HashMap::new(), items: Vec::new() }
+        Counter { index: None, items: Vec::new(), last: 0 }
     }
 
     pub fn add(&mut self, k: K, n: i64) {
-        match self.index.get(&k) {
-            Some(&i) => self.items[i].1 += n,
+        let found = match &self.index {
+            _ if self.items.get(self.last).is_some_and(|(x, _)| *x == k) => Some(self.last),
+            Some(index) => index.get(&k).copied(),
+            None => self.items.iter().position(|(x, _)| *x == k),
+        };
+        match found {
+            Some(i) => {
+                self.items[i].1 += n;
+                self.last = i;
+            }
             None => {
-                self.index.insert(k.clone(), self.items.len());
+                self.last = self.items.len();
+                if let Some(index) = &mut self.index {
+                    index.insert(k.clone(), self.items.len());
+                } else if self.items.len() >= COUNTER_SCAN {
+                    let mut index: HashMap<K, usize> = HashMap::new();
+                    for (i, (x, _)) in self.items.iter().enumerate() {
+                        index.insert(x.clone(), i);
+                    }
+                    index.insert(k.clone(), self.items.len());
+                    self.index = Some(index);
+                }
                 self.items.push((k, n));
             }
         }
@@ -270,18 +297,20 @@ impl<K: Hash + Eq + Clone> Default for Counter<K> {
 /// the one reported).
 pub struct FloatCounter {
     inner: Counter<u64>,
-    first: HashMap<u64, f64>,
+    first: Vec<f64>,
 }
 
 impl FloatCounter {
     pub fn new() -> Self {
-        FloatCounter { inner: Counter::new(), first: HashMap::new() }
+        FloatCounter { inner: Counter::new(), first: Vec::new() }
     }
 
     pub fn add(&mut self, k: f64, n: i64) {
         let bits = (k + 0.0).to_bits();
-        self.first.entry(bits).or_insert(k);
         self.inner.add(bits, n);
+        if self.first.len() < self.inner.items.len() {
+            self.first.push(k); // a new key: remember the first value inserted for it
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -289,7 +318,8 @@ impl FloatCounter {
     }
 
     pub fn most_common(&self) -> Option<f64> {
-        self.inner.most_common().map(|b| self.first[b])
+        let best = self.inner.most_common()?;
+        self.inner.items.iter().position(|(b, _)| b == best).map(|i| self.first[i])
     }
 }
 

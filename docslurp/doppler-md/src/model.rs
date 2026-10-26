@@ -121,6 +121,10 @@ impl Line {
 
     pub fn rtl(&self) -> bool {
         *self.rtl.get_or_init(|| {
+            // r > 0 needs a right-to-left character, and none is ASCII
+            if self.words.iter().all(|w| w.text.is_ascii()) {
+                return false;
+            }
             let (mut r, mut l) = (0usize, 0usize);
             for w in &self.words {
                 for c in w.text.chars() {

@@ -95,9 +95,9 @@ fn norm_key(text: &str) -> String {
     out
 }
 
-/// Line ids (page index, line index) of repeated header/footer lines and page numbers.
-fn furniture(pages: &[Page], p: &Params) -> HashSet<(usize, usize)> {
-    let mut drop = HashSet::new();
+/// Per page, per line: a repeated header/footer line or a page number.
+fn furniture(pages: &[Page], p: &Params) -> Vec<Vec<bool>> {
+    let mut drop: Vec<Vec<bool>> = pages.iter().map(|pg| vec![false; pg.lines.len()]).collect();
     let band = p.furniture_band;
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut cand: Vec<(usize, usize, String)> = Vec::new();
@@ -115,19 +115,25 @@ fn furniture(pages: &[Page], p: &Params) -> HashSet<(usize, usize)> {
         }
     }
     let need = pmax(2.0, p.furniture_min_share * pages.len() as f64);
+    // each page's line baselines, sorted on first use: "no other line on this baseline" is a
+    // neighbour lookup instead of a scan of the page
+    let mut bases: Vec<Option<Vec<f64>>> = vec![None; pages.len()];
     for (pi, li, key) in cand {
         let lines = &pages[pi].lines;
         let line = &lines[li];
         let repeated = pages.len() >= 2 && counts.get(&key).copied().unwrap_or(0) as f64 >= need;
-        let page_number = || {
-            page_number(line.text())
-                && !lines
-                    .iter()
-                    .enumerate()
-                    .any(|(j, o)| j != li && (o.base() - line.base()).abs() <= 0.5 * pmax(line.size(), 1.0))
+        let mut page_number = || {
+            page_number(line.text()) && {
+                let sorted = bases[pi].get_or_insert_with(|| {
+                    let mut v: Vec<f64> = lines.iter().map(|o| o.base()).collect();
+                    v.sort_by(|a, b| fcmp(*a, *b));
+                    v
+                });
+                !layout::near_other(sorted, line.base(), 0.5 * pmax(line.size(), 1.0))
+            }
         };
         if repeated || page_number() {
-            drop.insert((pi, li));
+            drop[pi][li] = true;
         }
     }
     drop
@@ -160,7 +166,7 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
     let mut result = Vec::with_capacity(pages.len());
     for (pi, page) in pages.iter().enumerate() {
         let lines = &page.lines;
-        let ids: Vec<usize> = (0..lines.len()).filter(|&i| !drop.contains(&(pi, i))).collect();
+        let ids: Vec<usize> = (0..lines.len()).filter(|&i| !drop[pi][i]).collect();
         let mut per_block: Counter<i64> = Counter::new();
         for &i in &ids {
             per_block.add(lines[i].block, 1);
@@ -171,11 +177,14 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
             UseBlocks::Off => false,
         };
         let ruled = if p.rules && p.tables { ruled_tables(page, &ids, body, p) } else { Vec::new() };
-        let in_ruled: HashSet<usize> = ruled.iter().flat_map(|(m, _, _)| m.iter().copied()).collect();
+        let mut in_ruled = vec![false; lines.len()];
+        for &i in ruled.iter().flat_map(|(m, _, _)| m) {
+            in_ruled[i] = true;
+        }
         let tables_md: Vec<Rc<str>> = ruled.iter().map(|(_, g, _)| Rc::from(grid_markdown(g))).collect();
         let mut elements: Vec<Elem> = ids
             .iter()
-            .filter(|i| !in_ruled.contains(i))
+            .filter(|&&i| !in_ruled[i])
             .map(|&i| {
                 let l = &lines[i];
                 Elem { line: Some(i), table: 0, x0: l.x0, x1: l.x1, y0: l.y0, y1: l.y1 }
@@ -190,6 +199,7 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
             y1: b.3,
         }));
         let mut parts: Vec<String> = Vec::new();
+        let mut consumed = vec![false; lines.len()];
         for region in regions(&elements, lines, body, p, 0) {
             let rids: Vec<usize> = region.iter().filter_map(|e| e.line).collect();
             let mut seq: Vec<SeqItem> = region
@@ -197,18 +207,26 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
                 .filter(|e| e.line.is_none())
                 .map(|e| SeqItem { item: Seq::Table(tables_md[e.table].clone()), y0: e.y0, x0: e.x0 })
                 .collect();
-            let mut consumed: HashSet<usize> = HashSet::new();
+            // `consumed` is per region (a line can sit in two regions when a gutter is under
+            // two points wide); the page-sized flags are cleared again after each region
+            let mut marked: Vec<usize> = Vec::new();
             if p.tables {
                 for (members, grid) in find_tables(page, &rids, p, body) {
-                    consumed.extend(members.iter().copied());
+                    for &i in &members {
+                        consumed[i] = true;
+                    }
+                    marked.extend_from_slice(&members);
                     let y0 = members.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pyc::pmin);
                     seq.push(SeqItem { item: Seq::Table(Rc::from(grid_markdown(&grid))), y0, x0: 0.0 });
                 }
             }
             seq.extend(region.iter().filter_map(|e| {
                 let i = e.line?;
-                (!consumed.contains(&i)).then(|| SeqItem { item: Seq::Line(lines[i].clone()), y0: e.y0, x0: e.x0 })
+                (!consumed[i]).then(|| SeqItem { item: Seq::Line(lines[i].clone()), y0: e.y0, x0: e.x0 })
             }));
+            for i in marked {
+                consumed[i] = false;
+            }
             seq.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
             parts.extend(paragraphs(&seq, body, &body_color, p, use_blocks));
         }

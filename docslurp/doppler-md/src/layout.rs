@@ -82,10 +82,62 @@ pub fn table_like(left: &[Elem], right: &[Elem], lines: &[Rc<Line>], p: &Params)
     if words(&left) > p.table_cell_words && words(&right) > p.table_cell_words {
         return false;
     }
-    let bases: Vec<f64> = left.iter().map(|l| l.base()).collect();
-    let aligned =
-        right.iter().filter(|l| bases.iter().any(|&b| (l.base() - b).abs() <= p.row_tol * pmax(l.size(), 1.0))).count();
+    let mut bases: Vec<f64> = left.iter().map(|l| l.base()).collect();
+    bases.sort_by(|a, b| fcmp(*a, *b));
+    // right-side baselines in ascending order too, so the neighbour search is one merge pass
+    let mut queries: Vec<(f64, f64)> = right.iter().map(|l| (l.base(), p.row_tol * pmax(l.size(), 1.0))).collect();
+    queries.sort_by(|a, b| fcmp(a.0, b.0));
+    let nan = bases.first().is_some_and(|b| b.is_nan()) || bases.last().is_some_and(|b| b.is_nan());
+    let mut k = 0;
+    let mut aligned = 0usize;
+    for (x, tol) in queries {
+        if nan || !x.is_finite() {
+            aligned += near_any(&bases, x, tol) as usize;
+            continue;
+        }
+        // k = bases.partition_point(|&b| b < x), monotone in x
+        while k < bases.len() && bases[k] < x {
+            k += 1;
+        }
+        let hit = bases.get(k).is_some_and(|&b| (x - b).abs() <= tol) || (k > 0 && (x - bases[k - 1]).abs() <= tol);
+        aligned += hit as usize;
+    }
     aligned as f64 >= p.table_align * right.len() as f64
+}
+
+/// `any(abs(x - b) <= tol for b in sorted)` for `sorted` in ascending `fcmp` order, in
+/// O(log n): for a finite `x` the closest values are its two neighbours in sorted order
+/// (floating-point subtraction is monotonic), and the predicate only depends on the distance.
+/// A non-finite `x` (only reachable through overflowing medians) takes the linear scan.
+pub fn near_any(sorted: &[f64], x: f64, tol: f64) -> bool {
+    // total_cmp order puts any NaN first (negative sign) or last
+    let nan = sorted.first().is_some_and(|b| b.is_nan()) || sorted.last().is_some_and(|b| b.is_nan());
+    if !x.is_finite() || nan {
+        return sorted.iter().any(|&b| (x - b).abs() <= tol);
+    }
+    let k = sorted.partition_point(|&b| b < x);
+    sorted.get(k).is_some_and(|&b| (x - b).abs() <= tol) || (k > 0 && (x - sorted[k - 1]).abs() <= tol)
+}
+
+/// `any(abs(x - b) <= tol for b in sorted without one copy of x)`: [`near_any`] over the
+/// other values, for an `x` taken from `sorted` itself.
+pub fn near_other(sorted: &[f64], x: f64, tol: f64) -> bool {
+    let nan = sorted.first().is_some_and(|b| b.is_nan()) || sorted.last().is_some_and(|b| b.is_nan());
+    if !x.is_finite() || nan {
+        let mut skipped = false;
+        return sorted.iter().any(|&b| {
+            if !skipped && b == x {
+                skipped = true;
+                return false;
+            }
+            (x - b).abs() <= tol
+        });
+    }
+    let lo = sorted.partition_point(|&b| b < x);
+    let hi = sorted.partition_point(|&b| b <= x);
+    (hi - lo >= 2 && 0.0 <= tol)
+        || sorted.get(hi).is_some_and(|&b| (x - b).abs() <= tol)
+        || (lo > 0 && (x - sorted[lo - 1]).abs() <= tol)
 }
 
 /// Layout regions in reading order. Runs of bands sharing a non-table vertical gutter are read
@@ -97,17 +149,19 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
         return if elements.is_empty() { Vec::new() } else { vec![elements] };
     }
     let bs = bands(&elements);
+    // each band's own gutters, once: the start candidates for band i and the `multi` test of
+    // every band a gutter is followed through
+    let band_gutters: Vec<Vec<(f64, f64)>> = bs.iter().map(|b| gutters_of(b, body, p)).collect();
     let mut out: Vec<Vec<Elem>> = Vec::new();
     let mut pending: Vec<Elem> = Vec::new();
     let mut i = 0;
     while i < bs.len() {
         let mut split = None;
-        let mut gs = gutters_of(&bs[i], body, p);
+        let mut gs = band_gutters[i].clone();
         gs.sort_by(|g, h| fcmp(g.0 - g.1, h.0 - h.1));
         for (mut a, mut b) in gs {
             // follow the gutter down; elements reaching into it from one side narrow it
             let mut j = i;
-            let mut members: Vec<Elem> = Vec::new();
             let mut multi = 0usize;
             while j < bs.len() {
                 let band = &bs[j];
@@ -128,17 +182,18 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
                 }
                 a = na;
                 b = nb;
-                members.extend_from_slice(band);
-                multi += !gutters_of(band, body, p).is_empty() as usize;
+                multi += !band_gutters[j].is_empty() as usize;
                 j += 1;
             }
-            let left: Vec<Elem> = members.iter().copied().filter(|e| e.x1 <= a + 1.0).collect();
-            let right: Vec<Elem> = members.iter().copied().filter(|e| e.x0 >= b - 1.0).collect();
-            if multi as f64 >= p.column_min_bands
-                && left.len() >= 2
-                && right.len() >= 2
-                && !table_like(&left, &right, lines, p)
-            {
+            // the members are bands i..j; nothing below depends on them unless enough bands
+            // carry a gutter (each band start used to copy every member, O(n^2) on tall pages)
+            if (multi as f64) < p.column_min_bands {
+                continue;
+            }
+            let members = bs[i..j].iter().flatten();
+            let left: Vec<Elem> = members.clone().copied().filter(|e| e.x1 <= a + 1.0).collect();
+            let right: Vec<Elem> = members.copied().filter(|e| e.x0 >= b - 1.0).collect();
+            if left.len() >= 2 && right.len() >= 2 && !table_like(&left, &right, lines, p) {
                 split = Some((j, left, right));
                 break;
             }
