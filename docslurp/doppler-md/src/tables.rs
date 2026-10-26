@@ -4,7 +4,6 @@ use crate::layout::near_any;
 use crate::model::{Line, Page, Word};
 use crate::params::Params;
 use crate::pyc::{self, PyRe, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
-use std::collections::HashSet;
 use std::rc::Rc;
 
 pub static NUMBERED: PyRe = PyRe::new(|c| {
@@ -554,7 +553,8 @@ pub fn ruled_tables(
         }
     }
     let mut out = Vec::new();
-    let mut used: HashSet<usize> = HashSet::new();
+    let mut used = vec![false; lines.len()];
+    let mut in_members = vec![false; lines.len()];
     for g in &split {
         let ys = &g.ys;
         if ys.len() < 2 {
@@ -570,7 +570,7 @@ pub fn ruled_tables(
             .copied()
             .filter(|&i| {
                 let my = (lines[i].y0 + lines[i].y1) / 2.0;
-                !used.contains(&i) && inside(i) && y0 - 1.0 <= my && my <= y1 + 1.0
+                !used[i] && inside(i) && y0 - 1.0 <= my && my <= y1 + 1.0
             })
             .collect();
         if members.len() < 2 {
@@ -588,9 +588,13 @@ pub fn ruled_tables(
         };
         let pitches: Vec<f64> = rows.windows(2).map(|w| w[1].base - w[0].base).collect();
         let pitch = if pitches.is_empty() { median(vec![2.0 * body]) } else { median(pitches) };
-        let member_set: HashSet<usize> = members.iter().copied().collect();
-        let other_ids: Vec<usize> =
-            ids.iter().copied().filter(|&i| !used.contains(&i) && !member_set.contains(&i) && inside(i)).collect();
+        for &i in &members {
+            in_members[i] = true;
+        }
+        let other_ids: Vec<usize> = ids.iter().copied().filter(|&i| !used[i] && !in_members[i] && inside(i)).collect();
+        for &i in &members {
+            in_members[i] = false;
+        }
         let others = visual_rows(page, &other_ids, p);
         let above: Vec<&Row> = others.iter().filter(|r| r.base < y0 + 1.0).collect();
         if let Some(last) = above.last()
@@ -650,7 +654,9 @@ pub fn ruled_tables(
         if grid.len() < 2 || grid[0].len() < 2 || numbered_list(&grid, p) {
             continue;
         }
-        used.extend(members.iter().copied());
+        for &i in &members {
+            used[i] = true;
+        }
         out.push((members, grid, (x0, y0, x1, y1)));
     }
     out
