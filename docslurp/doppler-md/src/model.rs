@@ -308,8 +308,53 @@ enum Tag<'a> {
 
 const NAMES: [&str; 4] = ["page", "flow", "block", "line"];
 
-/// One step of `TAG_RE.finditer`: the match starting at `lt` (a '<'), and its end.
-fn tag_at(s: &str, lt: usize) -> Option<(Tag<'_>, usize)> {
+/// The next occurrence of a byte (or of `</word>`) at or after a position, remembering the
+/// last answer. Queries only move forward during a scan, so every search resumes where the
+/// last one ended and the whole scan stays linear, even on hostile input full of unclosed tags.
+#[derive(Default)]
+struct Next {
+    /// (searched from, first hit at or after it)
+    last: Option<(usize, Option<usize>)>,
+}
+
+impl Next {
+    fn find(&mut self, b: &[u8], from: usize, search: impl Fn(&[u8]) -> Option<usize>) -> Option<usize> {
+        if let Some((start, hit)) = self.last
+            && start <= from
+        {
+            match hit {
+                None => return None,
+                Some(h) if h >= from => return Some(h),
+                _ => {}
+            }
+        }
+        let hit = search(&b[from..]).map(|k| from + k);
+        self.last = Some((from, hit));
+        hit
+    }
+}
+
+/// Forward-only searches for [`tag_at`].
+struct Scan {
+    gt: Next,
+    newline: Next,
+    word_close: Next,
+    finder: memmem::Finder<'static>,
+}
+
+impl Scan {
+    fn new() -> Scan {
+        Scan { gt: Next::default(), newline: Next::default(), word_close: Next::default(), finder: memmem::Finder::new(b"</word>") }
+    }
+
+    fn gt(&mut self, b: &[u8], from: usize) -> Option<usize> {
+        self.gt.find(b, from, |h| memchr(b'>', h))
+    }
+}
+
+/// One step of `TAG_RE.finditer`: the match starting at `lt` (a '<'), and its end. Calls must
+/// come in nondecreasing `lt` order (see [`Next`]).
+fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan) -> Option<(Tag<'s>, usize)> {
     let b = s.as_bytes();
     let rest = &s[lt + 1..];
     // </(page|flow|block|line)>
@@ -321,6 +366,19 @@ fn tag_at(s: &str, lt: usize) -> Option<(Tag<'_>, usize)> {
         }
         return None;
     }
+    // <word ([^>]*)>(.*?)</word>
+    if rest.starts_with("word ") {
+        let a = lt + 6;
+        let gt = scan.gt(b, a)?;
+        let t = gt + 1;
+        let finder = &scan.finder;
+        let end = scan.word_close.find(b, t, |h| finder.find(h))?;
+        // `.` does not match a newline
+        if scan.newline.find(b, t, |h| memchr(b'\n', h)).is_some_and(|nl| nl < end) {
+            return None;
+        }
+        return Some((Tag::Word(&s[a..gt], &s[t..end]), end + 7));
+    }
     // <(page|flow|block|line)\b([^>]*)>
     for n in NAMES {
         if rest.starts_with(n) {
@@ -328,26 +386,15 @@ fn tag_at(s: &str, lt: usize) -> Option<(Tag<'_>, usize)> {
             if s[after..].chars().next().is_some_and(pyc::is_word_char) {
                 return None;
             }
-            let gt = after + memchr(b'>', &b[after..])?;
+            let gt = scan.gt(b, after)?;
             return Some((Tag::Open(n, &s[after..gt]), gt + 1));
         }
-    }
-    // <word ([^>]*)>(.*?)</word>
-    if rest.starts_with("word ") {
-        let a = lt + 6;
-        let gt = a + memchr(b'>', &b[a..])?;
-        let t = gt + 1;
-        let end = t + memmem::find(&b[t..], b"</word>")?;
-        if memchr(b'\n', &b[t..end]).is_some() {
-            return None;
-        }
-        return Some((Tag::Word(&s[a..gt], &s[t..end]), end + 7));
     }
     // <(rule|box) ([^>]*)/>
     for (n, boxed) in [("rule ", false), ("box ", true)] {
         if rest.starts_with(n) {
             let a = lt + 1 + n.len();
-            let gt = a + memchr(b'>', &b[a..])?;
+            let gt = scan.gt(b, a)?;
             if gt > a && b[gt - 1] == b'/' {
                 return Some((Tag::Rule(boxed, &s[a..gt - 1]), gt + 1));
             }
@@ -411,13 +458,14 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
     let (mut flow, mut block) = (-1i64, -1i64);
     let b = xhtml.as_bytes();
     let mut a = Attrs([None; KEYS.len()]);
+    let mut scan = Scan::new();
     let mut last_color: Option<Rc<str>> = None;
     // font names repeat word after word: cache the last style
     let mut last_font: Option<(&str, (bool, bool))> = None;
     let mut pos = 0;
     while let Some(off) = memchr(b'<', &b[pos..]) {
         let lt = pos + off;
-        let Some((tag, end)) = tag_at(xhtml, lt) else {
+        let Some((tag, end)) = tag_at(xhtml, lt, &mut scan) else {
             pos = lt + 1;
             continue;
         };
