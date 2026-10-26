@@ -15,7 +15,7 @@ sys.path.insert(0, here)
 import docslurp_testlib as t  # noqa: E402
 import rastertools as r  # noqa: E402
 
-DEFAULT_LEVEL = 1  # keep in sync with PNGWriter::defaultCompressionLevel
+DEFAULT_LEVEL = 6  # keep in sync with PNGWriter::defaultCompressionLevel
 
 utils = t.Utils.from_args()
 
