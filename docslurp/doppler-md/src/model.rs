@@ -279,13 +279,15 @@ impl<'a> Attrs<'a> {
             }
             // Every suffix of a failing run fails the same way, so resume after the run.
             if b.get(j) == Some(&b'=') && b.get(j + 1) == Some(&b'"') {
-                if let Some(q) = memchr(b'"', &b[j + 2..]) {
-                    if let Some(k) = key_index(&s[i..j]) {
-                        out[k] = Some(&s[j + 2..j + 2 + q]);
-                    }
-                    i = j + 2 + q + 1;
-                    continue;
+                let Some(q) = memchr(b'"', &b[j + 2..]) else {
+                    // no closing quote anywhere, so no later pair can match either
+                    break;
+                };
+                if let Some(k) = key_index(&s[i..j]) {
+                    out[k] = Some(&s[j + 2..j + 2 + q]);
                 }
+                i = j + 2 + q + 1;
+                continue;
             }
             i = j;
         }
@@ -513,5 +515,8 @@ mod tests {
         assert_eq!(key_index("xmin"), None);
         let a = Attrs::parse(r#"x xMin="1" é="2" color="a" color="b" fontName="F"x="3" bad= "4" yMin="5"#);
         assert_eq!((a.get("xMin"), a.get("color"), a.get("fontName"), a.get("yMin")), (Some("1"), Some("b"), Some("F"), None));
+        // an unterminated value ends the scan (linear even for a huge tag of `a="` repeats)
+        let open = "a=\"".repeat(200_000);
+        assert!(Attrs::parse(&format!("color=\"x\" {open}")).get("color") == Some("x"));
     }
 }
