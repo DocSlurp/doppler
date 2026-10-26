@@ -576,6 +576,15 @@ private:
 // TextPage
 //------------------------------------------------------------------------
 
+// An axis-aligned vector rule (line segment or thin filled rectangle) or filled box,
+// in the same coordinate space as the page's words (see TextOutputDev::setCollectRules).
+struct TextRule
+{
+    double xMin, yMin, xMax, yMax;
+    double r, g, b; // stroke or fill colour, 0..1
+    bool box; // a filled rectangle that is not thin enough to be a rule
+};
+
 class POPPLER_PRIVATE_EXPORT TextPage
 {
 public:
@@ -613,6 +622,12 @@ public:
 
     // Add a (potential) underline.
     void addUnderline(double x0, double y0, double x1, double y1);
+
+    // Add a rule (TextOutputDev::setCollectRules); at most maxRules per page are kept.
+    void addRule(const TextRule &rule);
+    const std::vector<TextRule> &getRules() const { return rules; }
+    bool getRulesTruncated() const { return rulesTruncated; }
+    static constexpr size_t maxRules = 20000;
 
     // Add a hyperlink.
     void addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link);
@@ -735,6 +750,8 @@ private:
     bool haveLastFind;
 
     std::vector<std::unique_ptr<TextUnderline>> underlines;
+    std::vector<TextRule> rules;
+    bool rulesTruncated = false;
     std::vector<std::unique_ptr<TextLink>> links;
 
     friend class TextLine;
@@ -903,6 +920,12 @@ public:
     // Turn extra processing for HTML conversion on or off.
     void enableHTMLExtras(bool doHTMLA) { doHTML = doHTMLA; }
 
+    // Record axis-aligned stroked segments, thin filled rectangles (rules) and filled
+    // rectangles (boxes) of each page, for table borders and cell shading.
+    void setCollectRules(bool collectRulesA) { collectRules = collectRulesA; }
+    const std::vector<TextRule> &getRules() const;
+    bool getRulesTruncated() const;
+
     void setInlineLinkURIs(bool inlineLinkURIsA);
 
     // Get the head of the linked list of TextFlows for the
@@ -938,6 +961,8 @@ private:
                       // 0, 90, 180, or 270 degree axes, is discarded. This is useful
                       // to skip watermarks drawn on top of body text, etc.
     bool doHTML; // extra processing for HTML conversion
+    bool collectRules = false;
+    void collectPathRules(const GfxState *state, bool filled);
     bool inlineLinkURIs = false;
     Page *currentPage = nullptr;
     bool ok; // set up ok?

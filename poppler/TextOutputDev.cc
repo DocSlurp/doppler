@@ -2552,6 +2552,8 @@ void TextPage::clear()
     }
     fonts.clear();
     underlines.clear();
+    rules.clear();
+    rulesTruncated = false;
     links.clear();
 
     diagonal = false;
@@ -2925,6 +2927,15 @@ void TextPage::addWord(TextWord *word)
 void TextPage::addUnderline(double x0, double y0, double x1, double y1)
 {
     underlines.emplace_back(std::make_unique<TextUnderline>(x0, y0, x1, y1));
+}
+
+void TextPage::addRule(const TextRule &rule)
+{
+    if (rules.size() >= maxRules) {
+        rulesTruncated = true;
+        return;
+    }
+    rules.push_back(rule);
 }
 
 void TextPage::addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link)
@@ -5883,10 +5894,90 @@ void TextOutputDev::endActualText(GfxState *state)
     actualText->end(state);
 }
 
+const std::vector<TextRule> &TextOutputDev::getRules() const
+{
+    return text->getRules();
+}
+
+bool TextOutputDev::getRulesTruncated() const
+{
+    return text->getRulesTruncated();
+}
+
+void TextOutputDev::collectPathRules(const GfxState *state, bool filled)
+{
+    // Rules thinner than this (device units) from a filled rectangle are line rules, not boxes.
+    constexpr double maxThinRule = 1.5;
+    constexpr double eps = 0.01;
+    const GfxPath *path = state->getPath();
+    GfxRGB rgb;
+    if (filled) {
+        state->getFillRGB(&rgb);
+    } else {
+        state->getStrokeRGB(&rgb);
+    }
+    const double r = colToDbl(rgb.r), g = colToDbl(rgb.g), b = colToDbl(rgb.b);
+    for (int i = 0; i < path->getNumSubpaths(); ++i) {
+        const GfxSubpath *sub = path->getSubpath(i);
+        const int n = sub->getNumPoints();
+        if (filled) {
+            // an axis-aligned rectangle: 4 corners, optionally closed back to the first
+            if (n != 4 && n != 5) {
+                continue;
+            }
+            double x[5], y[5];
+            bool curve = false;
+            for (int k = 0; k < n; ++k) {
+                curve = curve || sub->getCurve(k);
+                state->transform(sub->getX(k), sub->getY(k), &x[k], &y[k]);
+            }
+            if (curve || (n == 5 && (fabs(x[4] - x[0]) > eps || fabs(y[4] - y[0]) > eps))) {
+                continue;
+            }
+            bool rect = true;
+            for (int k = 0; k < 4 && rect; ++k) {
+                const int j = (k + 1) % 4;
+                const bool horiz = fabs(y[k] - y[j]) <= eps, vert = fabs(x[k] - x[j]) <= eps;
+                const int l = (k + 2) % 4;
+                const bool nextHoriz = fabs(y[j] - y[l]) <= eps;
+                rect = (horiz != vert) && (horiz != nextHoriz);
+            }
+            if (!rect) {
+                continue;
+            }
+            const double x0 = std::min(std::min(x[0], x[1]), x[2]), x1 = std::max(std::max(x[0], x[1]), x[2]);
+            const double y0 = std::min(std::min(y[0], y[1]), y[2]), y1 = std::max(std::max(y[0], y[1]), y[2]);
+            if (x1 - x0 <= eps && y1 - y0 <= eps) {
+                continue;
+            }
+            const bool thin = std::min(x1 - x0, y1 - y0) <= maxThinRule;
+            text->addRule({ x0, y0, x1, y1, r, g, b, !thin });
+        } else {
+            const double hw = 0.5 * state->getTransformedLineWidth();
+            for (int k = 1; k < n; ++k) {
+                if (sub->getCurve(k) || sub->getCurve(k - 1)) {
+                    continue; // part of a Bezier curve
+                }
+                double x0, y0, x1, y1;
+                state->transform(sub->getX(k - 1), sub->getY(k - 1), &x0, &y0);
+                state->transform(sub->getX(k), sub->getY(k), &x1, &y1);
+                if (fabs(x1 - x0) <= eps && fabs(y1 - y0) > eps) {
+                    text->addRule({ x0 - hw, std::min(y0, y1), x0 + hw, std::max(y0, y1), r, g, b, false });
+                } else if (fabs(y1 - y0) <= eps && fabs(x1 - x0) > eps) {
+                    text->addRule({ std::min(x0, x1), y0 - hw, std::max(x0, x1), y0 + hw, r, g, b, false });
+                }
+            }
+        }
+    }
+}
+
 void TextOutputDev::stroke(GfxState *state)
 {
     double x[2], y[2];
 
+    if (collectRules) {
+        collectPathRules(state, false);
+    }
     if (!doHTML) {
         return;
     }
@@ -5913,6 +6004,9 @@ void TextOutputDev::fill(GfxState *state)
     double rx0, ry0, rx1, ry1, t;
     int i;
 
+    if (collectRules) {
+        collectPathRules(state, true);
+    }
     if (!doHTML) {
         return;
     }
@@ -5974,7 +6068,7 @@ void TextOutputDev::fill(GfxState *state)
 
 void TextOutputDev::eoFill(GfxState *state)
 {
-    if (!doHTML) {
+    if (!doHTML && !collectRules) {
         return;
     }
     fill(state);
