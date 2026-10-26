@@ -624,7 +624,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
             lineYMax = yMax;
         }
 
-        const std::unique_ptr<std::string> wordText = word->getText(uMap);
+        const std::unique_ptr<std::string> wordText = word->getLogicalText(uMap);
         const std::string myString = myXmlTokenReplace(wordText->c_str());
         wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\"" << (wordMeta ? wordMetaXmlAttributes(word) : std::string()) << ">" << myString << "</word>\n";
     }
@@ -731,7 +731,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                         }
 
                         GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
-                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getText(uMap)->c_str()).c_str());
+                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getLogicalText(uMap)->c_str()).c_str());
                         if (wordMeta) {
                             lineWordsBuffer += wordMetaTsvColumns(word);
                         }
@@ -771,7 +771,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
             for (const TextWord *word : words) {
                 double xMinA, yMinA, xMaxA, yMaxA;
                 word->getBBox(&xMinA, &yMinA, &xMaxA, &yMaxA);
-                const std::string myString = myXmlTokenReplace(word->getText(uMap)->c_str());
+                const std::string myString = myXmlTokenReplace(word->getLogicalText(uMap)->c_str());
                 fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\"%s>%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, wordMeta ? wordMetaXmlAttributes(word).c_str() : "", myString.c_str());
             }
         }

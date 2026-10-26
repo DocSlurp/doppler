@@ -837,6 +837,32 @@ std::unique_ptr<std::string> TextWord::getText(const UnicodeMap *uMap) const
     return s;
 }
 
+std::unique_ptr<std::string> TextWord::getLogicalText(const UnicodeMap *uMap) const
+{
+    const size_t n = len();
+    bool rtl = false;
+    for (size_t i = 0; i < n && !rtl; ++i) {
+        rtl = unicodeTypeR(chars[i].text);
+    }
+    if (!rtl || !uMap) {
+        return getText(uMap);
+    }
+    // Same reordering as the plain text output of a right-to-left line: runs of
+    // right-to-left characters are reversed, left-to-right and numeric runs keep their order.
+    std::vector<Unicode> visual(n), logical(n);
+    for (size_t i = 0; i < n; ++i) {
+        visual[i] = chars[i].text;
+    }
+    const int count = reorderText(visual.data(), static_cast<int>(n), nullptr, false, nullptr, logical.data());
+    char buf[8];
+    auto s = std::make_unique<std::string>();
+    for (int i = 0; i < count; ++i) {
+        const int bytes = uMap->mapUnicode(logical[i], buf, sizeof(buf));
+        s->append(buf, bytes);
+    }
+    return s;
+}
+
 void TextWord::getCharBBox(int charIdx, double *xMinA, double *yMinA, double *xMaxA, double *yMaxA) const
 {
     if (charIdx < 0) {

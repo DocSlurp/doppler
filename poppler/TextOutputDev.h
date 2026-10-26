@@ -191,6 +191,10 @@ public:
     std::unique_ptr<std::string> getText() const;
     // Text of the word in the encoding given by <uMap> (null gives an empty string).
     std::unique_ptr<std::string> getText(const UnicodeMap *uMap) const;
+    // Like getText(uMap), but a word containing right-to-left characters (stored in visual
+    // order) is returned in logical order, as the plain text output orders it, without
+    // bidi embedding controls.
+    std::unique_ptr<std::string> getLogicalText(const UnicodeMap *uMap) const;
     const GooString *getFontName(int idx) const { return chars[idx].font->fontName; }
     void getColor(double *r, double *g, double *b) const
     {
