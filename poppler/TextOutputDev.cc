@@ -80,6 +80,7 @@
 #include "UnicodeTypeTable.h"
 #include "Link.h"
 #include "TextOutputDev.h"
+#include "CJKRadicals.h"
 #include "Page.h"
 #include "Annot.h"
 #include "UTF.h"
@@ -2797,6 +2798,19 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
             ++uLen;
         }
         u = ligature;
+    }
+
+    // CJK radicals (Kangxi Radicals and CJK Radicals Supplement) that fonts use for
+    // ordinary ideographs become their equivalent unified ideograph (Unicode's
+    // Equivalent_Unified_Ideograph), so search and embeddings see the ideograph.
+    Unicode radical;
+    if (uLen == 1 && u[0] >= 0x2e80 && u[0] <= 0x2fdf) {
+        const auto *end = cjkRadicalEquivalents.end();
+        const auto *it = std::lower_bound(cjkRadicalEquivalents.begin(), end, u[0], [](const std::pair<unsigned int, unsigned int> &e, Unicode v) { return e.first < v; });
+        if (it != end && it->first == u[0]) {
+            radical = it->second;
+            u = &radical;
+        }
     }
 
     // Arabic presentation forms (positional glyph variants and ligatures such as
