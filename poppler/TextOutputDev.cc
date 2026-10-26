@@ -848,13 +848,24 @@ std::unique_ptr<std::string> TextWord::getLogicalText(const UnicodeMap *uMap) co
     if (!rtl || !uMap) {
         return getText(uMap);
     }
-    // Same reordering as the plain text output of a right-to-left line: runs of
-    // right-to-left characters are reversed, left-to-right and numeric runs keep their order.
+    // Same reordering as the plain text output, in the direction of the word's first strong
+    // character: right-to-left runs are reversed; in a right-to-left word the left-to-right
+    // and numeric runs keep their own order.
+    bool primaryLR = true;
+    for (size_t i = 0; i < n; ++i) {
+        if (unicodeTypeR(chars[i].text)) {
+            primaryLR = false;
+            break;
+        }
+        if (unicodeTypeL(chars[i].text)) {
+            break;
+        }
+    }
     std::vector<Unicode> visual(n), logical(n);
     for (size_t i = 0; i < n; ++i) {
         visual[i] = chars[i].text;
     }
-    const int count = reorderText(visual.data(), static_cast<int>(n), nullptr, false, nullptr, logical.data());
+    const int count = reorderText(visual.data(), static_cast<int>(n), nullptr, primaryLR, nullptr, logical.data());
     char buf[8];
     auto s = std::make_unique<std::string>();
     for (int i = 0; i < count; ++i) {
@@ -2826,10 +2837,16 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         int normLen = 0;
         Unicode *norm = unicodeNormalizeNFKC(u, 1, &normLen, nullptr);
         int n = 0;
+        bool phrase = false;
         for (int k = 0; k < normLen && n < static_cast<int>(sizeof(arabic) / sizeof(arabic[0])); ++k) {
-            if (norm[k] != 0x20) {
-                arabic[n++] = norm[k];
+            if (norm[k] == 0x20 && n == 0) {
+                continue; // isolated harakat: NFKC puts a space before the mark
             }
+            phrase = phrase || norm[k] == 0x20;
+            arabic[n++] = norm[k];
+        }
+        if (phrase) {
+            n = 0; // a phrase ligature (U+FDFA, U+FDFB) spans several words: keep the ligature
         }
         gfree(norm);
         if (n > 0 && !(n == 1 && arabic[0] == u[0])) {
@@ -5904,10 +5921,38 @@ bool TextOutputDev::getRulesTruncated() const
     return text->getRulesTruncated();
 }
 
+void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box)
+{
+    if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1)) {
+        return;
+    }
+    // keep only the visible part: inside the current clip and the page
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    cx0 = std::max(cx0, 0.0);
+    cy0 = std::max(cy0, 0.0);
+    cx1 = std::min(cx1, text->getPageWidth());
+    cy1 = std::min(cy1, text->getPageHeight());
+    x0 = std::max(x0, cx0);
+    y0 = std::max(y0, cy0);
+    x1 = std::min(x1, cx1);
+    y1 = std::min(y1, cy1);
+    if (x1 < x0 || y1 < y0 || (x1 - x0 <= 0.01 && y1 - y0 <= 0.01)) {
+        return;
+    }
+    // a document-wide budget bounds the output of pages that share hostile content
+    if (docRules >= maxDocRules) {
+        text->markRulesTruncated();
+        return;
+    }
+    ++docRules;
+    text->addRule({ x0, y0, x1, y1, r, g, b, box });
+}
+
 void TextOutputDev::collectPathRules(const GfxState *state, bool filled)
 {
-    // Rules thinner than this (device units) from a filled rectangle are line rules, not boxes.
-    constexpr double maxThinRule = 1.5;
+    // Rules thinner than 1.5 pt from a filled rectangle are line rules, not boxes.
+    const double maxThinRule = 1.5 * state->getHDPI() / 72.0;
     constexpr double eps = 0.01;
     const GfxPath *path = state->getPath();
     GfxRGB rgb;
@@ -5951,7 +5996,7 @@ void TextOutputDev::collectPathRules(const GfxState *state, bool filled)
                 continue;
             }
             const bool thin = std::min(x1 - x0, y1 - y0) <= maxThinRule;
-            text->addRule({ x0, y0, x1, y1, r, g, b, !thin });
+            addClippedRule(state, x0, y0, x1, y1, r, g, b, !thin);
         } else {
             const double hw = 0.5 * state->getTransformedLineWidth();
             for (int k = 1; k < n; ++k) {
@@ -5962,9 +6007,9 @@ void TextOutputDev::collectPathRules(const GfxState *state, bool filled)
                 state->transform(sub->getX(k - 1), sub->getY(k - 1), &x0, &y0);
                 state->transform(sub->getX(k), sub->getY(k), &x1, &y1);
                 if (fabs(x1 - x0) <= eps && fabs(y1 - y0) > eps) {
-                    text->addRule({ x0 - hw, std::min(y0, y1), x0 + hw, std::max(y0, y1), r, g, b, false });
+                    addClippedRule(state, x0 - hw, std::min(y0, y1), x0 + hw, std::max(y0, y1), r, g, b, false);
                 } else if (fabs(y1 - y0) <= eps && fabs(x1 - x0) > eps) {
-                    text->addRule({ std::min(x0, x1), y0 - hw, std::max(x0, x1), y0 + hw, r, g, b, false });
+                    addClippedRule(state, std::min(x0, x1), y0 - hw, std::max(x0, x1), y0 + hw, r, g, b, false);
                 }
             }
         }

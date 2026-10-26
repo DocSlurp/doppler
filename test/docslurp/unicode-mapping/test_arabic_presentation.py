@@ -20,10 +20,10 @@ TOUNICODE = b"""/CIDInit /ProcSet findresource begin 12 dict begin begincmap
 /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
 /CMapName /Adobe-Identity-UCS def /CMapType 2 def
 1 begincodespacerange <00> <FF> endcodespacerange
-4 beginbfchar <41> <FE90> <42> <FEFB> <43> <FE8D> <44> <FE76> endbfchar
+5 beginbfchar <41> <FE90> <42> <FEFB> <43> <FE8D> <44> <FE76> <45> <FDFA> endbfchar
 endcmap CMapName currentdict /CMap defineresource pop end end"""
 WORD = "لاب"  # lam alef beh: logical order of the visual "AB"
-CONTENT = b"BT /F2 14 Tf 300 700 Td (AB) Tj ET BT /F2 14 Tf 300 650 Td (DC) Tj ET"
+CONTENT = b"BT /F2 14 Tf 300 700 Td (AB) Tj ET BT /F2 14 Tf 300 650 Td (DC) Tj ET BT /F2 14 Tf 300 600 Td (E) Tj ET"
 EXTRA = [
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 7 0 R >>",
     t.stream("", TOUNICODE),
@@ -32,7 +32,8 @@ PDF = t.simple_page_pdf(CONTENT, resources="<< /Font << /F1 4 0 R /F2 6 0 R >> >
 
 
 def presentation(s):
-    return any(0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFF for c in s)
+    # phrase ligatures (U+FDFA, U+FDFB) are kept: expanding them would run their words together
+    return any((0xFB50 <= ord(c) <= 0xFDFF or 0xFE70 <= ord(c) <= 0xFEFF) and c not in "\ufdfa\ufdfb" for c in s)
 
 
 with t.TempDir() as d:
@@ -41,6 +42,8 @@ with t.TempDir() as d:
     t.check(WORD in plain, "plain: base letters in logical order", repr(plain))
     t.check(not presentation(plain), "plain: no presentation forms", repr(plain))
     t.check("اَ" in plain or "َا" in plain, "plain: isolated fatha keeps its mark, no inserted space", repr(plain))
+    # U+FDFA expands to a four-word phrase; its words must not be run together
+    t.check("\u0635\u0644\u0649\u0627\u0644\u0644\u0647" not in plain, "plain: a phrase ligature is not collapsed into one word", repr(plain))
     root = ET.fromstring(utils.run("pdftotext", "-bbox", path, "-").encode("utf-8"))
     words = ["".join(e.itertext()) for e in root.iter() if e.tag.endswith("}word")]
     t.check(WORD in words, "-bbox: base letters in logical order", repr(words))

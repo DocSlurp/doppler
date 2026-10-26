@@ -16,13 +16,14 @@ TOUNICODE = b"""/CIDInit /ProcSet findresource begin 12 dict begin begincmap
 /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
 /CMapName /Adobe-Identity-UCS def /CMapType 2 def
 1 begincodespacerange <00> <FF> endcodespacerange
-4 beginbfchar <41> <05DD> <42> <05D5> <43> <05DC> <44> <05E9> endbfchar
+8 beginbfchar <41> <05DD> <42> <05D5> <43> <05DC> <44> <05E9> <61> <0061> <62> <0062> <63> <0063> <45> <05E9> endbfchar
 endcmap CMapName currentdict /CMap defineresource pop end end"""
 HEBREW = "שלום"
 VISUAL = HEBREW[::-1]
 CONTENT = (
     b"BT /F2 14 Tf 300 700 Td (ABCD) Tj ET "  # RTL word, visual order
-    b"BT /F1 12 Tf 72 600 Td (Hello 2026) Tj ET"  # LTR word and a number: untouched
+    b"BT /F1 12 Tf 72 600 Td (Hello 2026) Tj ET "  # LTR word and a number: untouched
+    b"BT /F2 12 Tf 72 500 Td (abcCE) Tj ET"  # LTR-dominant word ending in two RTL letters (visual lamed, shin)
 )
 EXTRA = [
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode 7 0 R >>",
@@ -47,6 +48,11 @@ with t.TempDir() as d:
         t.check(VISUAL not in words, flag + ": no visual-order RTL word", repr(words))
         t.check("Hello" in words and "2026" in words, flag + ": LTR words unchanged", repr(words))
         t.check(not any(c in w for w in words for c in CONTROLS), flag + ": no bidi embedding controls", repr(words))
+    mixed = "abc\u05e9\u05dc"  # left-to-right word: only the RTL run is reversed, as in plain text
+    plain_words = plain.translate(dict.fromkeys(map(ord, CONTROLS))).split()
+    t.check(mixed in plain_words, "plain: LTR-dominant mixed word", repr(plain_words))
+    words = xml_words(utils.run("pdftotext", "-bbox", path, "-"))
+    t.check(mixed in words, "-bbox: LTR-dominant mixed word keeps its left-to-right order", repr(words))
     texts = [r[11] for r in tsv_rows(utils.run("pdftotext", "-tsv", path, "-")) if r[0] == "5"]
     t.check(HEBREW in texts, "-tsv: RTL word in logical order", repr(texts))
     t.check("Hello" in texts and "2026" in texts, "-tsv: LTR words unchanged", repr(texts))

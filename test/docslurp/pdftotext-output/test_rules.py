@@ -69,4 +69,65 @@ with t.TempDir() as d:
     pages = [e for e in root.iter() if e.tag.endswith("}page")]
     t.check(len(rules) == 20000 and pages[0].attrib.get("rulesTruncated") == "1", "rules are capped at 20000 per page and the page is marked", "%d rules, %r" % (len(rules), pages[0].attrib))
 
+
+
+# --- hostile and edge cases: clipping, page bounds, huge coordinates, amplification, resolution ---
+HUGE = b"1" + b"0" * 120
+EDGE = t.simple_page_pdf(
+    b"q 0 0 10 10 re W n 0 G 1 w 90 696 m 300 696 l S Q "  # fully clipped stroke: not a rule
+    b"0 G 1 w -600 500 m -500 500 l S "  # off-page stroke: not a rule
+    b"0 G 1 w 10 400 m " + HUGE + b" 400 l S "  # huge coordinate: clipped to the page
+    b"0 g 100 300 200 1 re f"  # 1 pt filled rule
+)
+
+
+def nested_forms_pdf(pages=30, depth=5, fanout=10):
+    # The leaf form strokes a horizontal and a vertical line; every level paints the next one
+    # fanout times; all pages share one content stream scaled by a huge cm.
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", None]
+    content_num = 3
+    objs.append(t.stream("", b"1" + b"0" * 120 + b" 0 0 1" + b"0" * 120 + b" 0 0 cm 1 w /X Do"))
+    form_nums = []
+    first_form = 4
+    for level in range(depth):
+        num = first_form + level
+        form_nums.append(num)
+    for level, num in enumerate(form_nums):
+        if level == depth - 1:
+            body = b"0 0 m 1 0 l S 0 0 m 0 1 l S"
+            res = ""
+        else:
+            body = b" ".join([b"q /X Do Q"] * fanout)
+            res = " /Resources << /XObject << /X %d 0 R >> >>" % form_nums[level + 1]
+        objs.append(t.stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1]" + res, body))
+    page_first = first_form + depth
+    kids = []
+    for i in range(pages):
+        kids.append("%d 0 R" % (page_first + i))
+        objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /X %d 0 R >> >> /Contents %d 0 R >>" % (form_nums[0], content_num))
+    objs[1] = "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join(kids), pages)
+    return t.build_pdf(objs)
+
+
+with t.TempDir() as d:
+    path = d.write("edge.pdf", EDGE)
+    out = utils.run("pdftotext", "-bbox-layout", "-rules", path, "-")
+    rules, root = tags(out, "rule")
+    page = [e for e in root.iter() if e.tag.endswith("}page")][0]
+    width = float(page.attrib["width"])
+    t.check(not any(box(r)[0] < -1 for r in rules), "off-page stroke is not reported", repr([r.attrib for r in rules]))
+    t.check(not any(abs(box(r)[1] - 96) < 2 for r in rules), "fully clipped stroke is not reported", repr([r.attrib for r in rules]))
+    t.check(all(len(v) < 16 for r in rules for v in r.attrib.values()), "rule coordinates are printed with bounded digits", repr([r.attrib for r in rules]))
+    t.check(any(abs(box(r)[1] - 392) < 2 and box(r)[2] <= width + 0.01 for r in rules), "a huge-coordinate stroke is clipped to the page", repr([r.attrib for r in rules]))
+
+    out = utils.run("pdftotext", "-r", "144", "-bbox-layout", "-rules", path, "-")
+    rules, _ = tags(out, "rule")
+    boxes, _ = tags(out, "box")
+    t.check(any(abs(box(r)[0] - 200) < 2 for r in rules) and not boxes, "a 1 pt filled rule stays a rule at -r 144", repr(([r.attrib for r in rules], [b.attrib for b in boxes])))
+
+    bomb = d.write("bomb.pdf", nested_forms_pdf())
+    data = utils.run("pdftotext", "-bbox-layout", "-rules", bomb, "-", binary=True, timeout=300)
+    t.check(len(data) < 40_000_000, "nested-form rule amplification stays bounded (%d bytes from %d)" % (len(data), len(nested_forms_pdf())), "")
+    t.check(data.count(b"<rule") <= 200000, "a document keeps at most 200000 rules", str(data.count(b"<rule")))
+
 t.finish()

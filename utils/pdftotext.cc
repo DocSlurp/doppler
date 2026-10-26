@@ -658,7 +658,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "");
             for (const TextRule &rule : textOut->getRules()) {
-                fprintf(f, "    <%s xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\" color=\"%s\"/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str());
+                fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str());
             }
         } else {
             fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
