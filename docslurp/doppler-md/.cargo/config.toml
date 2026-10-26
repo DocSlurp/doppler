@@ -1,0 +1,8 @@
+# Link the glibc runtime statically on x86_64/aarch64 Linux: the converter runs once per
+# document, and dynamic loading and relocation were about a quarter of its system time (see
+# PERF.md). It uses no NSS, iconv or dlopen, the parts of glibc that need shared objects.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
