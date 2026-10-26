@@ -5,7 +5,8 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::rc::Rc;
 
-use crate::pyc::{self, PyRe, median, pmax, py_float};
+use crate::patterns::leading_punct;
+use crate::pyc::{self, median, pmax, py_float};
 
 pub fn is_rtl(c: char) -> bool {
     matches!(c, '\u{0590}'..='\u{08ff}' | '\u{fb1d}'..='\u{fdff}' | '\u{fe70}'..='\u{feff}')
@@ -23,17 +24,15 @@ fn is_control(c: char) -> bool {
     matches!(c, '\u{00}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}' | '\u{fffd}')
 }
 
-static LEADING_PUNCT: PyRe = PyRe::new(|c| format!(r"\A([,.;:!?)\]]+)([{}].*)\z", c.d));
-
 /// `LEADING_PUNCT_RE.sub(r'\2\1', t)`: ",28" drawn left of a number reads "28,".
 fn leading_punct_sub(t: &str) -> Cow<'_, str> {
-    if let Some(c) = LEADING_PUNCT.get(t).captures(t) {
-        return Cow::Owned(format!("{}{}", &c[2], &c[1]));
+    if let Some((punct, rest)) = leading_punct(t) {
+        return Cow::Owned(format!("{rest}{punct}"));
     }
     if let Some(s) = t.strip_suffix('\n')
-        && let Some(c) = LEADING_PUNCT.get(s).captures(s)
+        && let Some((punct, rest)) = leading_punct(s)
     {
-        return Cow::Owned(format!("{}{}\n", &c[2], &c[1]));
+        return Cow::Owned(format!("{rest}{punct}\n"));
     }
     Cow::Borrowed(t)
 }

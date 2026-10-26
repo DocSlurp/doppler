@@ -6,9 +6,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{LazyLock, OnceLock};
-
-use regex::Regex;
 
 use crate::entities::{HTML5, INVALID_CHARREFS, INVALID_CODEPOINTS};
 use crate::unicode_tables as tables;
@@ -76,56 +73,6 @@ pub fn split_count(s: &str) -> usize {
 /// `len(s)` in code points.
 pub fn char_len(s: &str) -> usize {
     s.chars().count()
-}
-
-/// Character classes of Python's `re` for str patterns, for interpolation inside `[...]`.
-pub struct Classes {
-    /// `\d`
-    pub d: String,
-    /// `\s`
-    pub s: String,
-}
-
-fn class_of(table: &[(u32, u32)]) -> String {
-    table.iter().map(|&(a, b)| format!("\\x{{{a:x}}}-\\x{{{b:x}}}")).collect()
-}
-
-/// Python's own Unicode classes (from the generated tables, so they follow Python's Unicode
-/// version rather than the regex crate's).
-static UNICODE: LazyLock<Classes> =
-    LazyLock::new(|| Classes { d: class_of(tables::DECIMAL), s: class_of(tables::SPACE) });
-/// The same classes restricted to ASCII: identical on ASCII haystacks.
-static ASCII: LazyLock<Classes> = LazyLock::new(|| Classes { d: "0-9".into(), s: r"\t\n\x0b\x0c\r \x1c-\x1f".into() });
-
-/// A regex built from a pattern template twice, each on first use: with ASCII classes for ASCII
-/// haystacks (equivalent there, and much cheaper to compile than Unicode classes, which
-/// otherwise dominate the run time of small documents) and with Python's Unicode classes for
-/// everything else.
-pub struct PyRe {
-    build: fn(&Classes) -> String,
-    ascii: OnceLock<Regex>,
-    uni: OnceLock<Regex>,
-}
-
-impl PyRe {
-    pub const fn new(build: fn(&Classes) -> String) -> PyRe {
-        PyRe { build, ascii: OnceLock::new(), uni: OnceLock::new() }
-    }
-
-    pub fn get(&self, haystack: &str) -> &Regex {
-        let (cell, classes) = if haystack.is_ascii() { (&self.ascii, &*ASCII) } else { (&self.uni, &*UNICODE) };
-        cell.get_or_init(|| Regex::new(&(self.build)(classes)).expect("valid pattern"))
-    }
-
-    pub fn is_match(&self, s: &str) -> bool {
-        self.get(s).is_match(s)
-    }
-
-    /// `re.match(pattern, s)` for a pattern anchored with `\A` whose every alternative ends with
-    /// `\z`: Python's `$` also matches just before a trailing newline.
-    pub fn py_match(&self, s: &str) -> bool {
-        self.is_match(s) || (s.ends_with('\n') && self.is_match(&s[..s.len() - 1]))
-    }
 }
 
 /// Total order on floats that treats -0.0 and 0.0 as equal, like Python's `<` on non-NaN floats.

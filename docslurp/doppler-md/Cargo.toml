@@ -17,8 +17,11 @@ path = "src/main.rs"
 
 [dependencies]
 memchr = "2"
-regex = "1"
 serde_json = "1"
+
+[dev-dependencies]
+# the original patterns, to check the hand-written matchers in src/patterns.rs
+regex = "1"
 
 [profile.release]
 lto = "thin"

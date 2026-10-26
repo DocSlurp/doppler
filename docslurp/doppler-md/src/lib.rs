@@ -14,6 +14,7 @@ mod entities;
 pub mod layout;
 pub mod model;
 pub mod params;
+pub mod patterns;
 pub mod prose;
 pub mod pyc;
 pub mod tables;

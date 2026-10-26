@@ -2,20 +2,13 @@
 
 use crate::model::{Line, Page, Word};
 use crate::params::Params;
-use crate::pyc::{self, PyRe, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
+use crate::pyc::{self, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-pub static NUMBERED: PyRe = PyRe::new(|c| {
-    let (d, s) = (&c.d, &c.s);
-    format!(
-        r"\A(?:\(?[{d}]{{1,3}}(?:\.[{d}]{{1,3}}){{0,3}}[.)]|[{d}]{{1,3}}(?:\.[{d}]{{1,3}}){{1,3}}|\(?[a-z]\)|\([A-Za-z]\)|\(?[ivx]{{1,4}}\)|[IVX]{{1,4}}\.|§[{s}]?[{d}]+)\z"
-    )
-});
-
 /// `NUMBERED_RE.match(s)`
 pub fn numbered(s: &str) -> bool {
-    NUMBERED.py_match(s)
+    crate::patterns::numbered(s)
 }
 
 pub fn is_bullet_char(c: char) -> bool {
@@ -47,16 +40,9 @@ pub fn bullet(s: &str) -> bool {
     matches!((it.next(), it.next()), (Some(c), None) if is_bullet_char(c))
 }
 
-static NUMERIC: PyRe = PyRe::new(|c| {
-    let (d, s) = (&c.d, &c.s);
-    format!(
-        r"\A(?:[{s}(+\-\u{{2212}}\u{{2013}}]*[$\u{{20ac}}\u{{00a3}}\u{{00a5}}\u{{20a9}}\u{{20b9}}]?[{s}]*[{d}][{d}{s}.,'\u{{2019}}\u{{202f}}\u{{00a0}}]*(?:[.,][{d}]+)?[{s}]*(?:%|\u{{20ac}}|\$|[A-Z]{{3}}|k|m|bn|x)?[){s}]*\z|[{d}]{{1,4}}[/.\-][{d}]{{1,2}}(?:[/.\-][{d}]{{1,4}})?\z|[\u{{2013}}\u{{2014}}\-]\z)"
-    )
-});
-
 /// `bool(NUMERIC_RE.match(text.strip()))`
 pub fn numeric(text: &str) -> bool {
-    NUMERIC.py_match(strip(text))
+    crate::patterns::numeric_match(strip(text))
 }
 
 /// A visual row: lines sharing a baseline.
