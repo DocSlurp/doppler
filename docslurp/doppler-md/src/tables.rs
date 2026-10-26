@@ -118,17 +118,106 @@ pub fn visual_rows(page: &Page, ids: &[usize], p: &Params) -> Vec<Row> {
             _ => groups.push((line.base(), vec![i])),
         }
     }
-    groups
-        .into_iter()
-        .map(|(base, mut ids)| {
-            ids.sort_by(|&a, &b| fcmp(lines[a].x0, lines[b].x0));
-            let cells: Vec<Rc<Line>> = ids.iter().flat_map(|&i| segments_rc(&lines[i], p)).collect();
-            let size = median(cells.iter().map(|c| c.size()).collect());
-            let long = cells.iter().filter(|c| c.words.len() as f64 >= p.long_cell_words).count();
-            let multi = cells.len() >= 2 && long < 2;
-            Row { base, ids, cells, size, multi }
-        })
-        .collect()
+    groups.into_iter().map(|(base, ids)| make_row(lines, base, ids, p)).collect()
+}
+
+/// One visual row from its lines in baseline order.
+fn make_row(lines: &[Rc<Line>], base: f64, mut ids: Vec<usize>, p: &Params) -> Row {
+    ids.sort_by(|&a, &b| fcmp(lines[a].x0, lines[b].x0));
+    let cells: Vec<Rc<Line>> = ids.iter().flat_map(|&i| segments_rc(&lines[i], p)).collect();
+    let size = median(cells.iter().map(|c| c.size()).collect());
+    let long = cells.iter().filter(|c| c.words.len() as f64 >= p.long_cell_words).count();
+    let multi = cells.len() >= 2 && long < 2;
+    Row { base, ids, cells, size, multi }
+}
+
+/// Positions a [`RowWindow`] walks over non-kept lines or along a baseline chain before it
+/// gives up and the caller builds every row instead.
+const ROW_WINDOW_STEPS: usize = 256;
+
+/// `visual_rows` of the kept lines of `order` (line ids already stably sorted by baseline, all
+/// finite), built only around the baselines a caller asks for.
+///
+/// visual_rows starts a row at a line whose baseline is more than its tolerance from the row's
+/// first line. Baselines ascend, so a line further than its tolerance from the previous kept line
+/// starts a row whatever came before: grouping can restart there and gives the same rows.
+struct RowWindow<'a, F: Fn(usize) -> bool> {
+    lines: &'a [Rc<Line>],
+    order: &'a [usize],
+    keep: F,
+    p: &'a Params,
+}
+
+impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
+    fn tol(&self, i: usize) -> f64 {
+        self.p.row_tol * pmax(self.lines[i].size(), 1.0)
+    }
+
+    /// The kept position at or before `pos`, then back to the position that starts its row;
+    /// None when the walk is too long.
+    fn row_start_at_or_before(&self, pos: usize) -> Option<Option<usize>> {
+        let mut steps = 0;
+        let mut k = pos;
+        loop {
+            if (self.keep)(self.order[k]) {
+                break;
+            }
+            steps += 1;
+            if k == 0 {
+                return Some(None);
+            }
+            if steps > ROW_WINDOW_STEPS {
+                return None;
+            }
+            k -= 1;
+        }
+        // k is kept: walk back until a kept line far enough from its kept predecessor
+        loop {
+            let mut j = k;
+            let prev = loop {
+                if j == 0 {
+                    break None;
+                }
+                j -= 1;
+                steps += 1;
+                if steps > ROW_WINDOW_STEPS {
+                    return None;
+                }
+                if (self.keep)(self.order[j]) {
+                    break Some(j);
+                }
+            };
+            let Some(j) = prev else { return Some(Some(k)) };
+            let (bk, bj) = (self.lines[self.order[k]].base(), self.lines[self.order[j]].base());
+            if bk - bj > self.tol(self.order[k]) {
+                return Some(Some(k));
+            }
+            k = j;
+        }
+    }
+
+    /// The next row starting at the first kept position at or after `*pos` (which must start a
+    /// row, or be followed only by non-kept lines before one).
+    fn next_row(&self, pos: &mut usize) -> Option<Row> {
+        let order = self.order;
+        while *pos < order.len() && !(self.keep)(order[*pos]) {
+            *pos += 1;
+        }
+        let &first = order.get(*pos)?;
+        *pos += 1;
+        let base = self.lines[first].base();
+        let mut ids = vec![first];
+        while let Some(&k) = order.get(*pos) {
+            if (self.keep)(k) {
+                if (base - self.lines[k].base()).abs() > self.tol(k) {
+                    break;
+                }
+                ids.push(k);
+            }
+            *pos += 1;
+        }
+        Some(make_row(self.lines, base, ids, self.p))
+    }
 }
 
 /// Python's `int(x)` (truncation toward zero). Clamped to +-1e30 so the coverage arithmetic
@@ -436,6 +525,9 @@ fn table_columns(
     y1: f64,
     p: &Params,
 ) -> Option<Vec<(f64, f64)>> {
+    // v is sorted by x (x is never NaN)
+    let v = &v[v.partition_point(|r| r.0 <= x0 + 2.0)..];
+    let v = &v[..v.partition_point(|r| r.0 < x1 - 2.0)];
     let mut vx: Vec<f64> = v
         .iter()
         .filter(|&&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && pmin(yb, y1) - pmax(ya, y0) > 0.5 * (y1 - y0))
@@ -481,6 +573,11 @@ pub fn ruled_tables(
         return Vec::new();
     }
     let lines: &[Rc<Line>] = &page.lines;
+    // (vertical middle, id) in ascending order, for the lines inside a y band; every middle is
+    // finite or infinite (never NaN: coordinates are finite), so the order is a total one
+    let mut by_mid: Vec<(f64, usize)> = ids.iter().map(|&i| ((lines[i].y0 + lines[i].y1) / 2.0, i)).collect();
+    by_mid.sort_by(|a, b| fcmp(a.0, b.0));
+    let ids_ascending = ids.windows(2).all(|w| w[0] < w[1]);
     let mut h: Vec<(f64, f64, f64)> = Vec::new();
     let mut v: Vec<VRule> = Vec::new();
     for r in &page.rules {
@@ -499,6 +596,9 @@ pub fn ruled_tables(
             v.push(((r.x0 + r.x1) / 2.0, r.y0, r.y1));
         }
     }
+    // by x, so table_columns and caption_band look at the rules in an x range only (their
+    // results do not depend on the order of v)
+    v.sort_by(|a, b| fcmp(a.0, b.0));
     // join collinear segments that touch (cell borders drawn cell by cell)
     h.sort_by(|a, b| fcmp(round0(a.2), round0(b.2)).then(fcmp(a.0, b.0)));
     let mut joined: Vec<(f64, f64, f64)> = Vec::new();
@@ -511,18 +611,37 @@ pub fn ruled_tables(
     let mut h: Vec<(f64, f64, f64)> = joined.into_iter().filter(|h| h.1 - h.0 >= p.rule_min_len * body).collect();
     h.sort_by(|a, b| fcmp(a.2, b.2));
     let mut groups: Vec<Group> = Vec::new();
+    // Groups (in creation order) whose last rule is close enough to take the next one. Rules
+    // come in ascending y and a group's last y only moves when it takes a rule, so once
+    // `y - last` exceeds the gap it does for every later rule: dropping such groups leaves the
+    // first match unchanged without rescanning every group for every rule.
+    let mut open: Vec<usize> = Vec::new();
+    let gap = p.rule_row_gap * body;
     for (x0, x1, y) in h {
-        let hit = groups.iter_mut().find(|g| {
-            let ov = pmin(x1, g.x1) - pmax(x0, g.x0);
-            ov >= 0.8 * pmin(x1 - x0, g.x1 - g.x0) && g.ys.last().is_some_and(|&l| y - l <= p.rule_row_gap * body)
+        let mut hit = None;
+        open.retain(|&gi| {
+            let g = &groups[gi];
+            if !g.ys.last().is_some_and(|&l| y - l <= gap) {
+                return false;
+            }
+            if hit.is_none() {
+                let ov = pmin(x1, g.x1) - pmax(x0, g.x0);
+                if ov >= 0.8 * pmin(x1 - x0, g.x1 - g.x0) {
+                    hit = Some(gi);
+                }
+            }
+            true
         });
-        match hit {
+        match hit.map(|gi| &mut groups[gi]) {
             Some(g) => {
                 g.ys.push(y);
                 g.x0 = pmin(g.x0, x0);
                 g.x1 = pmax(g.x1, x1);
             }
-            None => groups.push(Group { x0, x1, ys: vec![y] }),
+            None => {
+                open.push(groups.len());
+                groups.push(Group { x0, x1, ys: vec![y] });
+            }
         }
     }
     // split a group where the rule spacing jumps (two tables sharing a width)
@@ -540,16 +659,19 @@ pub fn ruled_tables(
         let limit = if gaps.is_empty() { 0.0 } else { p.rule_split * median(gaps.clone()) };
         let caption_band = |a: f64, b: f64| {
             // a band of single-cell text that no vertical rule crosses separates two ruled tables
-            let crossed = v
+            let lo = v.partition_point(|r| r.0 < g.x0 - 2.0);
+            let crossed = v[lo..v[lo..].partition_point(|r| r.0 <= g.x1 + 2.0) + lo]
                 .iter()
                 .any(|&(x, ya, yb)| g.x0 - 2.0 <= x && x <= g.x1 + 2.0 && pmin(yb, b) - pmax(ya, a) > 0.5 * (b - a));
             if crossed || v.is_empty() {
                 return false;
             }
             let mut any = false;
-            for &i in ids {
+            // the result does not depend on the order lines are visited in
+            let lo = by_mid.partition_point(|&(m, _)| m <= a);
+            let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+            for &(my, i) in &by_mid[lo..hi] {
                 let l = &lines[i];
-                let my = (l.y0 + l.y1) / 2.0;
                 let mx = (l.x0 + l.x1) / 2.0;
                 if a < my && my < b && g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0 {
                     any = true;
@@ -573,6 +695,10 @@ pub fn ruled_tables(
         }
     }
     let mut out = Vec::new();
+    // ids stably sorted by baseline, as visual_rows sorts any subset of them
+    let mut order: Vec<usize> = ids.to_vec();
+    order.sort_by(|&a, &b| fcmp(lines[a].base(), lines[b].base()));
+    let finite_bases = order.iter().all(|&i| lines[i].base().is_finite());
     let mut used = vec![false; lines.len()];
     let mut in_members = vec![false; lines.len()];
     for g in &split {
@@ -585,14 +711,20 @@ pub fn ruled_tables(
             let m = (lines[i].x0 + lines[i].x1) / 2.0;
             x0 - 2.0 <= m && m <= x1 + 2.0
         };
-        let mut members: Vec<usize> = ids
-            .iter()
-            .copied()
-            .filter(|&i| {
-                let my = (lines[i].y0 + lines[i].y1) / 2.0;
-                !used[i] && inside(i) && y0 - 1.0 <= my && my <= y1 + 1.0
-            })
-            .collect();
+        let member = |i: usize| {
+            let my = (lines[i].y0 + lines[i].y1) / 2.0;
+            !used[i] && inside(i) && y0 - 1.0 <= my && my <= y1 + 1.0
+        };
+        let mut members: Vec<usize> = if ids_ascending {
+            // the lines whose middle is in [y0 - 1, y1 + 1], back in ids order
+            let lo = by_mid.partition_point(|&(m, _)| m < y0 - 1.0);
+            let hi = by_mid.partition_point(|&(m, _)| m <= y1 + 1.0).max(lo);
+            let mut m: Vec<usize> = by_mid[lo..hi].iter().map(|&(_, i)| i).filter(|&i| member(i)).collect();
+            m.sort_unstable();
+            m
+        } else {
+            ids.iter().copied().filter(|&i| member(i)).collect()
+        };
         if members.len() < 2 {
             continue;
         }
@@ -608,28 +740,67 @@ pub fn ruled_tables(
         };
         let pitches: Vec<f64> = rows.windows(2).map(|w| w[1].base - w[0].base).collect();
         let pitch = if pitches.is_empty() { median(vec![2.0 * body]) } else { median(pitches) };
+        // the other lines' visual rows: only the last one above the first rule and the first
+        // ones below the last rule are used, so build just those when the page allows it
+        let n_members = members.len();
         for &i in &members {
             in_members[i] = true;
         }
-        let other_ids: Vec<usize> = ids.iter().copied().filter(|&i| !used[i] && !in_members[i] && inside(i)).collect();
-        for &i in &members {
-            in_members[i] = false;
-        }
-        let others = visual_rows(page, &other_ids, p);
-        let above: Vec<&Row> = others.iter().filter(|r| r.base < y0 + 1.0).collect();
-        if let Some(last) = above.last()
+        let win = RowWindow { lines, order: &order, keep: |i: usize| !used[i] && !in_members[i] && inside(i), p };
+        let windowed = (|| {
+            if !finite_bases {
+                return None;
+            }
+            let above_end = order.partition_point(|&i| lines[i].base() < y0 + 1.0);
+            let above = match above_end {
+                0 => None,
+                e => match win.row_start_at_or_before(e - 1)? {
+                    None => None,
+                    Some(start) => {
+                        // the row holding the last kept line above y0 + 1
+                        let mut pos = start;
+                        let mut last = None;
+                        while pos < above_end {
+                            last = win.next_row(&mut pos);
+                        }
+                        last
+                    }
+                },
+            };
+            let below_start = order.partition_point(|&i| lines[i].base() <= y1 - 1.0);
+            let start = match below_start {
+                0 => 0,
+                b => win.row_start_at_or_before(b - 1)?.unwrap_or(b),
+            };
+            Some((above, start))
+        })();
+        let fallback;
+        let (above, mut below): (Option<Row>, Box<dyn Iterator<Item = Row> + '_>) = match windowed {
+            Some((above, mut pos)) => (above, Box::new(std::iter::from_fn(move || win.next_row(&mut pos)))),
+            None => {
+                let other_ids: Vec<usize> = ids.iter().copied().filter(|&i| (win.keep)(i)).collect();
+                fallback = visual_rows(page, &other_ids, p);
+                let above = fallback.iter().filter(|r| r.base < y0 + 1.0).last().cloned();
+                (above, Box::new(fallback.iter().cloned()))
+            }
+        };
+        if let Some(last) = &above
             && y0 - last.base <= 1.2 * pitch
             && fits(last, &cols)
         {
             members.extend(last.ids.iter().copied());
         }
         let mut edge = rows[rows.len() - 1].base;
-        for r in others.iter().filter(|r| r.base > y1 - 1.0) {
-            if r.base - edge > 1.6 * pitch || !fits(r, &cols) {
+        for r in below.by_ref().filter(|r| r.base > y1 - 1.0) {
+            if r.base - edge > 1.6 * pitch || !fits(&r, &cols) {
                 break;
             }
             members.extend(r.ids.iter().copied());
             edge = r.base;
+        }
+        drop(below);
+        for &i in &members[..n_members] {
+            in_members[i] = false;
         }
         let mut rows = visual_rows(page, &members, p);
         let cols = match table_columns(&mut rows, &v, x0, x1, y0, y1, p) {

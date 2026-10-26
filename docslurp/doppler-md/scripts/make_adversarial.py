@@ -80,6 +80,33 @@ def rules(n):
     return doc([p1, p2])
 
 
+def ruled_many(n):
+    """n small ruled tables (three rules, one vertical) with a line of text between them."""
+    out, rs = [], []
+    for i in range(n):
+        y = 50 + 120 * i
+        for k in range(3):
+            rs.append(f'<rule xMin="50" yMin="{y + 14 * k}" xMax="550" yMax="{y + 14 * k + 0.5}" color="#000000"/>\n')
+        rs.append(f'<rule xMin="300" yMin="{y}" xMax="300.5" yMax="{y + 28}" color="#000000"/>\n')
+        for k in range(2):
+            out.append(line([word(60, y + 14 * k + 2, 90, y + 14 * k + 12, f'a{i}')]))
+            out.append(line([word(310, y + 14 * k + 2, 340, y + 14 * k + 12, f'b{i}')]))
+        out.append(line([word(60, y + 60, 200, y + 70, 'between tables text')]))
+    return doc([page(612, 120 * n + 100, ''.join(out), ''.join(rs))])
+
+
+def caption_rules(n):
+    """n full-width rules with one single-cell line between each pair and a vertical rule that
+    crosses none of them: every rule gap is tested as a caption band."""
+    out, rs = [], []
+    for i in range(n):
+        y = 50 + 14 * i
+        rs.append(f'<rule xMin="50" yMin="{y}" xMax="550" yMax="{y + 0.5}" color="#000000"/>\n')
+        out.append(line([word(60, y + 2, 90, y + 12, f'a{i}')]))
+    rs.append('<rule xMin="600" yMin="50" xMax="600.5" yMax="80" color="#000000"/>\n')
+    return doc([page(612, 14 * n + 100, ''.join(out), ''.join(rs))])
+
+
 def sameline(n):
     """n one-word lines on one baseline, each just right of the last."""
     out = [line([word(10 + 4 * i, 50, 13 + 4 * i, 60, 'x')]) for i in range(n)]
@@ -144,6 +171,8 @@ def main():
         'adv-grid': grid(int(300 * s), 30),
         'adv-rules': rules(int(3000 * s)),
         'adv-sameline': sameline(int(20000 * s)),
+        'adv-ruled-many': ruled_many(int(3000 * s)),
+        'adv-caption-rules': caption_rules(int(20000 * s)),
     }
     for name, x in pages.items():
         with open(os.path.join(out, name + '.raw'), 'w', encoding='utf-8') as f:
