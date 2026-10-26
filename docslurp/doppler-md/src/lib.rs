@@ -114,16 +114,22 @@ fn furniture(pages: &[Page], p: &Params) -> HashSet<(usize, usize)> {
         }
     }
     let need = pmax(2.0, p.furniture_min_share * pages.len() as f64);
+    // each page's line baselines, sorted on first use: "no other line on this baseline" is a
+    // neighbour lookup instead of a scan of the page
+    let mut bases: Vec<Option<Vec<f64>>> = vec![None; pages.len()];
     for (pi, li, key) in cand {
         let lines = &pages[pi].lines;
         let line = &lines[li];
         let repeated = pages.len() >= 2 && counts.get(&key).copied().unwrap_or(0) as f64 >= need;
-        let page_number = || {
-            page_number(line.text())
-                && !lines
-                    .iter()
-                    .enumerate()
-                    .any(|(j, o)| j != li && (o.base() - line.base()).abs() <= 0.5 * pmax(line.size(), 1.0))
+        let mut page_number = || {
+            page_number(line.text()) && {
+                let sorted = bases[pi].get_or_insert_with(|| {
+                    let mut v: Vec<f64> = lines.iter().map(|o| o.base()).collect();
+                    v.sort_by(|a, b| fcmp(*a, *b));
+                    v
+                });
+                !layout::near_other(sorted, line.base(), 0.5 * pmax(line.size(), 1.0))
+            }
         };
         if repeated || page_number() {
             drop.insert((pi, li));

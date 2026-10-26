@@ -1,5 +1,6 @@
 //! Gutter tables and ruled tables (the `tables` section of doppler_md.py).
 
+use crate::layout::near_any;
 use crate::model::{Line, Page, Word};
 use crate::params::Params;
 use crate::pyc::{self, PyRe, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
@@ -170,17 +171,25 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     events.sort();
     let allowed = p.gutter_tol * multi.len() as f64;
     let size = median(multi.iter().map(|r| r.size).collect());
-    let aligned = |a: i128, b: i128| {
+    // each row's word starts and ends, sorted once, built on the first narrow gap
+    let mut edges: Option<Vec<(Vec<f64>, Vec<f64>)>> = None;
+    let mut aligned = |a: i128, b: i128| {
         // narrow gap: most rows have a word starting right after it or ending right before it
         let (fa, fb) = ((a + lo) as f64, (b + lo) as f64);
-        let hits = multi
-            .iter()
-            .filter(|r| {
-                let mut ws = r.cells.iter().flat_map(|c| c.words.iter());
-                let starts = ws.clone().any(|w| (w.x0 - fb).abs() <= 1.5);
-                starts || ws.any(|w| (w.x1 - fa).abs() <= 1.5)
-            })
-            .count();
+        let edges = edges.get_or_insert_with(|| {
+            multi
+                .iter()
+                .map(|r| {
+                    let ws = r.cells.iter().flat_map(|c| c.words.iter());
+                    let mut x0s: Vec<f64> = ws.clone().map(|w| w.x0).collect();
+                    let mut x1s: Vec<f64> = ws.map(|w| w.x1).collect();
+                    x0s.sort_by(|a, b| fcmp(*a, *b));
+                    x1s.sort_by(|a, b| fcmp(*a, *b));
+                    (x0s, x1s)
+                })
+                .collect()
+        });
+        let hits = edges.iter().filter(|(x0s, x1s)| near_any(x0s, fb, 1.5) || near_any(x1s, fa, 1.5)).count();
         hits as f64 >= p.narrow_align * multi.len() as f64
     };
     let mut cols: Vec<(i128, i128)> = Vec::new();
