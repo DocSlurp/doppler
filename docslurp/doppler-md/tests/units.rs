@@ -229,9 +229,11 @@ fn table_grid_from_gutters() {
     assert_eq!(cols, vec![(72.0, 110.0), (240.0, 260.0), (360.0, 390.0)]);
     let grid = build_grid(&rows, &cols, &p);
     assert_eq!(
-        grid,
+        grid.rows,
         vec![vec!["Item", "Qty", "Price"], vec!["Widget", "12", "4.50"], vec!["Gadget (blue)", "7", "11.25"],]
     );
+    // the kept column intervals travel with the rows (for header lines above the table)
+    assert_eq!(grid.cols, cols);
 }
 
 #[test]
@@ -275,4 +277,16 @@ fn hostile_inputs_do_not_panic() {
     ] {
         let _ = to_markdown(s, &p);
     }
+}
+
+#[test]
+fn rtl_grid_reverses_columns_only_when_mostly_rtl() {
+    use doppler_md::tables::grid_markdown;
+    let g =
+        |rows: &[&[&str]]| rows.iter().map(|r| r.iter().map(|c| c.to_string()).collect()).collect::<Vec<Vec<String>>>();
+    assert_eq!(grid_markdown(&g(&[&["1", "שלום"], &["2", "עולם"]])), "| שלום | 1 |\n| --- | --- |\n| עולם | 2 |");
+    // more Latin letters than Hebrew ones: left to right
+    assert_eq!(grid_markdown(&g(&[&["one", "שלום"], &["two", "x"]])), "| one | שלום |\n| --- | --- |\n| two | x |");
+    // digits alone are neither
+    assert_eq!(grid_markdown(&g(&[&["1", "2"]])), "| 1 | 2 |\n| --- | --- |");
 }

@@ -64,3 +64,27 @@ fn params_override() {
     assert!(p.apply_json(r#"{"cell_gap": "wide"}"#).is_err());
     assert!(p.apply_json("[1]").is_err());
 }
+
+#[test]
+fn rtl_table() {
+    // a mostly right-to-left table is written rightmost column first
+    check("rtl_table");
+}
+
+#[test]
+fn table_titles() {
+    // a header line split across the columns, a title in the first header cell, and a
+    // sentence that stays a paragraph
+    check("table_titles");
+}
+
+#[test]
+fn table_titles_off() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let xhtml = std::fs::read_to_string(dir.join("table_titles.xhtml")).unwrap();
+    let mut p = Params::default();
+    p.apply_json(r#"{"table_titles": false}"#).unwrap();
+    let md = to_markdown(&xhtml, &p).join("\x0c");
+    assert!(md.starts_with("Region Units Revenue\n\n| North | 1,204 | 3.50 |\n| --- |"), "{md}");
+    assert!(md.contains("\n\nQuarterly sales by store\n\n| North |"));
+}

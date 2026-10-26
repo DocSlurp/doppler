@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Byte-for-byte parity of the release doppler-md binary against doppler_md.py golden output.
 #
-#   scripts/parity.sh [GOLDEN_DIR]
+#   scripts/parity.sh [GOLDEN_DIR [SET]]
 #
-# GOLDEN_DIR holds raw/<name>.raw (doppler XHTML) and golden/<name>.md (Python output, pages
-# joined by form feeds). Prints identical/total and, for each failure, the first differing page.
+# GOLDEN_DIR holds raw/<name>.raw (doppler XHTML) and SET/<name>.md (Python output, pages
+# joined by form feeds). SET defaults to golden-v23, the output of the current doppler_md.py;
+# golden/ is the output of the version first ported. Prints identical/total and, for each failure, the first differing page.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 dir=${1:-${DOPPLER_GOLDEN:-/home/dan/tmp/agents/doppler-bench.NwduaF/md-golden}}
+set_name=${2:-${DOPPLER_GOLDEN_SET:-golden-v23}}
 bin="$here/target/release/doppler-md"
 [[ -x $bin ]] || { echo "build first: cargo build --release" >&2; exit 2; }
 
@@ -18,7 +20,7 @@ trap 'rm -rf "$scratch"' EXIT
 ok=0 total=0 failed=()
 for raw in "$dir"/raw/*.raw; do
   name=$(basename "$raw" .raw)
-  golden="$dir/golden/$name.md"
+  golden="$dir/$set_name/$name.md"
   total=$((total + 1))
   if ! "$bin" "$raw" > "$scratch/out.md" 2> "$scratch/err"; then
     failed+=("$name: exit $? $(head -c 200 "$scratch/err")")

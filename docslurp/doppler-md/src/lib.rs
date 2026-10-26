@@ -28,7 +28,7 @@ use layout::{Elem, regions};
 use model::Page;
 use prose::{Seq, SeqItem, paragraphs};
 use pyc::{Counter, FloatCounter, char_len, fcmp, median, pmax, round0, strip};
-use tables::{find_tables, grid_markdown, ruled_tables};
+use tables::{Table, find_tables, ruled_tables};
 
 /// `PAGE_NUM_RE.match(text)`: `^\W*(?:page\s*)?\d{1,4}(?:\s*(?:of|/)\s*\d{1,4})?\W*$` with
 /// re.I. Every quantifier is followed by a character it cannot consume (a `\w` after `\W*`, a
@@ -181,7 +181,12 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
         for &i in ruled.iter().flat_map(|(m, _, _)| m) {
             in_ruled[i] = true;
         }
-        let tables_md: Vec<Rc<str>> = ruled.iter().map(|(_, g, _)| Rc::from(grid_markdown(g))).collect();
+        let mut ruled_tables: Vec<Rc<Table>> = Vec::with_capacity(ruled.len());
+        let mut ruled_boxes = Vec::with_capacity(ruled.len());
+        for (_, t, b) in ruled {
+            ruled_tables.push(Rc::new(t));
+            ruled_boxes.push(b);
+        }
         let mut elements: Vec<Elem> = ids
             .iter()
             .filter(|&&i| !in_ruled[i])
@@ -190,7 +195,7 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
                 Elem { line: Some(i), table: 0, x0: l.x0, x1: l.x1, y0: l.y0, y1: l.y1 }
             })
             .collect();
-        elements.extend(ruled.iter().enumerate().map(|(k, (_, _, b))| Elem {
+        elements.extend(ruled_boxes.iter().enumerate().map(|(k, b)| Elem {
             line: None,
             table: k,
             x0: b.0,
@@ -205,7 +210,11 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
             let mut seq: Vec<SeqItem> = region
                 .iter()
                 .filter(|e| e.line.is_none())
-                .map(|e| SeqItem { item: Seq::Table(tables_md[e.table].clone()), y0: e.y0, x0: e.x0 })
+                .map(|e| SeqItem {
+                    item: Seq::Table { table: ruled_tables[e.table].clone(), x0: e.x0, x1: e.x1 },
+                    y0: e.y0,
+                    x0: e.x0,
+                })
                 .collect();
             // `consumed` is per region (a line can sit in two regions when a gutter is under
             // two points wide); the page-sized flags are cleared again after each region
@@ -217,7 +226,10 @@ pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
                     }
                     marked.extend_from_slice(&members);
                     let y0 = members.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pyc::pmin);
-                    seq.push(SeqItem { item: Seq::Table(Rc::from(grid_markdown(&grid))), y0, x0: 0.0 });
+                    let tx0 = members.iter().map(|&i| lines[i].x0).fold(f64::INFINITY, pyc::pmin);
+                    let tx1 = members.iter().map(|&i| lines[i].x1).fold(f64::NEG_INFINITY, pmax);
+                    let table = Rc::new(grid);
+                    seq.push(SeqItem { item: Seq::Table { table, x0: tx0, x1: tx1 }, y0, x0: 0.0 });
                 }
             }
             seq.extend(region.iter().filter_map(|e| {

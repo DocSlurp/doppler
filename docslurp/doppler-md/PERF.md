@@ -131,3 +131,13 @@ from `HashSet<usize>`/`HashSet<(usize, usize)>` in `to_markdown`/`furniture` and
 `Counter` in `body_size`. Those are in the algorithmic code and were left alone here; a faster
 hasher would need care because the keys come from hostile input. Kernel time left over is
 mostly page faults for reading the input (about 33k pages) and for the parsed structures.
+
+## doppler_md.py v23 rules (right-to-left tables, table header lines)
+
+The two new rules add a pass over each region's items and render tables at output time.
+`DATA_CELL_RE` is a hand-written matcher in `src/patterns.rs` with the same randomized check as
+the others. Measured against `b23e93187` on a busy host (load about 7), alternating the two
+binaries over 5 rounds: per-file-launch CPU median 1.070 s vs 1.112 s pinned to one core and
+0.934 s vs 0.905 s unpinned, both within noise. User-space instructions over the set were
+4.090 G vs 4.053 G (+0.9%) and cycles 2.65 G vs 2.71 G. Output is 258/258 against
+`golden-v23`, and the adversarial pages take the same time.

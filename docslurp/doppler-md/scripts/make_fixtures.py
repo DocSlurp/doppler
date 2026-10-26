@@ -176,7 +176,40 @@ def furniture():
     return d
 
 
+def rtl_table():
+    d = Doc().page()
+    d.block([words(72, 60, 'Mixed caption above the table', 10.0)])
+    rows = [('\u05e4\u05e8\u05d9\u05d8', '\u05db\u05de\u05d5\u05ea', '\u05de\u05d7\u05d9\u05e8'),
+            ('\u05e9\u05d5\u05dc\u05d7\u05df', '12', '4.50'), ('\u05db\u05d9\u05e1\u05d0', '7', '11.25'),
+            ('\u05de\u05e0\u05d5\u05e8\u05d4', '140', '0.75'), ('\u05d3\u05dc\u05ea', '3', '19.00')]
+    # right-to-left layout: the label column is on the right
+    for i, (label, qty, price) in enumerate(rows):
+        d.block([cells(100 + i * 14, [(72, price), (200, qty), (360, label)])])
+    return d
+
+
+def table_titles():
+    d = Doc().page()
+    # a header row that poppler kept as one line, too far above to join the table: split into cells
+    d.block([cells(100, [(72, 'Region'), (240, 'Units'), (360, 'Revenue')])])
+    rows = [('North', '1,204', '3.50'), ('South', '980', '2.95'), ('East', '1,511', '4.10'), ('West', '77', '0.80')]
+    for i, row in enumerate(rows):
+        d.block([cells(124 + i * 14, [(72, row[0]), (240, row[1]), (360, row[2])])])
+    d.block(prose_lines(72, 200, 2))
+    # a title whose words do not fit the columns: it becomes the first header cell
+    d.block([words(72, 260, 'Quarterly sales by store', 10.0)])
+    for i, row in enumerate(rows):
+        d.block([cells(284 + i * 14, [(72, row[0]), (240, row[1]), (360, row[2])])])
+    d.block(prose_lines(72, 360, 2, start=3))
+    # a sentence above a table is not a title
+    d.block([words(72, 420, 'The figures follow.', 10.0)])
+    for i, row in enumerate(rows):
+        d.block([cells(444 + i * 14, [(72, row[0]), (240, row[1]), (360, row[2])])])
+    return d
+
+
 FIXTURES = {
+    'rtl_table': rtl_table, 'table_titles': table_titles,
     'two_columns': two_columns, 'rtl': rtl, 'ruled_table': ruled_table, 'gutter_table': gutter_table,
     'lists_headings': lists_headings, 'joins': joins, 'furniture': furniture,
 }

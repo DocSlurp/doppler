@@ -1,7 +1,7 @@
 //! Gutter tables and ruled tables (the `tables` section of doppler_md.py).
 
 use crate::layout::near_any;
-use crate::model::{Line, Page, Word};
+use crate::model::{Line, Page, Word, is_ltr, is_rtl};
 use crate::params::Params;
 use crate::pyc::{self, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
 use std::rc::Rc;
@@ -330,17 +330,26 @@ fn line_text(ws: Vec<Word>) -> String {
 
 pub type Grid = Vec<Vec<String>>;
 
-/// (member line ids, grid, bbox x0 y0 x1 y1)
-pub type RuledTable = (Vec<usize>, Grid, (f64, f64, f64, f64));
-
-fn keep_filled(grid: Grid, ncols: usize) -> Grid {
-    let keep: Vec<usize> = (0..ncols).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
-    grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect()
+/// Table rows with the x interval of each kept column (Python's `Grid` list subclass).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Table {
+    pub rows: Grid,
+    pub cols: Vec<(f64, f64)>,
 }
 
-pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Grid {
+/// (member line ids, table, bbox x0 y0 x1 y1)
+pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
+
+/// Drop the columns no row fills, keeping the intervals of the others.
+fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
+    let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
+    let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
+    Table { rows, cols: keep.iter().map(|&i| cols[i]).collect() }
+}
+
+pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
     if cols.is_empty() {
-        return Vec::new();
+        return Table::default();
     }
     let column = |w: &Word| {
         let mid = (w.x0 + w.x1) / 2.0;
@@ -386,7 +395,7 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Grid {
         grid.push(texts);
         prev = Some(r);
     }
-    keep_filled(grid, cols.len())
+    keep_filled(grid, cols)
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -444,11 +453,11 @@ fn section_label(row: &Row, run: &[Row], body: f64, p: &Params) -> bool {
 }
 
 /// [(row ids, grid)] for runs of aligned multi-cell rows.
-pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Vec<usize>, Grid)> {
+pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Vec<usize>, Table)> {
     let rows = visual_rows(page, ids, p);
     let mut found = Vec::new();
     let mut run: Vec<Row> = Vec::new();
-    let flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Grid)>| {
+    let flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| {
         while run.last().is_some_and(|r| !r.multi) {
             run.pop();
         }
@@ -456,7 +465,7 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
             let cols = gutter_columns(run, p);
             if cols.len() >= 2 {
                 let grid = build_grid(run, &cols, p);
-                if plausible(&grid, p) {
+                if plausible(&grid.rows, p) {
                     found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
                 }
             }
@@ -480,9 +489,23 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
     found
 }
 
+/// A table whose text is mostly right-to-left (`grid_rtl`).
+fn grid_rtl(grid: &Grid) -> bool {
+    let (mut r, mut l) = (0usize, 0usize);
+    for ch in grid.iter().flatten().flat_map(|c| c.chars()) {
+        r += is_rtl(ch) as usize;
+        l += is_ltr(ch) as usize;
+    }
+    r > 0 && r >= l
+}
+
 pub fn grid_markdown(grid: &Grid) -> String {
+    let rtl = grid_rtl(grid); // right-to-left table: first column is the rightmost
     let esc = |x: &String| x.replace('|', "\\|");
-    let row = |r: &Vec<String>| format!("| {} |", r.iter().map(esc).collect::<Vec<_>>().join(" | "));
+    let row = |r: &Vec<String>| {
+        let cells: Vec<String> = if rtl { r.iter().rev().map(esc).collect() } else { r.iter().map(esc).collect() };
+        format!("| {} |", cells.join(" | "))
+    };
     let Some(head) = grid.first() else { return String::new() };
     let mut lines = vec![row(head), format!("|{}|", vec![" --- "; head.len()].join("|"))];
     lines.extend(grid[1..].iter().map(row));
@@ -816,14 +839,14 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
                 }
                 grid.push(cells.into_iter().map(line_text).collect());
             }
-            keep_filled(grid, cols.len())
+            keep_filled(grid, &cols)
         } else {
             for r in rows.iter_mut() {
                 r.multi = r.cells.len() >= 2;
             }
             build_grid(&rows, &cols, p)
         };
-        if grid.len() < 2 || grid[0].len() < 2 || numbered_list(&grid, p) {
+        if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
         for &i in &members {

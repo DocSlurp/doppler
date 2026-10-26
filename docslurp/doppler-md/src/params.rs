@@ -97,6 +97,12 @@ params! {
     color_breaks: flag = true,
     /// minor headings next to a table become *captions*
     captions: flag = true,
+    /// a short line on top of a data-first table becomes its header row
+    table_titles: flag = true,
+    title_max_chars: num = 60.0,
+    title_max_words: num = 8.0,
+    /// max gap between title and table / title font size
+    title_gap: num = 1.6,
     /// vertical gap / median line pitch that starts a paragraph
     para_gap: num = 1.45,
     /// line ending before this share of block width ends a paragraph
