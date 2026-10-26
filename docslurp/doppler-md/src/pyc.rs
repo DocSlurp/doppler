@@ -170,9 +170,60 @@ pub fn round1(x: f64) -> f64 {
     format!("{x:.1}").parse().unwrap_or(x)
 }
 
+/// Powers of ten exactly representable as f64.
+const POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19,
+    1e20, 1e21, 1e22,
+];
+
+/// Fast path of [`py_float`] for `-?\d+(\.\d*)?` with at most 15 significant digits (every
+/// coordinate pdftotext writes): the mantissa and the power of ten are both exact, so one IEEE
+/// division is correctly rounded and equals what `str::parse` returns (Clinger's fast path, the
+/// one `dec2flt` takes first). Anything else returns None and goes through the general parser.
+fn plain_decimal(b: &[u8]) -> Option<f64> {
+    let (neg, digits) = match b.first() {
+        Some(b'-') => (true, &b[1..]),
+        _ => (false, b),
+    };
+    let mut m: u64 = 0;
+    let mut n = 0usize; // digits accumulated
+    let mut frac = 0usize; // digits after the point
+    let mut point = false;
+    let mut any = false;
+    for &c in digits {
+        match c {
+            b'0'..=b'9' => {
+                any = true;
+                if m == 0 && c == b'0' {
+                    // leading zeros add no significant digits
+                } else {
+                    n += 1;
+                    if n > 15 {
+                        return None;
+                    }
+                }
+                m = m * 10 + (c - b'0') as u64;
+                if point {
+                    frac += 1;
+                }
+            }
+            b'.' if !point => point = true,
+            _ => return None,
+        }
+    }
+    if !any || frac >= POW10.len() || (point && digits.first() == Some(&b'.')) {
+        return None;
+    }
+    let v = m as f64 / POW10[frac];
+    Some(if neg { -v } else { v })
+}
+
 /// `float(s)` for finite values. Python strips whitespace and allows `_` between digits; it also
 /// accepts inf/nan, which this port rejects (None) because no coordinate or size can be infinite.
 pub fn py_float(s: &str) -> Option<f64> {
+    if let Some(v) = plain_decimal(s.as_bytes()) {
+        return Some(v);
+    }
     let t = strip(s);
     let v: f64 = if t.contains('_') {
         let b: Vec<char> = t.chars().collect();

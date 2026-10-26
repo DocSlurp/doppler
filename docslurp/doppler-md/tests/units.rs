@@ -56,6 +56,40 @@ fn python_strings() {
 }
 
 #[test]
+fn float_fast_path_matches_std_parse() {
+    let mut cases: Vec<String> = [
+        "0", "-0", "-0.0", "5.", "0.000001", "254.380000", "999999999999999", "9999999999999999",
+        "0.1234567890123456789", "123456789012345.6", "-12.5e3", ".5", "-.5", "1.2.3", "", "-", ".", "00012.50",
+        "1e400", "1,5", "12a",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // deterministic pseudo-random decimals of every digit count and point position
+    let mut x: u64 = 0x9e3779b97f4a7c15;
+    for _ in 0..20000 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let digits = 1 + (x % 24) as usize;
+        let mut s: String = (0..digits).map(|k| char::from(b'0' + ((x >> (k % 60)) % 10) as u8)).collect();
+        let point = ((x >> 40) as usize) % (digits + 2);
+        if point <= digits {
+            s.insert(point, '.');
+        }
+        if x & 1 == 1 {
+            s.insert(0, '-');
+        }
+        cases.push(s);
+    }
+    for s in &cases {
+        let want = s.parse::<f64>().ok().filter(|v| v.is_finite());
+        let got = pyc::py_float(s);
+        assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits), "{s:?}");
+    }
+}
+
+#[test]
 fn unescape_matches_html_module() {
     assert_eq!(html_unescape("a &amp; b &lt;c&gt; &quot;&apos;"), "a & b <c> \"'");
     assert_eq!(html_unescape("&#65;&#x42;&#0;&#128;&#xD800;&#1;"), "AB\u{fffd}\u{20ac}\u{fffd}");

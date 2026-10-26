@@ -45,7 +45,12 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     // Python read the XHTML with errors='replace'
-    let xhtml = String::from_utf8_lossy(&bytes);
+    // (validate first: the strict check is several times faster than the lossy decoder, which
+    // only runs when the input really has invalid bytes)
+    let xhtml = match std::str::from_utf8(&bytes) {
+        Ok(s) => std::borrow::Cow::Borrowed(s),
+        Err(_) => String::from_utf8_lossy(&bytes),
+    };
     let pages = to_markdown(&xhtml, &params);
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(pages.join("\x0c").as_bytes()).and_then(|_| out.flush()) {

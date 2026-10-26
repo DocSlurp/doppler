@@ -211,21 +211,37 @@ pub struct Attrs<'a>(Vec<(&'a str, &'a str)>);
 
 impl<'a> Attrs<'a> {
     pub fn parse(s: &'a str) -> Attrs<'a> {
-        let mut out = Vec::new();
+        let mut out = Attrs(Vec::with_capacity(12));
+        out.parse_into(s);
+        out
+    }
+
+    /// Clear and refill from `s`, reusing the allocation.
+    pub fn parse_into(&mut self, s: &'a str) {
+        let out = &mut self.0;
+        out.clear();
         let b = s.as_bytes();
         let mut i = 0;
-        while i < s.len() {
-            // maximal run of \w characters starting at i
+        while i < b.len() {
+            // maximal run of \w characters starting at i (ASCII bytes without decoding)
             let mut j = i;
-            for (k, c) in s[i..].char_indices() {
-                if pyc::is_word_char(c) {
-                    j = i + k + c.len_utf8();
-                } else {
+            while j < b.len() {
+                let c = b[j];
+                if c < 0x80 {
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        j += 1;
+                        continue;
+                    }
                     break;
+                }
+                match s[j..].chars().next() {
+                    Some(ch) if pyc::is_word_char(ch) => j += ch.len_utf8(),
+                    _ => break,
                 }
             }
             if j == i {
-                i += s[i..].chars().next().map_or(1, char::len_utf8);
+                // not a word character: skip it (a whole code point; `i` is always a boundary)
+                i += if b[i] < 0x80 { 1 } else { s[i..].chars().next().map_or(1, char::len_utf8) };
                 continue;
             }
             // Every suffix of a failing run fails the same way, so resume after the run.
@@ -238,7 +254,6 @@ impl<'a> Attrs<'a> {
             }
             i = j;
         }
-        Attrs(out)
     }
 
     pub fn get(&self, k: &str) -> Option<&'a str> {
@@ -327,6 +342,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
     let mut words: Option<Vec<Word>> = None;
     let (mut flow, mut block) = (-1i64, -1i64);
     let b = xhtml.as_bytes();
+    let mut a = Attrs(Vec::with_capacity(12));
     let mut pos = 0;
     while let Some(off) = memchr(b'<', &b[pos..]) {
         let lt = pos + off;
@@ -341,7 +357,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 if !have_page {
                     continue;
                 }
-                let a = Attrs::parse(attrs);
+                a.parse_into(attrs);
                 let (Some(x0), Some(y0), Some(x1), Some(y1)) =
                     (coord(&a, "xMin"), coord(&a, "yMin"), coord(&a, "xMax"), coord(&a, "yMax"))
                 else {
@@ -353,7 +369,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 }
             }
             Tag::Open("page", attrs) => {
-                let a = Attrs::parse(attrs);
+                a.parse_into(attrs);
                 let dim = |k: &str, d: f64| a.get(k).map_or(Some(d), py_float).unwrap_or(d);
                 pages.push(Page {
                     width: dim("width", 612.0),
@@ -379,7 +395,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
             }
             Tag::Word(attrs, text) => {
                 let Some(ws) = words.as_mut() else { continue };
-                let a = Attrs::parse(attrs);
+                a.parse_into(attrs);
                 let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
                     coord(&a, "xMin"),
                     coord(&a, "yMin"),
