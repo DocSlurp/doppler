@@ -205,20 +205,29 @@ pub struct Page {
     pub rules: Vec<Rule>,
 }
 
-/// `dict(ATTR_RE.findall(s))` with `(\w+)="([^"]*)"`; later duplicates win on lookup.
-pub struct Attrs<'a>(Vec<(&'a str, &'a str)>);
+/// The attribute names the converter reads.
+const KEYS: [&str; 11] =
+    ["xMin", "yMin", "xMax", "yMax", "fontName", "fontSize", "spaceAfter", "color", "baseline", "width", "height"];
+
+fn key_index(name: &str) -> Option<usize> {
+    KEYS.iter().position(|k| *k == name)
+}
+
+/// `dict(ATTR_RE.findall(s))` with `(\w+)="([^"]*)"`, keeping only the names in [`KEYS`];
+/// later duplicates win, as in the dict.
+pub struct Attrs<'a>([Option<&'a str>; KEYS.len()]);
 
 impl<'a> Attrs<'a> {
     pub fn parse(s: &'a str) -> Attrs<'a> {
-        let mut out = Attrs(Vec::with_capacity(12));
+        let mut out = Attrs([None; KEYS.len()]);
         out.parse_into(s);
         out
     }
 
-    /// Clear and refill from `s`, reusing the allocation.
+    /// Clear and refill from `s`.
     pub fn parse_into(&mut self, s: &'a str) {
         let out = &mut self.0;
-        out.clear();
+        *out = [None; KEYS.len()];
         let b = s.as_bytes();
         let mut i = 0;
         while i < b.len() {
@@ -246,7 +255,9 @@ impl<'a> Attrs<'a> {
             // Every suffix of a failing run fails the same way, so resume after the run.
             if b.get(j) == Some(&b'=') && b.get(j + 1) == Some(&b'"') {
                 if let Some(q) = memchr(b'"', &b[j + 2..]) {
-                    out.push((&s[i..j], &s[j + 2..j + 2 + q]));
+                    if let Some(k) = key_index(&s[i..j]) {
+                        out[k] = Some(&s[j + 2..j + 2 + q]);
+                    }
                     i = j + 2 + q + 1;
                     continue;
                 }
@@ -255,8 +266,9 @@ impl<'a> Attrs<'a> {
         }
     }
 
+    /// The value of `k`, which must be one of [`KEYS`] (any other name reads as absent).
     pub fn get(&self, k: &str) -> Option<&'a str> {
-        self.0.iter().rev().find(|(n, _)| *n == k).map(|(_, v)| *v)
+        self.0[key_index(k)?]
     }
 }
 
@@ -318,30 +330,63 @@ fn tag_at(s: &str, lt: usize) -> Option<(Tag<'_>, usize)> {
     None
 }
 
-fn coord(a: &Attrs, k: &str) -> Option<f64> {
-    py_float(a.get(k)?)
+// indices into KEYS
+const X_MIN: usize = 0;
+const Y_MIN: usize = 1;
+const X_MAX: usize = 2;
+const Y_MAX: usize = 3;
+const FONT_NAME: usize = 4;
+const FONT_SIZE: usize = 5;
+const SPACE_AFTER: usize = 6;
+const COLOR: usize = 7;
+const BASELINE: usize = 8;
+const WIDTH: usize = 9;
+const HEIGHT: usize = 10;
+
+fn coord(a: &Attrs, k: usize) -> Option<f64> {
+    py_float(a.0[k]?)
 }
 
 /// `float(a.get(k, 0) or 0)`
-fn opt_num(a: &Attrs, k: &str) -> Option<f64> {
-    match a.get(k) {
+fn opt_num(a: &Attrs, k: usize) -> Option<f64> {
+    match a.0[k] {
         None | Some("") => Some(0.0),
         Some(v) => py_float(v),
     }
 }
 
-fn word_text(raw: &str) -> String {
-    pyc::html_unescape(raw).chars().filter(|&c| !is_control(c)).collect()
+fn word_text(raw: &str) -> Rc<str> {
+    let t = pyc::html_unescape(raw);
+    // is_control on the bytes: C0 controls other than tab and newline, DEL, U+FFFD
+    let control = t.bytes().any(|c| (c < 0x20 && c != b'\t' && c != b'\n') || c == 0x7f) || t.contains('\u{fffd}');
+    if control { Rc::from(t.chars().filter(|&c| !is_control(c)).collect::<String>()) } else { Rc::from(&*t) }
+}
+
+/// `Rc<str>` for a value that usually repeats the previous one (colours): share the last one.
+fn interned(last: &mut Option<Rc<str>>, v: &str) -> Rc<str> {
+    match last {
+        Some(rc) if **rc == *v => rc.clone(),
+        _ => {
+            let rc: Rc<str> = Rc::from(v);
+            *last = Some(rc.clone());
+            rc
+        }
+    }
 }
 
 /// Parse doppler XHTML into pages. Where Python would raise (a missing or malformed required
 /// number), the offending word or rule is skipped instead; non-finite numbers count as malformed.
 pub fn parse(xhtml: &str) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
-    let mut words: Option<Vec<Word>> = None;
+    // words of the open <line> (`words` in Python is None until the first <line>)
+    let mut words: Vec<Word> = Vec::new();
+    let mut in_line = false;
     let (mut flow, mut block) = (-1i64, -1i64);
     let b = xhtml.as_bytes();
-    let mut a = Attrs(Vec::with_capacity(12));
+    let mut a = Attrs([None; KEYS.len()]);
+    let mut last_color: Option<Rc<str>> = None;
+    // font names repeat word after word: cache the last style
+    let mut last_font: Option<(&str, (bool, bool))> = None;
     let mut pos = 0;
     while let Some(off) = memchr(b'<', &b[pos..]) {
         let lt = pos + off;
@@ -358,66 +403,72 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 }
                 a.parse_into(attrs);
                 let (Some(x0), Some(y0), Some(x1), Some(y1)) =
-                    (coord(&a, "xMin"), coord(&a, "yMin"), coord(&a, "xMax"), coord(&a, "yMax"))
+                    (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
                 else {
                     continue;
                 };
-                let color = a.get("color").unwrap_or("#000000").to_string();
+                let color = a.0[COLOR].unwrap_or("#000000").to_string();
                 if let Some(pg) = pages.last_mut() {
                     pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
                 }
             }
             Tag::Open("page", attrs) => {
                 a.parse_into(attrs);
-                let dim = |k: &str, d: f64| a.get(k).map_or(Some(d), py_float).unwrap_or(d);
-                pages.push(Page {
-                    width: dim("width", 612.0),
-                    height: dim("height", 792.0),
-                    lines: Vec::new(),
-                    rules: Vec::new(),
-                });
+                let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
+                pages.push(Page { width: dim(WIDTH, 612.0), height: dim(HEIGHT, 792.0), lines: Vec::new(), rules: Vec::new() });
             }
             Tag::Open("flow", _) => flow += 1,
             Tag::Open("block", _) => block += 1,
-            Tag::Open(_, _) => words = Some(Vec::new()),
+            Tag::Open(_, _) => {
+                words.clear();
+                in_line = true;
+            }
             Tag::Close(name) => {
-                if name == "line"
-                    && have_page
-                    && let Some(ws) = words.as_ref()
-                    && !ws.is_empty()
-                {
-                    let ws = words.take().unwrap_or_default();
+                if name == "line" && have_page && in_line && !words.is_empty() {
+                    // exact-size copy out of the reused buffer
+                    let ws: Vec<Word> = words.drain(..).collect();
+                    in_line = false;
                     if let Some(pg) = pages.last_mut() {
                         pg.lines.push(Rc::new(Line::new(ws, block, flow)));
                     }
                 }
             }
             Tag::Word(attrs, text) => {
-                let Some(ws) = words.as_mut() else { continue };
+                if !in_line {
+                    continue;
+                }
                 a.parse_into(attrs);
                 let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
-                    coord(&a, "xMin"),
-                    coord(&a, "yMin"),
-                    coord(&a, "xMax"),
-                    coord(&a, "yMax"),
-                    opt_num(&a, "fontSize"),
-                    opt_num(&a, "baseline"),
+                    coord(&a, X_MIN),
+                    coord(&a, Y_MIN),
+                    coord(&a, X_MAX),
+                    coord(&a, Y_MAX),
+                    opt_num(&a, FONT_SIZE),
+                    opt_num(&a, BASELINE),
                 ) else {
                     continue;
                 };
-                let (bold, italic) = Word::font_style(a.get("fontName").unwrap_or(""));
-                ws.push(Word {
+                let font = a.0[FONT_NAME].unwrap_or("");
+                let (bold, italic) = match last_font {
+                    Some((f, style)) if f == font => style,
+                    _ => {
+                        let style = Word::font_style(font);
+                        last_font = Some((font, style));
+                        style
+                    }
+                };
+                words.push(Word {
                     x0,
                     y0,
                     x1,
                     y1,
-                    text: Rc::from(word_text(text)),
+                    text: word_text(text),
                     bold,
                     italic,
                     size,
                     base,
-                    space: a.get("spaceAfter").unwrap_or("1") != "0",
-                    color: Rc::from(a.get("color").unwrap_or("")),
+                    space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
+                    color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
                 });
             }
         }
