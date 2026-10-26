@@ -1243,11 +1243,17 @@ void TextLine::coalesce(const UnicodeMap *uMap)
             }
         }
 
+        // Shaped right-to-left scripts are often drawn glyph by glyph, leaving small gaps
+        // between the glyph boxes of one word. Between two right-to-left characters only a
+        // gap that would also break a word in addChar (minWordBreakSpace) is a space.
+        const double rtlSpace = std::max(space, minWordBreakSpace * words->fontSize);
+
         // merge words
         auto *word0 = words;
         auto *word1 = words->next;
         while (word1) {
-            if (word0->primaryDelta(word1) >= space) {
+            const bool rtlPair = unicodeTypeR(word0->chars.back().text) && unicodeTypeR(word1->chars.front().text);
+            if (word0->primaryDelta(word1) >= (rtlPair ? rtlSpace : space)) {
                 word0->spaceAfter = true;
                 word0 = word1;
                 word1 = word1->next;

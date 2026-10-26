@@ -12,3 +12,4 @@ set_tests_properties(docslurp-pdftotext-output-text-encoding-lookup PROPERTIES S
 docslurp_add_test(pdftotext-output-pdftohtml-wordbreak test_pdftohtml_wordbreak.py)
 docslurp_add_test(pdftotext-output-wordmeta test_wordmeta.py)
 docslurp_add_test(pdftotext-output-bbox-rtl-logical test_bbox_rtl_logical.py)
+docslurp_add_test(pdftotext-output-rtl-glyph-gaps test_rtl_glyph_gaps.py)
