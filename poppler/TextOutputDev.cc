@@ -2785,6 +2785,32 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         u = ligature;
     }
 
+    // Arabic presentation forms (positional glyph variants and ligatures such as
+    // lam-alef) become their base letters, so search, embeddings and plain text see
+    // ordinary Arabic. The NFKC expansion is stored in visual order, like every other
+    // right-to-left glyph run, so the logical reordering of the line or word restores
+    // the reading order. Isolated harakat forms (U+FE70..U+FE7F) expand to a space plus
+    // the mark; the space is dropped so the mark stays attached to its word.
+    Unicode arabic[20];
+    if (uLen == 1 && ((u[0] >= 0xfb50 && u[0] <= 0xfdff) || (u[0] >= 0xfe70 && u[0] <= 0xfefc))) {
+        int normLen = 0;
+        Unicode *norm = unicodeNormalizeNFKC(u, 1, &normLen, nullptr);
+        int n = 0;
+        for (int k = 0; k < normLen && n < static_cast<int>(sizeof(arabic) / sizeof(arabic[0])); ++k) {
+            if (norm[k] != 0x20) {
+                arabic[n++] = norm[k];
+            }
+        }
+        gfree(norm);
+        if (n > 0 && !(n == 1 && arabic[0] == u[0])) {
+            if (n > 1 && unicodeTypeR(arabic[0])) {
+                std::reverse(arabic, arabic + n);
+            }
+            uLen = n;
+            u = arabic;
+        }
+    }
+
     if (uLen != 0) {
         // start a new word if needed
         if (!curWord) {
