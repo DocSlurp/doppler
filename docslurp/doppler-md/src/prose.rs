@@ -212,7 +212,11 @@ pub fn paragraphs(seq: &[SeqItem], body: f64, body_color: &str, p: &Params, use_
             // release `prev` so a line merged on an earlier step is uniquely owned and its words
             // move instead of being copied (a run of n fragments on one baseline was O(n^2) clones)
             drop(prev.take());
-            let mut ws = st.cur.pop().map(|l| Rc::try_unwrap(l).map_or_else(|l| l.words.clone(), |l| l.words)).unwrap_or_default();
+            let mut ws = st
+                .cur
+                .pop()
+                .map(|l| Rc::try_unwrap(l).map_or_else(|l| l.words.clone(), |l| l.words))
+                .unwrap_or_default();
             ws.extend_from_slice(&line.words);
             let merged = Rc::new(Line::new(ws, line.block, line.flow));
             st.cur.push(merged.clone());

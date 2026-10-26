@@ -193,10 +193,7 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
             let members = bs[i..j].iter().flatten();
             let left: Vec<Elem> = members.clone().copied().filter(|e| e.x1 <= a + 1.0).collect();
             let right: Vec<Elem> = members.copied().filter(|e| e.x0 >= b - 1.0).collect();
-            if left.len() >= 2
-                && right.len() >= 2
-                && !table_like(&left, &right, lines, p)
-            {
+            if left.len() >= 2 && right.len() >= 2 && !table_like(&left, &right, lines, p) {
                 split = Some((j, left, right));
                 break;
             }

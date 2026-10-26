@@ -780,7 +780,7 @@ pub fn ruled_tables(
             None => {
                 let other_ids: Vec<usize> = ids.iter().copied().filter(|&i| (win.keep)(i)).collect();
                 fallback = visual_rows(page, &other_ids, p);
-                let above = fallback.iter().filter(|r| r.base < y0 + 1.0).last().cloned();
+                let above = fallback.iter().rfind(|r| r.base < y0 + 1.0).cloned();
                 (above, Box::new(fallback.iter().cloned()))
             }
         };
