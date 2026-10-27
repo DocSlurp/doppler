@@ -4,13 +4,15 @@
 #   scripts/parity.sh [GOLDEN_DIR [SET]]
 #
 # GOLDEN_DIR holds raw/<name>.raw (doppler XHTML) and SET/<name>.md (Python output, pages
-# joined by form feeds). SET defaults to golden-v23, the output of the current doppler_md.py;
-# golden/ is the output of the version first ported. Prints identical/total and, for each failure, the first differing page.
+# joined by form feeds). GOLDEN_DIR defaults to the durable copy in the DocSlurp eval data
+# store; SET defaults to golden-v24, the output of the current doppler_md.py (golden-v23 and
+# golden/, the version first ported, are kept for comparison). Prints identical/total and, for
+# each failure, the first differing page.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-dir=${1:-${DOPPLER_GOLDEN:-/home/dan/tmp/agents/doppler-bench.NwduaF/md-golden}}
-set_name=${2:-${DOPPLER_GOLDEN_SET:-golden-v23}}
+dir=${1:-${DOPPLER_GOLDEN:-/home/dan/data/docslurp-evals/doppler-md-golden}}
+set_name=${2:-${DOPPLER_GOLDEN_SET:-golden-v24}}
 bin="$here/target/release/doppler-md"
 [[ -x $bin ]] || { echo "build first: cargo build --release" >&2; exit 2; }
 
