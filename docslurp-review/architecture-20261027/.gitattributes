@@ -1,0 +1,6 @@
+# Keep captured logs byte-for-byte, including test output whitespace.
+*.log -whitespace
+*.pdf binary
+# Raw measurement records can be expanded explicitly when reviewing the PR.
+*.json linguist-generated=true
+*.log linguist-generated=true
