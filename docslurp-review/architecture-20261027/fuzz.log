@@ -1,0 +1,4 @@
+fuzz 250/1000, mismatches=0
+fuzz 500/1000, mismatches=0
+fuzz 750/1000, mismatches=0
+fuzz 1000/1000, mismatches=0

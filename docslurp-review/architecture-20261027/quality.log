@@ -1,0 +1,28 @@
+scored 10
+scored 20
+scored 30
+scored 40
+scored 50
+scored 60
+scored 70
+scored 80
+scored 90
+scored 100
+scored 110
+scored 120
+scored 130
+scored 140
+scored 150
+scored 160
+scored 170
+scored 180
+scored 190
+scored 200
+scored 210
+scored 220
+scored 230
+scored 240
+scored 250
+baseline {"content": 0.9217, "contentN": 254, "text": 0.8888, "textN": 254, "order": 0.8554, "orderN": 254, "paragraphs": 0.514, "paragraphsN": 254, "tables": 0.8097, "tablesN": 226, "math": null, "mathN": 0, "headings": 0.743, "headingsN": 250, "halluc": 0.0728, "hallucN": 254, "tolerant_tables": 0.902, "tolerant_tablesN": 226, "tolerant_table_content": 0.9257, "tolerant_table_contentN": 226, "quality": 0.7666, "qualityN": 254}
+candidate {"content": 0.9217, "contentN": 254, "text": 0.8888, "textN": 254, "order": 0.8554, "orderN": 254, "paragraphs": 0.514, "paragraphsN": 254, "tables": 0.8097, "tablesN": 226, "math": null, "mathN": 0, "headings": 0.743, "headingsN": 250, "halluc": 0.0728, "hallucN": 254, "tolerant_tables": 0.902, "tolerant_tablesN": 226, "tolerant_table_content": 0.9257, "tolerant_table_contentN": 226, "quality": 0.7666, "qualityN": 254}
+quality gates passed; every component row equal: True

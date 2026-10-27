@@ -1,0 +1,27 @@
+{
+  "uname": {
+    "system": "Linux",
+    "node": "dev04",
+    "release": "7.2.5-3-omarchy",
+    "version": "#1 SMP PREEMPT_DYNAMIC Mon, 14 Sep 2026 19:55:01 +0000",
+    "machine": "x86_64",
+    "processor": ""
+  },
+  "cpu": "\t: Intel(R) Core(TM) i7-7700K CPU @ 4.20GHz",
+  "memory": [
+    "MemTotal:       65763752 kB",
+    "MemFree:         4272772 kB",
+    "MemAvailable:   34519308 kB"
+  ],
+  "load": [
+    2.6484375,
+    3.4443359375,
+    3.8681640625
+  ],
+  "gcc": "c++ (GCC) 16.2.1 20260810",
+  "rust": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "sha256": {
+    "build/utils/pdftotext": "2dc79747e4516c8e87bbe5ee6b834872dc706e30e8b8ff66efbc4f13195ae2ec",
+    "docslurp/doppler-md/target/release/doppler-md": "c46251d578491b31ed9a4d6f0e7ccd58d7ac69bd4dab6572ec61894f3f5f04a3"
+  }
+}

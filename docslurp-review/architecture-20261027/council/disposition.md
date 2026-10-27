@@ -1,0 +1,13 @@
+# Council disposition
+
+Three personas (N=3), each gpt-6-astra with xhigh reasoning, reviewed the same implementation. At most two reviewers ran concurrently. All completed; no dropout. They performed read-only reviews of source and supplied evidence, not independent executions. Their original reports are preserved without merging or rewriting their findings.
+
+| Persona and output | Rationale / verdict | Coordinator response |
+|---|---|---|
+| [Architect](architect.md) | The three modules pass the deletion test; private ownership removes caller coordination. Approve, no blocker. Optional A1: clarify the standalone public prose helper's responsibilities. | Addressed in `prose::paragraphs` rustdoc: callers supply membership, ordering and block policy; complete page conversion uses `to_markdown_report`. No supported helper removed. |
+| [Detail Detective](detail-detective.md) | Overlap, title neighbors, atomic fallback, exact caps and reporting have targeted coverage. Approve, no blocker. Optional P3: disclose the tolerant judge's four exclusions. | Addressed in plan, README and quality.json with all four IDs and reasons. Completed quality results match every component row; no missing/unpaged case. |
+| [Performance Wizard](performance-wizard.md) | No demonstrated material CPU regression; treat measurements as near-neutral. Approve, no blocker. Optional P3s: dense-ID hashing, and cloning table placements before geometry filtering. | Retained as separate profiling follow-ups. A scoped bitmap can trade hashing for per-region initialization, so dense and sparse cases need measurement. Filtering before cloning is a small possible saving on rejected table placements, but its contribution is unmeasured. Neither requires a change to land the validated ownership/correctness work. No speedup claimed. |
+
+The Architect and Detail Detective observed quality while it was pending. The Performance Wizard subsequently inspected the completed result, and the coordinator verified all 254 per-case component rows and each difficulty level match. Four real PDFs have no authored Markdown reference; conversion regressions still cover them. The scorer's empty-output sentinel fails preservation as intended.
+
+Only documentation changed after implementation validation: the public helper's preconditions, the testing policy allowing harmless byte differences, and evidence/coverage reporting. Product algorithms and measured binaries are unchanged. No second implementation round was needed because no reviewer found a blocking defect. The optional performance ideas remain explicitly unimplemented, not silently resolved.

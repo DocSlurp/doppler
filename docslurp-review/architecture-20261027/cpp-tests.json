@@ -1,0 +1,7 @@
+{
+  "passed": 144,
+  "failed": 0,
+  "source": "build/Testing/Temporary/LastTest.log",
+  "begin": "Start testing: Oct 27 11:05 MDT",
+  "command": "ctest --test-dir build -j8 --output-on-failure"
+}

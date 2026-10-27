@@ -1,0 +1,7 @@
+{
+  "seed": 271027,
+  "cases": 1000,
+  "matching": 1000,
+  "mismatches": [],
+  "comparison": "exit status, Markdown bytes, all previous report fields; new truncation field must be empty"
+}

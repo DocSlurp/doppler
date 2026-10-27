@@ -225,22 +225,85 @@ static std::string hexColor(double r, double g, double b)
     return buf;
 }
 
-// The name of the font of the word (its first character), or "" if unknown.
-static std::string wordFontName(const TextWord *word)
+namespace {
+
+struct TextBounds
 {
-    const GooString *name = word->getLength() > 0 ? word->getFontName(0) : nullptr;
-    return name ? name->toStr() : std::string();
+    double xMin = 0, yMin = 0, xMax = 0, yMax = 0;
+};
+
+struct WordMetadata
+{
+    std::string fontName;
+    double fontSize;
+    int rotation;
+    bool spaceAfter, invisible;
+    double r, g, b;
+    double baseline;
+};
+
+struct ProjectedWord
+{
+    TextBounds bounds;
+    std::unique_ptr<std::string> text;
+    std::optional<WordMetadata> metadata;
+};
+
+// Private projection module at the extraction-to-writer seam. Writers consume
+// word facts without choosing font characters, text direction, or geometry.
+// Encoding lookup remains per output run; metadata is only selected on request.
+static ProjectedWord projectWord(const TextWord *word, const UnicodeMap *uMap, bool withMetadata)
+{
+    ProjectedWord result;
+    word->getBBox(&result.bounds.xMin, &result.bounds.yMin, &result.bounds.xMax, &result.bounds.yMax);
+    result.text = word->getLogicalText(uMap);
+    if (withMetadata) {
+        WordMetadata &meta = result.metadata.emplace();
+        const GooString *name = word->getLength() > 0 ? word->getFontName(0) : nullptr;
+        meta.fontName = name ? name->toStr() : std::string();
+        meta.fontSize = word->getFontSize();
+        meta.rotation = word->getRotation();
+        meta.spaceAfter = word->hasSpaceAfter();
+        meta.invisible = word->isInvisible();
+        word->getColor(&meta.r, &meta.g, &meta.b);
+        meta.baseline = word->getBaseline();
+    }
+    return result;
 }
 
-// -wordmeta: extra attributes of a <word> element, each preceded by a space.
-static std::string wordMetaXmlAttributes(const TextWord *word)
+// Visit words in extraction order and return their union. A line is projected
+// in one pass without retaining a second collection of words. Initialize from
+// the first word: zero and negative coordinates are valid bounds, not sentinels.
+template<typename WriteWord>
+static TextBounds projectLine(const TextLine *line, const UnicodeMap *uMap, bool withMetadata, WriteWord writeWord)
 {
-    double r, g, b;
-    word->getColor(&r, &g, &b);
+    TextBounds bounds;
+    bool first = true;
+    for (const TextWord *word = line->getWords(); word; word = word->getNext()) {
+        const ProjectedWord projected = projectWord(word, uMap, withMetadata);
+        if (first) {
+            bounds = projected.bounds;
+            first = false;
+        } else {
+            bounds.xMin = std::min(bounds.xMin, projected.bounds.xMin);
+            bounds.yMin = std::min(bounds.yMin, projected.bounds.yMin);
+            bounds.xMax = std::max(bounds.xMax, projected.bounds.xMax);
+            bounds.yMax = std::max(bounds.yMax, projected.bounds.yMax);
+        }
+        writeWord(projected);
+    }
+    return bounds;
+}
+
+} // namespace
+
+// -wordmeta: extra attributes of a <word> element, each preceded by a space.
+static std::string wordMetaXmlAttributes(const WordMetadata &meta)
+{
     char buf[256];
-    snprintf(buf, sizeof(buf), " fontSize=\"%f\" rotation=\"%d\" spaceAfter=\"%d\" invisible=\"%d\" color=\"%s\" baseline=\"%f\"", word->getFontSize(), word->getRotation(), word->hasSpaceAfter() ? 1 : 0, word->isInvisible() ? 1 : 0,
-             hexColor(r, g, b).c_str(), word->getBaseline());
-    return " fontName=\"" + myXmlTokenReplace(wordFontName(word).c_str()) + "\"" + buf;
+    snprintf(buf, sizeof(buf), " fontSize=\"%f\" rotation=\"%d\" spaceAfter=\"%d\" invisible=\"%d\" color=\"%s\" baseline=\"%f\"", meta.fontSize, meta.rotation, meta.spaceAfter ? 1 : 0, meta.invisible ? 1 : 0,
+             hexColor(meta.r, meta.g, meta.b).c_str(), meta.baseline);
+    return " fontName=\"" + myXmlTokenReplace(meta.fontName.c_str()) + "\"" + buf;
 }
 
 // -wordmeta: extra TSV columns of a word row (starting with a tab), after the text column.
@@ -248,13 +311,11 @@ static std::string wordMetaXmlAttributes(const TextWord *word)
 static const char tsvWordMetaHeader[] = "\tfont_name\tfont_size\trotation\tspace_after\tinvisible\tcolor\tbaseline";
 static const char tsvWordMetaEmpty[] = "\t\t\t\t\t\t\t";
 
-static std::string wordMetaTsvColumns(const TextWord *word)
+static std::string wordMetaTsvColumns(const WordMetadata &meta)
 {
-    double r, g, b;
-    word->getColor(&r, &g, &b);
     char buf[128];
-    snprintf(buf, sizeof(buf), "\t%.2f\t%d\t%d\t%d\t%s\t%.2f", word->getFontSize(), word->getRotation(), word->hasSpaceAfter() ? 1 : 0, word->isInvisible() ? 1 : 0, hexColor(r, g, b).c_str(), word->getBaseline());
-    return "\t" + myTsvFieldReplace(wordFontName(word).c_str()) + buf;
+    snprintf(buf, sizeof(buf), "\t%.2f\t%d\t%d\t%d\t%s\t%.2f", meta.fontSize, meta.rotation, meta.spaceAfter ? 1 : 0, meta.invisible ? 1 : 0, hexColor(meta.r, meta.g, meta.b).c_str(), meta.baseline);
+    return "\t" + myTsvFieldReplace(meta.fontName.c_str()) + buf;
 }
 
 static constexpr EndOfLineKind defaultEndOfLine()
@@ -609,33 +670,15 @@ static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *
 
 static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
 {
-    double xMin, yMin, xMax, yMax;
-    double lineXMin = 0, lineYMin = 0, lineXMax = 0, lineYMax = 0;
-    const TextWord *word;
     std::stringstream wordXML;
     wordXML << std::fixed << std::setprecision(6);
 
-    for (word = line->getWords(); word; word = word->getNext()) {
-        word->getBBox(&xMin, &yMin, &xMax, &yMax);
-
-        if (lineXMin == 0 || lineXMin > xMin) {
-            lineXMin = xMin;
-        }
-        if (lineYMin == 0 || lineYMin > yMin) {
-            lineYMin = yMin;
-        }
-        if (lineXMax < xMax) {
-            lineXMax = xMax;
-        }
-        if (lineYMax < yMax) {
-            lineYMax = yMax;
-        }
-
-        const std::unique_ptr<std::string> wordText = word->getLogicalText(uMap);
-        const std::string myString = myXmlTokenReplace(wordText->c_str());
-        wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\"" << (wordMeta ? wordMetaXmlAttributes(word) : std::string()) << ">" << myString << "</word>\n";
-    }
-    fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", lineXMin, lineYMin, lineXMax, lineYMax);
+    const TextBounds bounds = projectLine(line, uMap, wordMeta, [&](const ProjectedWord &word) {
+        const TextBounds &b = word.bounds;
+        wordXML << "          <word xMin=\"" << b.xMin << "\" yMin=\"" << b.yMin << "\" xMax=\"" << b.xMax << "\" yMax=\"" << b.yMax << "\"" << (word.metadata ? wordMetaXmlAttributes(*word.metadata) : std::string()) << ">"
+                << myXmlTokenReplace(word.text->c_str()) << "</word>\n";
+    });
+    fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
     fputs(wordXML.str().c_str(), f);
     fputs("        </line>\n", f);
 }
@@ -685,7 +728,6 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     const TextFlow *flow;
     const TextBlock *blk;
     const TextLine *line;
-    const TextWord *word;
     const int pageLevel = 1;
     const int blockLevel = 3;
     const int lineLevel = 4;
@@ -725,36 +767,21 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                 for (line = blk->getLines(); line; line = line->getNext()) {
                     int wordNum = 0;
 
-                    double lxMin = 1E+37, lyMin = 1E+37;
-                    double lxMax = 0, lyMax = 0;
                     std::string lineWordsBuffer;
 
-                    for (word = line->getWords(); word; word = word->getNext()) {
-                        word->getBBox(&xMin, &yMin, &xMax, &yMax);
-                        if (lxMin > xMin) {
-                            lxMin = xMin;
-                        }
-                        if (lxMax < xMax) {
-                            lxMax = xMax;
-                        }
-                        if (lyMin > yMin) {
-                            lyMin = yMin;
-                        }
-                        if (lyMax < yMax) {
-                            lyMax = yMax;
-                        }
-
-                        GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
-                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getLogicalText(uMap)->c_str()).c_str());
-                        if (wordMeta) {
-                            lineWordsBuffer += wordMetaTsvColumns(word);
+                    const TextBounds bounds = projectLine(line, uMap, wordMeta, [&](const ProjectedWord &word) {
+                        const TextBounds &b = word.bounds;
+                        GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}", wordLevel, page, flowNum, blockNum, lineNum, wordNum, b.xMin, b.yMin,
+                                           b.xMax - b.xMin, b.yMax - b.yMin, wordConf, myTsvFieldReplace(word.text->c_str()).c_str());
+                        if (word.metadata) {
+                            lineWordsBuffer += wordMetaTsvColumns(*word.metadata);
                         }
                         lineWordsBuffer += '\n';
                         wordNum++;
-                    }
+                    });
 
-                    // Print Link Bounding Box info
-                    fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###LINE###%s\n", lineLevel, page, flowNum, blockNum, lineNum, 0, lxMin, lyMin, lxMax - lxMin, lyMax - lyMin, metaConf, metaEmpty);
+                    fprintf(f, "%d\t%d\t%d\t%d\t%d\t%d\t%f\t%f\t%f\t%f\t%d\t###LINE###%s\n", lineLevel, page, flowNum, blockNum, lineNum, 0, bounds.xMin, bounds.yMin, bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin, metaConf,
+                            metaEmpty);
                     fprintf(f, "%s", lineWordsBuffer.c_str());
                     lineNum++;
                 }
@@ -783,10 +810,10 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
             fprintf(stderr, "no word list\n");
         } else {
             for (const TextWord *word : words) {
-                double xMinA, yMinA, xMaxA, yMaxA;
-                word->getBBox(&xMinA, &yMinA, &xMaxA, &yMaxA);
-                const std::string myString = myXmlTokenReplace(word->getLogicalText(uMap)->c_str());
-                fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\"%s>%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, wordMeta ? wordMetaXmlAttributes(word).c_str() : "", myString.c_str());
+                const ProjectedWord projected = projectWord(word, uMap, wordMeta);
+                const TextBounds &b = projected.bounds;
+                const std::string myString = myXmlTokenReplace(projected.text->c_str());
+                fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\"%s>%s</word>\n", b.xMin, b.yMin, b.xMax, b.yMax, projected.metadata ? wordMetaXmlAttributes(*projected.metadata).c_str() : "", myString.c_str());
             }
         }
         fprintf(f, "  </page>\n");

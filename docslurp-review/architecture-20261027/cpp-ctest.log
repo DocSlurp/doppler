@@ -1,0 +1,3482 @@
+Start testing: Oct 27 11:05 MDT
+----------------------------------------------------------
+63/144 Testing: nss-sign-rsa-shortchain
+63/144 Test: nss-sign-rsa-shortchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "RSA test key 01" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-shortchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-rsa-shortchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-rsa-shortchain" end time: Oct 27 11:05 MDT
+"nss-sign-rsa-shortchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+107/144 Testing: check_qt6_untrusted_signature
+107/144 Test: check_qt6_untrusted_signature
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_untrusted_signature"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_untrusted_signature" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of CheckUntrustedSignature *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : CheckUntrustedSignature::initTestCase()
+PASS   : CheckUntrustedSignature::testUntrusted()
+PASS   : CheckUntrustedSignature::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 139ms
+********* Finished testing of CheckUntrustedSignature *********
+<end of output>
+Test time =   0.16 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_untrusted_signature" end time: Oct 27 11:05 MDT
+"check_qt6_untrusted_signature" time elapsed: 00:00:00
+----------------------------------------------------------
+
+64/144 Testing: nss-verify-rsa-shortchain
+64/144 Test: nss-verify-rsa-shortchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-shortchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-rsa-shortchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.13 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-rsa-shortchain" end time: Oct 27 11:05 MDT
+"nss-verify-rsa-shortchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+65/144 Testing: nss-sign-rsa-moderatechain
+65/144 Test: nss-sign-rsa-moderatechain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "RSA test key 02" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-moderatechain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-rsa-moderatechain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-rsa-moderatechain" end time: Oct 27 11:05 MDT
+"nss-sign-rsa-moderatechain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+109/144 Testing: check_create_pgp_signature1
+109/144 Test: check_create_pgp_signature1
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_create_pgp_signature1"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_create_pgp_signature1" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+********* Start testing of TestSignWithGnupgPgp *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestSignWithGnupgPgp::initTestCase()
+PASS   : TestSignWithGnupgPgp::testPgpSignVerify(nss)
+PASS   : TestSignWithGnupgPgp::testPgpSignVerify(gpg)
+PASS   : TestSignWithGnupgPgp::testKeyList(nss)
+PASS   : TestSignWithGnupgPgp::testKeyList(gpg)
+PASS   : TestSignWithGnupgPgp::testKeyListQt(nss)
+PASS   : TestSignWithGnupgPgp::testKeyListQt(gpg)
+PASS   : TestSignWithGnupgPgp::testDontAskForSMimeWhenPpg(nss)
+PASS   : TestSignWithGnupgPgp::testDontAskForSMimeWhenPpg(gpg)
+PASS   : TestSignWithGnupgPgp::cleanupTestCase()
+Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 324ms
+********* Finished testing of TestSignWithGnupgPgp *********
+<end of output>
+Test time =   0.39 sec
+----------------------------------------------------------
+Test Passed.
+"check_create_pgp_signature1" end time: Oct 27 11:05 MDT
+"check_create_pgp_signature1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+66/144 Testing: nss-verify-rsa-moderatechain
+66/144 Test: nss-verify-rsa-moderatechain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-moderatechain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-rsa-moderatechain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-rsa-moderatechain" end time: Oct 27 11:05 MDT
+"nss-verify-rsa-moderatechain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+67/144 Testing: nss-sign-rsa-longchain
+67/144 Test: nss-sign-rsa-longchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "RSA test key 03" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-longchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-rsa-longchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-rsa-longchain" end time: Oct 27 11:05 MDT
+"nss-sign-rsa-longchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+68/144 Testing: nss-verify-rsa-longchain
+68/144 Test: nss-verify-rsa-longchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-longchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-rsa-longchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-rsa-longchain" end time: Oct 27 11:05 MDT
+"nss-verify-rsa-longchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+69/144 Testing: nss-sign-rsa-monster
+69/144 Test: nss-sign-rsa-monster
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "RSA test key 04" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-monster.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-rsa-monster" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-rsa-monster" end time: Oct 27 11:05 MDT
+"nss-sign-rsa-monster" time elapsed: 00:00:00
+----------------------------------------------------------
+
+110/144 Testing: check_qt6_signature_cross_validation
+110/144 Test: check_qt6_signature_cross_validation
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_signature_cross_validation"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_signature_cross_validation" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of CheckSignatureCrossValidation *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : CheckSignatureCrossValidation::initTestCase()
+PASS   : CheckSignatureCrossValidation::testKeyList(nss)
+PASS   : CheckSignatureCrossValidation::testKeyList(gpg)
+QWARN  : CheckSignatureCrossValidation::testSignVerify(nss) switching backend; was  0
+QWARN  : CheckSignatureCrossValidation::testSignVerify(nss) now backend is  1
+PASS   : CheckSignatureCrossValidation::testSignVerify(nss)
+QWARN  : CheckSignatureCrossValidation::testSignVerify(gpg) switching backend; was  1
+QWARN  : CheckSignatureCrossValidation::testSignVerify(gpg) now backend is  0
+PASS   : CheckSignatureCrossValidation::testSignVerify(gpg)
+PASS   : CheckSignatureCrossValidation::testBasicFailures(nss)
+PASS   : CheckSignatureCrossValidation::testBasicFailures(gpg)
+PASS   : CheckSignatureCrossValidation::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 580ms
+********* Finished testing of CheckSignatureCrossValidation *********
+<end of output>
+Test time =   0.66 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_signature_cross_validation" end time: Oct 27 11:05 MDT
+"check_qt6_signature_cross_validation" time elapsed: 00:00:00
+----------------------------------------------------------
+
+70/144 Testing: nss-verify-rsa-monster
+70/144 Test: nss-verify-rsa-monster
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-rsa-monster.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-rsa-monster" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-rsa-monster" end time: Oct 27 11:05 MDT
+"nss-verify-rsa-monster" time elapsed: 00:00:00
+----------------------------------------------------------
+
+71/144 Testing: nss-sign-ecdsa-shortchain
+71/144 Test: nss-sign-ecdsa-shortchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "ECDSA test key 01" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-shortchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-ecdsa-shortchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-ecdsa-shortchain" end time: Oct 27 11:05 MDT
+"nss-sign-ecdsa-shortchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+72/144 Testing: nss-verify-ecdsa-shortchain
+72/144 Test: nss-verify-ecdsa-shortchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-shortchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-ecdsa-shortchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-ecdsa-shortchain" end time: Oct 27 11:05 MDT
+"nss-verify-ecdsa-shortchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+73/144 Testing: nss-sign-ecdsa-moderatechain
+73/144 Test: nss-sign-ecdsa-moderatechain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "ECDSA test key 02" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-moderatechain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-ecdsa-moderatechain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-ecdsa-moderatechain" end time: Oct 27 11:05 MDT
+"nss-sign-ecdsa-moderatechain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+74/144 Testing: nss-verify-ecdsa-moderatechain
+74/144 Test: nss-verify-ecdsa-moderatechain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-moderatechain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-ecdsa-moderatechain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-ecdsa-moderatechain" end time: Oct 27 11:05 MDT
+"nss-verify-ecdsa-moderatechain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+75/144 Testing: nss-sign-ecdsa-longchain
+75/144 Test: nss-sign-ecdsa-longchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "ECDSA test key 03" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-longchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-ecdsa-longchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-ecdsa-longchain" end time: Oct 27 11:05 MDT
+"nss-sign-ecdsa-longchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+76/144 Testing: nss-verify-ecdsa-longchain
+76/144 Test: nss-verify-ecdsa-longchain
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--verify" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_root_only/" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-longchain.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-verify-ecdsa-longchain" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"nss-verify-ecdsa-longchain" end time: Oct 27 11:05 MDT
+"nss-verify-ecdsa-longchain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+100/144 Testing: check_qt6_signature_basics
+100/144 Test: check_qt6_signature_basics
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_signature_basics"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_signature_basics" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestSignatureBasics *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestSignatureBasics::initTestCase()
+PASS   : TestSignatureBasics::testSignatureCount(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignatureCount(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignatureCount(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignatureCount(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignatureSizes(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignatureSizes(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignatureSizes(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignatureSizes(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+NSS_Init failed: security library: bad database.
+PASS   : TestSignatureBasics::testSignerInfo(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignerInfo(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignerInfo(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignerInfo(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignedRanges(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignedRanges(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs.pdf)
+PASS   : TestSignatureBasics::testSignedRanges(nss /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::testSignedRanges(gpg /home/dan/code/oss/poppler-test/unittestcases/pdf-signature-sample-2sigs-randompadded.pdf)
+PASS   : TestSignatureBasics::cleanupTestCase()
+Totals: 18 passed, 0 failed, 0 skipped, 0 blacklisted, 1178ms
+********* Finished testing of TestSignatureBasics *********
+<end of output>
+Test time =   1.20 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_signature_basics" end time: Oct 27 11:05 MDT
+"check_qt6_signature_basics" time elapsed: 00:00:01
+----------------------------------------------------------
+
+77/144 Testing: nss-sign-ecdsa-compressed
+77/144 Test: nss-sign-ecdsa-compressed
+Command: "/home/dan/code/oss/poppler/build/test/pdf-signing-nss" "--sign" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/db_complete/" "ECDSA test key 04" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "/home/dan/code/oss/poppler-test/unittestcases/signing_nss/nss-ecdsa-compressed.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"nss-sign-ecdsa-compressed" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"nss-sign-ecdsa-compressed" end time: Oct 27 11:05 MDT
+"nss-sign-ecdsa-compressed" time elapsed: 00:00:00
+----------------------------------------------------------
+
+118/144 Testing: docslurp-pdftotext-output-page-size
+118/144 Test: docslurp-pdftotext-output-page-size
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_page_size.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-page-size" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: rotate0 -bbox : page size is 612x792
+PASS: rotate0 -bbox : has words
+PASS: rotate0 -bbox : every word box lies inside the reported page
+PASS: rotate0 -bbox-layout : page size is 612x792
+PASS: rotate0 -bbox-layout : has words
+PASS: rotate0 -bbox-layout : every word box lies inside the reported page
+PASS: rotate0 -tsv : page size is 612x792
+PASS: rotate0 -tsv : has words
+PASS: rotate0 -tsv : every word box lies inside the reported page
+PASS: rotate90 -bbox : page size is 792x612
+PASS: rotate90 -bbox : has words
+PASS: rotate90 -bbox : every word box lies inside the reported page
+PASS: rotate90 -bbox-layout : page size is 792x612
+PASS: rotate90 -bbox-layout : has words
+PASS: rotate90 -bbox-layout : every word box lies inside the reported page
+PASS: rotate90 -tsv : page size is 792x612
+PASS: rotate90 -tsv : has words
+PASS: rotate90 -tsv : every word box lies inside the reported page
+PASS: rotate180 -bbox : page size is 612x792
+PASS: rotate180 -bbox : has words
+PASS: rotate180 -bbox : every word box lies inside the reported page
+PASS: rotate180 -bbox-layout : page size is 612x792
+PASS: rotate180 -bbox-layout : has words
+PASS: rotate180 -bbox-layout : every word box lies inside the reported page
+PASS: rotate180 -tsv : page size is 612x792
+PASS: rotate180 -tsv : has words
+PASS: rotate180 -tsv : every word box lies inside the reported page
+PASS: rotate270 -bbox : page size is 792x612
+PASS: rotate270 -bbox : has words
+PASS: rotate270 -bbox : every word box lies inside the reported page
+PASS: rotate270 -bbox-layout : page size is 792x612
+PASS: rotate270 -bbox-layout : has words
+PASS: rotate270 -bbox-layout : every word box lies inside the reported page
+PASS: rotate270 -tsv : page size is 792x612
+PASS: rotate270 -tsv : has words
+PASS: rotate270 -tsv : every word box lies inside the reported page
+PASS: rotate90 -r 144 -bbox -r 144: page size is 1584x1224
+PASS: rotate90 -r 144 -bbox -r 144: has words
+PASS: rotate90 -r 144 -bbox -r 144: every word box lies inside the reported page
+PASS: rotate90 -r 144 -bbox-layout -r 144: page size is 1584x1224
+PASS: rotate90 -r 144 -bbox-layout -r 144: has words
+PASS: rotate90 -r 144 -bbox-layout -r 144: every word box lies inside the reported page
+PASS: rotate90 -r 144 -tsv -r 144: page size is 1584x1224
+PASS: rotate90 -r 144 -tsv -r 144: has words
+PASS: rotate90 -r 144 -tsv -r 144: every word box lies inside the reported page
+PASS: cropbox -bbox -cropbox: page size is 400x300
+PASS: cropbox -bbox -cropbox: has words
+PASS: cropbox -bbox -cropbox: every word box lies inside the reported page
+PASS: cropbox -bbox-layout -cropbox: page size is 400x300
+PASS: cropbox -bbox-layout -cropbox: has words
+PASS: cropbox -bbox-layout -cropbox: every word box lies inside the reported page
+PASS: cropbox -tsv -cropbox: page size is 400x300
+PASS: cropbox -tsv -cropbox: has words
+PASS: cropbox -tsv -cropbox: every word box lies inside the reported page
+PASS: cropbox rotate90 -bbox -cropbox: page size is 300x400
+PASS: cropbox rotate90 -bbox -cropbox: has words
+PASS: cropbox rotate90 -bbox -cropbox: every word box lies inside the reported page
+PASS: cropbox rotate90 -bbox-layout -cropbox: page size is 300x400
+PASS: cropbox rotate90 -bbox-layout -cropbox: has words
+PASS: cropbox rotate90 -bbox-layout -cropbox: every word box lies inside the reported page
+PASS: cropbox rotate90 -tsv -cropbox: page size is 300x400
+PASS: cropbox rotate90 -tsv -cropbox: has words
+PASS: cropbox rotate90 -tsv -cropbox: every word box lies inside the reported page
+PASS: mediabox despite cropbox -bbox : page size is 792x612
+PASS: mediabox despite cropbox -bbox : has words
+PASS: mediabox despite cropbox -bbox : every word box lies inside the reported page
+PASS: mediabox despite cropbox -bbox-layout : page size is 792x612
+PASS: mediabox despite cropbox -bbox-layout : has words
+PASS: mediabox despite cropbox -bbox-layout : every word box lies inside the reported page
+PASS: mediabox despite cropbox -tsv : page size is 792x612
+PASS: mediabox despite cropbox -tsv : has words
+PASS: mediabox despite cropbox -tsv : every word box lies inside the reported page
+all checks passed
+<end of output>
+Test time =   0.72 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-page-size" end time: Oct 27 11:05 MDT
+"docslurp-pdftotext-output-page-size" time elapsed: 00:00:00
+----------------------------------------------------------
+
+96/144 Testing: check_qt6_object
+96/144 Test: check_qt6_object
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_object"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_object" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestObject *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestObject::initTestCase()
+PASS   : TestObject::benchDefaultConstructor()
+RESULT : TestObject::benchDefaultConstructor():
+     5.8e-06 msecs per iteration (total: 9.7e+01 msecs, std.dev: 7.7e-04 msecs, iterations: 16777216)
+PASS   : TestObject::benchMoveConstructor()
+RESULT : TestObject::benchMoveConstructor():
+     1.19e-05 msecs per iteration (total: 1.99e+02 msecs, std.dev: 6.41e-03 msecs, iterations: 16777216)
+PASS   : TestObject::benchSetToNull()
+RESULT : TestObject::benchSetToNull():
+     6.9e-06 msecs per iteration (total: 5.8e+01 msecs, std.dev: 1.3e-03 msecs, iterations: 8388608)
+PASS   : TestObject::cleanupTestCase()
+Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 1001ms
+********* Finished testing of TestObject *********
+<end of output>
+Test time =   1.01 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_object" end time: Oct 27 11:05 MDT
+"check_qt6_object" time elapsed: 00:00:01
+----------------------------------------------------------
+
+130/144 Testing: docslurp-raster-png-compression
+130/144 Test: docslurp-raster-png-compression
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/raster-images/test_png_compression.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/raster-images
+"docslurp-raster-png-compression" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: pdftoppm: level 0 output is larger than level 9
+PASS: pdftoppm: level 1 output is not smaller than level 9
+PASS: pdftoppm: level changes file size
+PASS: pdftoppm: pixels identical at every level
+PASS: pdftoppm: default output equals compression=6
+PASS: pdftoppm: -pngopt honoured when writing to stdout
+PASS: pdftoppm: -pngopt compression=10 is rejected
+PASS: pdftoppm: -pngopt compression=-1 is rejected
+PASS: pdftoppm: -pngopt compression=x is rejected
+PASS: pdftoppm: -pngopt compression is rejected
+PASS: pdftoppm: -pngopt bogus=1 is rejected
+PASS: pdftocairo: level 0 output is larger than level 9
+PASS: pdftocairo: pixels identical at levels 0 and 9
+PASS: pdfimages: level 0 output is larger than level 9
+PASS: pdfimages: pixels identical at levels 0 and 9
+PASS: pdfimages: compression=11 is rejected
+PASS: pdftocairo: -pngopt without -png is rejected
+all checks passed
+<end of output>
+Test time =   2.79 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-raster-png-compression" end time: Oct 27 11:05 MDT
+"docslurp-raster-png-compression" time elapsed: 00:00:02
+----------------------------------------------------------
+
+78/144 Testing: fontsubsetting-basic-test
+78/144 Test: fontsubsetting-basic-test
+Command: "/home/dan/code/oss/poppler/build/test/fontsubsetting-basic-test" "/home/dan/code/oss/poppler-test/unittestcases/UseNone.pdf" "/home/dan/code/oss/poppler-test/unittestcases/pdf_with_text_form_field.pdf"
+Directory: /home/dan/code/oss/poppler/build/test
+"fontsubsetting-basic-test" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+Syntax Warning: Mismatch between font type and embedded font file
+Syntax Warning: Mismatch between font type and embedded font file
+Syntax Warning: Mismatch between font type and embedded font file
+<end of output>
+Test time =   2.68 sec
+----------------------------------------------------------
+Test Passed.
+"fontsubsetting-basic-test" end time: Oct 27 11:05 MDT
+"fontsubsetting-basic-test" time elapsed: 00:00:02
+----------------------------------------------------------
+
+131/144 Testing: docslurp-raster-png-colortype
+131/144 Test: docslurp-raster-png-colortype
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/raster-images/test_png_colortype.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/raster-images
+"docslurp-raster-png-colortype" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: plain -png is 8-bit RGB (color type 2)
+PASS: plain -png pixels equal the PPM
+PASS: -gray -png is 8-bit grayscale (color type 0)
+PASS: -gray without -png is a PGM
+PASS: -gray -png pixels equal the PGM
+PASS: gray render has several gray levels (sanity)
+PASS: -mono -png is 1-bit grayscale (color type 0, depth 1)
+PASS: -mono without -png is a PBM
+PASS: -mono -png pixels equal the (inverted) PBM
+PASS: -gray -png -pngopt works
+all checks passed
+<end of output>
+Test time =   0.52 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-raster-png-colortype" end time: Oct 27 11:05 MDT
+"docslurp-raster-png-colortype" time elapsed: 00:00:00
+----------------------------------------------------------
+
+141/144 Testing: docslurp-unicode-tounicode-lookup
+141/144 Test: docslurp-unicode-tounicode-lookup
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_tounicode_lookup.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-tounicode-lookup" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: later CMap entries take precedence; non-BMP entries map
+user CPU (best of 3): multi=0.206s, nonbmp=0.177s, single=0.111s, unmapped=0.101s
+PASS: non-BMP (string table) entries cost about the same as plain entries
+PASS: unmapped codes with a large string table cost about the same
+all checks passed
+<end of output>
+Test time =   3.32 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-tounicode-lookup" end time: Oct 27 11:05 MDT
+"docslurp-unicode-tounicode-lookup" time elapsed: 00:00:03
+----------------------------------------------------------
+
+137/144 Testing: docslurp-tagged-unknown-types
+137/144 Test: docslurp-tagged-unknown-types
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/tagged-structure/test_unknown_types.py" "--bindir" "/home/dan/code/oss/poppler/build/utils" "--probe" "/home/dan/code/oss/poppler/build/test/docslurp/tagged-structure/docslurp-parenttree-probe"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/tagged-structure
+"docslurp-tagged-unknown-types" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: content under /FENote is kept
+PASS: /FENote name is preserved in the structure dump
+PASS: content under /Title is kept
+PASS: /Title name is preserved in the structure dump
+PASS: content under /Aside is kept
+PASS: /Aside name is preserved in the structure dump
+PASS: content under /Em is kept
+PASS: /Em name is preserved in the structure dump
+PASS: content under /Strong is kept
+PASS: /Strong name is preserved in the structure dump
+PASS: content under /Sub is kept
+PASS: /Sub name is preserved in the structure dump
+PASS: content under /DocumentFragment is kept
+PASS: /DocumentFragment name is preserved in the structure dump
+PASS: content under /Artifact is kept
+PASS: /Artifact name is preserved in the structure dump
+PASS: content under /MyCustomThing is kept
+PASS: /MyCustomThing name is preserved in the structure dump
+PASS: content under /H7 is kept
+PASS: /H7 name is preserved in the structure dump
+PASS: no element reported as Unknown
+PASS: RoleMap-resolved type is reported by its standard name
+PASS: content under RoleMap-resolved type is kept
+PASS: grandchildren of an unknown element are kept
+PASS: valid sibling kept, invalid element dropped
+PASS: probe runs
+PASS: ParentTree has no entry for the dropped element
+PASS: valgrind: reading ParentTree elements is clean
+all checks passed
+<end of output>
+Test time =   3.59 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-tagged-unknown-types" end time: Oct 27 11:05 MDT
+"docslurp-tagged-unknown-types" time elapsed: 00:00:03
+----------------------------------------------------------
+
+136/144 Testing: docslurp-tagged-struct-text-pages
+136/144 Test: docslurp-tagged-struct-text-pages
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/tagged-structure/test_struct_text_pages.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/tagged-structure
+"docslurp-tagged-struct-text-pages" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: explicit /Pg
+PASS: /Pg inherited from an ancestor
+PASS: no /Pg: page found via the ParentTree, no leaking
+PASS: single element without /Pg gets only its own page
+PASS: /Stm form content is separate from page content
+PASS: no /Pg and no /StructParents: unique MCID resolved
+PASS: ambiguous MCID without page info does not leak other pages
+PASS: large document struct text is complete
+PASS: 2400 MCIDs on 20 pages extract in under 2 s (took 0.09 s)
+all checks passed
+<end of output>
+Test time =   0.41 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-tagged-struct-text-pages" end time: Oct 27 11:05 MDT
+"docslurp-tagged-struct-text-pages" time elapsed: 00:00:00
+----------------------------------------------------------
+
+132/144 Testing: docslurp-raster-jpx-params
+132/144 Test: docslurp-raster-jpx-params
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/raster-images/test_jpx_params.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/raster-images
+"docslurp-raster-jpx-params" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: pdfimages -list rgb.jp2: rgb/3 jpx
+PASS: pdfimages -list rgb.jp2: no diagnostics
+PASS: pdfimages -list rgb.j2k: rgb/3 jpx
+PASS: pdfimages -list rgb.j2k: no diagnostics
+PASS: pdfimages -list gray.j2k: gray/1 jpx
+PASS: pdfimages -list gray.j2k: no diagnostics
+PASS: found SOT marker in fixture
+PASS: damaged tile data: -list still reports rgb/3
+PASS: damaged tile data: -list does not decode (no OpenJPEG diagnostics)
+PASS: big jp2 listed correctly
+PASS: listing a 3000x3000 JPX costs < half of rendering it (0.01s vs 0.46s CPU)
+PASS: render: JPX centre pixel is the encoded colour
+PASS: render: page background untouched
+PASS: palette JP2: -list reports the expanded rgb/3
+PASS: palette JP2 renders in colour
+all checks passed
+<end of output>
+Test time =   2.53 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-raster-jpx-params" end time: Oct 27 11:05 MDT
+"docslurp-raster-jpx-params" time elapsed: 00:00:02
+----------------------------------------------------------
+
+135/144 Testing: docslurp-tagged-actualtext
+135/144 Test: docslurp-tagged-actualtext
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/tagged-structure/test_actualtext.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/tagged-structure
+"docslurp-tagged-actualtext" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: ActualText on /P is honoured
+PASS: ActualText on /Figure is honoured
+PASS: ActualText on /Link is honoured
+PASS: ActualText on /H1 is honoured
+PASS: ActualText on /Artifact is honoured
+PASS: ActualText on /MyTag is honoured
+PASS: ActualText in a named property list (/P) is honoured
+PASS: ActualText on /Span still honoured
+PASS: nested ActualText: outermost wins
+PASS: nested ActualText with a plain span in between
+PASS: plain nested span does not end ActualText
+PASS: sequential ActualText sequences
+PASS: text after nested ActualText survives
+all checks passed
+<end of output>
+Test time =   0.40 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-tagged-actualtext" end time: Oct 27 11:05 MDT
+"docslurp-tagged-actualtext" time elapsed: 00:00:00
+----------------------------------------------------------
+
+134/144 Testing: docslurp-tagged-mc-balance
+134/144 Test: docslurp-tagged-mc-balance
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/tagged-structure/test_mc_balance.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/tagged-structure
+"docslurp-tagged-mc-balance" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: inline-dict Span nested in MCID keeps trailing text
+PASS: named /OC property list nested in MCID keeps trailing text
+PASS: named /Span property list nested in MCID keeps trailing text
+PASS: BMC nested in MCID keeps trailing text
+PASS: two nested levels keep all text
+PASS: text after EMC is not part of the element
+PASS: pdftotext still extracts the text after the MCID
+all checks passed
+<end of output>
+Test time =   0.37 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-tagged-mc-balance" end time: Oct 27 11:05 MDT
+"docslurp-tagged-mc-balance" time elapsed: 00:00:00
+----------------------------------------------------------
+
+139/144 Testing: docslurp-unicode-cid-broken-tounicode
+139/144 Test: docslurp-unicode-cid-broken-tounicode
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_cid_broken_tounicode.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-cid-broken-tounicode" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: no ToUnicode: text comes from the Adobe-Japan1 collection
+PASS: garbage ToUnicode: falls back to the collection map
+PASS: ToUnicode without mappings: falls back to the collection map
+PASS: valid ToUnicode keeps precedence (U+3042 -> U+3044)
+PASS: partial ToUnicode: unmapped codes filled from the collection map
+PASS: Identity-H partial ToUnicode: no collection fallback for glyph-id CIDs
+all checks passed
+<end of output>
+Test time =   0.30 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-cid-broken-tounicode" end time: Oct 27 11:05 MDT
+"docslurp-unicode-cid-broken-tounicode" time elapsed: 00:00:00
+----------------------------------------------------------
+
+142/144 Testing: docslurp-unicode-ligature-decompose
+142/144 Test: docslurp-unicode-ligature-decompose
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_ligature_decompose.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-ligature-decompose" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: ligatures decompose, other presentation forms untouched
+PASS: word box still spans the nine glyph advances
+PASS: glib: one character box per extracted character
+PASS: glib: character boxes are in reading order
+all checks passed
+<end of output>
+Test time =   0.35 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-ligature-decompose" end time: Oct 27 11:05 MDT
+"docslurp-unicode-ligature-decompose" time elapsed: 00:00:00
+----------------------------------------------------------
+
+91/144 Testing: check_qt6_search
+91/144 Test: check_qt6_search
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_search"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_search" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestSearch *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestSearch::initTestCase()
+PASS   : TestSearch::testAcrossLinesSearch()
+PASS   : TestSearch::testAcrossLinesSearchDoubleColumn()
+PASS   : TestSearch::testAcrossLinesContinuationRect()
+PASS   : TestSearch::bug7063()
+PASS   : TestSearch::testNextAndPrevious()
+PASS   : TestSearch::testWholeWordsOnly()
+PASS   : TestSearch::testIgnoreDiacritics()
+PASS   : TestSearch::testRussianSearch()
+PASS   : TestSearch::testDeseretSearch()
+PASS   : TestSearch::cleanupTestCase()
+Totals: 11 passed, 0 failed, 0 skipped, 0 blacklisted, 173ms
+********* Finished testing of TestSearch *********
+<end of output>
+Test time =   0.25 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_search" end time: Oct 27 11:06 MDT
+"check_qt6_search" time elapsed: 00:00:00
+----------------------------------------------------------
+
+124/144 Testing: docslurp-pdftotext-output-wordmeta
+124/144 Test: docslurp-pdftotext-output-wordmeta
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_wordmeta.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-wordmeta" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: -bbox: all words present
+PASS: -bbox Red: font name 'Helvetica'
+PASS: -bbox Red: font size 12
+PASS: -bbox Red: rotation 0
+PASS: -bbox Red: space_after 1
+PASS: -bbox Red: invisible 0
+PASS: -bbox Red: colour #ff0000
+PASS: -bbox Red: numeric baseline
+PASS: -bbox blue: font name 'Helvetica'
+PASS: -bbox blue: font size 9
+PASS: -bbox blue: rotation 0
+PASS: -bbox blue: space_after 0
+PASS: -bbox blue: invisible 0
+PASS: -bbox blue: colour #0000ff
+PASS: -bbox blue: numeric baseline
+PASS: -bbox hidden: font name 'Helvetica'
+PASS: -bbox hidden: font size 12
+PASS: -bbox hidden: rotation 0
+PASS: -bbox hidden: space_after 1
+PASS: -bbox hidden: invisible 1
+PASS: -bbox hidden: colour #000000
+PASS: -bbox hidden: numeric baseline
+PASS: -bbox ocr: font name 'Helvetica'
+PASS: -bbox ocr: font size 12
+PASS: -bbox ocr: rotation 0
+PASS: -bbox ocr: space_after 0
+PASS: -bbox ocr: invisible 1
+PASS: -bbox ocr: colour #000000
+PASS: -bbox ocr: numeric baseline
+PASS: -bbox odd (escaped font name round-trips): font name 'Foo&Bar"Q<x>'
+PASS: -bbox odd (escaped font name round-trips): font size 10
+PASS: -bbox odd (escaped font name round-trips): rotation 0
+PASS: -bbox odd (escaped font name round-trips): space_after 0
+PASS: -bbox odd (escaped font name round-trips): invisible 0
+PASS: -bbox odd (escaped font name round-trips): colour #808080
+PASS: -bbox odd (escaped font name round-trips): numeric baseline
+PASS: -bbox: words on a line share a baseline
+PASS: -bbox-layout: all words present
+PASS: -bbox-layout Red: font name 'Helvetica'
+PASS: -bbox-layout Red: font size 12
+PASS: -bbox-layout Red: rotation 0
+PASS: -bbox-layout Red: space_after 1
+PASS: -bbox-layout Red: invisible 0
+PASS: -bbox-layout Red: colour #ff0000
+PASS: -bbox-layout Red: numeric baseline
+PASS: -bbox-layout blue: font name 'Helvetica'
+PASS: -bbox-layout blue: font size 9
+PASS: -bbox-layout blue: rotation 0
+PASS: -bbox-layout blue: space_after 0
+PASS: -bbox-layout blue: invisible 0
+PASS: -bbox-layout blue: colour #0000ff
+PASS: -bbox-layout blue: numeric baseline
+PASS: -bbox-layout hidden: font name 'Helvetica'
+PASS: -bbox-layout hidden: font size 12
+PASS: -bbox-layout hidden: rotation 0
+PASS: -bbox-layout hidden: space_after 1
+PASS: -bbox-layout hidden: invisible 1
+PASS: -bbox-layout hidden: colour #000000
+PASS: -bbox-layout hidden: numeric baseline
+PASS: -bbox-layout ocr: font name 'Helvetica'
+PASS: -bbox-layout ocr: font size 12
+PASS: -bbox-layout ocr: rotation 0
+PASS: -bbox-layout ocr: space_after 0
+PASS: -bbox-layout ocr: invisible 1
+PASS: -bbox-layout ocr: colour #000000
+PASS: -bbox-layout ocr: numeric baseline
+PASS: -bbox-layout odd (escaped font name round-trips): font name 'Foo&Bar"Q<x>'
+PASS: -bbox-layout odd (escaped font name round-trips): font size 10
+PASS: -bbox-layout odd (escaped font name round-trips): rotation 0
+PASS: -bbox-layout odd (escaped font name round-trips): space_after 0
+PASS: -bbox-layout odd (escaped font name round-trips): invisible 0
+PASS: -bbox-layout odd (escaped font name round-trips): colour #808080
+PASS: -bbox-layout odd (escaped font name round-trips): numeric baseline
+PASS: -bbox-layout: words on a line share a baseline
+PASS: -tsv: header gains the metadata columns
+PASS: -tsv: every row has the same number of columns
+PASS: -tsv: Red word metadata
+PASS: -tsv: blue word metadata
+PASS: -tsv: Tr 3 text is invisible
+PASS: -tsv: font name is not XML-escaped
+PASS: -tsv: page/block/line rows have empty metadata columns
+PASS: rotation field takes values 0..3 for rotated text
+PASS: -bbox without -wordmeta has no extra attributes
+PASS: -bbox word element has exactly the four coordinates
+PASS: -bbox-layout without -wordmeta has no extra attributes
+PASS: -tsv without -wordmeta keeps 12 columns
+PASS: -wordmeta alone writes no text
+all checks passed
+<end of output>
+Test time =   0.31 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-wordmeta" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-wordmeta" time elapsed: 00:00:00
+----------------------------------------------------------
+
+83/144 Testing: check_qt6_annotations
+83/144 Test: check_qt6_annotations
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_annotations"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_annotations" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestAnnotations *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestAnnotations::initTestCase()
+PASS   : TestAnnotations::checkQColorPrecision()
+QWARN  : TestAnnotations::checkFontSizeAndColor() Annotation::setPopup implementation when the pdf annotation exists not yet complete
+QWARN  : TestAnnotations::checkFontSizeAndColor() Annotation::setPopup implementation when the pdf annotation exists not yet complete
+PASS   : TestAnnotations::checkFontSizeAndColor()
+QWARN  : TestAnnotations::checkHighlightFromAndToQuads() Annotation::setPopup implementation when the pdf annotation exists not yet complete
+PASS   : TestAnnotations::checkHighlightFromAndToQuads()
+PASS   : TestAnnotations::checkUTF16LEAnnot()
+QDEBUG : TestAnnotations::checkModificationCreationDate() "Error: Invalid XRef entry 14"
+QDEBUG : TestAnnotations::checkModificationCreationDate() "Error: Invalid XRef entry 154"
+QDEBUG : TestAnnotations::checkModificationCreationDate() "Error: Invalid XRef entry 155"
+QDEBUG : TestAnnotations::checkModificationCreationDate() "Error: Invalid XRef entry 156"
+PASS   : TestAnnotations::checkModificationCreationDate()
+PASS   : TestAnnotations::checkNonMarkupAnnotations()
+PASS   : TestAnnotations::checkDefaultAppearance()
+PASS   : TestAnnotations::cleanupTestCase()
+Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 70ms
+********* Finished testing of TestAnnotations *********
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_annotations" end time: Oct 27 11:06 MDT
+"check_qt6_annotations" time elapsed: 00:00:00
+----------------------------------------------------------
+
+125/144 Testing: docslurp-pdftotext-output-structured-projection
+125/144 Test: docslurp-pdftotext-output-structured-projection
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_structured_projection.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-structured-projection" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: zero-x: words retain their order
+PASS: zero-x: one line in each format
+PASS: zero-x: XML line is the union of its words
+PASS: zero-x: TSV line shares the word union
+PASS: zero-x: first word starts at zero
+PASS: zero-x: all formats contain the same words
+PASS: zero-x: XML modes share geometry and metadata for One
+PASS: zero-x: TSV word geometry for One
+PASS: zero-x: shared fontName for One
+PASS: zero-x: shared rotation for One
+PASS: zero-x: shared spaceAfter for One
+PASS: zero-x: shared invisible for One
+PASS: zero-x: shared color for One
+PASS: zero-x: shared fontSize for One
+PASS: zero-x: shared baseline for One
+PASS: zero-x: XML modes share geometry and metadata for Two
+PASS: zero-x: TSV word geometry for Two
+PASS: zero-x: shared fontName for Two
+PASS: zero-x: shared rotation for Two
+PASS: zero-x: shared spaceAfter for Two
+PASS: zero-x: shared invisible for Two
+PASS: zero-x: shared color for Two
+PASS: zero-x: shared fontSize for Two
+PASS: zero-x: shared baseline for Two
+PASS: negative-x: words retain their order
+PASS: negative-x: one line in each format
+PASS: negative-x: XML line is the union of its words
+PASS: negative-x: TSV line shares the word union
+PASS: negative-x: first word starts before zero
+PASS: negative-x: all formats contain the same words
+PASS: negative-x: XML modes share geometry and metadata for One
+PASS: negative-x: TSV word geometry for One
+PASS: negative-x: shared fontName for One
+PASS: negative-x: shared rotation for One
+PASS: negative-x: shared spaceAfter for One
+PASS: negative-x: shared invisible for One
+PASS: negative-x: shared color for One
+PASS: negative-x: shared fontSize for One
+PASS: negative-x: shared baseline for One
+PASS: negative-x: XML modes share geometry and metadata for Two
+PASS: negative-x: TSV word geometry for Two
+PASS: negative-x: shared fontName for Two
+PASS: negative-x: shared rotation for Two
+PASS: negative-x: shared spaceAfter for Two
+PASS: negative-x: shared invisible for Two
+PASS: negative-x: shared color for Two
+PASS: negative-x: shared fontSize for Two
+PASS: negative-x: shared baseline for Two
+PASS: negative-y: words retain their order
+PASS: negative-y: one line in each format
+PASS: negative-y: XML line is the union of its words
+PASS: negative-y: TSV line shares the word union
+PASS: negative-y: word extends above the page
+PASS: negative-y: all formats contain the same words
+PASS: negative-y: XML modes share geometry and metadata for One
+PASS: negative-y: TSV word geometry for One
+PASS: negative-y: shared fontName for One
+PASS: negative-y: shared rotation for One
+PASS: negative-y: shared spaceAfter for One
+PASS: negative-y: shared invisible for One
+PASS: negative-y: shared color for One
+PASS: negative-y: shared fontSize for One
+PASS: negative-y: shared baseline for One
+PASS: negative-y: XML modes share geometry and metadata for Two
+PASS: negative-y: TSV word geometry for Two
+PASS: negative-y: shared fontName for Two
+PASS: negative-y: shared rotation for Two
+PASS: negative-y: shared spaceAfter for Two
+PASS: negative-y: shared invisible for Two
+PASS: negative-y: shared color for Two
+PASS: negative-y: shared fontSize for Two
+PASS: negative-y: shared baseline for Two
+PASS: rotated-text: words retain their order
+PASS: rotated-text: one line in each format
+PASS: rotated-text: XML line is the union of its words
+PASS: rotated-text: TSV line shares the word union
+PASS: rotated-text: all formats contain the same words
+PASS: rotated-text: XML modes share geometry and metadata for One
+PASS: rotated-text: TSV word geometry for One
+PASS: rotated-text: shared fontName for One
+PASS: rotated-text: shared rotation for One
+PASS: rotated-text: shared spaceAfter for One
+PASS: rotated-text: shared invisible for One
+PASS: rotated-text: shared color for One
+PASS: rotated-text: shared fontSize for One
+PASS: rotated-text: shared baseline for One
+PASS: rotated-text: XML modes share geometry and metadata for Two
+PASS: rotated-text: TSV word geometry for Two
+PASS: rotated-text: shared fontName for Two
+PASS: rotated-text: shared rotation for Two
+PASS: rotated-text: shared spaceAfter for Two
+PASS: rotated-text: shared invisible for Two
+PASS: rotated-text: shared color for Two
+PASS: rotated-text: shared fontSize for Two
+PASS: rotated-text: shared baseline for Two
+PASS: rotated-page: words retain their order
+PASS: rotated-page: one line in each format
+PASS: rotated-page: XML line is the union of its words
+PASS: rotated-page: TSV line shares the word union
+PASS: rotated-page: all formats contain the same words
+PASS: rotated-page: XML modes share geometry and metadata for One
+PASS: rotated-page: TSV word geometry for One
+PASS: rotated-page: shared fontName for One
+PASS: rotated-page: shared rotation for One
+PASS: rotated-page: shared spaceAfter for One
+PASS: rotated-page: shared invisible for One
+PASS: rotated-page: shared color for One
+PASS: rotated-page: shared fontSize for One
+PASS: rotated-page: shared baseline for One
+PASS: rotated-page: XML modes share geometry and metadata for Two
+PASS: rotated-page: TSV word geometry for Two
+PASS: rotated-page: shared fontName for Two
+PASS: rotated-page: shared rotation for Two
+PASS: rotated-page: shared spaceAfter for Two
+PASS: rotated-page: shared invisible for Two
+PASS: rotated-page: shared color for Two
+PASS: rotated-page: shared fontSize for Two
+PASS: rotated-page: shared baseline for Two
+PASS: crop-zero-x: words retain their order
+PASS: crop-zero-x: one line in each format
+PASS: crop-zero-x: XML line is the union of its words
+PASS: crop-zero-x: TSV line shares the word union
+PASS: crop-zero-x: first word starts at zero
+PASS: crop-zero-x: all formats contain the same words
+PASS: crop-zero-x: XML modes share geometry and metadata for One
+PASS: crop-zero-x: TSV word geometry for One
+PASS: crop-zero-x: shared fontName for One
+PASS: crop-zero-x: shared rotation for One
+PASS: crop-zero-x: shared spaceAfter for One
+PASS: crop-zero-x: shared invisible for One
+PASS: crop-zero-x: shared color for One
+PASS: crop-zero-x: shared fontSize for One
+PASS: crop-zero-x: shared baseline for One
+PASS: crop-zero-x: XML modes share geometry and metadata for Two
+PASS: crop-zero-x: TSV word geometry for Two
+PASS: crop-zero-x: shared fontName for Two
+PASS: crop-zero-x: shared rotation for Two
+PASS: crop-zero-x: shared spaceAfter for Two
+PASS: crop-zero-x: shared invisible for Two
+PASS: crop-zero-x: shared color for Two
+PASS: crop-zero-x: shared fontSize for Two
+PASS: crop-zero-x: shared baseline for Two
+PASS: rotated-crop-scaled: words retain their order
+PASS: rotated-crop-scaled: one line in each format
+PASS: rotated-crop-scaled: XML line is the union of its words
+PASS: rotated-crop-scaled: TSV line shares the word union
+PASS: rotated-crop-scaled: all formats contain the same words
+PASS: rotated-crop-scaled: XML modes share geometry and metadata for One
+PASS: rotated-crop-scaled: TSV word geometry for One
+PASS: rotated-crop-scaled: shared fontName for One
+PASS: rotated-crop-scaled: shared rotation for One
+PASS: rotated-crop-scaled: shared spaceAfter for One
+PASS: rotated-crop-scaled: shared invisible for One
+PASS: rotated-crop-scaled: shared color for One
+PASS: rotated-crop-scaled: shared fontSize for One
+PASS: rotated-crop-scaled: shared baseline for One
+PASS: rotated-crop-scaled: XML modes share geometry and metadata for Two
+PASS: rotated-crop-scaled: TSV word geometry for Two
+PASS: rotated-crop-scaled: shared fontName for Two
+PASS: rotated-crop-scaled: shared rotation for Two
+PASS: rotated-crop-scaled: shared spaceAfter for Two
+PASS: rotated-crop-scaled: shared invisible for Two
+PASS: rotated-crop-scaled: shared color for Two
+PASS: rotated-crop-scaled: shared fontSize for Two
+PASS: rotated-crop-scaled: shared baseline for Two
+all checks passed
+<end of output>
+Test time =   0.52 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-structured-projection" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-structured-projection" time elapsed: 00:00:00
+----------------------------------------------------------
+
+113/144 Testing: docslurp-interp-inline-image-skip
+113/144 Test: docslurp-interp-inline-image-skip
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/interp-robustness/test_inline_image_skip.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/interp-robustness
+"docslurp-interp-inline-image-skip" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: raw gray: pdftotext finishes
+PASS: raw gray: CPU time 0.01s < 1.0s
+PASS: raw gray: peak RSS 17 MB < 100 MB
+PASS: raw image mask: pdftotext finishes
+PASS: raw image mask: CPU time 0.02s < 1.0s
+PASS: raw image mask: peak RSS 17 MB < 100 MB
+PASS: AHx: text after the image is extracted
+PASS: AHx: CPU time 0.02s < 0.4s
+PASS: A85: text after the image is extracted
+PASS: A85: CPU time 0.02s < 0.4s
+PASS: Fl: text after the image is extracted
+PASS: Fl: CPU time 0.01s < 0.4s
+PASS: RL: text after the image is extracted
+PASS: RL: CPU time 0.01s < 0.4s
+PASS: LZW: text after the image is extracted
+PASS: LZW: CPU time 0.01s < 0.4s
+PASS: DCT: text after the image is extracted
+PASS: DCT: CPU time 0.01s < 0.4s
+PASS: ordinary inline images: text after them is extracted
+PASS: two rounds of inline images keep text order
+PASS: pdftoppm writes a 100x100 PPM
+PASS: top-left pixel is red
+PASS: top-right pixel is green
+PASS: bottom-left pixel is blue
+PASS: bottom-right pixel is yellow
+all checks passed
+<end of output>
+Test time =   0.30 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-interp-inline-image-skip" end time: Oct 27 11:06 MDT
+"docslurp-interp-inline-image-skip" time elapsed: 00:00:00
+----------------------------------------------------------
+
+92/144 Testing: check_qt6_actualtext
+92/144 Test: check_qt6_actualtext
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_actualtext"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_actualtext" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestActualText *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestActualText::initTestCase()
+PASS   : TestActualText::checkActualText1()
+PASS   : TestActualText::checkActualText2(full page)
+PASS   : TestActualText::checkActualText2(full line)
+PASS   : TestActualText::checkActualText2(full line [narrow])
+PASS   : TestActualText::checkActualText2(above line)
+PASS   : TestActualText::checkActualText2(above line mid)
+PASS   : TestActualText::checkActualText2(first two words)
+PASS   : TestActualText::checkActualText2(first two words [narrow])
+PASS   : TestActualText::checkActualText2(first character)
+PASS   : TestActualText::checkActualText2(last two words)
+PASS   : TestActualText::checkActualText2(last character)
+PASS   : TestActualText::checkActualText2(middle 'fox')
+PASS   : TestActualText::checkActualText2(middle 'x')
+PASS   : TestActualText::checkAllOrientations(Portrait)
+PASS   : TestActualText::checkAllOrientations(Landscape)
+PASS   : TestActualText::checkAllOrientations(Upside down)
+PASS   : TestActualText::checkAllOrientations(Seacape)
+PASS   : TestActualText::checkAllOrientations(Portrait A4 rect)
+PASS   : TestActualText::checkAllOrientations(Landscape A4 rect)
+PASS   : TestActualText::checkAllOrientations(Upside down A4 rect)
+PASS   : TestActualText::checkAllOrientations(Seacape A4 rect)
+PASS   : TestActualText::checkAllOrientations(Portrait line rect)
+PASS   : TestActualText::checkAllOrientations(Landscape line rect)
+PASS   : TestActualText::checkAllOrientations(Upside down line rect)
+PASS   : TestActualText::checkAllOrientations(Seacape line rect)
+PASS   : TestActualText::checkAllOrientations(Portrait small rect B)
+PASS   : TestActualText::checkAllOrientations(Portrait small rect E)
+PASS   : TestActualText::checkAllOrientations(Landscape small rect B)
+PASS   : TestActualText::checkAllOrientations(Landscape small rect E)
+PASS   : TestActualText::checkAllOrientations(Upside down small rect B)
+PASS   : TestActualText::checkAllOrientations(Upside down small rect E)
+PASS   : TestActualText::checkAllOrientations(Seacape small rect B)
+PASS   : TestActualText::checkAllOrientations(Seacape small rect E)
+PASS   : TestActualText::checkFakeboldText(Upright line 1)
+PASS   : TestActualText::checkFakeboldText(Upright line 2)
+PASS   : TestActualText::checkFakeboldText(Upright line 3)
+PASS   : TestActualText::checkFakeboldText(Upright line 4)
+PASS   : TestActualText::checkFakeboldText(Upright line 5)
+PASS   : TestActualText::checkFakeboldText(Rotated 90' line 1)
+PASS   : TestActualText::checkFakeboldText(Rotated 90' line 2)
+PASS   : TestActualText::checkFakeboldText(Rotated 90' line 3)
+PASS   : TestActualText::checkFakeboldText(Rotated 90' line 4)
+PASS   : TestActualText::checkFakeboldText(Rotated 90' line 5)
+PASS   : TestActualText::checkFakeboldText(Rotated 180' line 1)
+PASS   : TestActualText::checkFakeboldText(Rotated 180' line 2)
+PASS   : TestActualText::checkFakeboldText(Rotated 180' line 3)
+PASS   : TestActualText::checkFakeboldText(Rotated 180' line 4)
+PASS   : TestActualText::checkFakeboldText(Rotated 180' line 5)
+PASS   : TestActualText::checkFakeboldText(Rotated 270' line 1)
+PASS   : TestActualText::checkFakeboldText(Rotated 270' line 2)
+PASS   : TestActualText::checkFakeboldText(Rotated 270' line 3)
+PASS   : TestActualText::checkFakeboldText(Rotated 270' line 4)
+PASS   : TestActualText::checkFakeboldText(Rotated 270' line 5)
+PASS   : TestActualText::cleanupTestCase()
+Totals: 55 passed, 0 failed, 0 skipped, 0 blacklisted, 176ms
+********* Finished testing of TestActualText *********
+<end of output>
+Test time =   0.25 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_actualtext" end time: Oct 27 11:06 MDT
+"check_qt6_actualtext" time elapsed: 00:00:00
+----------------------------------------------------------
+
+138/144 Testing: docslurp-tagged-alt-text
+138/144 Test: docslurp-tagged-alt-text
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/tagged-structure/test_alt_text.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/tagged-structure
+"docslurp-tagged-alt-text" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: ASCII alt text is printed without a trailing NUL
+PASS: no NUL or placeholder after the alt text
+PASS: PDFDocEncoding alt text is UTF-8
+PASS: UTF-16BE alt text
+all checks passed
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-tagged-alt-text" end time: Oct 27 11:06 MDT
+"docslurp-tagged-alt-text" time elapsed: 00:00:00
+----------------------------------------------------------
+
+140/144 Testing: docslurp-unicode-wordspace-2byte
+140/144 Test: docslurp-unicode-wordspace-2byte
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_wordspace_2byte.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-wordspace-2byte" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: Tw=0 extracts ACB
+PASS: Tw=30 does not scramble the 2-byte text
+PASS: Tw=30 gives the same word boxes as Tw=0
+PASS: Tw=0: one word with positive width
+PASS: Tw=30: one word with positive width
+all checks passed
+<end of output>
+Test time =   0.21 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-wordspace-2byte" end time: Oct 27 11:06 MDT
+"docslurp-unicode-wordspace-2byte" time elapsed: 00:00:00
+----------------------------------------------------------
+
+116/144 Testing: docslurp-interp-ocg-null-entries
+116/144 Test: docslurp-interp-ocg-null-entries
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/interp-robustness/test_ocg_null_entries.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/interp-robustness
+"docslurp-interp-ocg-null-entries" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: OFF [6 0 R null] (control): extracted ['PLAIN', 'BETA']
+PASS: OFF [null 6 0 R]: extracted ['PLAIN', 'BETA']
+PASS: OFF [null 6 0 R null 7 0 R]: extracted ['PLAIN']
+PASS: OFF [42 6 0 R] (integer entry): extracted ['PLAIN', 'BETA']
+PASS: OFF [99 0 R 6 0 R] (not a group): extracted ['PLAIN', 'BETA']
+PASS: OCGs [null 6 0 R 7 0 R]: extracted ['PLAIN', 'BETA']
+PASS: OCGs [99 0 R 6 0 R 7 0 R]: extracted ['PLAIN', 'BETA']
+PASS: BaseState OFF, ON [null 7 0 R]: extracted ['PLAIN', 'BETA']
+PASS: BaseState OFF, ON [99 0 R 7 0 R]: extracted ['PLAIN', 'BETA']
+all checks passed
+<end of output>
+Test time =   0.30 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-interp-ocg-null-entries" end time: Oct 27 11:06 MDT
+"docslurp-interp-ocg-null-entries" time elapsed: 00:00:00
+----------------------------------------------------------
+
+121/144 Testing: docslurp-pdftotext-output-table-cells-glib
+121/144 Test: docslurp-pdftotext-output-table-cells-glib
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_table_cells_glib.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-table-cells-glib" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: table cells are separated by tabs, rows by newlines
+PASS: cells are no longer glued ('Apple101.20')
+PASS: text layout has one rectangle per character (74 rects, 74 chars)
+PASS: text attributes cover the whole text
+PASS: each tab rectangle lies between the neighbouring cells
+PASS: non-table text is unchanged
+PASS: non-table layout has one rectangle per character
+all checks passed
+<end of output>
+Test time =   0.34 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-table-cells-glib" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-table-cells-glib" time elapsed: 00:00:00
+----------------------------------------------------------
+
+115/144 Testing: docslurp-interp-softmask-text-leak
+115/144 Test: docslurp-interp-softmask-text-leak
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/interp-robustness/test_softmask_text_leak.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/interp-robustness
+"docslurp-interp-softmask-text-leak" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: pdftotext : mask group text is not extracted
+PASS: pdftotext : visible text is extracted
+PASS: pdftotext -raw: mask group text is not extracted
+PASS: pdftotext -raw: visible text is extracted
+PASS: pdftotext -layout: mask group text is not extracted
+PASS: pdftotext -layout: visible text is extracted
+PASS: mask group text inside a form is not extracted
+PASS: pdftoppm writes a 100x100 PPM
+PASS: unmasked half is red
+PASS: masked half stays white
+all checks passed
+<end of output>
+Test time =   0.25 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-interp-softmask-text-leak" end time: Oct 27 11:06 MDT
+"docslurp-interp-softmask-text-leak" time elapsed: 00:00:00
+----------------------------------------------------------
+
+81/144 Testing: check_qt6_fonts
+81/144 Test: check_qt6_fonts
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_fonts"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_fonts" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestFontsData *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestFontsData::initTestCase()
+PASS   : TestFontsData::checkNoFonts()
+PASS   : TestFontsData::checkType1()
+PASS   : TestFontsData::checkType3()
+PASS   : TestFontsData::checkTrueType()
+PASS   : TestFontsData::checkFontIterator()
+PASS   : TestFontsData::checkSecondDocumentQuery()
+PASS   : TestFontsData::checkMultipleIterations()
+PASS   : TestFontsData::checkIteratorFonts()
+PASS   : TestFontsData::cleanupTestCase()
+Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted, 49ms
+********* Finished testing of TestFontsData *********
+<end of output>
+Test time =   0.18 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_fonts" end time: Oct 27 11:06 MDT
+"check_qt6_fonts" time elapsed: 00:00:00
+----------------------------------------------------------
+
+126/144 Testing: docslurp-pdftotext-output-bbox-rtl-logical
+126/144 Test: docslurp-pdftotext-output-bbox-rtl-logical
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_bbox_rtl_logical.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-bbox-rtl-logical" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: plain text has the logical word
+PASS: -bbox: RTL word in logical order
+PASS: -bbox: no visual-order RTL word
+PASS: -bbox: LTR words unchanged
+PASS: -bbox: no bidi embedding controls
+PASS: -bbox-layout: RTL word in logical order
+PASS: -bbox-layout: no visual-order RTL word
+PASS: -bbox-layout: LTR words unchanged
+PASS: -bbox-layout: no bidi embedding controls
+PASS: plain: LTR-dominant mixed word
+PASS: -bbox: LTR-dominant mixed word keeps its left-to-right order
+PASS: -tsv: RTL word in logical order
+PASS: -tsv: LTR words unchanged
+PASS: -tsv: no bidi embedding controls
+all checks passed
+<end of output>
+Test time =   0.31 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-bbox-rtl-logical" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-bbox-rtl-logical" time elapsed: 00:00:00
+----------------------------------------------------------
+
+79/144 Testing: check_qt6_attachments
+79/144 Test: check_qt6_attachments
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_attachments"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_attachments" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestAttachments *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestAttachments::initTestCase()
+PASS   : TestAttachments::checkNoAttachments()
+PASS   : TestAttachments::checkAttach1()
+PASS   : TestAttachments::checkAttach2()
+PASS   : TestAttachments::checkAttach3()
+PASS   : TestAttachments::checkAttach4()
+PASS   : TestAttachments::cleanupTestCase()
+Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 17ms
+********* Finished testing of TestAttachments *********
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_attachments" end time: Oct 27 11:06 MDT
+"check_qt6_attachments" time elapsed: 00:00:00
+----------------------------------------------------------
+
+89/144 Testing: check_qt6_password
+89/144 Test: check_qt6_password
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_password"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_password" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestPassword *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestPassword::initTestCase()
+PASS   : TestPassword::password1()
+QDEBUG : TestPassword::password1a() "Error: Incorrect password"
+PASS   : TestPassword::password1a()
+PASS   : TestPassword::password2()
+PASS   : TestPassword::password2a()
+PASS   : TestPassword::password2b()
+QDEBUG : TestPassword::password3() "Error: Incorrect password"
+PASS   : TestPassword::password3()
+QDEBUG : TestPassword::password4() "Error: Incorrect password"
+PASS   : TestPassword::password4()
+QDEBUG : TestPassword::password4b() "Error: Incorrect password"
+PASS   : TestPassword::password4b()
+QDEBUG : TestPassword::password5() "Error: Incorrect password"
+PASS   : TestPassword::password5()
+PASS   : TestPassword::cleanupTestCase()
+Totals: 11 passed, 0 failed, 0 skipped, 0 blacklisted, 117ms
+********* Finished testing of TestPassword *********
+<end of output>
+Test time =   0.21 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_password" end time: Oct 27 11:06 MDT
+"check_qt6_password" time elapsed: 00:00:00
+----------------------------------------------------------
+
+82/144 Testing: check_qt6_links
+82/144 Test: check_qt6_links
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_links"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_links" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestLinks *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestLinks::initTestCase()
+QDEBUG : TestLinks::checkDocumentWithNoDests() "Error: failed to look up (no.dests.in.this.document)"
+QDEBUG : TestLinks::checkDocumentWithNoDests() "Error: Bad named destination value"
+PASS   : TestLinks::checkDocumentWithNoDests()
+PASS   : TestLinks::checkDests_xr01()
+QDEBUG : TestLinks::checkDests_xr02() "Error: failed to look up (section.3)"
+QDEBUG : TestLinks::checkDests_xr02() "Error: Bad named destination value"
+QDEBUG : TestLinks::checkDests_xr02() "Error: failed to look up (section.15)"
+QDEBUG : TestLinks::checkDests_xr02() "Error: Bad named destination value"
+PASS   : TestLinks::checkDests_xr02()
+PASS   : TestLinks::checkDocumentURILink()
+PASS   : TestLinks::cleanupTestCase()
+Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 16ms
+********* Finished testing of TestLinks *********
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_links" end time: Oct 27 11:06 MDT
+"check_qt6_links" time elapsed: 00:00:00
+----------------------------------------------------------
+
+119/144 Testing: docslurp-pdftotext-output-escaping
+119/144 Test: docslurp-pdftotext-output-escaping
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_escaping.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-escaping" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: every TSV row has exactly 12 columns
+PASS: header + page + block + line + word rows only (got 5)
+PASS: word text has controls replaced by single spaces
+PASS: no stray CR/FF/VT in TSV output
+PASS: ordinary TSV text unchanged
+PASS: -bbox: &, <, >, quote and apostrophe round-trip through an XML parser
+PASS: -bbox-layout: &, <, >, quote and apostrophe round-trip through an XML parser
+PASS: -bbox: control characters become spaces and output parses
+PASS: -bbox-layout: control characters become spaces and output parses
+all checks passed
+<end of output>
+Test time =   0.25 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-escaping" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-escaping" time elapsed: 00:00:00
+----------------------------------------------------------
+
+128/144 Testing: docslurp-pdftotext-output-type3-font-size
+128/144 Test: docslurp-pdftotext-output-type3-font-size
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_type3_font_size.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-type3-font-size" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: Type 3 CJK word reports 8 pt
+PASS: CJK and Latin on one baseline form one line
+PASS: matplotlib-style Type 3 word reports 10 pt
+PASS: -raw keeps the word space for a matplotlib-style Type 3 font
+PASS: plain text keeps the line together
+all checks passed
+<end of output>
+Test time =   0.16 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-type3-font-size" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-type3-font-size" time elapsed: 00:00:00
+----------------------------------------------------------
+
+120/144 Testing: docslurp-pdftotext-output-dehyphenate-paragraphs
+120/144 Test: docslurp-pdftotext-output-dehyphenate-paragraphs
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_dehyphenate_paragraphs.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-dehyphenate-paragraphs" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: hyphen: hyphen inside a block is still joined (exam-/ple)
+PASS: hyphen: second hyphen inside a block is still joined (hyphen-/ated)
+PASS: hyphen: last line of a block does not swallow the next paragraph
+PASS: hyphen: no glued 'dashThird'
+PASS: hyphen -remove-hyphens all: hyphen inside a block is still joined (exam-/ple)
+PASS: hyphen -remove-hyphens all: second hyphen inside a block is still joined (hyphen-/ated)
+PASS: hyphen -remove-hyphens all: last line of a block does not swallow the next paragraph
+PASS: hyphen -remove-hyphens all: no glued 'dashThird'
+PASS: soft hyphen: last line of a block does not swallow the next paragraph
+PASS: soft hyphen: no glued 'dashThird'
+PASS: -remove-hyphens none keeps every hyphen and line break
+all checks passed
+<end of output>
+Test time =   0.20 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-dehyphenate-paragraphs" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-dehyphenate-paragraphs" time elapsed: 00:00:00
+----------------------------------------------------------
+
+101/144 Testing: check_qt6_signature_basics_pgp
+101/144 Test: check_qt6_signature_basics_pgp
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_signature_basics_pgp"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_signature_basics_pgp" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestSignatureBasicsPgpSignature *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestSignatureBasicsPgpSignature::initTestCase()
+PASS   : TestSignatureBasicsPgpSignature::testPgp(nss)
+PASS   : TestSignatureBasicsPgpSignature::testPgp(gpg)
+PASS   : TestSignatureBasicsPgpSignature::cleanupTestCase()
+Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 29ms
+********* Finished testing of TestSignatureBasicsPgpSignature *********
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_signature_basics_pgp" end time: Oct 27 11:06 MDT
+"check_qt6_signature_basics_pgp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+127/144 Testing: docslurp-pdftotext-output-rtl-glyph-gaps
+127/144 Test: docslurp-pdftotext-output-rtl-glyph-gaps
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_rtl_glyph_gaps.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-rtl-glyph-gaps" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: plain: shaping gaps do not split the word; the word space remains
+PASS: plain: left-to-right word space unchanged
+PASS: -bbox-layout: one space between the two Arabic words
+all checks passed
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-rtl-glyph-gaps" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-rtl-glyph-gaps" time elapsed: 00:00:00
+----------------------------------------------------------
+
+84/144 Testing: check_qt6_metadata
+84/144 Test: check_qt6_metadata
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_metadata"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_metadata" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestMetaData *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestMetaData::initTestCase()
+PASS   : TestMetaData::checkStrings(Author)
+PASS   : TestMetaData::checkStrings(Title)
+PASS   : TestMetaData::checkStrings(Subject)
+PASS   : TestMetaData::checkStrings(Keywords)
+PASS   : TestMetaData::checkStrings(Creator)
+PASS   : TestMetaData::checkStrings(Producer)
+PASS   : TestMetaData::checkStrings2(Title)
+PASS   : TestMetaData::checkStrings2(Author)
+PASS   : TestMetaData::checkStrings2(Creator)
+PASS   : TestMetaData::checkStrings2(Producer)
+PASS   : TestMetaData::checkStrings2(Keywords)
+PASS   : TestMetaData::checkStrings2(Custom1)
+PASS   : TestMetaData::checkStrings2(Custom2)
+PASS   : TestMetaData::checkStringKeys()
+PASS   : TestMetaData::checkLinearised()
+PASS   : TestMetaData::checkNumPages()
+PASS   : TestMetaData::checkDate()
+PASS   : TestMetaData::checkPageSize()
+PASS   : TestMetaData::checkPortraitOrientation()
+PASS   : TestMetaData::checkLandscapeOrientation()
+PASS   : TestMetaData::checkUpsideDownOrientation()
+PASS   : TestMetaData::checkSeascapeOrientation()
+PASS   : TestMetaData::checkVersion()
+PASS   : TestMetaData::checkPdfId()
+PASS   : TestMetaData::checkNoPdfId()
+PASS   : TestMetaData::checkXml()
+PASS   : TestMetaData::cleanupTestCase()
+Totals: 28 passed, 0 failed, 0 skipped, 0 blacklisted, 79ms
+********* Finished testing of TestMetaData *********
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_metadata" end time: Oct 27 11:06 MDT
+"check_qt6_metadata" time elapsed: 00:00:00
+----------------------------------------------------------
+
+80/144 Testing: check_qt6_dateConversion
+80/144 Test: check_qt6_dateConversion
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_dateConversion"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_dateConversion" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestDateConv *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestDateConv::initTestCase()
+PASS   : TestDateConv::checkDates(D:20040101121110)
+PASS   : TestDateConv::checkDates(20040101121110)
+PASS   : TestDateConv::checkDates(D:2006)
+PASS   : TestDateConv::checkDates(D:200602)
+PASS   : TestDateConv::checkDates(D:20060304)
+PASS   : TestDateConv::checkDates(D:2006030405)
+PASS   : TestDateConv::checkDates(D:200603040512)
+PASS   : TestDateConv::checkDates(D:20060304051226)
+PASS   : TestDateConv::checkDates(D:20030131115258-04'00')
+PASS   : TestDateConv::checkDates(D:20030131115258+05'00')
+PASS   : TestDateConv::checkDates(D:20030131115258+08'30')
+PASS   : TestDateConv::checkDates(D:20030131115258-08'30')
+PASS   : TestDateConv::checkInvalidDates(Null data)
+PASS   : TestDateConv::checkInvalidDates(Empty data)
+PASS   : TestDateConv::checkInvalidDates(One character)
+PASS   : TestDateConv::checkInvalidDates('D:')
+PASS   : TestDateConv::checkInvalidDates(Not a date)
+PASS   : TestDateConv::cleanupTestCase()
+Totals: 19 passed, 0 failed, 0 skipped, 0 blacklisted, 2ms
+********* Finished testing of TestDateConv *********
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_dateConversion" end time: Oct 27 11:06 MDT
+"check_qt6_dateConversion" time elapsed: 00:00:00
+----------------------------------------------------------
+
+133/144 Testing: docslurp-smoke-pdftotext
+133/144 Test: docslurp-smoke-pdftotext
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/smoke/test_smoke.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/smoke
+"docslurp-smoke-pdftotext" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: pdftotext extracts generated text
+PASS: pdfinfo reads generated PDF
+all checks passed
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-smoke-pdftotext" end time: Oct 27 11:06 MDT
+"docslurp-smoke-pdftotext" time elapsed: 00:00:00
+----------------------------------------------------------
+
+105/144 Testing: check_qt6_overprint
+105/144 Test: check_qt6_overprint
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_overprint"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_overprint" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestOverprint *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestOverprint::initTestCase()
+PASS   : TestOverprint::checkOverprintImageRendering()
+PASS   : TestOverprint::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 18ms
+********* Finished testing of TestOverprint *********
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_overprint" end time: Oct 27 11:06 MDT
+"check_qt6_overprint" time elapsed: 00:00:00
+----------------------------------------------------------
+
+114/144 Testing: docslurp-interp-sh-skipped-for-text
+114/144 Test: docslurp-interp-sh-skipped-for-text
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/interp-robustness/test_sh_skipped_for_text.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/interp-robustness
+"docslurp-interp-sh-skipped-for-text" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: pdftotext finishes
+PASS: text around the shadings is extracted
+PASS: 400 mesh shadings: CPU time 0.01s < 0.5s
+PASS: pdftoppm writes a 100x100 PPM
+PASS: left edge is red
+PASS: right edge is blue
+all checks passed
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-interp-sh-skipped-for-text" end time: Oct 27 11:06 MDT
+"docslurp-interp-sh-skipped-for-text" time elapsed: 00:00:00
+----------------------------------------------------------
+
+117/144 Testing: docslurp-interp-xref-reconstruct-guard
+117/144 Test: docslurp-interp-xref-reconstruct-guard
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/interp-robustness/test_xref_reconstruct_guard.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/interp-robustness
+"docslurp-interp-xref-reconstruct-guard" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: dangling ref: other fonts still extract
+PASS: objects missing from the xref table are recovered
+all checks passed
+<end of output>
+Test time =   0.13 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-interp-xref-reconstruct-guard" end time: Oct 27 11:06 MDT
+"docslurp-interp-xref-reconstruct-guard" time elapsed: 00:00:00
+----------------------------------------------------------
+
+123/144 Testing: docslurp-pdftotext-output-pdftohtml-wordbreak
+123/144 Test: docslurp-pdftotext-output-pdftohtml-wordbreak
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_pdftohtml_wordbreak.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-pdftohtml-wordbreak" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: a large gap between unrotated words splits the string
+PASS: rotated text stays in one string
+all checks passed
+<end of output>
+Test time =   0.13 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-pdftohtml-wordbreak" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-pdftohtml-wordbreak" time elapsed: 00:00:00
+----------------------------------------------------------
+
+90/144 Testing: check_qt6_permissions
+90/144 Test: check_qt6_permissions
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_permissions"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_permissions" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestPermissions *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestPermissions::initTestCase()
+PASS   : TestPermissions::permissions1()
+PASS   : TestPermissions::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 3ms
+********* Finished testing of TestPermissions *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_permissions" end time: Oct 27 11:06 MDT
+"check_qt6_permissions" time elapsed: 00:00:00
+----------------------------------------------------------
+
+108/144 Testing: check_qt6_untrusted_signature_keylist
+108/144 Test: check_qt6_untrusted_signature_keylist
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_untrusted_signature_keylist"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_untrusted_signature_keylist" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of CheckUntrustedSignatureKeylist *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : CheckUntrustedSignatureKeylist::initTestCase()
+PASS   : CheckUntrustedSignatureKeylist::testUntrustedKeylist()
+PASS   : CheckUntrustedSignatureKeylist::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 40ms
+********* Finished testing of CheckUntrustedSignatureKeylist *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_untrusted_signature_keylist" end time: Oct 27 11:06 MDT
+"check_qt6_untrusted_signature_keylist" time elapsed: 00:00:00
+----------------------------------------------------------
+
+143/144 Testing: docslurp-unicode-arabic-presentation
+143/144 Test: docslurp-unicode-arabic-presentation
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_arabic_presentation.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-arabic-presentation" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: plain: base letters in logical order
+PASS: plain: no presentation forms
+PASS: plain: isolated fatha keeps its mark, no inserted space
+PASS: plain: a phrase ligature is not collapsed into one word
+PASS: -bbox: base letters in logical order
+PASS: -bbox: no presentation forms
+PASS: -tsv: base letters in logical order
+all checks passed
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-arabic-presentation" end time: Oct 27 11:06 MDT
+"docslurp-unicode-arabic-presentation" time elapsed: 00:00:00
+----------------------------------------------------------
+
+85/144 Testing: check_qt6_optcontent
+85/144 Test: check_qt6_optcontent
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_optcontent"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_optcontent" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestOptionalContent *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestOptionalContent::initTestCase()
+PASS   : TestOptionalContent::checkVisPolicy()
+PASS   : TestOptionalContent::checkNestedLayers()
+PASS   : TestOptionalContent::checkNoOptionalContent()
+PASS   : TestOptionalContent::checkIsVisible()
+PASS   : TestOptionalContent::checkVisibilitySetting()
+PASS   : TestOptionalContent::checkRadioButtons()
+PASS   : TestOptionalContent::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 11ms
+********* Finished testing of TestOptionalContent *********
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_optcontent" end time: Oct 27 11:06 MDT
+"check_qt6_optcontent" time elapsed: 00:00:00
+----------------------------------------------------------
+
+88/144 Testing: check_qt6_pagemode
+88/144 Test: check_qt6_pagemode
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_pagemode"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_pagemode" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestPageMode *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestPageMode::initTestCase()
+PASS   : TestPageMode::checkNone()
+PASS   : TestPageMode::checkFullScreen()
+PASS   : TestPageMode::checkAttachments()
+PASS   : TestPageMode::checkThumbs()
+PASS   : TestPageMode::checkOC()
+PASS   : TestPageMode::cleanupTestCase()
+Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 9ms
+********* Finished testing of TestPageMode *********
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_pagemode" end time: Oct 27 11:06 MDT
+"check_qt6_pagemode" time elapsed: 00:00:00
+----------------------------------------------------------
+
+97/144 Testing: check_qt6_stroke_opacity
+97/144 Test: check_qt6_stroke_opacity
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_stroke_opacity"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_stroke_opacity" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestStrokeOpacity *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestStrokeOpacity::initTestCase()
+PASS   : TestStrokeOpacity::checkStrokeOpacity(splash)
+PASS   : TestStrokeOpacity::checkStrokeOpacity(qpainter)
+PASS   : TestStrokeOpacity::cleanupTestCase()
+Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 9ms
+********* Finished testing of TestStrokeOpacity *********
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_stroke_opacity" end time: Oct 27 11:06 MDT
+"check_qt6_stroke_opacity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+86/144 Testing: check_qt6_forms
+86/144 Test: check_qt6_forms
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_forms"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_forms" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestForms *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestForms::initTestCase()
+PASS   : TestForms::testCheckbox()
+PASS   : TestForms::testCheckboxIssue159()
+PASS   : TestForms::testSetIcon()
+PASS   : TestForms::testSetPrintable()
+PASS   : TestForms::testSetAppearanceText()
+PASS   : TestForms::testStandAloneWidgets()
+PASS   : TestForms::testUnicodeFieldAttributes()
+PASS   : TestForms::cleanupTestCase()
+Totals: 9 passed, 0 failed, 0 skipped, 0 blacklisted, 23ms
+********* Finished testing of TestForms *********
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_forms" end time: Oct 27 11:06 MDT
+"check_qt6_forms" time elapsed: 00:00:00
+----------------------------------------------------------
+
+144/144 Testing: docslurp-unicode-cjk-radicals
+144/144 Test: docslurp-unicode-cjk-radicals
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/unicode-mapping/test_cjk_radicals.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/unicode-mapping
+"docslurp-unicode-cjk-radicals" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+PASS: plain: radicals become unified ideographs
+PASS: -bbox: radicals become unified ideographs
+all checks passed
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-unicode-cjk-radicals" end time: Oct 27 11:06 MDT
+"docslurp-unicode-cjk-radicals" time elapsed: 00:00:00
+----------------------------------------------------------
+
+99/144 Testing: check_qt6_outline
+99/144 Test: check_qt6_outline
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_outline"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_outline" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestOutline *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestOutline::initTestCase()
+PASS   : TestOutline::checkOutline_xr02()
+PASS   : TestOutline::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 3ms
+********* Finished testing of TestOutline *********
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_outline" end time: Oct 27 11:06 MDT
+"check_qt6_outline" time elapsed: 00:00:00
+----------------------------------------------------------
+
+111/144 Testing: check_qt6_pagelabelinfo
+111/144 Test: check_qt6_pagelabelinfo
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_pagelabelinfo"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_pagelabelinfo" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestPageLabelInfo *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestPageLabelInfo::initTestCase()
+PASS   : TestPageLabelInfo::testFromDecimal()
+PASS   : TestPageLabelInfo::testFromDecimalUnicode()
+PASS   : TestPageLabelInfo::testToRoman()
+PASS   : TestPageLabelInfo::testFromRoman()
+PASS   : TestPageLabelInfo::testToLatin()
+PASS   : TestPageLabelInfo::testFromLatin()
+PASS   : TestPageLabelInfo::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of TestPageLabelInfo *********
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_pagelabelinfo" end time: Oct 27 11:06 MDT
+"check_qt6_pagelabelinfo" time elapsed: 00:00:00
+----------------------------------------------------------
+
+87/144 Testing: check_qt6_pagelayout
+87/144 Test: check_qt6_pagelayout
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_pagelayout"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_pagelayout" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestPageLayout *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestPageLayout::initTestCase()
+PASS   : TestPageLayout::checkNone()
+PASS   : TestPageLayout::checkSingle()
+PASS   : TestPageLayout::checkFacing()
+PASS   : TestPageLayout::cleanupTestCase()
+Totals: 5 passed, 0 failed, 0 skipped, 0 blacklisted, 6ms
+********* Finished testing of TestPageLayout *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_pagelayout" end time: Oct 27 11:06 MDT
+"check_qt6_pagelayout" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/144 Testing: poppler-check-bb-orientation.pdf
+3/144 Test: poppler-check-bb-orientation.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/orientation.pdf" "34" "34" "83.74" "49" "793" "34" "808" "97.19" "488.02" "793" "561" "808" "34" "503.61" "49" "561"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-orientation.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/orientation.pdf
+    page: 1
+        bounding box: 34,34 - 83.745,49
+        correct:      34,34 - 83.74,49
+    page: 2
+        bounding box: 793,34 - 808,97.1902
+        correct:      793,34 - 808,97.19
+    page: 3
+        bounding box: 488.023,793 - 561,808
+        correct:      488.02,793 - 561,808
+    page: 4
+        bounding box: 34,503.613 - 49,561
+        correct:      34,503.61 - 49,561
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-orientation.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-orientation.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+106/144 Testing: check_qt6_endoflines
+106/144 Test: check_qt6_endoflines
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_endoflines"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_endoflines" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of EndOfLines *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : EndOfLines::initTestCase()
+PASS   : EndOfLines::checkEndOfLines()
+PASS   : EndOfLines::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 3ms
+********* Finished testing of EndOfLines *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_endoflines" end time: Oct 27 11:06 MDT
+"check_qt6_endoflines" time elapsed: 00:00:00
+----------------------------------------------------------
+
+112/144 Testing: check_qt6_strings
+112/144 Test: check_qt6_strings
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_strings"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_strings" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestStrings *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestStrings::initTestCase()
+PASS   : TestStrings::check_unicodeToQString(a)
+PASS   : TestStrings::check_unicodeToQString(š)
+PASS   : TestStrings::check_unicodeToQString(ab)
+PASS   : TestStrings::check_unicodeToQString(aš)
+PASS   : TestStrings::check_unicodeToQString(封面)
+PASS   : TestStrings::check_unicodeToQString(封面 + 0)
+PASS   : TestStrings::check_unicodeToQString(封面 + two 0)
+QWARN  : TestStrings::check_UnicodeParsedString() Duplicate data tag "test string" - please rename.
+PASS   : TestStrings::check_UnicodeParsedString(<empty>)
+PASS   : TestStrings::check_UnicodeParsedString(a)
+PASS   : TestStrings::check_UnicodeParsedString(ab)
+PASS   : TestStrings::check_UnicodeParsedString(~)
+PASS   : TestStrings::check_UnicodeParsedString(test string)
+PASS   : TestStrings::check_UnicodeParsedString(<unicode marks>)
+PASS   : TestStrings::check_UnicodeParsedString(U a)
+PASS   : TestStrings::check_UnicodeParsedString(U ~)
+PASS   : TestStrings::check_UnicodeParsedString(U aa)
+PASS   : TestStrings::check_UnicodeParsedString(U ß)
+PASS   : TestStrings::check_UnicodeParsedString(U ßa)
+PASS   : TestStrings::check_UnicodeParsedString(U š)
+PASS   : TestStrings::check_UnicodeParsedString(U ša)
+PASS   : TestStrings::check_UnicodeParsedString(test string)
+PASS   : TestStrings::check_UnicodeParsedString(UTF16-LE)
+PASS   : TestStrings::check_QStringToUnicodeGooString(<null>)
+PASS   : TestStrings::check_QStringToUnicodeGooString(<empty>)
+PASS   : TestStrings::check_QStringToUnicodeGooString(a)
+PASS   : TestStrings::check_QStringToUnicodeGooString(ab)
+PASS   : TestStrings::check_QStringToUnicodeGooString(test string)
+PASS   : TestStrings::check_QStringToUnicodeGooString(ß)
+PASS   : TestStrings::check_QStringToUnicodeGooString(ßa)
+PASS   : TestStrings::check_QStringToGooString(<null>)
+PASS   : TestStrings::check_QStringToGooString(<empty>)
+PASS   : TestStrings::check_QStringToGooString(a)
+PASS   : TestStrings::check_QStringToGooString(ab)
+PASS   : TestStrings::cleanupTestCase()
+Totals: 35 passed, 0 failed, 0 skipped, 0 blacklisted, 4ms
+********* Finished testing of TestStrings *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_strings" end time: Oct 27 11:06 MDT
+"check_qt6_strings" time elapsed: 00:00:00
+----------------------------------------------------------
+
+98/144 Testing: check_qt6_utf_conversion
+98/144 Test: check_qt6_utf_conversion
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_utf_conversion"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_utf_conversion" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestUTFConversion *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestUTFConversion::initTestCase()
+PASS   : TestUTFConversion::testUTF(<empty>)
+PASS   : TestUTFConversion::testUTF(a)
+PASS   : TestUTFConversion::testUTF(abc)
+PASS   : TestUTFConversion::testUTF(Latin)
+PASS   : TestUTFConversion::testUTF(Greek)
+PASS   : TestUTFConversion::testUTF(Icelandic)
+PASS   : TestUTFConversion::testUTF(Russian)
+PASS   : TestUTFConversion::testUTF(Sanskrit)
+PASS   : TestUTFConversion::testUTF(Arabic)
+PASS   : TestUTFConversion::testUTF(Chinese)
+PASS   : TestUTFConversion::testUTF(Thai)
+PASS   : TestUTFConversion::testUTF(non BMP)
+PASS   : TestUTFConversion::testUnicodeToAscii7()
+PASS   : TestUTFConversion::testUnicodeLittleEndian()
+PASS   : TestUTFConversion::cleanupTestCase()
+Totals: 16 passed, 0 failed, 0 skipped, 0 blacklisted, 3ms
+********* Finished testing of TestUTFConversion *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_utf_conversion" end time: Oct 27 11:06 MDT
+"check_qt6_utf_conversion" time elapsed: 00:00:00
+----------------------------------------------------------
+
+102/144 Testing: check_qt6_utf8document
+102/144 Test: check_qt6_utf8document
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_utf8document"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_utf8document" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestUtf8Document *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestUtf8Document::initTestCase()
+PASS   : TestUtf8Document::checkStrings()
+PASS   : TestUtf8Document::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 4ms
+********* Finished testing of TestUtf8Document *********
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_utf8document" end time: Oct 27 11:06 MDT
+"check_qt6_utf8document" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/144 Testing: poppler-check-bb-vis_policy_test.pdf
+7/144 Test: poppler-check-bb-vis_policy_test.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/vis_policy_test.pdf" "90" "77.93" "312.01" "265.13"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-vis_policy_test.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/vis_policy_test.pdf
+    page: 1
+        bounding box: 90,77.9279 - 312.013,265.127
+        correct:      90,77.93 - 312.01,265.13
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-vis_policy_test.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-vis_policy_test.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+46/144 Testing: signature/invalid/etsi_esscertid_04.pdf
+46/144 Test: signature/invalid/etsi_esscertid_04.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_04.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_04.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_04.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_04.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/144 Testing: poppler-check-bb-form_set_icon.pdf
+15/144 Test: poppler-check-bb-form_set_icon.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/form_set_icon.pdf" "0" "0" "362.835" "272.126"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-form_set_icon.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/form_set_icon.pdf
+    page: 1
+        bounding box: 0,0 - 362.835,272.126
+        correct:      0,0 - 362.835,272.126
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-form_set_icon.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-form_set_icon.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+45/144 Testing: signature/invalid/detached_rsa_mismatch.pdf
+45/144 Test: signature/invalid/detached_rsa_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/detached_rsa_mismatch.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/detached_rsa_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/detached_rsa_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/detached_rsa_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+22/144 Testing: poppler-check-bb-type3.pdf
+22/144 Test: poppler-check-bb-type3.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/type3.pdf" "-p" "10" "125.80" "130" "509.30" "695" "125.80" "132" "538.03" "693"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-type3.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/type3.pdf
+    page: 1
+        bounding box: 125.798,124.089 - 509.302,699.049
+        correct:      125.8,130 - 509.3,695
+    page: 2
+        bounding box: 125.798,123.355 - 538.028,699.049
+        correct:      125.8,132 - 538.03,693
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-type3.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-type3.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+59/144 Testing: signature/digest_mismatch/detached_hash_mismatch.pdf
+59/144 Test: signature/digest_mismatch/detached_hash_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/digest_mismatch/detached_hash_mismatch.pdf" "--digest-mismatch"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/digest_mismatch/detached_hash_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/digest_mismatch/detached_hash_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/digest_mismatch/detached_hash_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+50/144 Testing: signature/invalid/etsi_esscertid_08.pdf
+50/144 Test: signature/invalid/etsi_esscertid_08.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_08.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_08.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_08.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_08.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/144 Testing: poppler-check-bb-truetype.pdf
+14/144 Test: poppler-check-bb-truetype.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/truetype.pdf" "17.5" "17.5" "577.5" "225.62"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-truetype.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/truetype.pdf
+    page: 1
+        bounding box: 17.5,17.5 - 577.5,225.626
+        correct:      17.5,17.5 - 577.5,225.62
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-truetype.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-truetype.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/144 Testing: poppler-check-bb-checkbox_issue_159.pdf
+17/144 Test: poppler-check-bb-checkbox_issue_159.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/checkbox_issue_159.pdf" "2.84" "14.17" "553.18" "840.87"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-checkbox_issue_159.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/checkbox_issue_159.pdf
+    page: 1
+        bounding box: 2.835,14.1732 - 553.181,840.872
+        correct:      2.84,14.17 - 553.18,840.87
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-checkbox_issue_159.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-checkbox_issue_159.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+56/144 Testing: signature/invalid/mismatch_etsi_vs_sha1.pdf
+56/144 Test: signature/invalid/mismatch_etsi_vs_sha1.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/mismatch_etsi_vs_sha1.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/mismatch_etsi_vs_sha1.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/mismatch_etsi_vs_sha1.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/mismatch_etsi_vs_sha1.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/144 Testing: poppler-check-bb-imageretrieve+attachment.pdf
+16/144 Test: poppler-check-bb-imageretrieve+attachment.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/imageretrieve+attachment.pdf" "0" "0" "610.56" "792"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-imageretrieve+attachment.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/imageretrieve+attachment.pdf
+    page: 1
+        bounding box: 0,0 - 610.56,792
+        correct:      0,0 - 610.56,792
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-imageretrieve+attachment.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-imageretrieve+attachment.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+1/144 Testing: poppler-check-text
+1/144 Test: poppler-check-text
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-text"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-text" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+The slow brown fox jumps over the black dog.
+Consistency test between poppler_page_get_text() and poppler_page_get_text_layout()
+Issue #1100 
+Test: OK ('layout glyph areas' match amount of 'utf8 characters')
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-text" end time: Oct 27 11:06 MDT
+"poppler-check-text" time elapsed: 00:00:00
+----------------------------------------------------------
+
+49/144 Testing: signature/invalid/etsi_esscertid_07.pdf
+49/144 Test: signature/invalid/etsi_esscertid_07.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_07.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_07.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_07.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_07.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+21/144 Testing: poppler-check-bb-utf16le-annot.pdf
+21/144 Test: poppler-check-bb-utf16le-annot.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/utf16le-annot.pdf" "55.47" "54.78" "98.74" "96.12"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-utf16le-annot.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/utf16le-annot.pdf
+    page: 1
+        bounding box: 55.4716,54.7796 - 98.7364,96.1204
+        correct:      55.47,54.78 - 98.74,96.12
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-utf16le-annot.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-utf16le-annot.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+19/144 Testing: poppler-check-bb-A6EmbeddedFiles.pdf
+19/144 Test: poppler-check-bb-A6EmbeddedFiles.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/A6EmbeddedFiles.pdf" "18" "18" "558.36" "751.92"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-A6EmbeddedFiles.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/A6EmbeddedFiles.pdf
+    page: 1
+        bounding box: 18,18 - 558.36,751.92
+        correct:      18,18 - 558.36,751.92
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-A6EmbeddedFiles.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-A6EmbeddedFiles.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+55/144 Testing: signature/invalid/mismatch_detached_vs_sha1.pdf
+55/144 Test: signature/invalid/mismatch_detached_vs_sha1.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/mismatch_detached_vs_sha1.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/mismatch_detached_vs_sha1.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/mismatch_detached_vs_sha1.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/mismatch_detached_vs_sha1.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/144 Testing: poppler-check-bb-xr01.pdf
+4/144 Test: poppler-check-bb-xr01.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "148.71" "126.35" "308.11" "704.57"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-xr01.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/xr01.pdf
+    page: 1
+        bounding box: 148.712,126.35 - 308.114,704.568
+        correct:      148.71,126.35 - 308.11,704.57
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-xr01.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-xr01.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+44/144 Testing: signature/valid/sha1_mixed_functions.pdf
+44/144 Test: signature/valid/sha1_mixed_functions.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/sha1_mixed_functions.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/sha1_mixed_functions.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/sha1_mixed_functions.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/sha1_mixed_functions.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/144 Testing: poppler-check-bb-shapes+attachments.pdf
+2/144 Test: poppler-check-bb-shapes+attachments.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/shapes+attachments.pdf" "42.5" "42.5" "557.5" "557.5"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-shapes+attachments.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/shapes+attachments.pdf
+    page: 1
+        bounding box: 42.5,42.5 - 557.5,557.5
+        correct:      42.5,42.5 - 557.5,557.5
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-shapes+attachments.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-shapes+attachments.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+54/144 Testing: signature/invalid/etsi_rsa_mismatch.pdf
+54/144 Test: signature/invalid/etsi_rsa_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_rsa_mismatch.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_rsa_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_rsa_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_rsa_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/144 Testing: poppler-check-bb-xr02.pdf
+5/144 Test: poppler-check-bb-xr02.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/xr02.pdf" "133.77" "124.81" "308.11" "704.57" "133.77" "124.80" "308.11" "704.57"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-xr02.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/xr02.pdf
+    page: 1
+        bounding box: 133.768,124.809 - 308.114,704.568
+        correct:      133.77,124.81 - 308.11,704.57
+    page: 2
+        bounding box: 133.768,124.809 - 308.114,704.568
+        correct:      133.77,124.8 - 308.11,704.57
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-xr02.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-xr02.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+62/144 Testing: signature/digest_mismatch/sha1_hash_mismatch.pdf
+62/144 Test: signature/digest_mismatch/sha1_hash_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/digest_mismatch/sha1_hash_mismatch.pdf" "--digest-mismatch"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/digest_mismatch/sha1_hash_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/digest_mismatch/sha1_hash_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/digest_mismatch/sha1_hash_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/144 Testing: poppler-check-bb-searchAcrossLines.pdf
+8/144 Test: poppler-check-bb-searchAcrossLines.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/searchAcrossLines.pdf" "107.15" "105.23" "523.85" "691" "85.04" "94" "538.59" "762.19"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-searchAcrossLines.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/searchAcrossLines.pdf
+    page: 1
+        bounding box: 107.151,105.232 - 523.847,691.006
+        correct:      107.15,105.23 - 523.85,691
+    page: 2
+        bounding box: 85.039,94.0026 - 538.585,762.185
+        correct:      85.04,94 - 538.59,762.19
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-searchAcrossLines.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-searchAcrossLines.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+53/144 Testing: signature/invalid/etsi_esscertid_11.pdf
+53/144 Test: signature/invalid/etsi_esscertid_11.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_11.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_11.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_11.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_11.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/144 Testing: poppler-check-bb-WithActualText.pdf
+12/144 Test: poppler-check-bb-WithActualText.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf" "100" "90.72" "331.01" "102.35"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-WithActualText.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/WithActualText.pdf
+    page: 1
+        bounding box: 100,90.72 - 331.012,102.35
+        correct:      100,90.72 - 331.01,102.35
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-WithActualText.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-WithActualText.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+41/144 Testing: signature/valid/etsi_esscertid_02.pdf
+41/144 Test: signature/valid/etsi_esscertid_02.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/etsi_esscertid_02.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/etsi_esscertid_02.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/etsi_esscertid_02.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/etsi_esscertid_02.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+61/144 Testing: signature/digest_mismatch/sha1_function_mismatch.pdf
+61/144 Test: signature/digest_mismatch/sha1_function_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/digest_mismatch/sha1_function_mismatch.pdf" "--digest-mismatch"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/digest_mismatch/sha1_function_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/digest_mismatch/sha1_function_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/digest_mismatch/sha1_function_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+18/144 Testing: poppler-check-bb-NestedLayers.pdf
+18/144 Test: poppler-check-bb-NestedLayers.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/NestedLayers.pdf" "0" "191" "612" "792"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-NestedLayers.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/NestedLayers.pdf
+    page: 1
+        bounding box: 0,191 - 612,792
+        correct:      0,191 - 612,792
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-NestedLayers.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-NestedLayers.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+94/144 Testing: check_qt6_internal_outline
+94/144 Test: check_qt6_internal_outline
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_internal_outline"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_internal_outline" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestInternalOutline *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestInternalOutline::initTestCase()
+PASS   : TestInternalOutline::testCreateOutline()
+PASS   : TestInternalOutline::testSetOutline()
+PASS   : TestInternalOutline::testInsertChild()
+PASS   : TestInternalOutline::testRemoveChild()
+PASS   : TestInternalOutline::testSetTitleAndSetPageDest()
+PASS   : TestInternalOutline::cleanupTestCase()
+Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 7ms
+********* Finished testing of TestInternalOutline *********
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_internal_outline" end time: Oct 27 11:06 MDT
+"check_qt6_internal_outline" time elapsed: 00:00:00
+----------------------------------------------------------
+
+58/144 Testing: signature/invalid/sha1_rsa_mismatch.pdf
+58/144 Test: signature/invalid/sha1_rsa_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/sha1_rsa_mismatch.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/sha1_rsa_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/sha1_rsa_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/sha1_rsa_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+43/144 Testing: signature/valid/sha1.pdf
+43/144 Test: signature/valid/sha1.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/sha1.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/sha1.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/sha1.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/sha1.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+42/144 Testing: signature/valid/etsi_esscertid_03.pdf
+42/144 Test: signature/valid/etsi_esscertid_03.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/etsi_esscertid_03.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/etsi_esscertid_03.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/etsi_esscertid_03.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/etsi_esscertid_03.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+32/144 Testing: embed-png-rgb16
+32/144 Test: embed-png-rgb16
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-rgb16.png" "-depth" "16" "-colorspace" "DeviceRGB"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-rgb16" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-rgb16" end time: Oct 27 11:06 MDT
+"embed-png-rgb16" time elapsed: 00:00:00
+----------------------------------------------------------
+
+48/144 Testing: signature/invalid/etsi_esscertid_06.pdf
+48/144 Test: signature/invalid/etsi_esscertid_06.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_06.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_06.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_06.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_06.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/144 Testing: poppler-check-bb-bug7063.pdf
+11/144 Test: poppler-check-bb-bug7063.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/bug7063.pdf" "56.8" "57.46" "244.29" "118.79"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-bug7063.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/bug7063.pdf
+    page: 1
+        bounding box: 56.8,57.462 - 244.288,118.788
+        correct:      56.8,57.46 - 244.29,118.79
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-bug7063.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-bug7063.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/144 Testing: poppler-check-bb-deseret.pdf
+9/144 Test: poppler-check-bb-deseret.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/deseret.pdf" "56.8" "57.15" "109.5" "72.8"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-deseret.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/deseret.pdf
+    page: 1
+        bounding box: 56.8,57.1488 - 109.496,72.7968
+        correct:      56.8,57.15 - 109.5,72.8
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-deseret.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-deseret.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+20/144 Testing: poppler-check-bb-latex-hyperref-checkbox-issue-655.pdf
+20/144 Test: poppler-check-bb-latex-hyperref-checkbox-issue-655.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/latex-hyperref-checkbox-issue-655.pdf" "148.71" "123.81" "308.11" "704.57"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-latex-hyperref-checkbox-issue-655.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/latex-hyperref-checkbox-issue-655.pdf
+    page: 1
+        bounding box: 148.712,123.806 - 308.114,704.568
+        correct:      148.71,123.81 - 308.11,704.57
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-latex-hyperref-checkbox-issue-655.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-latex-hyperref-checkbox-issue-655.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+28/144 Testing: embed-png-ga8
+28/144 Test: embed-png-ga8
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-ga8.png" "-depth" "8" "-colorspace" "DeviceGray" "-smask"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-ga8" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-ga8" end time: Oct 27 11:06 MDT
+"embed-png-ga8" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/144 Testing: poppler-check-bb-fieldWithUtf16Names.pdf
+10/144 Test: poppler-check-bb-fieldWithUtf16Names.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/fieldWithUtf16Names.pdf" "56.65" "56.65" "264.55" "83.05"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-fieldWithUtf16Names.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/fieldWithUtf16Names.pdf
+    page: 1
+        bounding box: 56.65,56.6508 - 264.55,83.0508
+        correct:      56.65,56.65 - 264.55,83.05
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-fieldWithUtf16Names.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-fieldWithUtf16Names.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+27/144 Testing: embed-png-g16
+27/144 Test: embed-png-g16
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-g16.png" "-depth" "16" "-colorspace" "DeviceGray"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-g16" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-g16" end time: Oct 27 11:06 MDT
+"embed-png-g16" time elapsed: 00:00:00
+----------------------------------------------------------
+
+52/144 Testing: signature/invalid/etsi_esscertid_10.pdf
+52/144 Test: signature/invalid/etsi_esscertid_10.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_10.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_10.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_10.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_10.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/144 Testing: poppler-check-bb-russian.pdf
+6/144 Test: poppler-check-bb-russian.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/russian.pdf" "71.5" "76.81" "197.69" "131.09"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-russian.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/russian.pdf
+    page: 1
+        bounding box: 71.5,76.808 - 197.692,131.092
+        correct:      71.5,76.81 - 197.69,131.09
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-russian.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-russian.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+38/144 Testing: signature/valid/detached.pdf
+38/144 Test: signature/valid/detached.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/detached.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/detached.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/detached.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/detached.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+51/144 Testing: signature/invalid/etsi_esscertid_09.pdf
+51/144 Test: signature/invalid/etsi_esscertid_09.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_09.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_09.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_09.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_09.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+39/144 Testing: signature/valid/etsi.pdf
+39/144 Test: signature/valid/etsi.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/etsi.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/etsi.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/etsi.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/etsi.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+57/144 Testing: signature/invalid/mismatch_sha1_vs_detached.pdf
+57/144 Test: signature/invalid/mismatch_sha1_vs_detached.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/mismatch_sha1_vs_detached.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/mismatch_sha1_vs_detached.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/mismatch_sha1_vs_detached.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/mismatch_sha1_vs_detached.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+47/144 Testing: signature/invalid/etsi_esscertid_05.pdf
+47/144 Test: signature/invalid/etsi_esscertid_05.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/invalid/etsi_esscertid_05.pdf" "--invalid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/invalid/etsi_esscertid_05.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/invalid/etsi_esscertid_05.pdf" end time: Oct 27 11:06 MDT
+"signature/invalid/etsi_esscertid_05.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/144 Testing: poppler-check-bb-Issue637.pdf
+13/144 Test: poppler-check-bb-Issue637.pdf
+Command: "/home/dan/code/oss/poppler/build/glib/tests/poppler-check-bb" "/home/dan/code/oss/poppler-test/unittestcases/Issue637.pdf" "70.87" "53" "293" "105.37"
+Directory: /home/dan/code/oss/poppler/build/glib/tests
+"poppler-check-bb-Issue637.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+file: /home/dan/code/oss/poppler-test/unittestcases/Issue637.pdf
+    page: 1
+        bounding box: 70.8672,52.9986 - 293.005,105.372
+        correct:      70.87,53 - 293,105.37
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"poppler-check-bb-Issue637.pdf" end time: Oct 27 11:06 MDT
+"poppler-check-bb-Issue637.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+60/144 Testing: signature/digest_mismatch/etsi_hash_mismatch.pdf
+60/144 Test: signature/digest_mismatch/etsi_hash_mismatch.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/digest_mismatch/etsi_hash_mismatch.pdf" "--digest-mismatch"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/digest_mismatch/etsi_hash_mismatch.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/digest_mismatch/etsi_hash_mismatch.pdf" end time: Oct 27 11:06 MDT
+"signature/digest_mismatch/etsi_hash_mismatch.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+40/144 Testing: signature/valid/etsi_esscertid_01.pdf
+40/144 Test: signature/valid/etsi_esscertid_01.pdf
+Command: "/home/dan/code/oss/poppler/build/test/pdf-validate-signature" "/home/dan/code/oss/poppler-test/unittestcases/signature/valid/etsi_esscertid_01.pdf" "--valid"
+Directory: /home/dan/code/oss/poppler/build/test
+"signature/valid/etsi_esscertid_01.pdf" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+NSS_Init failed: security library: bad database.
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"signature/valid/etsi_esscertid_01.pdf" end time: Oct 27 11:06 MDT
+"signature/valid/etsi_esscertid_01.pdf" time elapsed: 00:00:00
+----------------------------------------------------------
+
+95/144 Testing: check_qt6_goostring
+95/144 Test: check_qt6_goostring
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_goostring"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_goostring" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestGooString *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestGooString::initTestCase()
+PASS   : TestGooString::testInsertData(foo)
+PASS   : TestGooString::testInsertData(<empty>)
+PASS   : TestGooString::testInsertData(foo+bar #1)
+PASS   : TestGooString::testInsertData(foo+bar #2)
+PASS   : TestGooString::testInsertData(foo+bar #last)
+PASS   : TestGooString::testInsertData(foo+bar #end)
+PASS   : TestGooString::testInsertData(long #start)
+PASS   : TestGooString::testInsert()
+PASS   : TestGooString::testFormat()
+PASS   : TestGooString::testFromNullptr()
+PASS   : TestGooString::cleanupTestCase()
+Totals: 12 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of TestGooString *********
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_goostring" end time: Oct 27 11:06 MDT
+"check_qt6_goostring" time elapsed: 00:00:00
+----------------------------------------------------------
+
+34/144 Testing: embed-png-rgba16
+34/144 Test: embed-png-rgba16
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-rgba16.png" "-depth" "16" "-colorspace" "DeviceRGB" "-smask"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-rgba16" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-rgba16" end time: Oct 27 11:06 MDT
+"embed-png-rgba16" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/144 Testing: embed-png-palette
+30/144 Test: embed-png-palette
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-palette.png" "-depth" "8" "-colorspace" "DeviceRGB"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-palette" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-palette" end time: Oct 27 11:06 MDT
+"embed-png-palette" time elapsed: 00:00:00
+----------------------------------------------------------
+
+35/144 Testing: embed-malformed-png
+35/144 Test: embed-malformed-png
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/malformed.png" "-fail"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-malformed-png" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+libpng error: PNG file corrupted by ASCII conversion
+Internal Error: Couldn't load PNG. libpng error while reading PNG info
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"embed-malformed-png" end time: Oct 27 11:06 MDT
+"embed-malformed-png" time elapsed: 00:00:00
+----------------------------------------------------------
+
+31/144 Testing: embed-png-rgb8
+31/144 Test: embed-png-rgb8
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-rgb8.png" "-depth" "8" "-colorspace" "DeviceRGB"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-rgb8" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-rgb8" end time: Oct 27 11:06 MDT
+"embed-png-rgb8" time elapsed: 00:00:00
+----------------------------------------------------------
+
+93/144 Testing: check_qt6_lexer
+93/144 Test: check_qt6_lexer
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_lexer"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_lexer" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestLexer *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestLexer::initTestCase()
+PASS   : TestLexer::testNumbers()
+PASS   : TestLexer::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 0ms
+********* Finished testing of TestLexer *********
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_lexer" end time: Oct 27 11:06 MDT
+"check_qt6_lexer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+29/144 Testing: embed-png-ga16
+29/144 Test: embed-png-ga16
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-ga16.png" "-depth" "16" "-colorspace" "DeviceGray" "-smask"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-ga16" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-ga16" end time: Oct 27 11:06 MDT
+"embed-png-ga16" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/144 Testing: embed-png-g8
+26/144 Test: embed-png-g8
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-g8.png" "-depth" "8" "-colorspace" "DeviceGray"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-g8" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-g8" end time: Oct 27 11:06 MDT
+"embed-png-g8" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/144 Testing: embed-png-rgba8
+33/144 Test: embed-png-rgba8
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-rgba8.png" "-depth" "8" "-colorspace" "DeviceRGB" "-smask"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-rgba8" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-rgba8" end time: Oct 27 11:06 MDT
+"embed-png-rgba8" time elapsed: 00:00:00
+----------------------------------------------------------
+
+36/144 Testing: embed-jpeg
+36/144 Test: embed-jpeg
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/jpeg.jpg" "-depth" "8" "-colorspace" "DeviceRGB" "-filter" "DCTDecode"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-jpeg" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-jpeg" end time: Oct 27 11:06 MDT
+"embed-jpeg" time elapsed: 00:00:00
+----------------------------------------------------------
+
+25/144 Testing: embed-png-g4
+25/144 Test: embed-png-g4
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-g4.png" "-depth" "8" "-colorspace" "DeviceGray"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-g4" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-g4" end time: Oct 27 11:06 MDT
+"embed-png-g4" time elapsed: 00:00:00
+----------------------------------------------------------
+
+37/144 Testing: embed-malformed-jpeg
+37/144 Test: embed-malformed-jpeg
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/malformed.jpg" "-fail"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-malformed-jpeg" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+Unsupported marker type 0x3d
+Internal Error: libjpeg failed to process the file
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-malformed-jpeg" end time: Oct 27 11:06 MDT
+"embed-malformed-jpeg" time elapsed: 00:00:00
+----------------------------------------------------------
+
+24/144 Testing: embed-png-g2
+24/144 Test: embed-png-g2
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-g2.png" "-depth" "8" "-colorspace" "DeviceGray"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-g2" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-g2" end time: Oct 27 11:06 MDT
+"embed-png-g2" time elapsed: 00:00:00
+----------------------------------------------------------
+
+103/144 Testing: check_qt6_distinguished_name_parser
+103/144 Test: check_qt6_distinguished_name_parser
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_distinguished_name_parser"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_distinguished_name_parser" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestDistinguishedNameParser *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestDistinguishedNameParser::initTestCase()
+QWARN  : TestDistinguishedNameParser::testParser() Duplicate data tag "Quoted quotation" - please rename.
+QWARN  : TestDistinguishedNameParser::testParser() Duplicate data tag "CN="Simple" - please rename.
+PASS   : TestDistinguishedNameParser::testParser(empty)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple)
+PASS   : TestDistinguishedNameParser::testParser(CN=Name with spaces)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple,O=Silly)
+PASS   : TestDistinguishedNameParser::testParser(CN=Steve Kille,O=Isode Limited,C=GB)
+PASS   : TestDistinguishedNameParser::testParser(CN=some.user@example.com, O=MyCompany, L=San Diego,ST=California, C=US)
+PASS   : TestDistinguishedNameParser::testParser(Multi valued)
+PASS   : TestDistinguishedNameParser::testParser(Escaping comma)
+PASS   : TestDistinguishedNameParser::testParser(Escaped trailing space)
+PASS   : TestDistinguishedNameParser::testParser(Escaped quote)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple with escaping)
+PASS   : TestDistinguishedNameParser::testParser(SN=Lu\C4\8Di\C4\87)
+PASS   : TestDistinguishedNameParser::testParser(CN="Quoted name")
+PASS   : TestDistinguishedNameParser::testParser(CN=" Leading and trailing spacees ")
+PASS   : TestDistinguishedNameParser::testParser(Comma in quotes)
+PASS   : TestDistinguishedNameParser::testParser(forbidden chars in quotes)
+PASS   : TestDistinguishedNameParser::testParser(Quoted quotation)
+PASS   : TestDistinguishedNameParser::testParser(Quoted quotation)
+PASS   : TestDistinguishedNameParser::testParser(frompdf1)
+PASS   : TestDistinguishedNameParser::testParser(frompdf1a)
+PASS   : TestDistinguishedNameParser::testParser(frompdf2)
+PASS   : TestDistinguishedNameParser::testParser(frompdf2a)
+PASS   : TestDistinguishedNameParser::testParser(ends with hex string)
+PASS   : TestDistinguishedNameParser::testParser(CN =Simple)
+PASS   : TestDistinguishedNameParser::testParser(CN= Simple)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple )
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple,)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple, O=Silly)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple\)
+PASS   : TestDistinguishedNameParser::testParser(CN=)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple\X)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple, O)
+PASS   : TestDistinguishedNameParser::testParser(CN=Sim"ple)
+PASS   : TestDistinguishedNameParser::testParser(CN=Simple\a)
+PASS   : TestDistinguishedNameParser::testParser(=Simple)
+PASS   : TestDistinguishedNameParser::testParser(CN="Simple)
+PASS   : TestDistinguishedNameParser::testParser(CN="Simple)
+PASS   : TestDistinguishedNameParser::testParser(unquoted quotation in quotation)
+PASS   : TestDistinguishedNameParser::testRemoveLeadingSpaces(Empty)
+PASS   : TestDistinguishedNameParser::testRemoveLeadingSpaces(No leading spaces)
+PASS   : TestDistinguishedNameParser::testRemoveLeadingSpaces(Some spaces)
+PASS   : TestDistinguishedNameParser::testRemoveLeadingSpaces(Some leading and trailing)
+PASS   : TestDistinguishedNameParser::testRemoveTrailingSpaces(Empty)
+PASS   : TestDistinguishedNameParser::testRemoveTrailingSpaces(No leading spaces)
+PASS   : TestDistinguishedNameParser::testRemoveTrailingSpaces(Some spaces)
+PASS   : TestDistinguishedNameParser::testRemoveTrailingSpaces(Some leading and trailing)
+PASS   : TestDistinguishedNameParser::testParseHexString(4)
+PASS   : TestDistinguishedNameParser::testParseHexString(Koch)
+PASS   : TestDistinguishedNameParser::testParseHexString(USt-IdNr. DE 123475223)
+PASS   : TestDistinguishedNameParser::testParseHexString(empty)
+PASS   : TestDistinguishedNameParser::testParseHexString(FFF)
+PASS   : TestDistinguishedNameParser::testParseHexString(F)
+PASS   : TestDistinguishedNameParser::testParseHexString(XX)
+PASS   : TestDistinguishedNameParser::cleanupTestCase()
+Totals: 55 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of TestDistinguishedNameParser *********
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_distinguished_name_parser" end time: Oct 27 11:06 MDT
+"check_qt6_distinguished_name_parser" time elapsed: 00:00:00
+----------------------------------------------------------
+
+104/144 Testing: check_qt6_cidfontswidthsbuilder
+104/144 Test: check_qt6_cidfontswidthsbuilder
+Command: "/home/dan/code/oss/poppler/build/qt6/tests/check_qt6_cidfontswidthsbuilder"
+Directory: /home/dan/code/oss/poppler/build/qt6/tests
+"check_qt6_cidfontswidthsbuilder" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestCIDFontsWidthsBuilder *********
+Config: Using QtTest library 6.12.0, Qt 6.12.0 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 16.2.1 20260810), omarchy 4.0.6
+PASS   : TestCIDFontsWidthsBuilder::initTestCase()
+PASS   : TestCIDFontsWidthsBuilder::testEmpty()
+PASS   : TestCIDFontsWidthsBuilder::testSingleList()
+PASS   : TestCIDFontsWidthsBuilder::testSingleRange()
+PASS   : TestCIDFontsWidthsBuilder::testSimpleSequence()
+PASS   : TestCIDFontsWidthsBuilder::cleanupTestCase()
+Totals: 6 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of TestCIDFontsWidthsBuilder *********
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"check_qt6_cidfontswidthsbuilder" end time: Oct 27 11:06 MDT
+"check_qt6_cidfontswidthsbuilder" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/144 Testing: embed-png-g1
+23/144 Test: embed-png-g1
+Command: "/home/dan/code/oss/poppler/build/test/image-embedding" "/home/dan/code/oss/poppler-test/unittestcases/xr01.pdf" "/home/dan/code/oss/poppler-test/unittestcases/images/png-g1.png" "-depth" "8" "-colorspace" "DeviceGray"
+Directory: /home/dan/code/oss/poppler/build/test
+"embed-png-g1" start time: Oct 27 11:06 MDT
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"embed-png-g1" end time: Oct 27 11:06 MDT
+"embed-png-g1" time elapsed: 00:00:00
+----------------------------------------------------------
+
+129/144 Testing: docslurp-pdftotext-output-rules
+129/144 Test: docslurp-pdftotext-output-rules
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_rules.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-rules" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: without -rules the output has no rules
+PASS: 2 strokes + 4 rectangle edges + 1 thin fill = 7 rules
+PASS: one grey filled box
+PASS: stroke colour is reported
+PASS: rule shares the word coordinate space (just below the word)
+PASS: thin filled rectangle becomes one rule
+PASS: -rules without -bbox-layout is rejected
+PASS: page-cap: rule count and completeness per page
+PASS: document-cap: rule count and completeness per page
+PASS: page-overflow-accounting: rule count and completeness per page
+PASS: off-page stroke is not reported
+PASS: fully clipped stroke is not reported
+PASS: rule coordinates are printed with bounded digits
+PASS: a huge-coordinate stroke is clipped to the page
+PASS: a 1 pt filled rule stays a rule at -r 144
+PASS: nested-form rule amplification stays bounded (16002336 bytes from 6424)
+PASS: a document keeps at most 200000 rules
+all checks passed
+<end of output>
+Test time =   8.18 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-rules" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-rules" time elapsed: 00:00:08
+----------------------------------------------------------
+
+122/144 Testing: docslurp-pdftotext-output-text-encoding-lookup
+122/144 Test: docslurp-pdftotext-output-text-encoding-lookup
+Command: "/usr/bin/python3.14" "-I" "/home/dan/code/oss/poppler/test/docslurp/pdftotext-output/test_text_encoding_lookup.py" "--bindir" "/home/dan/code/oss/poppler/build/utils"
+Directory: /home/dan/code/oss/poppler/build/test/docslurp/pdftotext-output
+"docslurp-pdftotext-output-text-encoding-lookup" start time: Oct 27 11:05 MDT
+Output:
+----------------------------------------------------------
+PASS: -bbox: all 300 words are in the output
+PASS: -bbox: output encoding looked up 3 times for 300 words (want a constant, <= 5)
+PASS: -bbox-layout: all 300 words are in the output
+PASS: -bbox-layout: output encoding looked up 3 times for 300 words (want a constant, <= 5)
+PASS: -tsv: all 300 words are in the output
+PASS: -tsv: output encoding looked up 3 times for 300 words (want a constant, <= 5)
+all checks passed
+<end of output>
+Test time =  14.78 sec
+----------------------------------------------------------
+Test Passed.
+"docslurp-pdftotext-output-text-encoding-lookup" end time: Oct 27 11:06 MDT
+"docslurp-pdftotext-output-text-encoding-lookup" time elapsed: 00:00:14
+----------------------------------------------------------
+
+End testing: Oct 27 11:06 MDT
