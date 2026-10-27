@@ -70,6 +70,7 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <charconv>
 #include "Win32Console.h"
 #include "DateInfo.h"
 
@@ -108,6 +109,7 @@ static bool printEnc = false;
 static bool tsvMode = false;
 static bool wordMeta = false;
 static bool collectRules = false;
+static bool compactLayout = false;
 static char hyphenModeStr[16] = "";
 
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
@@ -125,6 +127,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
                                    { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
                                    { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
+                                   { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
                                    { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
                                    { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
                                    { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
@@ -240,6 +243,7 @@ struct WordMetadata
     bool spaceAfter, invisible;
     double r, g, b;
     double baseline;
+    bool operator==(const WordMetadata &) const = default;
 };
 
 struct ProjectedWord
@@ -354,6 +358,10 @@ int main(int argc, char *argv[])
     }
     if (collectRules && !bboxLayout) {
         error(errCommandLine, -1, "'-rules' needs -bbox-layout");
+        return 99;
+    }
+    if (compactLayout && !bboxLayout) {
+        error(errCommandLine, -1, "'-compact-layout' needs -bbox-layout");
         return 99;
     }
     if (wordMeta && !(bbox || tsvMode)) {
@@ -670,6 +678,49 @@ static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *
 
 static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
 {
+    if (compactLayout) {
+        // The converter needs geometric relationships, not six decimal places.
+        // Avoid a locale-aware stream insertion for every coordinate. This buffer
+        // also fits the fixed representation of the largest finite double.
+        std::string words;
+        words.reserve(4096);
+        std::optional<WordMetadata> previousMetadata;
+        std::string previousAttributes;
+        const auto coordinate = [&](double value) {
+            char buffer[384];
+            const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 3);
+            if (result.ec == std::errc()) {
+                words.append(buffer, result.ptr);
+            } else {
+                words += std::to_string(value);
+            }
+        };
+        const TextBounds bounds = projectLine(line, uMap, wordMeta, [&](const ProjectedWord &word) {
+            words += "          <word xMin=\"";
+            coordinate(word.bounds.xMin);
+            words += "\" yMin=\"";
+            coordinate(word.bounds.yMin);
+            words += "\" xMax=\"";
+            coordinate(word.bounds.xMax);
+            words += "\" yMax=\"";
+            coordinate(word.bounds.yMax);
+            words += "\"";
+            if (word.metadata) {
+                if (!previousMetadata || *previousMetadata != *word.metadata) {
+                    previousAttributes = wordMetaXmlAttributes(*word.metadata);
+                    previousMetadata = *word.metadata;
+                }
+                words += previousAttributes;
+            }
+            words += ">";
+            words += myXmlTokenReplace(word.text->c_str());
+            words += "</word>\n";
+        });
+        fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
+        fwrite(words.data(), 1, words.size(), f);
+        fputs("        </line>\n", f);
+        return;
+    }
     std::stringstream wordXML;
     wordXML << std::fixed << std::setprecision(6);
 
