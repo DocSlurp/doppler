@@ -140,13 +140,53 @@ pub fn near_other(sorted: &[f64], x: f64, tol: f64) -> bool {
         || (lo > 0 && (x - sorted[lo - 1]).abs() <= tol)
 }
 
+/// A work allowance for a page's layout. One unit is one element visited: each [`regions_within`]
+/// call charges its element count, each band a gutter is followed through charges the band's
+/// elements, each gutter that reaches the column test charges its member count, and each
+/// same-baseline merge in [`crate::prose::paragraphs_within`] charges the merged word count.
+/// `doppler_md.py` charges the same units in the same places, so both stop on the same pages.
+#[derive(Clone, Copy, Debug)]
+pub struct Budget {
+    pub used: u64,
+    pub limit: f64,
+}
+
+impl Budget {
+    pub fn new(limit: f64) -> Budget {
+        Budget { used: 0, limit }
+    }
+
+    /// Charge `n` units; false once the total is over the limit.
+    pub(crate) fn spend(&mut self, n: usize) -> bool {
+        self.used += n as u64;
+        self.used as f64 <= self.limit
+    }
+}
+
 /// Layout regions in reading order. Runs of bands sharing a non-table vertical gutter are read
 /// column by column.
 pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, depth: usize) -> Vec<Vec<Elem>> {
+    regions_within(elements, lines, body, p, depth, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
+}
+
+/// [`regions`] within a work budget: `None` once the budget runs out (the region search is
+/// superlinear on hostile pages, e.g. a grid of one-cell lines re-follows every gutter through
+/// every later band).
+pub fn regions_within(
+    elements: &[Elem],
+    lines: &[Rc<Line>],
+    body: f64,
+    p: &Params,
+    depth: usize,
+    budget: &mut Budget,
+) -> Option<Vec<Vec<Elem>>> {
+    if !budget.spend(elements.len()) {
+        return None;
+    }
     let mut elements = elements.to_vec();
     sort_yx(&mut elements);
     if elements.len() < 3 || depth > MAX_DEPTH {
-        return if elements.is_empty() { Vec::new() } else { vec![elements] };
+        return Some(if elements.is_empty() { Vec::new() } else { vec![elements] });
     }
     let bs = bands(&elements);
     // each band's own gutters, once: the start candidates for band i and the `multi` test of
@@ -165,6 +205,9 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
             let mut multi = 0usize;
             while j < bs.len() {
                 let band = &bs[j];
+                if !budget.spend(band.len()) {
+                    return None;
+                }
                 let (mut na, mut nb) = (a, b);
                 for e in band {
                     if e.x0 < nb - 1.0 && e.x1 > na + 1.0 {
@@ -190,6 +233,9 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
             if (multi as f64) < p.column_min_bands {
                 continue;
             }
+            if !budget.spend(bs[i..j].iter().map(Vec::len).sum()) {
+                return None;
+            }
             let members = bs[i..j].iter().flatten();
             let left: Vec<Elem> = members.clone().copied().filter(|e| e.x1 <= a + 1.0).collect();
             let right: Vec<Elem> = members.copied().filter(|e| e.x0 >= b - 1.0).collect();
@@ -206,12 +252,12 @@ pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, dep
         if !pending.is_empty() {
             out.push(std::mem::take(&mut pending));
         }
-        out.extend(regions(&left, lines, body, p, depth + 1));
-        out.extend(regions(&right, lines, body, p, depth + 1));
+        out.extend(regions_within(&left, lines, body, p, depth + 1, budget)?);
+        out.extend(regions_within(&right, lines, body, p, depth + 1, budget)?);
         i = j;
     }
     if !pending.is_empty() {
         out.push(pending);
     }
-    out
+    Some(out)
 }

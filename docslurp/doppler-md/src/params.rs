@@ -154,4 +154,14 @@ params! {
     band_rows: num = 0.6,
     /// a rule gap this many times the group's median splits two tables
     rule_split: num = 2.5,
+    /// pages with more lines or rules than this skip layout and table analysis and are read
+    /// as plain lines in poppler order (the analysis is superlinear on hostile pages)
+    max_page_lines: num = 20000.0,
+    max_page_rules: num = 20000.0,
+    /// layout work units (elements visited, see `layout::Budget`) one page may use before it
+    /// falls back to plain lines
+    max_page_work: num = 1.0e7,
+    /// lines plus layout work units over the whole document; once spent, the remaining pages
+    /// fall back to plain lines
+    max_doc_work: num = 5.0e7,
 }

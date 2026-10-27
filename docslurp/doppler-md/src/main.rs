@@ -1,16 +1,21 @@
-//! `doppler-md [--params JSON] [FILE]`: doppler XHTML (file or stdin) to Markdown pages joined
-//! with form feeds on stdout.
+//! `doppler-md [--params JSON] [--report] [FILE]`: doppler XHTML (file or stdin) to Markdown
+//! pages joined with form feeds on stdout.
+//!
+//! Exit status 2 (with a message on stderr) when the input has no `<page>`, which means it is
+//! not doppler XHTML. `--report` prints a one-line JSON report of skipped words and rules,
+//! unclosed elements and pages read as plain lines to stderr.
 
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
-use doppler_md::{Params, to_markdown};
+use doppler_md::{Params, to_markdown_report};
 
-const USAGE: &str = "usage: doppler-md [--params JSON] [FILE|-]\n";
+const USAGE: &str = "usage: doppler-md [--params JSON] [--report] [FILE|-]\n";
 
 fn main() -> ExitCode {
     let mut params = Params::default();
     let mut input: Option<String> = None;
+    let mut want_report = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -18,6 +23,7 @@ fn main() -> ExitCode {
                 print!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
+            "--report" => want_report = true,
             "--params" => {
                 let Some(json) = args.next() else {
                     eprint!("--params needs a JSON object\n{USAGE}");
@@ -51,7 +57,14 @@ fn main() -> ExitCode {
         Ok(s) => std::borrow::Cow::Borrowed(s),
         Err(_) => String::from_utf8_lossy(&bytes),
     };
-    let pages = to_markdown(&xhtml, &params);
+    let (pages, report) = to_markdown_report(&xhtml, &params);
+    if want_report {
+        eprintln!("{}", report.to_json());
+    }
+    if !report.page_found() {
+        eprintln!("doppler-md: no <page> in the input (not doppler -bbox-layout XHTML?)");
+        return ExitCode::from(2);
+    }
     let mut out = std::io::stdout().lock();
     if let Err(e) = out.write_all(pages.join("\x0c").as_bytes()).and_then(|_| out.flush()) {
         eprintln!("doppler-md: {e}");

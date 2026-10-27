@@ -474,9 +474,38 @@ fn interned(last: &mut Option<Rc<str>>, v: &str) -> Rc<str> {
     }
 }
 
-/// Parse doppler XHTML into pages. Where Python would raise (a missing or malformed required
-/// number), the offending word or rule is skipped instead; non-finite numbers count as malformed.
+/// What [`parse`] skipped or found incomplete (see [`crate::Report`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParseReport {
+    /// `<page>` tags
+    pub pages: usize,
+    /// `</page>` tags
+    pub page_closes: usize,
+    /// lines and words kept
+    pub lines: usize,
+    pub words: usize,
+    /// words without one of xMin, yMin, xMax, yMax
+    pub words_missing_coord: usize,
+    /// words with a coordinate, fontSize or baseline that is not a finite number
+    pub words_bad_number: usize,
+    /// words outside any open `<line>`
+    pub words_outside_line: usize,
+    /// words of a `<line>` that never closed on a page (truncated input, nested or pageless lines)
+    pub words_unclosed_line: usize,
+    /// the input ended inside a `<line>` that had words
+    pub unclosed_line_at_eof: bool,
+    /// rules or boxes without four finite coordinates
+    pub rules_skipped: usize,
+}
+
+/// Parse doppler XHTML into pages. A word or rule with a missing or malformed required number
+/// (non-finite numbers count as malformed) is skipped; `doppler_md.py` skips the same ones.
 pub fn parse(xhtml: &str) -> Vec<Page> {
+    parse_report(xhtml, &mut ParseReport::default())
+}
+
+/// [`parse`], counting what was skipped into `report`.
+pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
     // words of the open <line> (`words` in Python is None until the first <line>)
     let mut words: Vec<Word> = Vec::new();
@@ -506,6 +535,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 let (Some(x0), Some(y0), Some(x1), Some(y1)) =
                     (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
                 else {
+                    report.rules_skipped += 1;
                     continue;
                 };
                 let color = a.0[COLOR].unwrap_or("#000000").to_string();
@@ -514,6 +544,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 }
             }
             Tag::Open("page", attrs) => {
+                report.pages += 1;
                 a.parse_into(attrs);
                 let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
                 pages.push(Page {
@@ -526,11 +557,15 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
             Tag::Open("flow", _) => flow += 1,
             Tag::Open("block", _) => block += 1,
             Tag::Open(_, _) => {
+                report.words_unclosed_line += words.len();
                 words.clear();
                 in_line = true;
             }
             Tag::Close(name) => {
+                report.page_closes += (name == "page") as usize;
                 if name == "line" && have_page && in_line && !words.is_empty() {
+                    report.lines += 1;
+                    report.words += words.len();
                     // exact-size copy out of the reused buffer (mem::take would hand the line
                     // the grown buffer and regrow a new one for every line)
                     #[allow(clippy::drain_collect)]
@@ -543,9 +578,14 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
             }
             Tag::Word(attrs, text) => {
                 if !in_line {
+                    report.words_outside_line += 1;
                     continue;
                 }
                 a.parse_into(attrs);
+                if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
+                    report.words_missing_coord += 1;
+                    continue;
+                }
                 let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
                     coord(&a, X_MIN),
                     coord(&a, Y_MIN),
@@ -554,6 +594,7 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                     opt_num(&a, FONT_SIZE),
                     opt_num(&a, BASELINE),
                 ) else {
+                    report.words_bad_number += 1;
                     continue;
                 };
                 let font = a.0[FONT_NAME].unwrap_or("");
@@ -580,6 +621,10 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
                 });
             }
         }
+    }
+    if in_line && !words.is_empty() {
+        report.unclosed_line_at_eof = true;
+        report.words_unclosed_line += words.len();
     }
     pages
 }

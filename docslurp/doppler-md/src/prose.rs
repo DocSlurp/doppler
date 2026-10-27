@@ -1,5 +1,6 @@
 //! Paragraphs, lists and headings.
 
+use crate::layout::Budget;
 use crate::model::{Line, Word, is_cjk};
 use crate::params::Params;
 use crate::patterns::data_cell;
@@ -259,6 +260,21 @@ fn table_title(it: &Item, tab: &TableItem, p: &Params) -> bool {
 /// Ordered elements (lines and tables) to Markdown paragraphs.
 #[allow(clippy::if_same_then_else)] // mirrors the Python elif chain
 pub fn paragraphs(seq: &[SeqItem], body: f64, body_color: &str, p: &Params, use_blocks: bool) -> Vec<String> {
+    paragraphs_within(seq, body, body_color, p, use_blocks, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
+}
+
+/// [`paragraphs`] within a work budget: each same-baseline merge charges the merged line's word
+/// count (a run of n fragments on one baseline rebuilds lines of 1..n words), and the result
+/// is `None` once the budget runs out.
+#[allow(clippy::if_same_then_else)] // mirrors the Python elif chain
+pub fn paragraphs_within(
+    seq: &[SeqItem],
+    body: f64,
+    body_color: &str,
+    p: &Params,
+    use_blocks: bool,
+    budget: &mut Budget,
+) -> Option<Vec<String>> {
     let mut st = Para { p, body, body_color, items: Vec::new(), cur: Vec::new(), kind: None };
     let pitches: Vec<f64> = seq
         .windows(2)
@@ -309,6 +325,9 @@ pub fn paragraphs(seq: &[SeqItem], body: f64, body_color: &str, p: &Params, use_
                 .map(|l| Rc::try_unwrap(l).map_or_else(|l| l.words.clone(), |l| l.words))
                 .unwrap_or_default();
             ws.extend_from_slice(&line.words);
+            if !budget.spend(ws.len()) {
+                return None;
+            }
             let merged = Rc::new(Line::new(ws, line.block, line.flow));
             st.cur.push(merged.clone());
             if marker_only {
@@ -456,5 +475,5 @@ pub fn paragraphs(seq: &[SeqItem], body: f64, body_color: &str, p: &Params, use_
             out.push(it.text.clone());
         }
     }
-    out
+    Some(out)
 }

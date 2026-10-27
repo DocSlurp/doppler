@@ -20,13 +20,14 @@ pub mod pyc;
 pub mod tables;
 mod unicode_tables;
 
+pub use model::ParseReport;
 pub use params::{Params, UseBlocks};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use layout::{Elem, regions};
+use layout::{Budget, Elem, regions_within};
 use model::Page;
-use prose::{Seq, SeqItem, paragraphs};
+use prose::{Seq, SeqItem, paragraphs_within};
 use pyc::{Counter, FloatCounter, char_len, fcmp, median, pmax, round0, strip};
 use tables::{Table, find_tables, ruled_tables};
 
@@ -158,92 +159,227 @@ fn body_size(pages: &[Page]) -> (f64, String) {
     (c.most_common().unwrap_or(10.0), color)
 }
 
+/// Why a page was read as plain lines instead of being laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Degraded {
+    /// more lines than `max_page_lines`
+    PageLines,
+    /// more rules than `max_page_rules`
+    PageRules,
+    /// the layout used up `max_page_work`
+    PageWork,
+    /// the document's `max_doc_work` was used up
+    DocWork,
+}
+
+impl Degraded {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Degraded::PageLines => "page_lines",
+            Degraded::PageRules => "page_rules",
+            Degraded::PageWork => "page_work",
+            Degraded::DocWork => "doc_work",
+        }
+    }
+}
+
+/// What a conversion skipped, lost or simplified, alongside its Markdown.
+#[derive(Clone, Debug, Default)]
+pub struct Report {
+    pub parse: ParseReport,
+    /// (0-based page index, reason) of every page read as plain lines
+    pub degraded: Vec<(usize, Degraded)>,
+    /// lines plus layout work units charged to `max_doc_work`
+    pub doc_work: u64,
+    /// the most layout work units one page used
+    pub page_work_max: u64,
+}
+
+impl Report {
+    /// Whether the input had any `<page>` (input that is not doppler XHTML has none).
+    pub fn page_found(&self) -> bool {
+        self.parse.pages > 0
+    }
+
+    /// One line of JSON.
+    pub fn to_json(&self) -> String {
+        let r = &self.parse;
+        let degraded: Vec<String> = self
+            .degraded
+            .iter()
+            .map(|(i, why)| format!("{{\"page\":{},\"reason\":\"{}\"}}", i + 1, why.as_str()))
+            .collect();
+        format!(
+            concat!(
+                "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
+                "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
+                "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]}}"
+            ),
+            self.page_found(),
+            r.pages,
+            r.pages.saturating_sub(r.page_closes),
+            r.lines,
+            r.words,
+            r.words_missing_coord,
+            r.words_bad_number,
+            r.words_outside_line,
+            r.words_unclosed_line,
+            r.unclosed_line_at_eof,
+            r.rules_skipped,
+            self.doc_work,
+            self.page_work_max,
+            degraded.join(",")
+        )
+    }
+}
+
 /// One Markdown string per page.
 pub fn to_markdown(xhtml: &str, p: &Params) -> Vec<String> {
-    let pages = model::parse(xhtml);
+    to_markdown_report(xhtml, p).0
+}
+
+/// A degraded page: its kept lines in poppler order, one per Markdown line.
+fn plain_lines(page: &Page, drop: &[bool]) -> String {
+    let kept: Vec<&str> = page
+        .lines
+        .iter()
+        .zip(drop)
+        .filter(|(_, d)| !**d)
+        .map(|(l, _)| strip(l.text()))
+        .filter(|t| !t.is_empty())
+        .collect();
+    kept.join("\n")
+}
+
+/// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
+pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
+    let mut report = Report::default();
+    let pages = model::parse_report(xhtml, &mut report.parse);
     let drop = furniture(&pages, p);
     let (body, body_color) = body_size(&pages);
     let mut result = Vec::with_capacity(pages.len());
+    let mut spent: u64 = 0;
     for (pi, page) in pages.iter().enumerate() {
         let lines = &page.lines;
-        let ids: Vec<usize> = (0..lines.len()).filter(|&i| !drop[pi][i]).collect();
-        let mut per_block: Counter<i64> = Counter::new();
-        for &i in &ids {
-            per_block.add(lines[i].block, 1);
-        }
-        let use_blocks = match p.use_blocks {
-            UseBlocks::On => true,
-            UseBlocks::Auto => !per_block.is_empty() && median(per_block.counts().map(|c| c as f64).collect()) >= 1.5,
-            UseBlocks::Off => false,
+        let n = lines.len();
+        let doc_left = p.max_doc_work - spent as f64 - n as f64;
+        let early = if n as f64 > p.max_page_lines {
+            Some(Degraded::PageLines)
+        } else if page.rules.len() as f64 > p.max_page_rules {
+            Some(Degraded::PageRules)
+        } else if doc_left < 0.0 {
+            Some(Degraded::DocWork)
+        } else {
+            None
         };
-        let ruled = if p.rules && p.tables { ruled_tables(page, &ids, body, p) } else { Vec::new() };
-        let mut in_ruled = vec![false; lines.len()];
-        for &i in ruled.iter().flat_map(|(m, _, _)| m) {
-            in_ruled[i] = true;
+        if let Some(why) = early {
+            report.degraded.push((pi, why));
+            result.push(plain_lines(page, &drop[pi]));
+            continue;
         }
-        let mut ruled_tables: Vec<Rc<Table>> = Vec::with_capacity(ruled.len());
-        let mut ruled_boxes = Vec::with_capacity(ruled.len());
-        for (_, t, b) in ruled {
-            ruled_tables.push(Rc::new(t));
-            ruled_boxes.push(b);
+        spent += n as u64;
+        let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
+        match layout_page(page, &drop[pi], body, &body_color, p, &mut budget) {
+            Some(md) => result.push(md),
+            None => {
+                let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
+                report.degraded.push((pi, why));
+                result.push(plain_lines(page, &drop[pi]));
+            }
         }
-        let mut elements: Vec<Elem> = ids
+        spent += budget.used;
+        report.page_work_max = report.page_work_max.max(budget.used);
+    }
+    report.doc_work = spent;
+    (result, report)
+}
+
+/// One page's Markdown, or `None` once `budget` runs out.
+fn layout_page(
+    page: &Page,
+    drop: &[bool],
+    body: f64,
+    body_color: &str,
+    p: &Params,
+    budget: &mut Budget,
+) -> Option<String> {
+    let lines = &page.lines;
+    let ids: Vec<usize> = (0..lines.len()).filter(|&i| !drop[i]).collect();
+    let mut per_block: Counter<i64> = Counter::new();
+    for &i in &ids {
+        per_block.add(lines[i].block, 1);
+    }
+    let use_blocks = match p.use_blocks {
+        UseBlocks::On => true,
+        UseBlocks::Auto => !per_block.is_empty() && median(per_block.counts().map(|c| c as f64).collect()) >= 1.5,
+        UseBlocks::Off => false,
+    };
+    let ruled = if p.rules && p.tables { ruled_tables(page, &ids, body, p) } else { Vec::new() };
+    let mut in_ruled = vec![false; lines.len()];
+    for &i in ruled.iter().flat_map(|(m, _, _)| m) {
+        in_ruled[i] = true;
+    }
+    let mut ruled_tables: Vec<Rc<Table>> = Vec::with_capacity(ruled.len());
+    let mut ruled_boxes = Vec::with_capacity(ruled.len());
+    for (_, t, b) in ruled {
+        ruled_tables.push(Rc::new(t));
+        ruled_boxes.push(b);
+    }
+    let mut elements: Vec<Elem> = ids
+        .iter()
+        .filter(|&&i| !in_ruled[i])
+        .map(|&i| {
+            let l = &lines[i];
+            Elem { line: Some(i), table: 0, x0: l.x0, x1: l.x1, y0: l.y0, y1: l.y1 }
+        })
+        .collect();
+    elements.extend(ruled_boxes.iter().enumerate().map(|(k, b)| Elem {
+        line: None,
+        table: k,
+        x0: b.0,
+        y0: b.1,
+        x1: b.2,
+        y1: b.3,
+    }));
+    let mut parts: Vec<String> = Vec::new();
+    let mut consumed = vec![false; lines.len()];
+    for region in regions_within(&elements, lines, body, p, 0, budget)? {
+        let rids: Vec<usize> = region.iter().filter_map(|e| e.line).collect();
+        let mut seq: Vec<SeqItem> = region
             .iter()
-            .filter(|&&i| !in_ruled[i])
-            .map(|&i| {
-                let l = &lines[i];
-                Elem { line: Some(i), table: 0, x0: l.x0, x1: l.x1, y0: l.y0, y1: l.y1 }
+            .filter(|e| e.line.is_none())
+            .map(|e| SeqItem {
+                item: Seq::Table { table: ruled_tables[e.table].clone(), x0: e.x0, x1: e.x1 },
+                y0: e.y0,
+                x0: e.x0,
             })
             .collect();
-        elements.extend(ruled_boxes.iter().enumerate().map(|(k, b)| Elem {
-            line: None,
-            table: k,
-            x0: b.0,
-            y0: b.1,
-            x1: b.2,
-            y1: b.3,
-        }));
-        let mut parts: Vec<String> = Vec::new();
-        let mut consumed = vec![false; lines.len()];
-        for region in regions(&elements, lines, body, p, 0) {
-            let rids: Vec<usize> = region.iter().filter_map(|e| e.line).collect();
-            let mut seq: Vec<SeqItem> = region
-                .iter()
-                .filter(|e| e.line.is_none())
-                .map(|e| SeqItem {
-                    item: Seq::Table { table: ruled_tables[e.table].clone(), x0: e.x0, x1: e.x1 },
-                    y0: e.y0,
-                    x0: e.x0,
-                })
-                .collect();
-            // `consumed` is per region (a line can sit in two regions when a gutter is under
-            // two points wide); the page-sized flags are cleared again after each region
-            let mut marked: Vec<usize> = Vec::new();
-            if p.tables {
-                for (members, grid) in find_tables(page, &rids, p, body) {
-                    for &i in &members {
-                        consumed[i] = true;
-                    }
-                    marked.extend_from_slice(&members);
-                    let y0 = members.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pyc::pmin);
-                    let tx0 = members.iter().map(|&i| lines[i].x0).fold(f64::INFINITY, pyc::pmin);
-                    let tx1 = members.iter().map(|&i| lines[i].x1).fold(f64::NEG_INFINITY, pmax);
-                    let table = Rc::new(grid);
-                    seq.push(SeqItem { item: Seq::Table { table, x0: tx0, x1: tx1 }, y0, x0: 0.0 });
+        // `consumed` is per region (a line can sit in two regions when a gutter is under
+        // two points wide); the page-sized flags are cleared again after each region
+        let mut marked: Vec<usize> = Vec::new();
+        if p.tables {
+            for (members, grid) in find_tables(page, &rids, p, body) {
+                for &i in &members {
+                    consumed[i] = true;
                 }
+                marked.extend_from_slice(&members);
+                let y0 = members.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pyc::pmin);
+                let tx0 = members.iter().map(|&i| lines[i].x0).fold(f64::INFINITY, pyc::pmin);
+                let tx1 = members.iter().map(|&i| lines[i].x1).fold(f64::NEG_INFINITY, pmax);
+                let table = Rc::new(grid);
+                seq.push(SeqItem { item: Seq::Table { table, x0: tx0, x1: tx1 }, y0, x0: 0.0 });
             }
-            seq.extend(region.iter().filter_map(|e| {
-                let i = e.line?;
-                (!consumed[i]).then(|| SeqItem { item: Seq::Line(lines[i].clone()), y0: e.y0, x0: e.x0 })
-            }));
-            for i in marked {
-                consumed[i] = false;
-            }
-            seq.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
-            parts.extend(paragraphs(&seq, body, &body_color, p, use_blocks));
         }
-        let kept: Vec<&str> = parts.iter().map(String::as_str).filter(|x| !strip(x).is_empty()).collect();
-        result.push(kept.join("\n\n"));
+        seq.extend(region.iter().filter_map(|e| {
+            let i = e.line?;
+            (!consumed[i]).then(|| SeqItem { item: Seq::Line(lines[i].clone()), y0: e.y0, x0: e.x0 })
+        }));
+        for i in marked {
+            consumed[i] = false;
+        }
+        seq.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
+        parts.extend(paragraphs_within(&seq, body, body_color, p, use_blocks, budget)?);
     }
-    result
+    let kept: Vec<&str> = parts.iter().map(String::as_str).filter(|x| !strip(x).is_empty()).collect();
+    Some(kept.join("\n\n"))
 }
