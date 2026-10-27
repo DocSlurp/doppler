@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/home/dan/code/oss/poppler/docslurp/doppler-md/scripts/check_pipeline.py", line 120, in <module>
+    main()
+    ~~~~^^
+  File "/home/dan/code/oss/poppler/docslurp/doppler-md/scripts/check_pipeline.py", line 115, in main
+    check_case(pdftotext, converter, Path(directory), *case)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dan/code/oss/poppler/docslurp/doppler-md/scripts/check_pipeline.py", line 78, in check_case
+    assert report.get("rules_truncated_pages") == truncated, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ('truncated-at-page-cap', 'upstream truncation must survive conversion', {'page_found': True, 'pages': 2, 'unclosed_pages': 0, 'lines': 2, 'words': 4, 'words_skipped': {'missing_coord': 0, 'bad_number': 0, 'outside_line': 0, 'unclosed_line': 0}, 'unclosed_line_at_eof': False, 'rules_skipped': 0, 'doc_work': 4, 'page_work_max': 1, 'degraded': []}, [1])

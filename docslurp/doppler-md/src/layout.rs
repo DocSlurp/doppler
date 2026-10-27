@@ -7,11 +7,12 @@ use crate::params::Params;
 use crate::pyc::{fcmp, median, pmax, pmin, strip};
 use crate::tables::{bullet, numbered};
 
-/// A layout element: a page line (by index) or a ruled table (by index into the page's tables).
+/// A positioned page line or table payload. The default payload preserves the standalone
+/// geometry helpers; page layout carries the table itself instead of a second index space.
 #[derive(Clone, Copy, Debug)]
-pub struct Elem {
+pub struct Elem<T = usize> {
     pub line: Option<usize>,
-    pub table: usize,
+    pub table: T,
     pub x0: f64,
     pub x1: f64,
     pub y0: f64,
@@ -21,12 +22,12 @@ pub struct Elem {
 /// Python caps region recursion here.
 pub const MAX_DEPTH: usize = 6;
 
-fn sort_yx(es: &mut [Elem]) {
+fn sort_yx<T>(es: &mut [Elem<T>]) {
     es.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
 }
 
 /// x intervals no element crosses, at least column_gutter x body wide, with text on both sides.
-pub fn gutters_of(elements: &[Elem], body: f64, p: &Params) -> Vec<(f64, f64)> {
+pub fn gutters_of<T>(elements: &[Elem<T>], body: f64, p: &Params) -> Vec<(f64, f64)> {
     if elements.len() < 2 {
         return Vec::new();
     }
@@ -44,21 +45,21 @@ pub fn gutters_of(elements: &[Elem], body: f64, p: &Params) -> Vec<(f64, f64)> {
 }
 
 /// Split elements at y positions no element overlaps (boxes shrunk by 20% to ignore ascender overlap).
-pub fn bands(elements: &[Elem]) -> Vec<Vec<Elem>> {
+pub fn bands<T: Clone>(elements: &[Elem<T>]) -> Vec<Vec<Elem<T>>> {
     let mut es = elements.to_vec();
     sort_yx(&mut es);
-    let mut out: Vec<Vec<Elem>> = Vec::new();
+    let mut out: Vec<Vec<Elem<T>>> = Vec::new();
     let mut reach = 0.0;
     for e in es {
         let h = 0.2 * (e.y1 - e.y0);
         match out.last_mut() {
             Some(last) if e.y0 + h < reach => {
-                last.push(e);
                 reach = pmax(reach, e.y1 - h);
+                last.push(e);
             }
             _ => {
-                out.push(vec![e]);
                 reach = e.y1 - h;
+                out.push(vec![e]);
             }
         }
     }
@@ -66,7 +67,7 @@ pub fn bands(elements: &[Elem]) -> Vec<Vec<Elem>> {
 }
 
 /// A gutter inside a table (short cells sharing baselines) or after a column of list markers.
-pub fn table_like(left: &[Elem], right: &[Elem], lines: &[Rc<Line>], p: &Params) -> bool {
+pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p: &Params) -> bool {
     let left: Vec<&Line> = left.iter().filter_map(|e| e.line.map(|i| &*lines[i])).collect();
     let right: Vec<&Line> = right.iter().filter_map(|e| e.line.map(|i| &*lines[i])).collect();
     if left.is_empty() || right.is_empty() {
@@ -165,21 +166,27 @@ impl Budget {
 
 /// Layout regions in reading order. Runs of bands sharing a non-table vertical gutter are read
 /// column by column.
-pub fn regions(elements: &[Elem], lines: &[Rc<Line>], body: f64, p: &Params, depth: usize) -> Vec<Vec<Elem>> {
+pub fn regions<T: Clone>(
+    elements: &[Elem<T>],
+    lines: &[Rc<Line>],
+    body: f64,
+    p: &Params,
+    depth: usize,
+) -> Vec<Vec<Elem<T>>> {
     regions_within(elements, lines, body, p, depth, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
 }
 
 /// [`regions`] within a work budget: `None` once the budget runs out (the region search is
 /// superlinear on hostile pages, e.g. a grid of one-cell lines re-follows every gutter through
 /// every later band).
-pub fn regions_within(
-    elements: &[Elem],
+pub fn regions_within<T: Clone>(
+    elements: &[Elem<T>],
     lines: &[Rc<Line>],
     body: f64,
     p: &Params,
     depth: usize,
     budget: &mut Budget,
-) -> Option<Vec<Vec<Elem>>> {
+) -> Option<Vec<Vec<Elem<T>>>> {
     if !budget.spend(elements.len()) {
         return None;
     }
@@ -192,8 +199,8 @@ pub fn regions_within(
     // each band's own gutters, once: the start candidates for band i and the `multi` test of
     // every band a gutter is followed through
     let band_gutters: Vec<Vec<(f64, f64)>> = bs.iter().map(|b| gutters_of(b, body, p)).collect();
-    let mut out: Vec<Vec<Elem>> = Vec::new();
-    let mut pending: Vec<Elem> = Vec::new();
+    let mut out: Vec<Vec<Elem<T>>> = Vec::new();
+    let mut pending: Vec<Elem<T>> = Vec::new();
     let mut i = 0;
     while i < bs.len() {
         let mut split = None;
@@ -237,8 +244,8 @@ pub fn regions_within(
                 return None;
             }
             let members = bs[i..j].iter().flatten();
-            let left: Vec<Elem> = members.clone().copied().filter(|e| e.x1 <= a + 1.0).collect();
-            let right: Vec<Elem> = members.copied().filter(|e| e.x0 >= b - 1.0).collect();
+            let left: Vec<Elem<T>> = members.clone().cloned().filter(|e| e.x1 <= a + 1.0).collect();
+            let right: Vec<Elem<T>> = members.cloned().filter(|e| e.x0 >= b - 1.0).collect();
             if left.len() >= 2 && right.len() >= 2 && !table_like(&left, &right, lines, p) {
                 split = Some((j, left, right));
                 break;

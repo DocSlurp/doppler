@@ -1,0 +1,5 @@
+PASS truncated-at-page-cap: kept=[20000, 1], truncated=[1], layout fallback separately reported
+PASS complete-at-page-cap: kept=[20000], truncated=[], layout fallback separately reported
+PASS document-cap: kept=[20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000, 20000, 0, 0], truncated=[11], layout fallback separately reported
+PASS page-cap-still-charges-document: kept=[20000, 0], truncated=[1, 2], layout fallback separately reported
+all 4 producer-to-converter cases passed

@@ -1,0 +1,42 @@
+{
+  "text": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "layout": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "raw": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "bbox": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "bbox-layout": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "tsv": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "bbox-meta": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "bbox-layout-meta": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "tsv-meta": {
+    "identical": 91,
+    "matched_failure": 4
+  },
+  "bbox-layout-rules": {
+    "identical": 91,
+    "matched_failure": 4
+  }
+}

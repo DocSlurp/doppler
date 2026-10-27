@@ -623,11 +623,12 @@ public:
     // Add a (potential) underline.
     void addUnderline(double x0, double y0, double x1, double y1);
 
-    // Add a rule (TextOutputDev::setCollectRules); at most maxRules per page are kept.
-    void addRule(const TextRule &rule);
+    // Add a visible rule (TextOutputDev::setCollectRules); at most maxRules per
+    // page are kept. Consume the caller's document budget even when this page
+    // is full, and mark this page incomplete only if a rule is rejected.
+    void addRule(const TextRule &rule, size_t &remainingDocumentRules);
     const std::vector<TextRule> &getRules() const { return rules; }
     bool getRulesTruncated() const { return rulesTruncated; }
-    void markRulesTruncated() { rulesTruncated = true; }
     static constexpr size_t maxRules = 20000;
 
     // Add a hyperlink.
@@ -963,8 +964,10 @@ private:
                       // to skip watermarks drawn on top of body text, etc.
     bool doHTML; // extra processing for HTML conversion
     bool collectRules = false;
-    size_t docRules = 0; // rules kept across all pages of the document
     static constexpr size_t maxDocRules = 200000;
+    // Budget for visible rule candidates across pages, including candidates
+    // rejected by a full page. TextPage consumes it but does not own its lifetime.
+    size_t remainingDocRules = maxDocRules;
     void collectPathRules(const GfxState *state, bool filled);
     void addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box);
     bool inlineLinkURIs = false;

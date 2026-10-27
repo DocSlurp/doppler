@@ -3,8 +3,9 @@
 Table borders, row separators and cell shading are drawn as stroked lines, stroked rectangles
 and filled rectangles. -rules emits them in the word coordinate space: <rule> for line segments
 and thin filled rectangles, <box> for other filled rectangles, each with its colour. Curves and
-diagonal lines are ignored. Output without -rules is unchanged, and a page with more than
-20000 rules is truncated and marked rulesTruncated="1".
+diagonal lines are ignored. Output without -rules is unchanged. Only rejected visible
+rules mark a page rulesTruncated="1"; reaching a cap exactly is still complete. The
+document budget counts visible candidates, including ones rejected by a full page.
 """
 
 import os
@@ -28,7 +29,6 @@ CONTENT = (
     b"0 G 50 300 m 60 350 70 350 80 300 c S"  # curve: ignored
 )
 PDF = t.simple_page_pdf(CONTENT)
-BIG = t.simple_page_pdf(b"0 G 0.1 w " + b" ".join(b"10 %d m 20 %d l S" % (i % 700 + 10, i % 700 + 10) for i in range(25000)))
 
 
 def tags(out, name):
@@ -63,11 +63,38 @@ with t.TempDir() as d:
     proc = subprocess.run([os.path.join(utils.bindir, "pdftotext"), "-rules", path, "-"], capture_output=True)
     t.check(proc.returncode == 99, "-rules without -bbox-layout is rejected", repr(proc))
 
-    big = d.write("big.pdf", BIG)
-    out = utils.run("pdftotext", "-bbox-layout", "-rules", big, "-")
-    rules, root = tags(out, "rule")
-    pages = [e for e in root.iter() if e.tag.endswith("}page")]
-    t.check(len(rules) == 20000 and pages[0].attrib.get("rulesTruncated") == "1", "rules are capped at 20000 per page and the page is marked", "%d rules, %r" % (len(rules), pages[0].attrib))
+
+def rule_pages_pdf(counts):
+    """Pages of visible candidates followed by a fully clipped stroke (not a candidate)."""
+    objects = ["<< /Type /Catalog /Pages 2 0 R >>", None]
+    streams = {}
+    kids = []
+    for count in counts:
+        if count not in streams:
+            content = b"0 G 0.1 w " + b"10 10 m 20 10 l S\n" * count
+            content += b"q 0 0 1 1 re W n 10 10 m 20 10 l S Q"
+            objects.append(t.stream("", content, compress=True))
+            streams[count] = len(objects)
+        objects.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents %d 0 R >>" % streams[count])
+        kids.append("%d 0 R" % len(objects))
+    objects[1] = "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join(kids), len(kids))
+    return t.build_pdf(objects)
+
+
+with t.TempDir() as d:
+    for name, counts, expected in (
+        ("page-cap", [19999, 20000, 20001, 1], [(19999, None), (20000, None), (20000, "1"), (1, None)]),
+        # An exhausted document does not make a page incomplete until it loses
+        # visible evidence. Clipped-only pages remain complete, even afterwards.
+        ("document-cap", [20000] * 10 + [0, 1, 0], [(20000, None)] * 10 + [(0, None), (0, "1"), (0, None)]),
+        # Eight overflowing pages exhaust the document budget after only 160000
+        # retained rules: page rejection must still consume document allowance.
+        ("page-overflow-accounting", [25000] * 8 + [1], [(20000, "1")] * 8 + [(0, "1")]),
+    ):
+        path = d.write(name + ".pdf", rule_pages_pdf(counts))
+        root = ET.fromstring(utils.run("pdftotext", "-bbox-layout", "-rules", path, "-", binary=True))
+        got = [(sum(e.tag.endswith("}rule") for e in page), page.attrib.get("rulesTruncated")) for page in root.iter() if page.tag.endswith("}page")]
+        t.check(got == expected, name + ": rule count and completeness per page", repr(got))
 
 
 

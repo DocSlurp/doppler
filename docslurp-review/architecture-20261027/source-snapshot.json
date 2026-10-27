@@ -1,0 +1,17 @@
+{
+  "docslurp/doppler-md/README.md": "057ab59229e1cda3f3c8e6643985ce3743e5c40ff25467c08b111ce2afefd646",
+  "docslurp/doppler-md/src/layout.rs": "395708fbfa36b4cf9d3163e2021b72132e0e8d23491104f87d5cc892d190e32d",
+  "docslurp/doppler-md/src/lib.rs": "8e2b6389c3de71226a945da349a47edde80a694399a3ec720c6c054dc2aacbb2",
+  "docslurp/doppler-md/src/model.rs": "881f050fa734722ebbdb4ceec7df29d17d0e5e6f8ed3d509d5fbb7b86deb9e4e",
+  "docslurp/doppler-md/src/prose.rs": "12ab57c4a4773c6c25ebbce72994565dbcba2238197af2a7194994257738d6d8",
+  "poppler/TextOutputDev.cc": "202db2297c1e7a6214db123ea309415ef155eeec3160dfa3d4a2f10d0f59c140",
+  "poppler/TextOutputDev.h": "36331f0bbc7465c92b6f02a39e0b826b417c891b423f5815292b923886df2828",
+  "test/docslurp/pdftotext-output/CMakeLists.txt": "76cf443e7f705ecd8e8b06aff2f3fdae7208bd701168567571a374057eb4a316",
+  "test/docslurp/pdftotext-output/test_rules.py": "9bda1131bcd2d7df6ed083a8d60273041766d40f5146c0c386caafb167d04af7",
+  "utils/pdftotext.cc": "983045ffb1082aac1f2f7afdd3f9d182a9de9c06ec8e8578a93bfb24b261d04e",
+  "docslurp/doppler-md/src/page_layout.rs": "896e5ed153e574a981ea33b316a3034971c07a6bc60e0f1052b2942ea0f097d9",
+  "docslurp/doppler-md/tests/page_layout.rs": "10fc6b0503a4b07dda24937aa53bd76c08d6bd7b68ed3040b641387c9c58bde0",
+  "docslurp/doppler-md/tests/completeness.rs": "2e3a550e9759b94f6e137ba4a1c750756bf3fe24aaec00ca0cd78d2a4d471e3a",
+  "docslurp/doppler-md/scripts/check_pipeline.py": "73264b692c3b2e438106c231af6e64e3c33fdaf637d7a083e7bce901e71e2cd7",
+  "test/docslurp/pdftotext-output/test_structured_projection.py": "242f0f6fc962d41c8484de478be94f7b322a807934a1f8a2c7b05aefbdd16c68"
+}

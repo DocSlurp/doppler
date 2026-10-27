@@ -11,6 +11,7 @@ docslurp_add_test(pdftotext-output-text-encoding-lookup test_text_encoding_looku
 set_tests_properties(docslurp-pdftotext-output-text-encoding-lookup PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 docslurp_add_test(pdftotext-output-pdftohtml-wordbreak test_pdftohtml_wordbreak.py)
 docslurp_add_test(pdftotext-output-wordmeta test_wordmeta.py)
+docslurp_add_test(pdftotext-output-structured-projection test_structured_projection.py)
 docslurp_add_test(pdftotext-output-bbox-rtl-logical test_bbox_rtl_logical.py)
 docslurp_add_test(pdftotext-output-rtl-glyph-gaps test_rtl_glyph_gaps.py)
 docslurp_add_test(pdftotext-output-type3-font-size test_type3_font_size.py)

@@ -2946,9 +2946,13 @@ void TextPage::addUnderline(double x0, double y0, double x1, double y1)
     underlines.emplace_back(std::make_unique<TextUnderline>(x0, y0, x1, y1));
 }
 
-void TextPage::addRule(const TextRule &rule)
+void TextPage::addRule(const TextRule &rule, size_t &remainingDocumentRules)
 {
-    if (rules.size() >= maxRules) {
+    const bool documentFull = remainingDocumentRules == 0;
+    if (!documentFull) {
+        --remainingDocumentRules;
+    }
+    if (documentFull || rules.size() >= maxRules) {
         rulesTruncated = true;
         return;
     }
@@ -5940,13 +5944,7 @@ void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, 
     if (x1 < x0 || y1 < y0 || (x1 - x0 <= 0.01 && y1 - y0 <= 0.01)) {
         return;
     }
-    // a document-wide budget bounds the output of pages that share hostile content
-    if (docRules >= maxDocRules) {
-        text->markRulesTruncated();
-        return;
-    }
-    ++docRules;
-    text->addRule({ x0, y0, x1, y1, r, g, b, box });
+    text->addRule({ x0, y0, x1, y1, r, g, b, box }, remainingDocRules);
 }
 
 void TextOutputDev::collectPathRules(const GfxState *state, bool filled)

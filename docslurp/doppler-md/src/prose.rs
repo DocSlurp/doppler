@@ -2,10 +2,10 @@
 
 use crate::layout::Budget;
 use crate::model::{Line, Word, is_cjk};
+use crate::page_layout::{FlowItem, PlacedTable, finish_region, render_blocks};
 use crate::params::Params;
-use crate::patterns::data_cell;
-use crate::pyc::{self, Counter, char_len, median, pmax, pmin, rstrip, split_count, strip};
-use crate::tables::{Table, bullet, grid_markdown, numbered};
+use crate::pyc::{self, Counter, char_len, median, pmax, pmin, rstrip, strip};
+use crate::tables::{Table, bullet, numbered};
 use std::rc::Rc;
 
 /// `re.search(r'[^\W\d_]', text)`: a letter, or a number that is not a decimal digit.
@@ -145,46 +145,22 @@ fn heading_level(lines: &[Rc<Line>], body: f64, body_color: &str, p: &Params) ->
     0
 }
 
-/// A table item: the table, its geometry and a header row taken from the line above it.
-struct TableItem {
-    table: Rc<Table>,
-    x0: f64,
-    x1: f64,
-    y0: f64,
-    header: Option<Vec<String>>,
+/// A grouped paragraph, before neighbouring content determines its presentation.
+pub(crate) struct Paragraph {
+    pub text: String,
+    pub level: u8,
+    pub ratio: f64,
+    pub kind: Option<Kind>,
+    pub lines: Vec<Rc<Line>>,
 }
 
-impl TableItem {
-    fn markdown(&self) -> String {
-        match &self.header {
-            None => grid_markdown(&self.table.rows),
-            Some(h) => {
-                let mut rows = Vec::with_capacity(self.table.rows.len() + 1);
-                rows.push(h.clone());
-                rows.extend(self.table.rows.iter().cloned());
-                grid_markdown(&rows)
-            }
-        }
-    }
-}
-
-struct Item {
-    table: Option<TableItem>,
-    text: String,
-    level: u8,
-    ratio: f64,
-    kind: Option<Kind>,
-    /// the paragraph's lines (its geometry, for table titles)
-    lines: Vec<Rc<Line>>,
-}
-
-const SENT_END: [char; 9] = ['.', '!', '?', ':', ';', '"', '”', '’', ')'];
+pub(crate) const SENT_END: [char; 9] = ['.', '!', '?', ':', ';', '"', '”', '’', ')'];
 
 struct Para<'a> {
     p: &'a Params,
     body: f64,
     body_color: &'a str,
-    items: Vec<Item>,
+    items: Vec<FlowItem>,
     cur: Vec<Rc<Line>>,
     kind: Option<Kind>,
 }
@@ -201,63 +177,19 @@ impl Para<'_> {
                 if self.body != 0.0 { median(self.cur.iter().map(|l| l.size()).collect()) / self.body } else { 1.0 };
             let text = join_lines(&self.cur, self.p);
             let lines = std::mem::take(&mut self.cur);
-            self.items.push(Item { table: None, text, level, ratio, kind: self.kind, lines });
+            self.items.push(FlowItem::Paragraph(Paragraph { text, level, ratio, kind: self.kind, lines }));
         }
         self.cur.clear();
         self.kind = None;
     }
 }
 
-/// Header cells when a line's words fall into two or more of the table's columns, else None.
-fn split_header(words: &[Word], cols: &[(f64, f64)]) -> Option<Vec<String>> {
-    if cols.len() < 2 {
-        return None;
-    }
-    let mut cells: Vec<Vec<Word>> = vec![Vec::new(); cols.len()];
-    for w in words {
-        let mid = (w.x0 + w.x1) / 2.0;
-        let k = cols.iter().position(|&(a, b)| a - 2.0 <= mid && mid <= b + 2.0)?;
-        cells[k].push(w.clone());
-    }
-    if cells.iter().filter(|c| !c.is_empty()).count() < 2 {
-        return None;
-    }
-    Some(
-        cells
-            .into_iter()
-            .map(|ws| if ws.is_empty() { String::new() } else { strip(Line::new(ws, 0, 0).text()).to_string() })
-            .collect(),
-    )
-}
-
-/// A short line directly on top of a table whose first row is data becomes the table's header row.
-fn table_title(it: &Item, tab: &TableItem, p: &Params) -> bool {
-    let grid = &tab.table.rows;
-    if it.kind.is_some()
-        || it.lines.len() != 1
-        || it.ratio >= p.heading_ratio
-        || grid.first().is_none_or(|r| r.len() < 2)
-    {
-        return false;
-    }
-    let text = &it.text;
-    if char_len(text) as f64 > p.title_max_chars
-        || split_count(text) as f64 > p.title_max_words
-        || rstrip(text).ends_with(SENT_END)
-    {
-        return false;
-    }
-    let l = &it.lines[0];
-    if !(tab.x0 - 2.0 <= l.x0 && l.x0 <= tab.x1 && tab.y0 - l.y1 <= p.title_gap * pmax(l.size(), 1.0)) {
-        return false;
-    }
-    grid[0].iter().any(|c| {
-        let c = strip(c);
-        !c.is_empty() && data_cell(c)
-    })
-}
-
 /// Ordered elements (lines and tables) to Markdown paragraphs.
+///
+/// Standalone grouping helper: the caller must assign table membership, omit member
+/// lines from the sequence, and supply reading order and block policy. This does not
+/// detect tables or partition a page. Use [`crate::to_markdown_report`] for complete
+/// page ownership and layout.
 #[allow(clippy::if_same_then_else)] // mirrors the Python elif chain
 pub fn paragraphs(seq: &[SeqItem], body: f64, body_color: &str, p: &Params, use_blocks: bool) -> Vec<String> {
     paragraphs_within(seq, body, body_color, p, use_blocks, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
@@ -275,6 +207,20 @@ pub fn paragraphs_within(
     use_blocks: bool,
     budget: &mut Budget,
 ) -> Option<Vec<String>> {
+    let items = group_within(seq, body, body_color, p, use_blocks, budget)?;
+    Some(render_blocks(finish_region(items, p)))
+}
+
+/// Group lines around table barriers. Assignment and presentation belong to page layout.
+#[allow(clippy::if_same_then_else)] // mirrors the Python elif chain
+pub(crate) fn group_within(
+    seq: &[SeqItem],
+    body: f64,
+    body_color: &str,
+    p: &Params,
+    use_blocks: bool,
+    budget: &mut Budget,
+) -> Option<Vec<FlowItem>> {
     let mut st = Para { p, body, body_color, items: Vec::new(), cur: Vec::new(), kind: None };
     let pitches: Vec<f64> = seq
         .windows(2)
@@ -295,15 +241,8 @@ pub fn paragraphs_within(
         let line = match &e.item {
             Seq::Table { table, x0, x1 } => {
                 st.emit();
-                let t = TableItem { table: table.clone(), x0: *x0, x1: *x1, y0: e.y0, header: None };
-                st.items.push(Item {
-                    table: Some(t),
-                    text: String::new(),
-                    level: 0,
-                    ratio: 1.0,
-                    kind: None,
-                    lines: Vec::new(),
-                });
+                let t = PlacedTable { table: table.clone(), x0: *x0, x1: *x1, y0: e.y0, header: None };
+                st.items.push(FlowItem::Table(t));
                 prev = None;
                 prev_is_last = false;
                 continue;
@@ -422,58 +361,5 @@ pub fn paragraphs_within(
         prev = Some(line);
     }
     st.emit();
-    let mut items = st.items;
-    let mut titled = vec![false; items.len()];
-    if p.table_titles {
-        for i in 1..items.len() {
-            let (head, rest) = items.split_at_mut(i);
-            let (it, Some(tab)) = (&head[i - 1], rest[0].table.as_mut()) else { continue };
-            if it.table.is_none() && table_title(it, tab, p) {
-                let n = tab.table.rows[0].len();
-                let header = split_header(&it.lines[0].words, &tab.table.cols).unwrap_or_else(|| {
-                    let mut h = vec![String::new(); n];
-                    h[0] = it.text.clone();
-                    h
-                });
-                tab.header = Some(header);
-                titled[i - 1] = true;
-            }
-        }
-    }
-    let mut out = Vec::with_capacity(items.len());
-    for (i, it) in items.iter().enumerate() {
-        if titled[i] {
-            continue;
-        }
-        if let Some(t) = &it.table {
-            out.push(t.markdown());
-            continue;
-        }
-        let is_table = |j: usize| items.get(j).is_some_and(|n| n.table.is_some());
-        let near_table = (i > 0 && is_table(i - 1)) || is_table(i + 1);
-        let minor = it.level != 0 && it.ratio < p.heading_ratio;
-        if minor && p.captions && near_table {
-            out.push(format!("*{}*", it.text));
-            continue;
-        }
-        let mut level = it.level;
-        if minor {
-            let ok = items.get(i + 1).is_some_and(|n| {
-                n.table.is_none()
-                    && n.level == 0
-                    && (n.kind.is_some() || char_len(&n.text) as f64 >= p.minor_heading_body)
-            });
-            if !ok {
-                level = 0;
-            }
-        }
-        if level != 0 {
-            out.push(format!("{} {}", "#".repeat(level as usize), it.text));
-        } else if it.kind.is_some() {
-            out.push(format!("- {}", it.text));
-        } else {
-            out.push(it.text.clone());
-        }
-    }
-    Some(out)
+    Some(st.items)
 }

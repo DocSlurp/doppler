@@ -207,11 +207,26 @@ pub struct Page {
     pub lines: Vec<Rc<Line>>,
     /// doppler -rules
     pub rules: Vec<Rule>,
+    /// Upstream rule completeness: `Some(true)` for rulesTruncated="1", `Some(false)`
+    /// for "0", and `None` when absent or unrecognized. Independent of kept rule count.
+    pub rules_truncated: Option<bool>,
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 11] =
-    ["xMin", "yMin", "xMax", "yMax", "fontName", "fontSize", "spaceAfter", "color", "baseline", "width", "height"];
+const KEYS: [&str; 12] = [
+    "xMin",
+    "yMin",
+    "xMax",
+    "yMax",
+    "fontName",
+    "fontSize",
+    "spaceAfter",
+    "color",
+    "baseline",
+    "width",
+    "height",
+    "rulesTruncated",
+];
 
 fn key_index(name: &str) -> Option<usize> {
     // (a match compiles to a switch on length, then one comparison)
@@ -227,6 +242,7 @@ fn key_index(name: &str) -> Option<usize> {
         "baseline" => 8,
         "width" => 9,
         "height" => 10,
+        "rulesTruncated" => 11,
         _ => return None,
     })
 }
@@ -425,6 +441,7 @@ const COLOR: usize = 7;
 const BASELINE: usize = 8;
 const WIDTH: usize = 9;
 const HEIGHT: usize = 10;
+const RULES_TRUNCATED: usize = 11;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -496,6 +513,9 @@ pub struct ParseReport {
     pub unclosed_line_at_eof: bool,
     /// rules or boxes without four finite coordinates
     pub rules_skipped: usize,
+    /// Zero-based page indices marked rulesTruncated="1" by the producer, including pages
+    /// with no kept rules. This describes incomplete evidence, not layout degradation.
+    pub rules_truncated_pages: Vec<usize>,
 }
 
 /// Parse doppler XHTML into pages. A word or rule with a missing or malformed required number
@@ -547,11 +567,20 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                 report.pages += 1;
                 a.parse_into(attrs);
                 let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
+                let rules_truncated = match a.0[RULES_TRUNCATED] {
+                    Some("1") => Some(true),
+                    Some("0") => Some(false),
+                    _ => None,
+                };
+                if rules_truncated == Some(true) {
+                    report.rules_truncated_pages.push(report.pages - 1);
+                }
                 pages.push(Page {
                     width: dim(WIDTH, 612.0),
                     height: dim(HEIGHT, 792.0),
                     lines: Vec::new(),
                     rules: Vec::new(),
+                    rules_truncated,
                 });
             }
             Tag::Open("flow", _) => flow += 1,
