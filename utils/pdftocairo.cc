@@ -158,7 +158,7 @@ static bool setupdlg = false;
 static const ArgDesc argDesc[] = {
 #if ENABLE_LIBPNG
     { .arg = "-png", .kind = argFlag, .val = &png, .size = 0, .usage = "generate a PNG file" },
-    { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9>" },
+    { .arg = "-pngopt", .kind = argGooString, .val = &pngOpt, .size = 0, .usage = "png options, with format compression=<0-9> (default 6)" },
 #endif
 #if ENABLE_LIBJPEG
     { .arg = "-jpeg", .kind = argFlag, .val = &jpeg, .size = 0, .usage = "generate a JPEG file" },

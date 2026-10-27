@@ -80,6 +80,7 @@
 #include "UnicodeTypeTable.h"
 #include "Link.h"
 #include "TextOutputDev.h"
+#include "CJKRadicals.h"
 #include "Page.h"
 #include "Annot.h"
 #include "UTF.h"
@@ -837,6 +838,43 @@ std::unique_ptr<std::string> TextWord::getText(const UnicodeMap *uMap) const
     return s;
 }
 
+std::unique_ptr<std::string> TextWord::getLogicalText(const UnicodeMap *uMap) const
+{
+    const size_t n = len();
+    bool rtl = false;
+    for (size_t i = 0; i < n && !rtl; ++i) {
+        rtl = unicodeTypeR(chars[i].text);
+    }
+    if (!rtl || !uMap) {
+        return getText(uMap);
+    }
+    // Same reordering as the plain text output, in the direction of the word's first strong
+    // character: right-to-left runs are reversed; in a right-to-left word the left-to-right
+    // and numeric runs keep their own order.
+    bool primaryLR = true;
+    for (size_t i = 0; i < n; ++i) {
+        if (unicodeTypeR(chars[i].text)) {
+            primaryLR = false;
+            break;
+        }
+        if (unicodeTypeL(chars[i].text)) {
+            break;
+        }
+    }
+    std::vector<Unicode> visual(n), logical(n);
+    for (size_t i = 0; i < n; ++i) {
+        visual[i] = chars[i].text;
+    }
+    const int count = reorderText(visual.data(), static_cast<int>(n), nullptr, primaryLR, nullptr, logical.data());
+    char buf[8];
+    auto s = std::make_unique<std::string>();
+    for (int i = 0; i < count; ++i) {
+        const int bytes = uMap->mapUnicode(logical[i], buf, sizeof(buf));
+        s->append(buf, bytes);
+    }
+    return s;
+}
+
 void TextWord::getCharBBox(int charIdx, double *xMinA, double *yMinA, double *xMaxA, double *yMaxA) const
 {
     if (charIdx < 0) {
@@ -1217,11 +1255,17 @@ void TextLine::coalesce(const UnicodeMap *uMap)
             }
         }
 
+        // Shaped right-to-left scripts are often drawn glyph by glyph, leaving small gaps
+        // between the glyph boxes of one word. Between two right-to-left characters only a
+        // gap that would also break a word in addChar (minWordBreakSpace) is a space.
+        const double rtlSpace = std::max(space, minWordBreakSpace * words->fontSize);
+
         // merge words
         auto *word0 = words;
         auto *word1 = words->next;
         while (word1) {
-            if (word0->primaryDelta(word1) >= space) {
+            const bool rtlPair = unicodeTypeR(word0->chars.back().text) && unicodeTypeR(word1->chars.front().text);
+            if (word0->primaryDelta(word1) >= (rtlPair ? rtlSpace : space)) {
                 word0->spaceAfter = true;
                 word0 = word1;
                 word1 = word1->next;
@@ -2519,6 +2563,8 @@ void TextPage::clear()
     }
     fonts.clear();
     underlines.clear();
+    rules.clear();
+    rulesTruncated = false;
     links.clear();
 
     diagonal = false;
@@ -2556,7 +2602,15 @@ void TextPage::updateFont(const GfxState *state)
     // adjust the font size
     GfxFont *const gfxFont = state->getFont().get();
     curFontSize = state->getTransformedFontSize();
-    if (gfxFont && gfxFont->getType() == fontType3) {
+    // A Type 3 font with the conventional 1000-unit glyph space (FontMatrix
+    // [0.001 0 0 +-0.001 0 0], as Ghostscript and most converters write) already has
+    // a meaningful size; the guess below would, for example, double a CJK subset whose
+    // only glyphs are full-width.
+    const bool standardType3Matrix = gfxFont && gfxFont->getType() == fontType3 && [&] {
+        const std::array<double, 6> &m = gfxFont->getFontMatrix();
+        return fabs(fabs(m[0]) - 0.001) < 1e-9 && fabs(fabs(m[3]) - 0.001) < 1e-9 && m[1] == 0 && m[2] == 0;
+    }();
+    if (gfxFont && gfxFont->getType() == fontType3 && !standardType3Matrix) {
         // This is a hack which makes it possible to deal with some Type 3
         // fonts.  The problem is that it's impossible to know what the
         // base coordinate system used in the font is without actually
@@ -2759,6 +2813,51 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         u = ligature;
     }
 
+    // CJK radicals (Kangxi Radicals and CJK Radicals Supplement) that fonts use for
+    // ordinary ideographs become their equivalent unified ideograph (Unicode's
+    // Equivalent_Unified_Ideograph), so search and embeddings see the ideograph.
+    Unicode radical;
+    if (uLen == 1 && u[0] >= 0x2e80 && u[0] <= 0x2fdf) {
+        const auto *end = cjkRadicalEquivalents.end();
+        const auto *it = std::lower_bound(cjkRadicalEquivalents.begin(), end, u[0], [](const std::pair<unsigned int, unsigned int> &e, Unicode v) { return e.first < v; });
+        if (it != end && it->first == u[0]) {
+            radical = it->second;
+            u = &radical;
+        }
+    }
+
+    // Arabic presentation forms (positional glyph variants and ligatures such as
+    // lam-alef) become their base letters, so search, embeddings and plain text see
+    // ordinary Arabic. The NFKC expansion is stored in visual order, like every other
+    // right-to-left glyph run, so the logical reordering of the line or word restores
+    // the reading order. Isolated harakat forms (U+FE70..U+FE7F) expand to a space plus
+    // the mark; the space is dropped so the mark stays attached to its word.
+    Unicode arabic[20];
+    if (uLen == 1 && ((u[0] >= 0xfb50 && u[0] <= 0xfdff) || (u[0] >= 0xfe70 && u[0] <= 0xfefc))) {
+        int normLen = 0;
+        Unicode *norm = unicodeNormalizeNFKC(u, 1, &normLen, nullptr);
+        int n = 0;
+        bool phrase = false;
+        for (int k = 0; k < normLen && n < static_cast<int>(sizeof(arabic) / sizeof(arabic[0])); ++k) {
+            if (norm[k] == 0x20 && n == 0) {
+                continue; // isolated harakat: NFKC puts a space before the mark
+            }
+            phrase = phrase || norm[k] == 0x20;
+            arabic[n++] = norm[k];
+        }
+        if (phrase) {
+            n = 0; // a phrase ligature (U+FDFA, U+FDFB) spans several words: keep the ligature
+        }
+        gfree(norm);
+        if (n > 0 && !(n == 1 && arabic[0] == u[0])) {
+            if (n > 1 && unicodeTypeR(arabic[0])) {
+                std::reverse(arabic, arabic + n);
+            }
+            uLen = n;
+            u = arabic;
+        }
+    }
+
     if (uLen != 0) {
         // start a new word if needed
         if (!curWord) {
@@ -2845,6 +2944,15 @@ void TextPage::addWord(TextWord *word)
 void TextPage::addUnderline(double x0, double y0, double x1, double y1)
 {
     underlines.emplace_back(std::make_unique<TextUnderline>(x0, y0, x1, y1));
+}
+
+void TextPage::addRule(const TextRule &rule)
+{
+    if (rules.size() >= maxRules) {
+        rulesTruncated = true;
+        return;
+    }
+    rules.push_back(rule);
 }
 
 void TextPage::addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link)
@@ -5803,10 +5911,118 @@ void TextOutputDev::endActualText(GfxState *state)
     actualText->end(state);
 }
 
+const std::vector<TextRule> &TextOutputDev::getRules() const
+{
+    return text->getRules();
+}
+
+bool TextOutputDev::getRulesTruncated() const
+{
+    return text->getRulesTruncated();
+}
+
+void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box)
+{
+    if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1)) {
+        return;
+    }
+    // keep only the visible part: inside the current clip and the page
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    cx0 = std::max(cx0, 0.0);
+    cy0 = std::max(cy0, 0.0);
+    cx1 = std::min(cx1, text->getPageWidth());
+    cy1 = std::min(cy1, text->getPageHeight());
+    x0 = std::max(x0, cx0);
+    y0 = std::max(y0, cy0);
+    x1 = std::min(x1, cx1);
+    y1 = std::min(y1, cy1);
+    if (x1 < x0 || y1 < y0 || (x1 - x0 <= 0.01 && y1 - y0 <= 0.01)) {
+        return;
+    }
+    // a document-wide budget bounds the output of pages that share hostile content
+    if (docRules >= maxDocRules) {
+        text->markRulesTruncated();
+        return;
+    }
+    ++docRules;
+    text->addRule({ x0, y0, x1, y1, r, g, b, box });
+}
+
+void TextOutputDev::collectPathRules(const GfxState *state, bool filled)
+{
+    // Rules thinner than 1.5 pt from a filled rectangle are line rules, not boxes.
+    const double maxThinRule = 1.5 * state->getHDPI() / 72.0;
+    constexpr double eps = 0.01;
+    const GfxPath *path = state->getPath();
+    GfxRGB rgb;
+    if (filled) {
+        state->getFillRGB(&rgb);
+    } else {
+        state->getStrokeRGB(&rgb);
+    }
+    const double r = colToDbl(rgb.r), g = colToDbl(rgb.g), b = colToDbl(rgb.b);
+    for (int i = 0; i < path->getNumSubpaths(); ++i) {
+        const GfxSubpath *sub = path->getSubpath(i);
+        const int n = sub->getNumPoints();
+        if (filled) {
+            // an axis-aligned rectangle: 4 corners, optionally closed back to the first
+            if (n != 4 && n != 5) {
+                continue;
+            }
+            double x[5], y[5];
+            bool curve = false;
+            for (int k = 0; k < n; ++k) {
+                curve = curve || sub->getCurve(k);
+                state->transform(sub->getX(k), sub->getY(k), &x[k], &y[k]);
+            }
+            if (curve || (n == 5 && (fabs(x[4] - x[0]) > eps || fabs(y[4] - y[0]) > eps))) {
+                continue;
+            }
+            bool rect = true;
+            for (int k = 0; k < 4 && rect; ++k) {
+                const int j = (k + 1) % 4;
+                const bool horiz = fabs(y[k] - y[j]) <= eps, vert = fabs(x[k] - x[j]) <= eps;
+                const int l = (k + 2) % 4;
+                const bool nextHoriz = fabs(y[j] - y[l]) <= eps;
+                rect = (horiz != vert) && (horiz != nextHoriz);
+            }
+            if (!rect) {
+                continue;
+            }
+            const double x0 = std::min(std::min(x[0], x[1]), x[2]), x1 = std::max(std::max(x[0], x[1]), x[2]);
+            const double y0 = std::min(std::min(y[0], y[1]), y[2]), y1 = std::max(std::max(y[0], y[1]), y[2]);
+            if (x1 - x0 <= eps && y1 - y0 <= eps) {
+                continue;
+            }
+            const bool thin = std::min(x1 - x0, y1 - y0) <= maxThinRule;
+            addClippedRule(state, x0, y0, x1, y1, r, g, b, !thin);
+        } else {
+            const double hw = 0.5 * state->getTransformedLineWidth();
+            for (int k = 1; k < n; ++k) {
+                if (sub->getCurve(k) || sub->getCurve(k - 1)) {
+                    continue; // part of a Bezier curve
+                }
+                double x0, y0, x1, y1;
+                state->transform(sub->getX(k - 1), sub->getY(k - 1), &x0, &y0);
+                state->transform(sub->getX(k), sub->getY(k), &x1, &y1);
+                if (fabs(x1 - x0) <= eps && fabs(y1 - y0) > eps) {
+                    addClippedRule(state, x0 - hw, std::min(y0, y1), x0 + hw, std::max(y0, y1), r, g, b, false);
+                } else if (fabs(y1 - y0) <= eps && fabs(x1 - x0) > eps) {
+                    addClippedRule(state, std::min(x0, x1), y0 - hw, std::max(x0, x1), y0 + hw, r, g, b, false);
+                }
+            }
+        }
+    }
+}
+
 void TextOutputDev::stroke(GfxState *state)
 {
     double x[2], y[2];
 
+    if (collectRules) {
+        collectPathRules(state, false);
+    }
     if (!doHTML) {
         return;
     }
@@ -5833,6 +6049,9 @@ void TextOutputDev::fill(GfxState *state)
     double rx0, ry0, rx1, ry1, t;
     int i;
 
+    if (collectRules) {
+        collectPathRules(state, true);
+    }
     if (!doHTML) {
         return;
     }
@@ -5894,7 +6113,7 @@ void TextOutputDev::fill(GfxState *state)
 
 void TextOutputDev::eoFill(GfxState *state)
 {
-    if (!doHTML) {
+    if (!doHTML && !collectRules) {
         return;
     }
     fill(state);

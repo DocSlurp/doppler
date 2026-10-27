@@ -107,6 +107,7 @@ static bool printHelp = false;
 static bool printEnc = false;
 static bool tsvMode = false;
 static bool wordMeta = false;
+static bool collectRules = false;
 static char hyphenModeStr[16] = "";
 
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
@@ -130,6 +131,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-nopgbrk", .kind = argFlag, .val = &noPageBreaks, .size = 0, .usage = "don't insert page breaks between pages" },
                                    { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
                                    { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
+                                   { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
                                    { .arg = "-colspacing",
@@ -287,6 +289,10 @@ int main(int argc, char *argv[])
     }
     if (colspacing <= 0 || colspacing > 10) {
         error(errCommandLine, -1, "Bogus value provided for -colspacing");
+        return 99;
+    }
+    if (collectRules && !bboxLayout) {
+        error(errCommandLine, -1, "'-rules' needs -bbox-layout");
         return 99;
     }
     if (wordMeta && !(bbox || tsvMode)) {
@@ -467,6 +473,7 @@ int main(int argc, char *argv[])
                 textOut.setTextPageBreaks(false);
             }
             if (bboxLayout) {
+                textOut.setCollectRules(collectRules);
                 printDocBBox(f, doc.get(), &textOut, firstPage, lastPage);
             } else {
                 printWordBBox(f, doc.get(), &textOut, firstPage, lastPage);
@@ -624,7 +631,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
             lineYMax = yMax;
         }
 
-        const std::unique_ptr<std::string> wordText = word->getText(uMap);
+        const std::unique_ptr<std::string> wordText = word->getLogicalText(uMap);
         const std::string myString = myXmlTokenReplace(wordText->c_str());
         wordXML << "          <word xMin=\"" << xMin << "\" yMin=\"" << yMin << "\" xMax=\"" << xMax << "\" yMax=\"" << yMax << "\"" << (wordMeta ? wordMetaXmlAttributes(word) : std::string()) << ">" << myString << "</word>\n";
     }
@@ -648,7 +655,14 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
-        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
+        if (collectRules) {
+            fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "");
+            for (const TextRule &rule : textOut->getRules()) {
+                fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str());
+            }
+        } else {
+            fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
+        }
         for (flow = textOut->getFlows(); flow; flow = flow->getNext()) {
             fprintf(f, "    <flow>\n");
             for (blk = flow->getBlocks(); blk; blk = blk->getNext()) {
@@ -731,7 +745,7 @@ void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                         }
 
                         GooString::appendf(lineWordsBuffer, "{0:d}\t{1:d}\t{2:d}\t{3:d}\t{4:d}\t{5:d}\t{6:.2f}\t{7:.2f}\t{8:.2f}\t{9:.2f}\t{10:d}\t{11:s}", wordLevel, page, flowNum, blockNum, lineNum, wordNum, xMin, yMin, xMax - xMin,
-                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getText(uMap)->c_str()).c_str());
+                                           yMax - yMin, wordConf, myTsvFieldReplace(word->getLogicalText(uMap)->c_str()).c_str());
                         if (wordMeta) {
                             lineWordsBuffer += wordMetaTsvColumns(word);
                         }
@@ -771,7 +785,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
             for (const TextWord *word : words) {
                 double xMinA, yMinA, xMaxA, yMaxA;
                 word->getBBox(&xMinA, &yMinA, &xMaxA, &yMaxA);
-                const std::string myString = myXmlTokenReplace(word->getText(uMap)->c_str());
+                const std::string myString = myXmlTokenReplace(word->getLogicalText(uMap)->c_str());
                 fprintf(f, "    <word xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\"%s>%s</word>\n", xMinA, yMinA, xMaxA, yMaxA, wordMeta ? wordMetaXmlAttributes(word).c_str() : "", myString.c_str());
             }
         }
