@@ -16,3 +16,5 @@ docslurp_add_test(pdftotext-output-bbox-rtl-logical test_bbox_rtl_logical.py)
 docslurp_add_test(pdftotext-output-rtl-glyph-gaps test_rtl_glyph_gaps.py)
 docslurp_add_test(pdftotext-output-type3-font-size test_type3_font_size.py)
 docslurp_add_test(pdftotext-output-rules test_rules.py)
+
+docslurp_add_test(pdftotext-output-compact-layout test_compact_layout.py)
