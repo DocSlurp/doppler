@@ -116,5 +116,37 @@ Two smaller ones:
   one x.
 - The rule-group match is O(groups^2) when thousands of disjoint rules share one y.
 
-A per-page line or rule cap would bound all of these, but it would change output, so it is
-left to the caller.
+## Work limits (doppler_md.py v24)
+
+A council review timed one page of one-cell lines at 4.3 s (100 x 200), 25.7 s (200 x 200) and
+123 s (280 x 280), so the converter and `doppler_md.py` now bound the work (`max_page_lines`,
+`max_page_rules`, `max_page_work`, `max_doc_work`; see README.md). Layout work units are elements
+visited, charged in the same places in both implementations (`layout::Budget`): each `regions`
+call its element count, each band a gutter is followed through its elements, each gutter
+reaching the column test its member count, and each same-baseline merge its merged word count.
+A page that runs out is read as plain lines in poppler order and listed in the report.
+
+Defaults are far above the golden set (largest page 303 lines and 20,617 units, largest document
+50,508 units): 20,000 lines or rules per page, 10 million units per page, 50 million per
+document. Timings (CPU s, single run each, `doppler-md` before and after on the same host):
+
+| page | lines | before | after | fallback |
+| --- | --- | --- | --- | --- |
+| grid 100 x 200 | 20,000 | 6.3 | 0.16 | page_work |
+| grid 200 x 200 | 40,000 | 24.5 | 0.04 | page_lines |
+| grid 280 x 280 | 78,400 | 105.9 | 0.08 | page_lines |
+| six columns, 10,000 rows | 60,000 | 61.3 | 0.06 | page_lines |
+| one baseline, 50,000 one-word lines | 50,000 | 8.3 | 0.05 | page_lines |
+| two columns, 25,000 rows | 50,000 | 26.1 | 0.05 | page_lines |
+| at the line cap: two columns, 10,000 rows | 20,000 | 3.7 | 0.31 | page_work |
+| at the line cap: six columns, 3,333 rows | 19,998 | | 0.18 | page_work |
+| at the line cap: one baseline, 20,000 lines | 20,000 | 1.3 | 0.09 | page_work |
+| 100 pages of 100 x 150 grids | 1,500,000 | | 2.0 (mostly parsing 330 MB) | page_work, then doc_work |
+
+The worst page under the budget is the two-column list (about 35 ns per unit, from `table_like`'s
+sorts), so one page costs at most about 0.4 s of layout and a document about 2 s more than its
+linear cost. The golden set is unchanged by the limits, and its speed is too (median of 7
+interleaved launches over the 258 inputs: 0.643 s CPU before, 0.636 s after).
+
+A sub-quadratic `regions` that keeps output exact is still open (see the walk memo above); the
+budget makes it unnecessary for safety.
