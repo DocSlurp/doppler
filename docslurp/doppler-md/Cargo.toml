@@ -1,0 +1,29 @@
+[package]
+name = "doppler-md"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML (port of doppler_md.py)"
+license = "GPL-2.0-or-later"
+publish = false
+
+[lib]
+name = "doppler_md"
+path = "src/lib.rs"
+
+[[bin]]
+name = "doppler-md"
+path = "src/main.rs"
+
+[dependencies]
+memchr = "2"
+serde_json = "1"
+
+[dev-dependencies]
+# the original patterns, to check the hand-written matchers in src/patterns.rs
+regex = "1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
