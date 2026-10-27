@@ -438,11 +438,28 @@ fn opt_num(a: &Attrs, k: usize) -> Option<f64> {
     }
 }
 
+/// Characters that would end a Markdown line or table row (`BREAKS` in doppler_md.py).
+fn is_break(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// `CONTROL_RE.sub('', html.unescape(raw).translate(BREAKS))`: line and paragraph breaks
+/// (literal or from `&#10;`-style references) become spaces, so word text cannot forge
+/// Markdown lines or table rows; other control characters and U+FFFD are removed.
 fn word_text(raw: &str) -> Rc<str> {
     let t = pyc::html_unescape(raw);
-    // is_control on the bytes: C0 controls other than tab and newline, DEL, U+FFFD
-    let control = t.bytes().any(|c| (c < 0x20 && c != b'\t' && c != b'\n') || c == 0x7f) || t.contains('\u{fffd}');
-    if control { Rc::from(t.chars().filter(|&c| !is_control(c)).collect::<String>()) } else { Rc::from(&*t) }
+    // on the bytes: any C0 control, DEL, or the lead bytes of U+0085 (C2 85), U+2028/U+2029
+    // (E2 80 A8/A9) and U+FFFD (EF BF BD)
+    let special = t.bytes().any(|c| c < 0x20 || c == 0x7f || c == 0xc2 || c == 0xe2 || c == 0xef);
+    if special && t.chars().any(|c| is_break(c) || is_control(c)) {
+        Rc::from(
+            t.chars()
+                .filter_map(|c| if is_break(c) { Some(' ') } else { (!is_control(c)).then_some(c) })
+                .collect::<String>(),
+        )
+    } else {
+        Rc::from(&*t)
+    }
 }
 
 /// `Rc<str>` for a value that usually repeats the previous one (colours): share the last one.

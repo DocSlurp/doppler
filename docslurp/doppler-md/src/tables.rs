@@ -501,7 +501,8 @@ fn grid_rtl(grid: &Grid) -> bool {
 
 pub fn grid_markdown(grid: &Grid) -> String {
     let rtl = grid_rtl(grid); // right-to-left table: first column is the rightmost
-    let esc = |x: &String| x.replace('|', "\\|");
+    // backslash first, so a cell ending in `\` cannot turn the next `|` into a literal
+    let esc = |x: &String| x.replace('\\', "\\\\").replace('|', "\\|");
     let row = |r: &Vec<String>| {
         let cells: Vec<String> = if rtl { r.iter().rev().map(esc).collect() } else { r.iter().map(esc).collect() };
         format!("| {} |", cells.join(" | "))
