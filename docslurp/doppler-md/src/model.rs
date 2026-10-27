@@ -55,7 +55,7 @@ pub struct Word {
 impl Word {
     /// (bold, italic) from a font name, as the `Word.bold` / `Word.italic` properties.
     pub fn font_style(font: &str) -> (bool, bool) {
-        let f = font.to_lowercase();
+        let f = pyc::py_lower(font);
         let italic = f.contains("italic") || f.contains("oblique") || f.ends_with(",i");
         let bold = f.contains("bold")
             || f.contains("black")

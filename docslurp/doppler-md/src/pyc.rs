@@ -57,6 +57,44 @@ pub fn is_lower(c: char) -> bool {
     in_table(tables::LOWER, c)
 }
 
+/// `str.lower()`: Python's full lowercase mappings (from its Unicode version, not Rust's) and
+/// CPython's final sigma rule (`handle_capital_sigma`): U+03A3 becomes U+03C2 after a cased
+/// character and not before one, skipping case-ignorable characters both ways.
+pub fn py_lower(s: &str) -> Cow<'_, str> {
+    if s.is_ascii() {
+        return if s.bytes().any(|b| b.is_ascii_uppercase()) {
+            Cow::Owned(s.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(s)
+        };
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_ascii() {
+            out.push(c.to_ascii_lowercase());
+        } else if c == '\u{3a3}' {
+            out.push(if final_sigma(&chars, i) { '\u{3c2}' } else { '\u{3c3}' });
+        } else {
+            match tables::LOWER_MAP.binary_search_by_key(&(c as u32), |&(k, _)| k) {
+                Ok(k) => out.push_str(tables::LOWER_MAP[k].1),
+                Err(_) => out.push(c),
+            }
+        }
+    }
+    Cow::Owned(out)
+}
+
+fn final_sigma(chars: &[char], i: usize) -> bool {
+    let ignorable = |c: char| in_table(tables::CASE_IGNORABLE, c);
+    let cased = |c: char| in_table(tables::CASED, c);
+    match chars[..i].iter().rev().find(|&&c| !ignorable(c)) {
+        Some(&c) if cased(c) => {}
+        _ => return false,
+    }
+    !chars[i + 1..].iter().find(|&&c| !ignorable(c)).is_some_and(|&c| cased(c))
+}
+
 pub fn strip(s: &str) -> &str {
     s.trim_matches(is_space)
 }

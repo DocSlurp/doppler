@@ -290,3 +290,30 @@ fn rtl_grid_reverses_columns_only_when_mostly_rtl() {
     // digits alone are neither
     assert_eq!(grid_markdown(&g(&[&["1", "2"]])), "| 1 | 2 |\n| --- | --- |");
 }
+
+#[test]
+fn py_lower_matches_python() {
+    // expected values from Python 3.14 (Unicode 16) str.lower()
+    let cases = [
+        ("AΣ", "aς"),
+        ("ΣA", "σa"),
+        ("Σ", "σ"),
+        ("A'Σ", "a'ς"),
+        ("AΣ'b", "aσ'b"),
+        ("İSTANBUL", "i\u{307}stanbul"),
+        ("ΟΔΥΣΣΕΥΣ", "οδυσσευς"),
+        // Unicode 17 capitals (Rust lowercases them, Python 3.14 does not)
+        ("\u{a7ce}\u{a7cf}", "\u{a7ce}\u{a7cf}"),
+        ("\u{1e900}", "\u{1e922}"),
+        ("ǅ", "ǆ"),
+        ("ﬃ", "ﬃ"),
+        ("A\u{301}Σ.", "a\u{301}ς."),
+        ("ΣΣ", "σς"),
+        ("aΣ\u{345}", "aς\u{345}"),
+        ("MİXED Case ẞ", "mi\u{307}xed case ß"),
+        ("Serif-BoldItalic", "serif-bolditalic"),
+    ];
+    for (s, want) in cases {
+        assert_eq!(doppler_md::pyc::py_lower(s), want, "{s:?}");
+    }
+}

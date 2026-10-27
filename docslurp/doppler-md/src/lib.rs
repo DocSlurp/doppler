@@ -81,7 +81,7 @@ fn page_number(text: &str) -> bool {
 fn norm_key(text: &str) -> String {
     let mut out = String::new();
     let mut in_digits = false;
-    for ch in strip(text).to_lowercase().chars() {
+    for ch in pyc::py_lower(strip(text)).chars() {
         if pyc::is_decimal(ch) {
             if !in_digits {
                 out.push('#');
