@@ -1,0 +1,5 @@
+baseline-gfm  quality=0.7669 content=0.9217 tables=0.8097 tol_tables=0.902 math=None headings=0.742 halluc=0.0729 subst=0.0458 | levels {'L0': 0.7992, 'L1': 0.7805, 'L2': 0.7805, 'L8': 0.7342, 'L9': 0.6404}
+baseline-html quality=0.7669 content=0.9217 tables=0.8097 tol_tables=0.8891 math=None headings=0.742 halluc=0.0729 subst=0.0458 | levels {'L0': 0.7992, 'L1': 0.7805, 'L2': 0.7805, 'L8': 0.7342, 'L9': 0.6404}
+candidate-html quality=0.7696 content=0.9222 tables=0.8239 tol_tables=0.8923 math=None headings=0.742 halluc=0.0729 subst=0.0458 | levels {'L0': 0.8023, 'L1': 0.784, 'L2': 0.784, 'L8': 0.7352, 'L9': 0.6418}
+changed cases vs baseline-gfm: {'baseline-gfm': 0, 'baseline-html': 223, 'candidate-html': 223}
+pdftotext CPU (parallel, screening): strict 9.22s compact 8.36s; 423s wall

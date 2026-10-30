@@ -23,5 +23,8 @@ reject broken/missing borders, an internal wall, truncated evidence and rule lim
 Limitations: candidate discovery still uses legacy full-width-rule grouping and
 text plausibility; sparse tables may therefore be missed. A completely missing
 internal edge is indistinguishable from an intentional merge when the remaining
-topology is rectangular. No claim of extraction-quality improvement is made;
-real-PDF synthetic conversion coverage and DocSlurp comparison remain follow-up.
+topology is rectangular. Public conversion coverage and a generated real-PDF CLI regression now exercise
+combined spans. Public tests also cover individual spans, empty cells, escaping,
+RTL order, ambiguous/truncated evidence and external-header fallback. See
+`../../docslurp-review/html-spans-20261030/README.md` for comparison evidence
+and its settings/deployment limitations.
