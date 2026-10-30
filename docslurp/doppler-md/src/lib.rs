@@ -97,21 +97,28 @@ fn norm_key(text: &str) -> String {
 }
 
 /// Per page, per line: a repeated header/footer line or a page number.
-fn furniture(pages: &[Page], p: &Params) -> Vec<Vec<bool>> {
+fn furniture(pages: &[Page], p: &Params, body: f64) -> Vec<Vec<bool>> {
     let mut drop: Vec<Vec<bool>> = pages.iter().map(|pg| vec![false; pg.lines.len()]).collect();
     let band = p.furniture_band;
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut cand: Vec<(usize, usize, String)> = Vec::new();
+    let mut counts: HashMap<(bool, String), usize> = HashMap::new();
+    let mut exact: HashMap<(bool, String), usize> = HashMap::new();
+    let mut cand = Vec::new();
     for (pi, page) in pages.iter().enumerate() {
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut seen_exact = HashSet::new();
         for (li, line) in page.lines.iter().enumerate() {
             let mid = (line.y0 + line.y1) / 2.0;
-            if mid < page.height * band || mid > page.height * (1.0 - band) {
-                let key = norm_key(line.text());
+            let top = mid < page.height * band;
+            if top || mid > page.height * (1.0 - band) {
+                let key = (top, norm_key(line.text()));
+                let literal = (top, pyc::py_lower(strip(line.text())).into_owned());
                 if seen.insert(key.clone()) {
                     *counts.entry(key.clone()).or_default() += 1;
                 }
-                cand.push((pi, li, key));
+                if seen_exact.insert(literal.clone()) {
+                    *exact.entry(literal.clone()).or_default() += 1;
+                }
+                cand.push((pi, li, key, literal));
             }
         }
     }
@@ -119,10 +126,55 @@ fn furniture(pages: &[Page], p: &Params) -> Vec<Vec<bool>> {
     // each page's line baselines, sorted on first use: "no other line on this baseline" is a
     // neighbour lookup instead of a scan of the page
     let mut bases: Vec<Option<Vec<f64>>> = vec![None; pages.len()];
-    for (pi, li, key) in cand {
+    let mut body_starts: Vec<Option<f64>> = vec![None; pages.len()];
+    let mut line_starts: Vec<Option<HashMap<i64, usize>>> = vec![None; pages.len()];
+    for (pi, li, key, literal) in cand {
         let lines = &pages[pi].lines;
         let line = &lines[li];
-        let repeated = pages.len() >= 2 && counts.get(&key).copied().unwrap_or(0) as f64 >= need;
+        let count = counts.get(&key).copied().unwrap_or(0);
+        // Min word size is conservative typography evidence, without allocating
+        // and sorting a median before the shared layout budget is available.
+        let size = line.words.iter().map(|w| w.size).fold(f64::INFINITY, f64::min);
+        // Digit normalization alone is weak evidence for removing a prominent
+        // heading. Exact repeated headers and ordinary-size furniture still drop.
+        let numbered_heading = p.furniture_preserve_headings
+            && pages.len() >= 2
+            && count as f64 >= need
+            && (exact.get(&literal).copied().unwrap_or(0) as f64) < need
+            && (line.y0 + line.y1) / 2.0 < pages[pi].height * band
+            && body > 0.0
+            && size.is_finite()
+            && size >= body * p.h2_ratio
+            && char_len(line.text()) as f64 <= p.heading_max_chars
+            && {
+                let start = body_starts[pi].get_or_insert_with(|| {
+                    lines
+                        .iter()
+                        .filter(|other| {
+                            other.y0 >= pages[pi].height * band
+                                && !other.words.is_empty()
+                                && other.words.iter().all(|w| w.size > 0.0 && w.size <= body * p.minor_heading_ratio)
+                        })
+                        .map(|other| other.y0)
+                        .fold(f64::INFINITY, f64::min)
+                });
+                *start >= line.y1 && *start - line.y1 <= p.title_gap * size
+            }
+            && {
+                // Do not preserve a fragment of a split heading: adding just a
+                // fragment can change downstream table discovery. Quantized
+                // bbox starts are only a conservative rejection, not alignment.
+                let starts = line_starts[pi].get_or_insert_with(|| {
+                    let mut m = HashMap::new();
+                    for other in lines {
+                        *m.entry(other.y0.floor() as i64).or_insert(0) += 1;
+                    }
+                    m
+                });
+                let y = line.y0.floor() as i64;
+                (-1i64..=1).map(|d| starts.get(&y.saturating_add(d)).copied().unwrap_or(0)).sum::<usize>() == 1
+            };
+        let repeated = pages.len() >= 2 && count as f64 >= need && !numbered_heading;
         let mut page_number = || {
             page_number(line.text()) && {
                 let sorted = bases[pi].get_or_insert_with(|| {
@@ -280,8 +332,8 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
 pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
     let mut report = Report::default();
     let pages = model::parse_report(xhtml, &mut report.parse);
-    let drop = furniture(&pages, p);
     let (body, body_color) = body_size(&pages);
+    let drop = furniture(&pages, p, body);
     let mut result = Vec::with_capacity(pages.len());
     let mut spent: u64 = 0;
     for (pi, page) in pages.iter().enumerate() {
