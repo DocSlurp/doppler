@@ -93,3 +93,7 @@ for the measured baseline and scoring coverage.
   differential fuzz against the Python reference (Unicode case and final sigma, entities, line
   separators, malformed numbers, truncation, tight work limits).
 - `scripts/make_adversarial.py`: hostile pages for timing and Rust-vs-Rust differential runs.
+
+### Margin headings
+
+Prominent, isolated numbered headings near body text can survive repeated-header filtering. Exact repeated running headers still drop. See [policy, measurements and confirmation limits](FURNITURE.md); `furniture_preserve_headings:false` disables the heading exemption.

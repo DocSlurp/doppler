@@ -79,6 +79,8 @@ params! {
     furniture_band: num = 0.09,
     /// share of pages a band line must repeat on
     furniture_min_share: num = 0.4,
+    /// keep prominent top-band headings repeated only after digit normalization
+    furniture_preserve_headings: flag = true,
     /// size / body size for a heading
     heading_ratio: num = 1.15,
     h1_ratio: num = 1.6,
