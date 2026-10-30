@@ -1,0 +1,25 @@
+   Compiling doppler-md v0.1.0 (/home/dan/code/oss/poppler/docslurp/doppler-md)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running tests/html_tables.rs (docslurp/doppler-md/target/debug/deps/html_tables-3e18569d4315e363)
+
+running 17 tests
+test empty_cells_stay_cells ... ok
+test detected_header_is_thead ... ok
+test empty_grid_is_empty ... ok
+test cells_are_escaped_once ... ok
+test header_only_has_no_tbody ... ok
+test a_word_with_a_literal_newline_is_skipped ... ok
+test no_header_means_no_thead ... ok
+test rtl_gutter_table_reads_right_to_left ... ok
+test rtl_table_reverses_cells_like_gfm ... ok
+test mostly_left_to_right_table_has_no_dir ... ok
+test gutter_table_without_header ... ok
+test ragged_rows_keep_their_cells ... ok
+test line_breaks_in_word_text_cannot_split_the_html_block ... ok
+test rtl_test_counts_the_header ... ok
+test ruled_tables_with_detected_headers ... ok
+test fixtures_change_only_their_tables ... ok
+test public_combined_span_preserves_cells_and_pages ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

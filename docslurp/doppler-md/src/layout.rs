@@ -159,7 +159,7 @@ impl Budget {
 
     /// Charge `n` units; false once the total is over the limit.
     pub(crate) fn spend(&mut self, n: usize) -> bool {
-        self.used += n as u64;
+        self.used = self.used.saturating_add(n as u64);
         self.used as f64 <= self.limit
     }
 }

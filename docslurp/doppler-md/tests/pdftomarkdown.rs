@@ -38,6 +38,10 @@ fn tiny_pdf() -> Vec<u8> {
             content += &format!("BT /F1 11 Tf {x} {y} Td ({cell}) Tj ET\n");
         }
     }
+    pdf_from_content(&content)
+}
+
+fn pdf_from_content(content: &str) -> Vec<u8> {
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
@@ -147,4 +151,47 @@ fn pdftotext_not_found() {
     let out = Command::new(PDFTOMARKDOWN).arg("x.pdf").env("PDFTOTEXT", "/nonexistent/pdftotext").output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("/nonexistent/pdftotext"));
+}
+
+#[test]
+fn real_pdf_combined_span() {
+    let Some(pt) = pdftotext() else {
+        return;
+    };
+    // Source: 3 columns, 3 rows, upper-left 2x2 merged. Six labeled cells.
+    let mut content = String::from("0.5 w\n");
+    for (x0, y0, x1, y1) in [
+        (20, 700, 320, 700),
+        (20, 640, 320, 640),
+        (20, 700, 20, 640),
+        (320, 700, 320, 640),
+        (220, 700, 220, 640),
+        (120, 660, 120, 640),
+        (20, 660, 320, 660),
+        (220, 680, 320, 680),
+    ] {
+        content += &format!("{x0} {y0} m {x1} {y1} l S\n");
+    }
+    for (x, y, t) in [
+        (30, 686, "Merged"),
+        (230, 686, "RightOne"),
+        (230, 666, "RightTwo"),
+        (30, 646, "BottomOne"),
+        (130, 646, "BottomTwo"),
+        (230, 646, "BottomThree"),
+    ] {
+        content += &format!("BT /F1 10 Tf {x} {y} Td ({t}) Tj ET\n");
+    }
+    let scratch = Scratch(std::env::temp_dir().join(format!("span-pdf-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let pdf = scratch.0.join("spans.pdf");
+    std::fs::write(&pdf, pdf_from_content(&content)).unwrap();
+    let out = run(&pt, &["--html", pdf.to_str().unwrap()]);
+    assert!(out.status.success());
+    let html = String::from_utf8(out.stdout).unwrap();
+    assert!(html.contains("rowspan=\"2\" colspan=\"2\""), "{html}");
+    assert_eq!(html.matches("<td").count(), 6);
+    for t in ["Merged", "RightOne", "RightTwo", "BottomOne", "BottomTwo", "BottomThree"] {
+        assert_eq!(html.matches(t).count(), 1, "{html}");
+    }
 }

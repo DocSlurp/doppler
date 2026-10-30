@@ -1,0 +1,151 @@
+   Compiling doppler-md v0.1.0 (/home/dan/code/oss/poppler/docslurp/doppler-md)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (docslurp/doppler-md/target/debug/deps/doppler_md-d99893787432cc89)
+
+running 3 tests
+test tables::span_tests::actual_work_and_exhaustion ... ok
+test tables::span_tests::combined_empty_geometry_and_rejection ... ok
+test model::tests::key_index_matches_keys ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/main.rs (docslurp/doppler-md/target/debug/deps/doppler_md-f054f904517db8d9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/pdftomarkdown.rs (docslurp/doppler-md/target/debug/deps/pdftomarkdown-218520828ffa066e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/algo.rs (docslurp/doppler-md/target/debug/deps/algo-3d6ee4673485f49b)
+
+running 2 tests
+test near_any_matches_scan ... ok
+test near_other_matches_scan ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/completeness.rs (docslurp/doppler-md/target/debug/deps/completeness-0ae0dd538fac7664)
+
+running 5 tests
+test incomplete_evidence_does_not_require_any_kept_rules_or_a_closed_page ... ok
+test absent_complete_truncated_and_unrecognized_markers_stay_distinct ... ok
+test later_document_exhaustion_does_not_hide_upstream_truncation ... ok
+test marker_does_not_change_existing_table_output_or_work ... ok
+test complete_and_truncated_at_the_producer_cap_have_the_same_layout ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/fixtures.rs (docslurp/doppler-md/target/debug/deps/fixtures-52902ef593cbc5cf)
+
+running 11 tests
+test params_override ... ok
+test gutter_table ... ok
+test rtl ... ok
+test joins ... ok
+test rtl_table ... ok
+test ruled_table ... ok
+test furniture ... ok
+test lists_headings ... ok
+test table_titles_off ... ok
+test table_titles ... ok
+test two_columns ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/html_tables.rs (docslurp/doppler-md/target/debug/deps/html_tables-3e18569d4315e363)
+
+running 17 tests
+test empty_grid_is_empty ... ok
+test cells_are_escaped_once ... ok
+test detected_header_is_thead ... ok
+test empty_cells_stay_cells ... ok
+test mostly_left_to_right_table_has_no_dir ... ok
+test header_only_has_no_tbody ... ok
+test no_header_means_no_thead ... ok
+test a_word_with_a_literal_newline_is_skipped ... ok
+test ragged_rows_keep_their_cells ... ok
+test gutter_table_without_header ... ok
+test line_breaks_in_word_text_cannot_split_the_html_block ... ok
+test rtl_table_reverses_cells_like_gfm ... ok
+test rtl_test_counts_the_header ... ok
+test rtl_gutter_table_reads_right_to_left ... ok
+test ruled_tables_with_detected_headers ... ok
+test fixtures_change_only_their_tables ... ok
+test public_combined_span_preserves_cells_and_pages ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/limits.rs (docslurp/doppler-md/target/debug/deps/limits-2d1d24ce5b96aa9c)
+
+running 9 tests
+test input_without_pages_is_reported ... ok
+test breaks_in_word_text_become_spaces ... ok
+test table_cells_escape_backslash_before_pipe ... ok
+test report_counts_skipped_words_and_rules ... ok
+test page_over_line_cap_reads_as_plain_lines ... ok
+test cli_exits_2_without_pages_and_prints_report ... ok
+test document_budget_degrades_the_remaining_pages ... ok
+test many_fragments_on_one_baseline_are_bounded ... ok
+test grid_page_runs_out_of_work_quickly ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.59s
+
+     Running tests/page_layout.rs (docslurp/doppler-md/target/debug/deps/page_layout-2b9c8c55bc4cd863)
+
+running 4 tests
+test exhausted_layout_discards_all_partial_assignments ... ok
+test wrapped_cells_keep_their_continuation_once ... ok
+test narrow_gutter_membership_belongs_to_each_overlapping_region ... ok
+test adjacent_ruled_tables_own_their_titles_without_changing_an_earlier_heading ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/patterns.rs (docslurp/doppler-md/target/debug/deps/patterns-36076947f55667d4)
+
+running 2 tests
+test data_cell_agrees_with_original_pattern ... ok
+test matchers_agree_with_original_patterns ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.06s
+
+     Running tests/pdftomarkdown.rs (docslurp/doppler-md/target/debug/deps/pdftomarkdown-940dccaa98682fca)
+
+running 3 tests
+test pdftotext_not_found ... ok
+test real_pdf_combined_span ... ok
+test pdftomarkdown_matches_the_pipe ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/units.rs (docslurp/doppler-md/target/debug/deps/units-af3d4fadbd459465)
+
+running 15 tests
+test bands_split_where_nothing_overlaps ... ok
+test median_matches_statistics_median ... ok
+test huge_coordinates_do_not_allocate_by_width ... ok
+test python_strings ... ok
+test python_rounding ... ok
+test gutter_follows_columns_and_narrows ... ok
+test py_lower_matches_python ... ok
+test rtl_line_reads_right_to_left_keeping_ltr_runs ... ok
+test rtl_grid_reverses_columns_only_when_mostly_rtl ... ok
+test hostile_inputs_do_not_panic ... ok
+test segments_split_at_wide_gaps ... ok
+test table_grid_from_gutters ... ok
+test unescape_matches_html_module ... ok
+test region_recursion_is_capped ... ok
+test float_fast_path_matches_std_parse ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests doppler_md
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

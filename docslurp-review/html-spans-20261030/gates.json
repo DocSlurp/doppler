@@ -1,0 +1,26 @@
+{
+  "halluc": {
+    "cases": 254,
+    "increases": 0,
+    "decreases": 0,
+    "max_increase": 0.0
+  },
+  "subst": {
+    "cases": 254,
+    "increases": 0,
+    "decreases": 0,
+    "max_increase": 0.0
+  },
+  "content": {
+    "cases": 254,
+    "increases": 64,
+    "decreases": 18,
+    "max_increase": 0.009413702947602132
+  },
+  "tol_tables": {
+    "cases": 226,
+    "increases": 91,
+    "decreases": 23,
+    "max_increase": 0.10328398876583322
+  }
+}

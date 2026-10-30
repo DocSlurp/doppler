@@ -49,6 +49,7 @@ impl PageLayout {
         body: f64,
         body_color: &str,
         p: &Params,
+        format: TableFormat,
         budget: &mut Budget,
     ) -> Option<Self> {
         let ids: Vec<usize> = (0..page.lines.len()).filter(|&i| !drop[i]).collect();
@@ -69,10 +70,12 @@ impl PageLayout {
             })
             .collect();
         if p.rules && p.tables {
-            let tables = ruled_tables(page, &ids, body, p).into_iter().map(|(members, table, (x0, y0, x1, y1))| {
-                let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
-                (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
-            });
+            let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
+                |(members, table, (x0, y0, x1, y1))| {
+                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
+                    (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
+                },
+            );
             elements = replace_members(elements, tables);
         }
         let mut blocks = Vec::new();
@@ -191,7 +194,13 @@ pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<Stri
         .into_iter()
         .map(|block| match block {
             Block::Table(t) => match (tables, t.header) {
-                (TableFormat::Html, header) => grid_html(header.as_deref(), &t.table.rows),
+                (TableFormat::Html, header) => {
+                    if header.is_none() {
+                        t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
+                    } else {
+                        grid_html(header.as_deref(), &t.table.rows)
+                    }
+                }
                 (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
                 (TableFormat::Gfm, Some(header)) => {
                     let mut rows = Vec::with_capacity(t.table.rows.len() + 1);

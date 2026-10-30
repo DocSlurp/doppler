@@ -1,6 +1,7 @@
 //! Gutter tables and ruled tables (the `tables` section of doppler_md.py).
 
-use crate::layout::near_any;
+use crate::TableFormat;
+use crate::layout::{Budget, near_any};
 use crate::model::{Line, Page, Word, is_ltr, is_rtl};
 use crate::params::Params;
 use crate::pyc::{self, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
@@ -334,6 +335,7 @@ pub type Grid = Vec<Vec<String>>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Table {
     pub rows: Grid,
+    pub spans: Option<String>,
     pub cols: Vec<(f64, f64)>,
 }
 
@@ -344,7 +346,7 @@ pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
-    Table { rows, cols: keep.iter().map(|&i| cols[i]).collect() }
+    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect() }
 }
 
 pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
@@ -606,10 +608,18 @@ struct Group {
 }
 
 /// Tables outlined by vector rules (doppler -rules): [(members, grid, bbox)].
-pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<RuledTable> {
+pub fn ruled_tables(
+    page: &Page,
+    ids: &[usize],
+    body: f64,
+    p: &Params,
+    format: TableFormat,
+    budget: &mut Budget,
+) -> Option<Vec<RuledTable>> {
     if page.rules.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
+    // Baseline discovery is shared by GFM and HTML; span work is charged separately.
     let lines: &[Rc<Line>] = &page.lines;
     // (vertical middle, id) in ascending order, for the lines inside a y band; every middle is
     // finite or infinite (never NaN: coordinates are finite), so the order is a total one
@@ -846,7 +856,7 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
             _ => cols,
         };
         let bands: Vec<(f64, f64)> = ys.windows(2).map(|w| (w[0], w[1])).collect();
-        let grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
+        let mut grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
             let mut grid: Grid = Vec::new();
             // rows outside the ruled span (a header above, unruled rows below) are rows of their own
             let head = rows.iter().filter(|r| r.base < ys[0] - 1.0).map(|r| (r.base - 0.5, r.base + 0.5));
@@ -883,10 +893,311 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
+        if format == TableFormat::Html {
+            grid.spans = ruled_html(page, &members, (x0, y0, x1, y1), p, budget).ok()?;
+        }
         for &i in &members {
             used[i] = true;
         }
         out.push((members, grid, (x0, y0, x1, y1)));
     }
-    out
+    Some(out)
+}
+
+/// Conservative closed rectangular topology. Partial edges invalidate the entire candidate.
+/// Limits bound both the Cartesian grid and edge/rule comparisons.
+fn ruled_html(
+    page: &Page,
+    ids: &[usize],
+    bbox: (f64, f64, f64, f64),
+    p: &Params,
+    budget: &mut Budget,
+) -> Result<Option<String>, ()> {
+    macro_rules! charge {
+        ($n:expr) => {
+            if !budget.spend($n) {
+                return Err(());
+            }
+        };
+    }
+    macro_rules! applicable {
+        ($e:expr) => {
+            match $e {
+                Some(value) => value,
+                None => return Ok(None),
+            }
+        };
+    }
+    fn sort_work(n: usize) -> usize {
+        n.saturating_mul((usize::BITS - n.max(1).leading_zeros()) as usize + 1)
+    }
+    let (x0, y0, x1, y1) = bbox;
+    if page.rules_truncated == Some(true) || page.rules.len() > 2048 {
+        return Ok(None);
+    }
+    let mut h = Vec::new();
+    let mut v = Vec::new();
+    for q in &page.rules {
+        charge!(1);
+        if q.boxed {
+            // Shading boundaries participate in discovery; do not erase their rows.
+            return Ok(None);
+        }
+        // cp_slice counts the full string for each of the three channels.
+        charge!(q.color.len().saturating_mul(3));
+        if luminance(&q.color) > p.rule_max_lum {
+            continue;
+        }
+        if q.x0 < x0 - 0.5 || q.x1 > x1 + 0.5 || q.y0 < y0 - 0.5 || q.y1 > y1 + 0.5 {
+            continue;
+        }
+        if (q.y1 - q.y0).abs() <= 1.0 && q.x1 > q.x0 {
+            h.push(((q.y0 + q.y1) / 2., q.x0, q.x1));
+        } else if (q.x1 - q.x0).abs() <= 1.0 && q.y1 > q.y0 {
+            v.push(((q.x0 + q.x1) / 2., q.y0, q.y1));
+        }
+    }
+    let axis = |mut a: Vec<f64>| {
+        a.sort_by(|a, b| a.total_cmp(b));
+        a.dedup_by(|a, b| (*a - *b).abs() <= 0.5);
+        a
+    };
+    charge!(sort_work(v.len() + 2).saturating_add(sort_work(h.len() + 2)));
+    let xs = axis(v.iter().map(|q| q.0).chain([x0, x1]).collect());
+    let ys = axis(h.iter().map(|q| q.0).chain([y0, y1]).collect());
+    let (nc, nr) = (xs.len() - 1, ys.len() - 1);
+    if nc < 2 || nr < 2 || nc > 64 || nr > 64 || nc * nr > 1024 {
+        return Ok(None);
+    }
+    // Return absent, complete, or ambiguous. Never interpret a broken edge as a merge.
+    let edge = |rules: &[(f64, f64, f64)], pos: f64, a: f64, b: f64, budget: &mut Budget| -> Result<Option<bool>, ()> {
+        if !budget.spend(rules.len()) {
+            return Err(());
+        }
+        let mut seg: Vec<_> = rules
+            .iter()
+            .filter(|q| (q.0 - pos).abs() <= 0.5 && q.2 > a + 0.5 && q.1 < b - 0.5)
+            .map(|q| (q.1, q.2))
+            .collect();
+        if seg.is_empty() {
+            return Ok(Some(false));
+        }
+        if !budget.spend(sort_work(seg.len()) + seg.len()) {
+            return Err(());
+        }
+        seg.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = a;
+        for (lo, hi) in seg {
+            if lo > end + 0.5 {
+                return Ok(None);
+            }
+            end = end.max(hi);
+        }
+        Ok(if end < b - 0.5 { None } else { Some(true) })
+    };
+    charge!(nc * nr * 4);
+    let mut right = vec![false; nc * nr];
+    let mut down = right.clone();
+    for r in 0..nr {
+        for c in 0..nc {
+            if r == 0 && !applicable!(edge(&h, ys[0], xs[c], xs[c + 1], budget)?) {
+                return Ok(None);
+            }
+            if c == 0 && !applicable!(edge(&v, xs[0], ys[r], ys[r + 1], budget)?) {
+                return Ok(None);
+            }
+            right[r * nc + c] = applicable!(edge(&v, xs[c + 1], ys[r], ys[r + 1], budget)?);
+            down[r * nc + c] = applicable!(edge(&h, ys[r + 1], xs[c], xs[c + 1], budget)?);
+            if (c == nc - 1 && !right[r * nc + c]) || (r == nr - 1 && !down[r * nc + c]) {
+                return Ok(None);
+            }
+        }
+    }
+    let mut owner = vec![usize::MAX; nc * nr];
+    let mut rects = Vec::new();
+    for i in 0..nc * nr {
+        if owner[i] != usize::MAX {
+            continue;
+        }
+        let id = rects.len();
+        let mut todo = vec![i];
+        owner[i] = id;
+        let (mut ra, mut rb, mut ca, mut cb) = (i / nc, i / nc, i % nc, i % nc);
+        let mut count = 0;
+        while let Some(j) = todo.pop() {
+            charge!(5);
+            let (r, c) = (j / nc, j % nc);
+            count += 1;
+            ra = ra.min(r);
+            rb = rb.max(r);
+            ca = ca.min(c);
+            cb = cb.max(c);
+            for k in [
+                if c + 1 < nc && !right[j] { Some(j + 1) } else { None },
+                if c > 0 && !right[j - 1] { Some(j - 1) } else { None },
+                if r + 1 < nr && !down[j] { Some(j + nc) } else { None },
+                if r > 0 && !down[j - nc] { Some(j - nc) } else { None },
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if owner[k] == usize::MAX {
+                    owner[k] = id;
+                    todo.push(k);
+                }
+            }
+        }
+        if count != (rb - ra + 1) * (cb - ca + 1) {
+            return Ok(None);
+        }
+        for r in ra..=rb {
+            for c in ca..=cb {
+                charge!(1);
+                if (c < cb && right[r * nc + c]) || (r < rb && down[r * nc + c]) {
+                    return Ok(None);
+                }
+            }
+        }
+        rects.push((ra, rb, ca, cb));
+    }
+    charge!(rects.len() + sort_work(ids.len()));
+    let mut texts = vec![String::new(); rects.len()];
+    // Baseline order, with Line::text retaining each line's bidi ordering.
+    let mut ordered = ids.to_vec();
+    ordered.sort_by(|a, b| page.lines[*a].base().total_cmp(&page.lines[*b].base()));
+    for i in ordered {
+        let line = &page.lines[i];
+        let mut words = std::collections::BTreeMap::<usize, Vec<Word>>::new();
+        charge!(sort_work(line.words.len()));
+        for w in &line.words {
+            charge!(xs.len().ilog2() as usize + ys.len().ilog2() as usize + w.text.len() + 1);
+            let x = (w.x0 + w.x1) / 2.;
+            let y = (w.y0 + w.y1) / 2.;
+            if x <= x0 || x >= x1 || y <= y0 || y >= y1 {
+                return Ok(None);
+            }
+            let c = xs.partition_point(|a| *a < x).saturating_sub(1).min(nc - 1);
+            let r = ys.partition_point(|a| *a < y).saturating_sub(1).min(nr - 1);
+            let id = owner[r * nc + c];
+            let (ra, rb, ca, cb) = rects[id];
+            if w.x0 <= xs[ca] || w.x1 >= xs[cb + 1] || w.y0 <= ys[ra] || w.y1 >= ys[rb + 1] {
+                return Ok(None);
+            }
+            words.entry(id).or_default().push(w.clone());
+        }
+        for (i, ws) in words {
+            if ws.is_empty() {
+                continue;
+            }
+            if !texts[i].is_empty() {
+                // Multiple source fragments need the established grid assembler's
+                // wrapping/bidi evidence. Decline spans rather than invent a join.
+                return Ok(None);
+            }
+            charge!(sort_work(ws.len()));
+            for w in &ws {
+                charge!(w.text.len().saturating_mul(4));
+            }
+            texts[i].push_str(&line_text(ws));
+        }
+    }
+    for text in &texts {
+        charge!(text.len());
+    }
+    let rtl = rows_rtl(std::iter::once(texts.as_slice()));
+    let mut out = if rtl { "<table dir=\"rtl\">\n<tbody>\n".to_string() } else { "<table>\n<tbody>\n".to_string() };
+    for r in 0..nr {
+        charge!(rects.len() + 1);
+        out.push_str("<tr>");
+        let mut cells: Vec<_> = rects.iter().enumerate().filter(|(_, q)| q.0 == r).collect();
+        if rtl {
+            cells.reverse();
+        }
+        for (i, &(ra, rb, ca, cb)) in cells {
+            charge!(texts[i].len().saturating_mul(24) + 64);
+            out.push_str("<td");
+            if rb > ra {
+                out.push_str(&format!(" rowspan=\"{}\"", rb - ra + 1));
+            }
+            if cb > ca {
+                out.push_str(&format!(" colspan=\"{}\"", cb - ca + 1));
+            }
+            out.push('>');
+            out.push_str(
+                &texts[i].replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;"),
+            );
+            out.push_str("</td>");
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n</table>");
+    Ok(Some(out))
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use crate::model::Rule;
+    // Source topology: 3x3 grid, upper-left 2x2 rectangle merged; other cells empty.
+    fn fixture() -> Page {
+        let mut page = Page { width: 300., height: 300., lines: vec![], rules: vec![], rules_truncated: Some(false) };
+        for (x0, y0, x1, y1) in [
+            (0., 0., 300., 0.),
+            (0., 300., 300., 300.),
+            (0., 0., 0., 300.),
+            (300., 0., 300., 300.),
+            (200., 0., 200., 300.),
+            (100., 200., 100., 300.),
+            (0., 200., 300., 200.),
+            (200., 100., 300., 100.),
+        ] {
+            page.rules.push(Rule { x0, y0, x1, y1, color: "#000000".into(), boxed: false });
+        }
+        page
+    }
+    #[test]
+    fn actual_work_and_exhaustion() {
+        let mut page = fixture();
+        let mut budget = Budget::new(100_000.);
+        assert!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut budget).unwrap().is_some());
+        assert!(budget.used < 10_000);
+        let mut tiny = Budget::new(1.);
+        assert!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut tiny).is_err());
+        page.rules[0].boxed = true;
+        let mut tiny = Budget::new(1.);
+        assert_eq!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut tiny), Ok(None));
+        assert_eq!(tiny.used, 1);
+    }
+    #[test]
+    fn oversized_color_exhausts_budget_before_luminance_scan() {
+        let mut page = fixture();
+        page.rules[0].color = format!("#000000{}", "x".repeat(100_000));
+        let mut budget = Budget::new(100_000.);
+        assert!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut budget).is_err());
+        assert_eq!(budget.used, 1 + 3 * page.rules[0].color.len() as u64);
+    }
+    #[test]
+    fn combined_empty_geometry_and_rejection() {
+        let mut page = fixture();
+        let render = |p: &Page| {
+            ruled_html(p, &[], (0., 0., 300., 300.), &Params::default(), &mut Budget::new(f64::INFINITY)).unwrap()
+        };
+        let html = render(&page).unwrap();
+        assert!(html.contains("rowspan=\"2\" colspan=\"2\""));
+        assert_eq!(html.matches("<td").count(), 6);
+        page.rules[7].x0 = 220.; // partial broken edge
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules.remove(0); // missing outer border
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules[7].x0 = 100.; // internal wall in a connected rectangle
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules_truncated = Some(true);
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules.resize(2049, page.rules[0].clone());
+        assert!(render(&page).is_none());
+    }
 }
