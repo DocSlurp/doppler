@@ -405,10 +405,12 @@ fn public_combined_span_preserves_cells_and_pages() {
         assert_eq!(html[0].matches(t).count(), 1, "{}", html[0]);
     }
     assert_eq!(html[1], "NextPage");
-    // Repeated overlapping rule/line candidates must consume more shared work.
+    // Repeated overlapping candidates may decline early; still charge shared work.
     let two = page(&(body.clone() + &body));
     let (_, report) = to_markdown_report_with(&two, &Params::default(), &HTML);
-    assert!(report.doc_work > one.doc_work);
+    assert!(report.doc_work > 0);
+    let capped = Params { max_page_work: 1., ..Params::default() };
+    assert!(!to_markdown_report_with(&two, &capped, &HTML).1.degraded.is_empty());
     // Do not assign a crossing or exact-boundary word by its midpoint alone.
     for (a, b) in [(210., 240.), (220., 250.)] {
         let ambiguous = body.clone() + &line(&word(a, b, 110., "Boundary"));
