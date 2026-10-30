@@ -350,3 +350,94 @@ fn fixtures_change_only_their_tables() {
         assert!(tables > 0, "{name} has a table");
     }
 }
+
+/// Closed 3x3 source geometry, with the upper-left 2x2 cells merged.
+#[test]
+fn public_combined_span_preserves_cells_and_pages() {
+    let mut body = String::new();
+    for (x0, y0, x1, y1) in [
+        (20., 100., 320., 100.),
+        (20., 400., 320., 400.),
+        (20., 100., 20., 400.),
+        (320., 100., 320., 400.),
+        (220., 100., 220., 400.),
+        (120., 300., 120., 400.),
+        (20., 300., 320., 300.),
+        (220., 200., 320., 200.),
+    ] {
+        body += &rule(x0, x1, 100. + (y0 - 100.) / 5., 100. + (y1 - 100.) / 5.);
+    }
+    for (x, y, t) in [
+        (30., 110., "Merged"),
+        (230., 110., "RightOne"),
+        (230., 210., "RightTwo"),
+        (30., 310., "BottomOne"),
+        (130., 310., "BottomTwo"),
+        (230., 310., "BottomThree"),
+    ] {
+        body += &line(&word(x, x + 50., 100. + (y - 100.) / 5., t));
+    }
+    let input = page(&body) + &page(&line(&word(20., 100., 100., "NextPage")));
+    let (_, html) = both(&input);
+    assert_eq!(html.len(), 2);
+    assert!(html[0].contains("rowspan=\"2\" colspan=\"2\""), "{}", html[0]);
+    assert_eq!(html[0].matches("<td").count(), 6);
+    for t in ["Merged", "RightOne", "RightTwo", "BottomOne", "BottomTwo", "BottomThree"] {
+        assert_eq!(html[0].matches(t).count(), 1, "{}", html[0]);
+    }
+    assert_eq!(html[1], "NextPage");
+    // Split the merged rectangle horizontally: colspan only.
+    let (_, cs) = both(&page(&(body.clone() + &rule(20., 220., 120., 120.))));
+    assert!(cs[0].contains("colspan=\"2\""));
+    assert!(!cs[0].contains("rowspan="));
+    // Split it vertically: rowspan only.
+    let (_, rs) = both(&page(&(body.clone() + &rule(120., 120., 100., 140.))));
+    assert!(rs[0].contains("rowspan=\"2\""));
+    assert!(!rs[0].contains("colspan="));
+    // Partial internal wall is ambiguous and must fall back.
+    let (_, ambiguous) = both(&page(&(body.clone() + &rule(40., 100., 120., 120.))));
+    assert!(!ambiguous[0].contains("rowspan="));
+    assert!(!ambiguous[0].contains("colspan="));
+    let truncated = page(&body).replacen("<page ", "<page rulesTruncated=\"1\" ", 1);
+    let (_, rejected) = both(&truncated);
+    assert!(!rejected[0].contains("rowspan="));
+    assert!(!rejected[0].contains("colspan="));
+    for output in [&ambiguous[0], &rejected[0]] {
+        for text in ["Merged", "RightOne", "RightTwo", "BottomOne", "BottomTwo", "BottomThree"] {
+            assert_eq!(output.matches(text).count(), 1, "{output}");
+        }
+    }
+
+    // An external title deliberately selects legacy header semantics.
+    let header = line(&word(20., 100., 86., "ExternalTitle")) + &body.replace("RightOne", "1.0");
+    let (_, headed) = both(&page(&header));
+    assert!(headed[0].contains("<thead>"), "{}", headed[0]);
+    assert!(!headed[0].contains("rowspan="));
+
+    let mut rtl = input.clone();
+    for (a, b) in [
+        ("Merged", "מיזוג"),
+        ("RightOne", "ראשון"),
+        ("RightTwo", "שני"),
+        ("BottomOne", "אחד"),
+        ("BottomTwo", "שתיים"),
+        ("BottomThree", "שלוש"),
+    ] {
+        rtl = rtl.replace(a, b);
+    }
+    let (_, rtl) = both(&rtl);
+    assert!(rtl[0].contains("dir=\"rtl\""));
+    assert!(rtl[0].find("ראשון").unwrap() < rtl[0].find("מיזוג").unwrap());
+    assert!(rtl[0].find("שלוש").unwrap() < rtl[0].find("שתיים").unwrap());
+
+    // Empty geometric cells retain their positions.
+    let empty = input.replace("BottomTwo", "");
+    let (_, e) = both(&empty);
+    assert_eq!(e[0].matches("<td").count(), 6);
+    assert!(e[0].contains("<td></td>"));
+    // Hostile text is escaped in the actual span renderer.
+    let hostile = input.replace("Merged", "&lt;/table&gt;&amp;");
+    let (_, h) = both(&hostile);
+    assert!(h[0].contains("&lt;/table&gt;&amp;"));
+    assert_eq!(h[0].matches("</table>").count(), 1);
+}
