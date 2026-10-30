@@ -1,0 +1,76 @@
+{
+  "html-low": {
+    "report": {
+      "page_found": true,
+      "pages": 1,
+      "unclosed_pages": 0,
+      "lines": 7,
+      "words": 7,
+      "words_skipped": {
+        "missing_coord": 0,
+        "bad_number": 0,
+        "outside_line": 0,
+        "unclosed_line": 0
+      },
+      "unclosed_line_at_eof": false,
+      "rules_skipped": 0,
+      "rules_truncated_pages": [],
+      "doc_work": 2055,
+      "page_work_max": 2048,
+      "degraded": [
+        {
+          "page": 1,
+          "reason": "page_work"
+        }
+      ]
+    },
+    "table": false,
+    "span": false
+  },
+  "html-default": {
+    "report": {
+      "page_found": true,
+      "pages": 1,
+      "unclosed_pages": 0,
+      "lines": 7,
+      "words": 7,
+      "words_skipped": {
+        "missing_coord": 0,
+        "bad_number": 0,
+        "outside_line": 0,
+        "unclosed_line": 0
+      },
+      "unclosed_line_at_eof": false,
+      "rules_skipped": 0,
+      "rules_truncated_pages": [],
+      "doc_work": 32867,
+      "page_work_max": 32860,
+      "degraded": []
+    },
+    "table": true,
+    "span": true
+  },
+  "gfm-default": {
+    "report": {
+      "page_found": true,
+      "pages": 1,
+      "unclosed_pages": 0,
+      "lines": 7,
+      "words": 7,
+      "words_skipped": {
+        "missing_coord": 0,
+        "bad_number": 0,
+        "outside_line": 0,
+        "unclosed_line": 0
+      },
+      "unclosed_line_at_eof": false,
+      "rules_skipped": 0,
+      "rules_truncated_pages": [],
+      "doc_work": 9,
+      "page_work_max": 2,
+      "degraded": []
+    },
+    "table": false,
+    "span": false
+  }
+}

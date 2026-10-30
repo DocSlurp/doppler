@@ -49,6 +49,7 @@ impl PageLayout {
         body: f64,
         body_color: &str,
         p: &Params,
+        format: TableFormat,
         budget: &mut Budget,
     ) -> Option<Self> {
         let ids: Vec<usize> = (0..page.lines.len()).filter(|&i| !drop[i]).collect();
@@ -69,10 +70,12 @@ impl PageLayout {
             })
             .collect();
         if p.rules && p.tables {
-            let tables = ruled_tables(page, &ids, body, p).into_iter().map(|(members, table, (x0, y0, x1, y1))| {
-                let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
-                (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
-            });
+            let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
+                |(members, table, (x0, y0, x1, y1))| {
+                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
+                    (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
+                },
+            );
             elements = replace_members(elements, tables);
         }
         let mut blocks = Vec::new();

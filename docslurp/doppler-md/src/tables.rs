@@ -1,6 +1,7 @@
 //! Gutter tables and ruled tables (the `tables` section of doppler_md.py).
 
-use crate::layout::near_any;
+use crate::TableFormat;
+use crate::layout::{Budget, near_any};
 use crate::model::{Line, Page, Word, is_ltr, is_rtl};
 use crate::params::Params;
 use crate::pyc::{self, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
@@ -607,9 +608,35 @@ struct Group {
 }
 
 /// Tables outlined by vector rules (doppler -rules): [(members, grid, bbox)].
-pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<RuledTable> {
+pub fn ruled_tables(
+    page: &Page,
+    ids: &[usize],
+    body: f64,
+    p: &Params,
+    format: TableFormat,
+    budget: &mut Budget,
+) -> Option<Vec<RuledTable>> {
     if page.rules.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
+    }
+    if format == TableFormat::Html {
+        // Discovery precedes span construction and must also fit the shared budget.
+        // Bound rule grouping, candidate/line scans and sorting before allocation.
+        let n = page.rules.len().saturating_add(ids.len()).saturating_add(1);
+        if !budget.spend(n.saturating_mul(n).saturating_mul(8)) {
+            return None;
+        }
+        for &i in ids {
+            let line = &page.lines[i];
+            if !budget.spend(line.words.len().saturating_mul(n).saturating_mul(16)) {
+                return None;
+            }
+            for w in &line.words {
+                if !budget.spend(w.text.len().saturating_mul(n).saturating_mul(8)) {
+                    return None;
+                }
+            }
+        }
     }
     let lines: &[Rc<Line>] = &page.lines;
     // (vertical middle, id) in ascending order, for the lines inside a y band; every middle is
@@ -884,13 +911,41 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
-        grid.spans = ruled_html(page, &members, (x0, y0, x1, y1), p);
+        if format == TableFormat::Html {
+            // Reserve a conservative upper bound before entering topology work. This
+            // includes repeated edge scans/sorts, grid traversal and row emission.
+            let rules = page.rules.len();
+            let axis = rules.saturating_add(2);
+            let cells = axis.saturating_mul(axis).min(1024);
+            let log = (usize::BITS - axis.leading_zeros()) as usize;
+            let work = axis
+                .saturating_mul(log + 1)
+                .saturating_add(cells.saturating_mul(4).saturating_mul(axis).saturating_mul(log + 1))
+                .saturating_add(
+                    members.len().saturating_mul((usize::BITS - members.len().max(1).leading_zeros()) as usize + 1),
+                );
+            if !budget.spend(work) {
+                return None;
+            }
+            for &i in &members {
+                let line = &page.lines[i];
+                if !budget.spend(line.words.len().saturating_mul(32)) {
+                    return None;
+                }
+                for w in &line.words {
+                    if !budget.spend(w.text.len().saturating_mul(16)) {
+                        return None;
+                    }
+                }
+            }
+            grid.spans = ruled_html(page, &members, (x0, y0, x1, y1), p);
+        }
         for &i in &members {
             used[i] = true;
         }
         out.push((members, grid, (x0, y0, x1, y1)));
     }
-    out
+    Some(out)
 }
 
 /// Conservative closed rectangular topology. Partial edges invalidate the entire candidate.
@@ -903,7 +958,11 @@ fn ruled_html(page: &Page, ids: &[usize], bbox: (f64, f64, f64, f64), p: &Params
     let mut h = Vec::new();
     let mut v = Vec::new();
     for q in &page.rules {
-        if q.boxed || luminance(&q.color) > p.rule_max_lum {
+        if q.boxed {
+            // Shading boundaries participate in discovery; do not erase their rows.
+            return None;
+        }
+        if luminance(&q.color) > p.rule_max_lum {
             continue;
         }
         if q.x0 < x0 - 0.5 || q.x1 > x1 + 0.5 || q.y0 < y0 - 0.5 || q.y1 > y1 + 0.5 {
@@ -1014,7 +1073,7 @@ fn ruled_html(page: &Page, ids: &[usize], bbox: (f64, f64, f64, f64), p: &Params
     ordered.sort_by(|a, b| page.lines[*a].base().total_cmp(&page.lines[*b].base()));
     for i in ordered {
         let line = &page.lines[i];
-        let mut words = vec![Vec::new(); rects.len()];
+        let mut words = std::collections::BTreeMap::<usize, Vec<Word>>::new();
         for w in &line.words {
             let x = (w.x0 + w.x1) / 2.;
             let y = (w.y0 + w.y1) / 2.;
@@ -1023,14 +1082,21 @@ fn ruled_html(page: &Page, ids: &[usize], bbox: (f64, f64, f64, f64), p: &Params
             }
             let c = xs.partition_point(|a| *a < x).saturating_sub(1).min(nc - 1);
             let r = ys.partition_point(|a| *a < y).saturating_sub(1).min(nr - 1);
-            words[owner[r * nc + c]].push(w.clone());
+            let id = owner[r * nc + c];
+            let (ra, rb, ca, cb) = rects[id];
+            if w.x0 <= xs[ca] || w.x1 >= xs[cb + 1] || w.y0 <= ys[ra] || w.y1 >= ys[rb + 1] {
+                return None;
+            }
+            words.entry(id).or_default().push(w.clone());
         }
-        for (i, ws) in words.into_iter().enumerate() {
+        for (i, ws) in words {
             if ws.is_empty() {
                 continue;
             }
             if !texts[i].is_empty() {
-                texts[i].push(' ');
+                // Multiple source fragments need the established grid assembler's
+                // wrapping/bidi evidence. Decline spans rather than invent a join.
+                return None;
             }
             texts[i].push_str(&line_text(ws));
         }

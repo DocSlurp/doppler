@@ -304,7 +304,7 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
         }
         spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
-        match PageLayout::within(page, &drop[pi], body, &body_color, p, &mut budget) {
+        match PageLayout::within(page, &drop[pi], body, &body_color, p, o.tables, &mut budget) {
             Some(layout) => result.push(layout.markdown(o.tables)),
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };

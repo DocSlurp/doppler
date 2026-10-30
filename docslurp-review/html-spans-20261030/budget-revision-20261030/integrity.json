@@ -1,0 +1,16 @@
+{
+  "schema": "docslurp-evaluation-integrity@v1",
+  "passed": false,
+  "datasetHash": null,
+  "productionHash": null,
+  "gitHead": null,
+  "base": "965411d40",
+  "scannedFiles": 0,
+  "scannedProductionFiles": 0,
+  "cases": 0,
+  "findings": [
+    {
+      "rule": "unsupported-catalog-schema"
+    }
+  ]
+}

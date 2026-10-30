@@ -168,7 +168,8 @@ fn both(xhtml: &str) -> (Vec<String>, Vec<String>) {
     assert_eq!(gfm, default);
     assert_eq!(gr.to_json(), dr.to_json());
     let (html, hr) = to_markdown_report_with(xhtml, &p, &HTML);
-    assert_eq!(hr.to_json(), dr.to_json(), "the table format does not change the work or what was skipped");
+    assert_eq!(hr.degraded, dr.degraded);
+    assert!(hr.doc_work >= dr.doc_work);
     (gfm, html)
 }
 
@@ -379,6 +380,24 @@ fn public_combined_span_preserves_cells_and_pages() {
     }
     let input = page(&body) + &page(&line(&word(20., 100., 100., "NextPage")));
     let (_, html) = both(&input);
+    let low = Params { max_page_work: 1., ..Params::default() };
+    let (plain, report) = to_markdown_report_with(&input, &low, &HTML);
+    assert_eq!(report.degraded[0], (0, doppler_md::Degraded::PageWork));
+    assert!(!plain[0].contains("<table"));
+    assert!(plain[0].contains("Merged"));
+    let single = page(&body);
+    let (_, one) = to_markdown_report_with(&single, &Params::default(), &HTML);
+    let doc = Params { max_doc_work: one.doc_work as f64, ..Params::default() };
+    let (_, report) = to_markdown_report_with(&(single.clone() + &single), &doc, &HTML);
+    assert_eq!(report.degraded, vec![(1, doppler_md::Degraded::DocWork)]);
+    let (_, gfm) = to_markdown_report(&single, &Params::default());
+    assert!(one.page_work_max > gfm.page_work_max);
+    let capped = Params { max_page_work: gfm.page_work_max as f64, ..Params::default() };
+    assert!(to_markdown_report(&single, &capped).1.degraded.is_empty());
+    assert!(!to_markdown_report_with(&single, &capped, &HTML).1.degraded.is_empty());
+    let dense = page(&(body.clone() + &line(&word(30., 80., 102., "Extra")).repeat(20_000)));
+    assert!(!to_markdown_report_with(&dense, &Params::default(), &HTML).1.degraded.is_empty());
+
     assert_eq!(html.len(), 2);
     assert!(html[0].contains("rowspan=\"2\" colspan=\"2\""), "{}", html[0]);
     assert_eq!(html[0].matches("<td").count(), 6);
@@ -386,6 +405,23 @@ fn public_combined_span_preserves_cells_and_pages() {
         assert_eq!(html[0].matches(t).count(), 1, "{}", html[0]);
     }
     assert_eq!(html[1], "NextPage");
+    // Repeated overlapping rule/line candidates must consume more shared work.
+    let two = page(&(body.clone() + &body));
+    let (_, report) = to_markdown_report_with(&two, &Params::default(), &HTML);
+    assert!(report.doc_work > one.doc_work);
+    // Do not assign a crossing or exact-boundary word by its midpoint alone.
+    for (a, b) in [(210., 240.), (220., 250.)] {
+        let ambiguous = body.clone() + &line(&word(a, b, 110., "Boundary"));
+        let (_, output) = both(&page(&ambiguous));
+        assert!(!output[0].contains("rowspan="));
+        assert!(output[0].contains("Boundary"));
+    }
+    // Detached fragments and wrapping must use established grid text assembly.
+    for text in ["en", "純利益", "123", "العربية"] {
+        let fragmented = body.clone() + &line(&word(35., 75., 115., text));
+        let (_, output) = both(&page(&fragmented));
+        assert!(!output[0].contains("rowspan="));
+    }
     // Split the merged rectangle horizontally: colspan only.
     let (_, cs) = both(&page(&(body.clone() + &rule(20., 220., 120., 120.))));
     assert!(cs[0].contains("colspan=\"2\""));
