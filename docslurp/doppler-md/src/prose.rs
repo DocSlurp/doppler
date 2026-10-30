@@ -208,7 +208,7 @@ pub fn paragraphs_within(
     budget: &mut Budget,
 ) -> Option<Vec<String>> {
     let items = group_within(seq, body, body_color, p, use_blocks, budget)?;
-    Some(render_blocks(finish_region(items, p)))
+    Some(render_blocks(finish_region(items, p), crate::TableFormat::Gfm))
 }
 
 /// Group lines around table barriers. Assignment and presentation belong to page layout.

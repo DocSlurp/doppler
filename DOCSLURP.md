@@ -27,6 +27,15 @@ ctest --test-dir build -j 8 --output-on-failure
 Binaries land in `build/utils/` (`pdftotext`, `pdftoppm`, `pdfimages`, `pdfinfo`, ...) and run
 from the build tree without installing.
 
+## PDF to Markdown
+
+`docslurp/doppler-md` builds `pdftomarkdown` (`cargo build --release` there), which runs this
+fork's `pdftotext -bbox-layout -wordmeta -rules -compact-layout` and converts its XHTML to
+Markdown in one step: `PDFTOTEXT=build/utils/pdftotext
+docslurp/doppler-md/target/release/pdftomarkdown [--html] [--strict] FILE.pdf`. `--html` writes
+tables as HTML, `--strict` keeps full-precision coordinates (the old pipe's exact output). See
+its README and PERF.md.
+
 ## DocSlurp regression tests
 
 `test/docslurp/` holds Python tests that build small PDFs in memory

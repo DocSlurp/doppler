@@ -141,3 +141,52 @@ binaries over 5 rounds: per-file-launch CPU median 1.070 s vs 1.112 s pinned to 
 0.934 s vs 0.905 s unpinned, both within noise. User-space instructions over the set were
 4.090 G vs 4.053 G (+0.9%) and cycles 2.65 G vs 2.71 G. Output is 258/258 against
 `golden-v23`, and the adversarial pages take the same time.
+
+## pdftomarkdown: one command, compact coordinates, HTML tables (2026-10-29)
+
+`pdftomarkdown FILE.pdf` replaces `pdftotext -bbox-layout -wordmeta -rules FILE - | doppler-md`.
+CPU is user+sys of the whole command (pdftotext plus conversion), interleaved, median of n runs.
+
+- **One process instead of a pipe:** Ghostscript.pdf (477 pages) 2.344 s vs 2.331 s for the
+  pipe, n=9: the same within noise. Of that, pdftotext is about 91%; the conversion of its 44 MB
+  of XHTML takes about 0.2 s, so no converter change can save more than about 9% end to end.
+- **`--html`:** conversion alone on the saved XHTML, 193 ms vs 200 ms for GFM tables, n=15
+  with overlapping ranges: no measurable cost.
+- **`-compact-layout` (the new default; `--strict` turns it off):** confirmation on three
+  PDFs not used for screening, n=7, with heavy host load (about 20), so the absolute times run
+  high:
+
+  | PDF | `--strict` | default (compact) | change |
+  | --- | ---: | ---: | ---: |
+  | Ghostscript.pdf, 477 pages | 3.834 s | 3.160 s | -17.6% |
+  | AAPL 10-K FY2025, 80 pages | 0.680 s | 0.505 s | -25.8% |
+  | US Code title 1 | 0.266 s | 0.176 s | -33.8% |
+
+  The ranges do not overlap. Screening over 29 real PDFs: pdftotext CPU 8.47 s -> 6.55 s
+  (-22.7%), Markdown byte-identical for 25.
+
+Quality gate: the DocSlurp Markdown judge v3.6 (the frozen v3.5 judge plus HTML tables scored as
+pipe tables) on the 254 wild-v2 cases with authored references, with every arm's XHTML made from
+the PDFs by the same pdftotext. Accepting a change required quality (overall and per level), the
+strict and tolerant table scores and headings to stay within 0.005, and the hallucinated-token
+and substitution rates (diagnostics the judge reports separately, not part of its score) to rise
+by at most 0.002.
+
+| arm | quality | content | tables | tolerant tables | headings | hallucinated | substituted | cases changed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `--strict` (the pipe) | 0.7666 | 0.9217 | 0.8097 | 0.9020 | 0.743 | 0.0728 | 0.0458 | |
+| compact (default) | 0.7669 | 0.9217 | 0.8097 | 0.9020 | 0.742 | 0.0729 | 0.0458 | 12 |
+| `--strict --html` | 0.7666 | 0.9217 | 0.8097 | 0.8891 | 0.743 | 0.0728 | 0.0458 | 223 |
+
+Compact passes: every level is within 0.001 (L8 and L9 slightly up). On the four real PDFs that
+changed, the differences are reading-order swaps of a few lines where words sit on a layout
+threshold (a footnote quote mark, a two-line table header cell) and one scanned map table that
+merges two OCR fragments into one cell. Their word multisets are identical apart from markup:
+two en dashes that strict read as `-` list bullets stay as text, and the map table has one
+column fewer.
+
+`--html` keeps every table's content (tolerant content F1 is unchanged in every case); it loses
+exactly 0.01 on every table case, the judge's flat `htmlEncoding` penalty for a table "encoded as
+HTML instead of a pipe table". That is a format preference, not lost data, so `--html` stays an
+opt-in output for renderers that want it. Harness and aggregate results:
+`docslurp-review/pdftomarkdown-20261029/`.
