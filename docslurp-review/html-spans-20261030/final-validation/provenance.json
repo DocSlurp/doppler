@@ -1,0 +1,12 @@
+{
+  "validatedHead": "cf566e64f9c73ed367659c9a6f6ee469f31eb09a",
+  "base": "b7684b572e4ca3f56361e95af748cc0d6b985988",
+  "observedAt": "2026-10-30T16:07:25.227966+00:00",
+  "sha256": {
+    "candidate": "adabd60d7c08693b994321f02abf473149cd56de19300d6f70d3d04987adc971",
+    "baseline": "6f0a4d487bd700dc9b6dd886a2778856fff0473563f5151f2ceeecf794e75d3d",
+    "pdftotext": "b0e153a1d824dcd880efe8d2e69916e6db23909302bc72541ec4f61c596685f7",
+    "catalog": "9f03f1274a4272b5b32d3d46792beb367b688fab6144e8e2ba540b2c8fbc583b",
+    "manifest": "c025f13978abfe58006f8d58bfa50dcc0ab3223b4654106318e92197d1f1170e"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "passed": false,
+  "status": "blocked-before-manifest",
+  "missingFields": [
+    "provenance.author",
+    "provenance.createdAt"
+  ],
+  "evidence": "wild-v2 catalog.json, manifest.json and reference metadata identify generator, hashes, upstream commit, CC0 license and numeric seed, but no authored identity or creation timestamp. Seed and filesystem timestamps are not authored provenance. No manifest fabricated; scanner unchanged; no product paths ignored; no scan findings or pass claimed.",
+  "base": "b7684b572e4ca3f56361e95af748cc0d6b985988",
+  "head": "cf566e64f9c73ed367659c9a6f6ee469f31eb09a"
+}

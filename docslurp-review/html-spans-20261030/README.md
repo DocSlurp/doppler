@@ -1,3 +1,7 @@
+# Current final result
+
+See [final-validation](final-validation/README.md): 254/254 baseline-equal HTML and GFM, zero HTML degradation, 33-page checks passed; integrity blocked by missing authored provenance. This supersedes all candidate quality claims below, retained as historical evidence.
+
 # HTML span validation — 2026-10-30
 
 Candidate implementation: 78db5478757ab3d8437027c6ae0139b295b3330a.
