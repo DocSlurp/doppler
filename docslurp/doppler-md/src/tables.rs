@@ -943,6 +943,8 @@ fn ruled_html(
             // Shading boundaries participate in discovery; do not erase their rows.
             return Ok(None);
         }
+        // cp_slice counts the full string for each of the three channels.
+        charge!(q.color.len().saturating_mul(3));
         if luminance(&q.color) > p.rule_max_lum {
             continue;
         }
@@ -1165,6 +1167,14 @@ mod span_tests {
         let mut tiny = Budget::new(1.);
         assert_eq!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut tiny), Ok(None));
         assert_eq!(tiny.used, 1);
+    }
+    #[test]
+    fn oversized_color_exhausts_budget_before_luminance_scan() {
+        let mut page = fixture();
+        page.rules[0].color = format!("#000000{}", "x".repeat(100_000));
+        let mut budget = Budget::new(100_000.);
+        assert!(ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut budget).is_err());
+        assert_eq!(budget.used, 1 + 3 * page.rules[0].color.len() as u64);
     }
     #[test]
     fn combined_empty_geometry_and_rejection() {
