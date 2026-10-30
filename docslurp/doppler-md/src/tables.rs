@@ -334,6 +334,7 @@ pub type Grid = Vec<Vec<String>>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Table {
     pub rows: Grid,
+    pub spans: Option<String>,
     pub cols: Vec<(f64, f64)>,
 }
 
@@ -344,7 +345,7 @@ pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
-    Table { rows, cols: keep.iter().map(|&i| cols[i]).collect() }
+    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect() }
 }
 
 pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
@@ -846,7 +847,7 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
             _ => cols,
         };
         let bands: Vec<(f64, f64)> = ys.windows(2).map(|w| (w[0], w[1])).collect();
-        let grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
+        let mut grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
             let mut grid: Grid = Vec::new();
             // rows outside the ruled span (a header above, unruled rows below) are rows of their own
             let head = rows.iter().filter(|r| r.base < ys[0] - 1.0).map(|r| (r.base - 0.5, r.base + 0.5));
@@ -883,10 +884,226 @@ pub fn ruled_tables(page: &Page, ids: &[usize], body: f64, p: &Params) -> Vec<Ru
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
+        grid.spans = ruled_html(page, &members, (x0, y0, x1, y1), p);
         for &i in &members {
             used[i] = true;
         }
         out.push((members, grid, (x0, y0, x1, y1)));
     }
     out
+}
+
+/// Conservative closed rectangular topology. Partial edges invalidate the entire candidate.
+/// Limits bound both the Cartesian grid and edge/rule comparisons.
+fn ruled_html(page: &Page, ids: &[usize], bbox: (f64, f64, f64, f64), p: &Params) -> Option<String> {
+    let (x0, y0, x1, y1) = bbox;
+    if page.rules_truncated == Some(true) || page.rules.len() > 2048 {
+        return None;
+    }
+    let mut h = Vec::new();
+    let mut v = Vec::new();
+    for q in &page.rules {
+        if q.boxed || luminance(&q.color) > p.rule_max_lum {
+            continue;
+        }
+        if q.x0 < x0 - 0.5 || q.x1 > x1 + 0.5 || q.y0 < y0 - 0.5 || q.y1 > y1 + 0.5 {
+            continue;
+        }
+        if (q.y1 - q.y0).abs() <= 1.0 && q.x1 > q.x0 {
+            h.push(((q.y0 + q.y1) / 2., q.x0, q.x1));
+        } else if (q.x1 - q.x0).abs() <= 1.0 && q.y1 > q.y0 {
+            v.push(((q.x0 + q.x1) / 2., q.y0, q.y1));
+        }
+    }
+    let axis = |mut a: Vec<f64>| {
+        a.sort_by(|a, b| a.total_cmp(b));
+        a.dedup_by(|a, b| (*a - *b).abs() <= 0.5);
+        a
+    };
+    let xs = axis(v.iter().map(|q| q.0).chain([x0, x1]).collect());
+    let ys = axis(h.iter().map(|q| q.0).chain([y0, y1]).collect());
+    let (nc, nr) = (xs.len() - 1, ys.len() - 1);
+    if nc < 2 || nr < 2 || nc > 64 || nr > 64 || nc * nr > 1024 {
+        return None;
+    }
+    // Return absent, complete, or ambiguous. Never interpret a broken edge as a merge.
+    let edge = |rules: &[(f64, f64, f64)], pos: f64, a: f64, b: f64| -> Option<bool> {
+        let mut seg: Vec<_> = rules
+            .iter()
+            .filter(|q| (q.0 - pos).abs() <= 0.5 && q.2 > a + 0.5 && q.1 < b - 0.5)
+            .map(|q| (q.1, q.2))
+            .collect();
+        if seg.is_empty() {
+            return Some(false);
+        }
+        seg.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut end = a;
+        for (lo, hi) in seg {
+            if lo > end + 0.5 {
+                return None;
+            }
+            end = end.max(hi);
+        }
+        if end < b - 0.5 { None } else { Some(true) }
+    };
+    let mut right = vec![false; nc * nr];
+    let mut down = right.clone();
+    for r in 0..nr {
+        for c in 0..nc {
+            if r == 0 && !edge(&h, ys[0], xs[c], xs[c + 1])? {
+                return None;
+            }
+            if c == 0 && !edge(&v, xs[0], ys[r], ys[r + 1])? {
+                return None;
+            }
+            right[r * nc + c] = edge(&v, xs[c + 1], ys[r], ys[r + 1])?;
+            down[r * nc + c] = edge(&h, ys[r + 1], xs[c], xs[c + 1])?;
+            if (c == nc - 1 && !right[r * nc + c]) || (r == nr - 1 && !down[r * nc + c]) {
+                return None;
+            }
+        }
+    }
+    let mut owner = vec![usize::MAX; nc * nr];
+    let mut rects = Vec::new();
+    for i in 0..nc * nr {
+        if owner[i] != usize::MAX {
+            continue;
+        }
+        let id = rects.len();
+        let mut todo = vec![i];
+        owner[i] = id;
+        let (mut ra, mut rb, mut ca, mut cb) = (i / nc, i / nc, i % nc, i % nc);
+        let mut count = 0;
+        while let Some(j) = todo.pop() {
+            let (r, c) = (j / nc, j % nc);
+            count += 1;
+            ra = ra.min(r);
+            rb = rb.max(r);
+            ca = ca.min(c);
+            cb = cb.max(c);
+            for k in [
+                if c + 1 < nc && !right[j] { Some(j + 1) } else { None },
+                if c > 0 && !right[j - 1] { Some(j - 1) } else { None },
+                if r + 1 < nr && !down[j] { Some(j + nc) } else { None },
+                if r > 0 && !down[j - nc] { Some(j - nc) } else { None },
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if owner[k] == usize::MAX {
+                    owner[k] = id;
+                    todo.push(k);
+                }
+            }
+        }
+        if count != (rb - ra + 1) * (cb - ca + 1) {
+            return None;
+        }
+        for r in ra..=rb {
+            for c in ca..=cb {
+                if (c < cb && right[r * nc + c]) || (r < rb && down[r * nc + c]) {
+                    return None;
+                }
+            }
+        }
+        rects.push((ra, rb, ca, cb));
+    }
+    let mut texts = vec![String::new(); rects.len()];
+    // Baseline order, with Line::text retaining each line's bidi ordering.
+    let mut ordered = ids.to_vec();
+    ordered.sort_by(|a, b| page.lines[*a].base().total_cmp(&page.lines[*b].base()));
+    for i in ordered {
+        let line = &page.lines[i];
+        let mut words = vec![Vec::new(); rects.len()];
+        for w in &line.words {
+            let x = (w.x0 + w.x1) / 2.;
+            let y = (w.y0 + w.y1) / 2.;
+            if x <= x0 || x >= x1 || y <= y0 || y >= y1 {
+                return None;
+            }
+            let c = xs.partition_point(|a| *a < x).saturating_sub(1).min(nc - 1);
+            let r = ys.partition_point(|a| *a < y).saturating_sub(1).min(nr - 1);
+            words[owner[r * nc + c]].push(w.clone());
+        }
+        for (i, ws) in words.into_iter().enumerate() {
+            if ws.is_empty() {
+                continue;
+            }
+            if !texts[i].is_empty() {
+                texts[i].push(' ');
+            }
+            texts[i].push_str(&line_text(ws));
+        }
+    }
+    let rtl = rows_rtl(std::iter::once(texts.as_slice()));
+    let mut out = if rtl { "<table dir=\"rtl\">\n<tbody>\n".to_string() } else { "<table>\n<tbody>\n".to_string() };
+    for r in 0..nr {
+        out.push_str("<tr>");
+        let mut cells: Vec<_> = rects.iter().enumerate().filter(|(_, q)| q.0 == r).collect();
+        if rtl {
+            cells.reverse();
+        }
+        for (i, &(ra, rb, ca, cb)) in cells {
+            out.push_str("<td");
+            if rb > ra {
+                out.push_str(&format!(" rowspan=\"{}\"", rb - ra + 1));
+            }
+            if cb > ca {
+                out.push_str(&format!(" colspan=\"{}\"", cb - ca + 1));
+            }
+            out.push('>');
+            out.push_str(
+                &texts[i].replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;"),
+            );
+            out.push_str("</td>");
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n</table>");
+    Some(out)
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+    use crate::model::Rule;
+    // Source topology: 3x3 grid, upper-left 2x2 rectangle merged; other cells empty.
+    fn fixture() -> Page {
+        let mut page = Page { width: 300., height: 300., lines: vec![], rules: vec![], rules_truncated: Some(false) };
+        for (x0, y0, x1, y1) in [
+            (0., 0., 300., 0.),
+            (0., 300., 300., 300.),
+            (0., 0., 0., 300.),
+            (300., 0., 300., 300.),
+            (200., 0., 200., 300.),
+            (100., 200., 100., 300.),
+            (0., 200., 300., 200.),
+            (200., 100., 300., 100.),
+        ] {
+            page.rules.push(Rule { x0, y0, x1, y1, color: "#000000".into(), boxed: false });
+        }
+        page
+    }
+    #[test]
+    fn combined_empty_geometry_and_rejection() {
+        let mut page = fixture();
+        let render = |p: &Page| ruled_html(p, &[], (0., 0., 300., 300.), &Params::default());
+        let html = render(&page).unwrap();
+        assert!(html.contains("rowspan=\"2\" colspan=\"2\""));
+        assert_eq!(html.matches("<td").count(), 6);
+        page.rules[7].x0 = 220.; // partial broken edge
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules.remove(0); // missing outer border
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules[7].x0 = 100.; // internal wall in a connected rectangle
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules_truncated = Some(true);
+        assert!(render(&page).is_none());
+        page = fixture();
+        page.rules.resize(2049, page.rules[0].clone());
+        assert!(render(&page).is_none());
+    }
 }

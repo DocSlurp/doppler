@@ -191,7 +191,13 @@ pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<Stri
         .into_iter()
         .map(|block| match block {
             Block::Table(t) => match (tables, t.header) {
-                (TableFormat::Html, header) => grid_html(header.as_deref(), &t.table.rows),
+                (TableFormat::Html, header) => {
+                    if header.is_none() {
+                        t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
+                    } else {
+                        grid_html(header.as_deref(), &t.table.rows)
+                    }
+                }
                 (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
                 (TableFormat::Gfm, Some(header)) => {
                     let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
