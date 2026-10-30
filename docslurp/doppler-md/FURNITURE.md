@@ -1,3 +1,21 @@
+# Distinct margin text preservation
+
+The default `furniture_preserve_headings=true` requires literal repetition (case-folded and trimmed, counted once per page and separately per margin) before deleting a running header or footer. Text differing in numbers is retained regardless of font size, body distance or split-line layout. Recognized isolated page numbers still drop. Setting the option to false restores aggressive digit-normalized repetition matching.
+
+This favors retaining content over removing variable running headers/footers. Identical repeated real titles or fragments can still be removed. It is not a lossless-title guarantee.
+
+## Current validation
+
+- 79 Rust tests pass; release build passes. New regression was observed failing before the fix.
+- Original pilot retains all four titles; previously failing confirmation now retains all three. Exact publication headers and Page n footers still drop.
+- Fresh 254-case comparison against the retained pre-heading baseline changes 166 outputs. One case changes table layout: a recovered section prefix causes an existing payment block to be represented as a table. No unchanged-corpus claim applies to this change. Added variable footer text is expected.
+- Independent integrity gate passes, with no findings. Raw replay and corpus outputs are retained in the app performance/header-deletion-fix-2026-10-30 directory.
+- Independent adversarial and fidelity reviews found no high security issue. The fidelity reviewer requested a new corpus/table comparison; the figures above resolve that validation gap, but do not establish end-to-end app fidelity.
+- The optional frozen full-text scoring pass was interrupted after conversion; no final aggregate quality scores are claimed.
+- No deployment, live VM test, provider calls or app-pin update.
+
+## Historical evidence (superseded candidate)
+
 # Conservative numbered-heading preservation
 
 Margin furniture is grouped by top/bottom band and counted once per page. Exact literal repetitions keep their own counts. A line that repeats only after digit normalization may now be retained if it is a short, prominent top-band heading, has nearby smaller body text outside the margin, and is not a fragment sharing a vertical start with another line. The checks reuse `h2_ratio`, `heading_max_chars`, `minor_heading_ratio` and `title_gap`.

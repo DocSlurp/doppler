@@ -26,8 +26,8 @@ fn prominent_numbered_headings_are_not_running_headers() {
     }
 }
 #[test]
-fn exact_repeated_large_headers_and_small_numbered_headers_still_drop() {
-    for (size, vary) in [(24.0, false), (9.0, true), (10.0, true)] {
+fn exact_repeated_headers_still_drop() {
+    for (size, vary) in [(24.0, false), (9.0, false), (10.0, false)] {
         let pages = to_markdown(&doc(size, vary), &Params::default());
         assert!(pages.iter().all(|page| !page.contains("Section ")));
     }
@@ -41,12 +41,12 @@ fn heading_preservation_can_be_disabled() {
 }
 
 #[test]
-fn large_numbered_running_headers_separated_from_body_still_drop() {
+fn differing_numbered_margin_text_survives_large_body_gaps() {
     let source = doc(18.0, true)
         .replace("yMin=\"78\"", "yMin=\"180\"")
         .replace("yMax=\"88\"", "yMax=\"190\"")
         .replace("baseline=\"86\"", "baseline=\"188\"");
-    assert!(to_markdown(&source, &Params::default()).iter().all(|s| !s.contains("Section ")));
+    assert!(to_markdown(&source, &Params::default()).iter().all(|s| s.contains("Section ")));
 }
 
 #[test]
@@ -61,8 +61,34 @@ fn literal_repetitions_are_not_overridden_by_other_numbered_lines() {
     assert!(to_markdown(&source, &Params::default()).iter().all(|s| !s.contains("Section ")));
 }
 #[test]
-fn split_heading_fragments_do_not_change_table_discovery() {
+fn split_heading_fragments_are_not_deleted_by_numeric_normalization() {
     let source =
         doc(18.0, true).replace("</page>", &format!("{}</page>", line("Adjacent heading fragment", 50.0, 18.0)));
-    assert!(to_markdown(&source, &Params::default()).iter().all(|s| !s.contains("Section ")));
+    assert!(to_markdown(&source, &Params::default()).iter().all(|s| s.contains("Section ")));
+}
+
+#[test]
+fn differing_margin_text_is_not_deleted_by_numeric_normalization() {
+    for size in [9.0, 14.0, 18.0] {
+        for gap in [10.0, 40.0, 120.0] {
+            let source = (1..=3)
+                .map(|n| {
+                    format!(
+                        "<page width=\"600\" height=\"800\">{}{}{}</page>",
+                        line(&format!("Record {n}"), 40.0, size),
+                        line(
+                            "Body text supplies ordinary font evidence and must survive extraction.",
+                            40.0 + size + gap,
+                            10.0
+                        ),
+                        line(&format!("Page {n}"), 765.0, 9.0)
+                    )
+                })
+                .collect::<String>();
+            for (i, page) in to_markdown(&source, &Params::default()).iter().enumerate() {
+                assert!(page.contains(&format!("Record {}", i + 1)), "size={size}, gap={gap}: {page}");
+                assert!(!page.contains("Page "));
+            }
+        }
+    }
 }
