@@ -254,8 +254,30 @@ fn plain_lines(page: &Page, drop: &[bool]) -> String {
     kept.join("\n")
 }
 
+/// How tables are written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TableFormat {
+    /// GFM pipe tables (the first row is always the header row).
+    #[default]
+    Gfm,
+    /// HTML `<table>` blocks: escaped cells, `<thead>` only for a detected header, `dir="rtl"`
+    /// for right-to-left tables. Prose stays Markdown.
+    Html,
+}
+
+/// Output choices that are not layout tuning (those are [`Params`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub tables: TableFormat,
+}
+
 /// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
 pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
+    to_markdown_report_with(xhtml, p, &Options::default())
+}
+
+/// [`to_markdown_report`] with output [`Options`].
+pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
     let mut report = Report::default();
     let pages = model::parse_report(xhtml, &mut report.parse);
     let drop = furniture(&pages, p);
@@ -283,7 +305,7 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
         spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         match PageLayout::within(page, &drop[pi], body, &body_color, p, &mut budget) {
-            Some(layout) => result.push(layout.markdown()),
+            Some(layout) => result.push(layout.markdown(o.tables)),
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
                 report.degraded.push((pi, why));

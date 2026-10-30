@@ -1,19 +1,25 @@
-//! `doppler-md [--params JSON] [--report] [FILE]`: doppler XHTML (file or stdin) to Markdown
-//! pages joined with form feeds on stdout.
+//! `doppler-md [--html] [--params JSON] [--report] [FILE]`: doppler XHTML (file or stdin) to
+//! Markdown pages joined with form feeds on stdout.
 //!
 //! Exit status 2 (with a message on stderr) when the input has no `<page>`, which means it is
 //! not doppler XHTML. `--report` prints a one-line JSON report of skipped words and rules,
-//! unclosed elements and pages read as plain lines to stderr.
+//! unclosed elements and pages read as plain lines to stderr. `--html` writes tables as HTML
+//! `<table>` blocks instead of GFM pipe tables.
 
-use std::io::{Read, Write};
+#![forbid(unsafe_code)]
+
+use std::io::Read;
 use std::process::ExitCode;
 
-use doppler_md::{Params, to_markdown_report};
+use doppler_md::{Options, Params, TableFormat};
 
-const USAGE: &str = "usage: doppler-md [--params JSON] [--report] [FILE|-]\n";
+mod cli;
+
+const USAGE: &str = "usage: doppler-md [--html] [--params JSON] [--report] [FILE|-]\n";
 
 fn main() -> ExitCode {
     let mut params = Params::default();
+    let mut opts = Options::default();
     let mut input: Option<String> = None;
     let mut want_report = false;
     let mut args = std::env::args().skip(1);
@@ -24,6 +30,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--report" => want_report = true,
+            "--html" => opts.tables = TableFormat::Html,
             "--params" => {
                 let Some(json) = args.next() else {
                     eprint!("--params needs a JSON object\n{USAGE}");
@@ -50,25 +57,6 @@ fn main() -> ExitCode {
         eprintln!("doppler-md: {e}");
         return ExitCode::FAILURE;
     }
-    // Python read the XHTML with errors='replace'
-    // (validate first: the strict check is several times faster than the lossy decoder, which
-    // only runs when the input really has invalid bytes)
-    let xhtml = match std::str::from_utf8(&bytes) {
-        Ok(s) => std::borrow::Cow::Borrowed(s),
-        Err(_) => String::from_utf8_lossy(&bytes),
-    };
-    let (pages, report) = to_markdown_report(&xhtml, &params);
-    if want_report {
-        eprintln!("{}", report.to_json());
-    }
-    if !report.page_found() {
-        eprintln!("doppler-md: no <page> in the input (not doppler -bbox-layout XHTML?)");
-        return ExitCode::from(2);
-    }
-    let mut out = std::io::stdout().lock();
-    if let Err(e) = out.write_all(pages.join("\x0c").as_bytes()).and_then(|_| out.flush()) {
-        eprintln!("doppler-md: {e}");
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
+    let no_page = "no <page> in the input (not doppler -bbox-layout XHTML?)";
+    cli::convert("doppler-md", &bytes, &params, &opts, want_report, no_page)
 }

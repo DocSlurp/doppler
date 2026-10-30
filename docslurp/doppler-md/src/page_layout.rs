@@ -6,13 +6,14 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::TableFormat;
 use crate::layout::{Budget, Elem, regions_within};
 use crate::model::{Page, Word};
 use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
 use crate::pyc::{Counter, char_len, fcmp, median, pmax, pmin, rstrip, split_count, strip};
-use crate::tables::{Table, find_tables, grid_markdown, ruled_tables};
+use crate::tables::{Table, find_tables, grid_html, grid_markdown, ruled_tables};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedTable {
@@ -85,8 +86,8 @@ impl PageLayout {
         Some(Self { blocks })
     }
 
-    pub(crate) fn markdown(self) -> String {
-        render_blocks(self.blocks).into_iter().filter(|s| !strip(s).is_empty()).collect::<Vec<_>>().join("\n\n")
+    pub(crate) fn markdown(self, tables: TableFormat) -> String {
+        render_blocks(self.blocks, tables).into_iter().filter(|s| !strip(s).is_empty()).collect::<Vec<_>>().join("\n\n")
     }
 }
 
@@ -185,13 +186,14 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
     out
 }
 
-pub(crate) fn render_blocks(blocks: Vec<Block>) -> Vec<String> {
+pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<String> {
     blocks
         .into_iter()
         .map(|block| match block {
-            Block::Table(t) => match t.header {
-                None => grid_markdown(&t.table.rows),
-                Some(header) => {
+            Block::Table(t) => match (tables, t.header) {
+                (TableFormat::Html, header) => grid_html(header.as_deref(), &t.table.rows),
+                (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
+                (TableFormat::Gfm, Some(header)) => {
                     let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
                     rows.push(header);
                     rows.extend(t.table.rows.iter().cloned());

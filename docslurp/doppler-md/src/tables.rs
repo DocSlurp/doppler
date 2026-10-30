@@ -491,8 +491,12 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).
 fn grid_rtl(grid: &Grid) -> bool {
+    rows_rtl(grid.iter().map(Vec::as_slice))
+}
+
+fn rows_rtl<'a>(rows: impl Iterator<Item = &'a [String]>) -> bool {
     let (mut r, mut l) = (0usize, 0usize);
-    for ch in grid.iter().flatten().flat_map(|c| c.chars()) {
+    for ch in rows.flatten().flat_map(|c| c.chars()) {
         r += is_rtl(ch) as usize;
         l += is_ltr(ch) as usize;
     }
@@ -510,6 +514,35 @@ pub fn grid_markdown(grid: &Grid) -> String {
     let Some(head) = grid.first() else { return String::new() };
     let mut lines = vec![row(head), format!("|{}|", vec![" --- "; head.len()].join("|"))];
     lines.extend(grid[1..].iter().map(row));
+    lines.join("\n")
+}
+
+/// An HTML `<table>` for a Markdown document: one row per line and no blank lines, so a
+/// CommonMark renderer reads the whole table as one HTML block. Cell text is escaped; `<thead>`
+/// appears only for a detected `header`; a right-to-left table keeps its columns in reading
+/// visual order under `dir="rtl"` (the first cell is the rightmost column, as in GFM).
+pub fn grid_html(header: Option<&[String]>, rows: &Grid) -> String {
+    let rtl = rows_rtl(header.into_iter().chain(rows.iter().map(Vec::as_slice)));
+    let esc = |x: &str| x.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let row = |r: &[String], tag: &str| {
+        // grid columns run left to right; under dir="rtl" the first cell is the rightmost
+        let cell = |c: &String| format!("<{tag}>{}</{tag}>", esc(c));
+        let cells: Vec<String> = if rtl { r.iter().rev().map(cell).collect() } else { r.iter().map(cell).collect() };
+        format!("<tr>{}</tr>", cells.concat())
+    };
+    if header.is_none() && rows.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![if rtl { "<table dir=\"rtl\">".to_string() } else { "<table>".to_string() }];
+    if let Some(h) = header {
+        lines.push(format!("<thead>{}</thead>", row(h, "th")));
+    }
+    if !rows.is_empty() {
+        lines.push("<tbody>".to_string());
+        lines.extend(rows.iter().map(|r| row(r, "td")));
+        lines.push("</tbody>".to_string());
+    }
+    lines.push("</table>".to_string());
     lines.join("\n")
 }
 

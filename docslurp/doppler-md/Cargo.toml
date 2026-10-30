@@ -2,7 +2,7 @@
 name = "doppler-md"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML (port of doppler_md.py)"
 license = "GPL-2.0-or-later"
 publish = false
@@ -14,6 +14,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "doppler-md"
 path = "src/main.rs"
+
+[[bin]]
+name = "pdftomarkdown"
+path = "src/bin/pdftomarkdown.rs"
 
 [dependencies]
 memchr = "2"
