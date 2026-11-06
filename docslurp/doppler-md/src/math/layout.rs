@@ -41,7 +41,7 @@ impl Atom {
 
     /// Symbols that are centred on the math axis and whose baseline says nothing about the
     /// row (big operators, big or extensible delimiters, radical signs).
-    fn axis_symbol(&self) -> bool {
+    pub fn axis_symbol(&self) -> bool {
         self.tex_ext
             || matches!(self.sym.class, Class::LargeOp | Class::Radical | Class::Piece)
             || (self.sym.big && matches!(self.sym.class, Class::Open | Class::Close | Class::Fence))
@@ -259,6 +259,22 @@ fn mark_big(atoms: &mut [Atom]) {
             atoms[i].sym.piece = Some(symbols::PieceKind::Extender);
         }
     }
+    // a backslash with binary-operator spacing on both sides is \setminus
+    for i in 0..atoms.len() {
+        if atoms[i].sym.text != "\\" {
+            continue;
+        }
+        let a = &atoms[i];
+        let same = |b: &Atom| (b.base - a.base).abs() <= 0.2 * a.size && b.size >= 0.8 * a.size;
+        let left =
+            atoms.iter().filter(|b| same(b) && b.x1 <= a.x0 + 0.01).map(|b| a.x0 - b.x1).fold(f64::INFINITY, f64::min);
+        let right =
+            atoms.iter().filter(|b| same(b) && b.x0 >= a.x1 - 0.01).map(|b| b.x0 - a.x1).fold(f64::INFINITY, f64::min);
+        if left.is_finite() && right.is_finite() && left >= 0.12 * a.size && right >= 0.12 * a.size {
+            atoms[i].sym.text = "∖".into();
+            atoms[i].sym.class = Class::Bin;
+        }
+    }
     // a bar with relation spacing on both sides is \mid (TeX sets \mid as a relation and a
     // plain | tight)
     for i in 0..atoms.len() {
@@ -382,6 +398,8 @@ fn parse_row_with(atoms: Vec<Atom>, bars: Vec<Bar>, extra: Vec<Item>, ctx: &mut 
     }
     let (atoms, bars, mut items) = matrix_regions(atoms, bars, ctx, depth);
     items.extend(extra);
+    let (atoms, limits) = limit_regions(atoms, ctx, depth);
+    items.extend(limits);
     if atoms.is_empty() && bars.is_empty() {
         return assemble(items, ctx, depth + 1);
     }
@@ -751,6 +769,147 @@ fn matrix_rows(
         env
     };
     Item { node: Node::Matrix { env, rows }, x0, x1, base, size: s, votes: false }
+}
+
+/// Is an atom an operator that takes limits under and over it (big operators, upright operator
+/// names such as lim and sup), or a relation or arrow that takes labels?
+fn limit_taker(a: &Atom) -> bool {
+    a.sym.class == Class::LargeOp
+        || a.sym.class == Class::Rel
+        || (a.upright_text
+            && matches!(
+                a.sym.text.as_str(),
+                "lim"
+                    | "liminf"
+                    | "limsup"
+                    | "sup"
+                    | "inf"
+                    | "max"
+                    | "min"
+                    | "det"
+                    | "gcd"
+                    | "Pr"
+                    | "argmax"
+                    | "argmin"
+            ))
+}
+
+/// Limits and labels read before segmentation: smaller symbols in the zone under or over an
+/// operator, seeded by symbols centred on it and extended along their own baseline, so limits
+/// wider than the operator stay together (`\lim_{x\to0^{+}}`, `\sum_{k=1}^{n}`,
+/// `\xrightarrow{f}`). Returns the other atoms and the operators with their limits.
+fn limit_regions(atoms: Vec<Atom>, ctx: &mut Ctx, depth: usize) -> (Vec<Atom>, Vec<Item>) {
+    let ops: Vec<usize> = (0..atoms.len()).filter(|&i| limit_taker(&atoms[i])).collect();
+    if ops.is_empty() || atoms.len() > 1500 || ops.len() > 200 {
+        return (atoms, Vec::new());
+    }
+    let mut taken = vec![false; atoms.len()];
+    let mut out = Vec::new();
+    for &o in &ops {
+        if taken[o] {
+            continue;
+        }
+        let op = &atoms[o];
+        let s = op.size.max(1.0);
+        let rel = op.sym.class == Class::Rel;
+        // the zones: an extension-font glyph hangs from its baseline
+        let (over_max, under_min) = if op.tex_ext {
+            let centre = op.base + if op.sym.big { 0.7 } else { 0.5 } * s;
+            (centre - 0.4 * s, centre + 0.5 * s)
+        } else if op.sym.class == Class::LargeOp && op.sym.big {
+            (op.base - 0.9 * s, op.base + 0.45 * s)
+        } else {
+            (op.base - 0.5 * s, op.base + 0.45 * s)
+        };
+        let reach = if rel { 1.6 * s } else { 3.0 * s };
+        let small = |a: &Atom| a.size < 0.9 * s && !a.axis_symbol();
+        let mut groups: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+        for (zone, group) in groups.iter_mut().enumerate() {
+            let in_zone = |a: &Atom| {
+                if zone == 0 {
+                    a.base > under_min && a.base < under_min + reach
+                } else {
+                    a.base < over_max && a.base > over_max - reach
+                }
+            };
+            // seeds: centred on the operator
+            let seeds: Vec<usize> = (0..atoms.len())
+                .filter(|&i| {
+                    i != o
+                        && !taken[i]
+                        && small(&atoms[i])
+                        && in_zone(&atoms[i])
+                        && atoms[i].cx() >= op.x0 - 0.1 * s
+                        && atoms[i].cx() <= op.x1 + 0.1 * s
+                })
+                .collect();
+            let Some(&seed) = seeds.first() else { continue };
+            let lb = atoms[seed].base;
+            // extend along the seed's baseline (scripts of the limit within 0.3 em)
+            let mid = (over_max + under_min) / 2.0;
+            let side = |a: &Atom| if zone == 0 { a.base > mid } else { a.base < mid };
+            let mut members: Vec<usize> = (0..atoms.len())
+                .filter(|&i| {
+                    i != o && !taken[i] && small(&atoms[i]) && side(&atoms[i]) && (atoms[i].base - lb).abs() <= 0.3 * s
+                })
+                .collect();
+            members.sort_by(|&a, &b| atoms[a].x0.total_cmp(&atoms[b].x0));
+            // keep the horizontally connected run containing the seeds
+            let k = members.iter().position(|&m| m == seed).unwrap_or(0);
+            let (mut lo, mut hi) = (k, k);
+            while lo > 0 && atoms[members[lo]].x0 - atoms[members[lo - 1]].x1 <= 0.5 * atoms[members[lo]].size {
+                lo -= 1;
+            }
+            while hi + 1 < members.len()
+                && atoms[members[hi + 1]].x0 - atoms[members[hi]].x1 <= 0.5 * atoms[members[hi]].size
+            {
+                hi += 1;
+            }
+            let run: Vec<usize> = members[lo..=hi].to_vec();
+            // a label must stay within reach of the operator's ends
+            let (rx0, rx1) = (
+                run.iter().map(|&i| atoms[i].x0).fold(f64::INFINITY, f64::min),
+                run.iter().map(|&i| atoms[i].x1).fold(f64::NEG_INFINITY, f64::max),
+            );
+            if rx0 < op.x0 - 2.5 * s || rx1 > op.x1 + 2.5 * s {
+                continue;
+            }
+            *group = run;
+        }
+        if groups[0].is_empty() && groups[1].is_empty() {
+            continue;
+        }
+        let mut item_x = (op.x0, op.x1);
+        let mut parts: [Option<Box<Item>>; 2] = [None, None];
+        for (z, g) in groups.iter().enumerate() {
+            if g.is_empty() {
+                continue;
+            }
+            for &i in g {
+                taken[i] = true;
+                item_x = (item_x.0.min(atoms[i].x0), item_x.1.max(atoms[i].x1));
+            }
+            let sub: Vec<Atom> = g.iter().map(|&i| atoms[i].clone()).collect();
+            parts[z] = Some(Box::new(parse_row(sub, Vec::new(), ctx, depth + 1)));
+        }
+        taken[o] = true;
+        let [under, over] = parts;
+        let base = Item::leaf(op.clone());
+        let (b, sz, v) = (base.base, base.size, base.votes);
+        out.push(Item {
+            node: Node::Limits { base: Box::new(base), under, over },
+            x0: item_x.0,
+            x1: item_x.1,
+            base: b,
+            size: sz,
+            votes: v,
+        });
+    }
+    if out.is_empty() {
+        return (atoms, out);
+    }
+    let rest = atoms.into_iter().enumerate().filter(|(i, _)| !taken[*i]).map(|(_, a)| a).collect();
+    (rest, out)
 }
 
 /// The atoms as one row, left to right, for formulas that failed.
@@ -1197,9 +1356,40 @@ fn assemble(mut items: Vec<Item>, ctx: &mut Ctx, depth: usize) -> Item {
         out.push(resolve_stack(it, ctx, depth));
     }
     attach(&mut out, pending, b, s, ctx, depth);
+    mark_norms(&mut out);
     let mut g = Item::group(out);
     g.base = b;
     g
+}
+
+/// Pairs of double bars in a row (including bars that carry scripts) open and close a norm.
+fn mark_norms(items: &mut [Item]) {
+    fn bar(it: &mut Item) -> Option<&mut Atom> {
+        match &mut it.node {
+            Node::Leaf(a) if matches!(a.sym.text.as_str(), "‖" | "∥") => Some(a),
+            Node::Scripts { base, .. } | Node::Limits { base, .. } => bar(base),
+            _ => None,
+        }
+    }
+    let idx: Vec<usize> = (0..items.len()).filter(|&k| bar(&mut items[k]).is_some()).collect();
+    if idx.len() < 2 {
+        return;
+    }
+    let mut k = 0;
+    while k + 1 < idx.len() {
+        // an opening bar needs something between it and its partner
+        if idx[k + 1] > idx[k] + 1 {
+            if let Some(a) = bar(&mut items[idx[k]]) {
+                a.sym.class = Class::Open;
+            }
+            if let Some(a) = bar(&mut items[idx[k + 1]]) {
+                a.sym.class = Class::Close;
+            }
+            k += 2;
+        } else {
+            k += 1;
+        }
+    }
 }
 
 /// A stack that is not a script: its rows as a matrix.
@@ -1537,6 +1727,9 @@ impl Tex {
 fn leaf_tex(a: &Atom) -> String {
     let t = &a.sym.text;
     let mut chars = t.chars();
+    if matches!(t.as_str(), "‖" | "∥") && matches!(a.sym.class, Class::Open | Class::Close) {
+        return if a.sym.class == Class::Open { "\\lVert".into() } else { "\\rVert".into() };
+    }
     if !a.sym.known {
         // never a symbol for a glyph the text layer does not identify
         return "\\boxed{?}".to_string();
@@ -1811,27 +2004,8 @@ fn count_primes(it: &Item) -> usize {
 /// A row: runs of upright text letters become `\text{...}` or an operator name, and pairs
 /// of double bars around something are a norm.
 fn emit_row(items: &[Item], w: &mut Tex) {
-    let double = |it: &Item| matches!(&it.node, Node::Leaf(a) if matches!(a.sym.text.as_str(), "‖" | "∥"));
-    let doubles: Vec<usize> = (0..items.len()).filter(|&k| double(&items[k])).collect();
-    let mut norm_open: Option<usize> = None;
     let mut i = 0;
     while i < items.len() {
-        if double(&items[i]) && doubles.len() >= 2 {
-            let k = doubles.iter().position(|&d| d == i).unwrap_or(0);
-            let opening = norm_open.is_none() && k + 1 < doubles.len() && doubles[k + 1] > i + 1;
-            if opening {
-                norm_open = Some(i);
-                w.push("\\lVert");
-                i += 1;
-                continue;
-            }
-            if norm_open.is_some() {
-                norm_open = None;
-                w.push("\\rVert");
-                i += 1;
-                continue;
-            }
-        }
         let operator = |a: &Atom| {
             a.sym.text.len() > 1
                 && (symbols::function_name(&a.sym.text).is_some() || symbols::operator_name(&a.sym.text))

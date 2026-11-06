@@ -387,7 +387,23 @@ fn merge_operator_names(atoms: &mut Vec<Atom>) {
         out.push(atoms[i].clone());
         i += 1;
     }
-    *atoms = out;
+    // lim sup, lim inf (and arg max, arg min) set as two words are one operator
+    let mut merged: Vec<Atom> = Vec::with_capacity(out.len());
+    for a in out {
+        if let Some(prev) = merged.last_mut()
+            && prev.upright_text
+            && a.upright_text
+            && matches!((prev.sym.text.as_str(), a.sym.text.as_str()), ("lim", "sup" | "inf") | ("arg", "max" | "min"))
+            && a.x0 - prev.x1 < 0.5 * a.size
+            && (a.base - prev.base).abs() < 0.1 * a.size
+        {
+            prev.sym.text = format!("{}{}", prev.sym.text, a.sym.text);
+            prev.x1 = a.x1;
+            continue;
+        }
+        merged.push(a);
+    }
+    *atoms = merged;
 }
 
 /// Is the glyph an operator that must not start or end a formula?
@@ -1001,7 +1017,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     let mut extra_order: Vec<usize> = (0..page.extra_glyphs.len()).collect();
     extra_order.sort_by(|&a, &b| page.extra_glyphs[a].x.total_cmp(&page.extra_glyphs[b].x));
     let mut work: u64 = 0;
-    let mut replace: Vec<(usize, usize, usize, String, bool)> = Vec::new(); // (line, start, end, tex, display)
+    let mut replace: Vec<(usize, usize, usize, String, f64)> = Vec::new(); // (line, start, end, text, size)
     let mut remove: Vec<(usize, usize, usize)> = Vec::new();
     for f in &formulas {
         let glyphs: usize = f.parts.iter().map(|&(_, a, b)| b - a).sum();
@@ -1059,6 +1075,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         let mut reason = 0u8;
         // numbers, equation numbers and delimiters alone (figure tick labels, a stray bracket,
         // a check mark drawn with a radical sign) stay text
+        let fsize = atoms.iter().filter(|a| !a.axis_symbol()).map(|a| a.size).fold(0.0, f64::max);
         let one_row = atoms.iter().all(|a| (a.base - atoms[0].base).abs() <= 0.3 * a.size.max(atoms[0].size));
         let numbers_only = !atoms.is_empty()
             && ((one_row
@@ -1164,7 +1181,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     text.push_str(page.lines[ll].text().trim());
                     remove.push((ll, 0, lines[ll].gs.len()));
                 }
-                replace.push((li, a, end, text, f.display));
+                // the formula's word gets the size of its main symbols, not of whatever word the
+                // anchor line starts with (a script or an extension glyph)
+                replace.push((li, a, end, text, fsize));
                 for &(k, s, e) in &f.parts[1..] {
                     remove.push((k, s, e));
                 }
@@ -1203,9 +1222,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     }
     let escaped = escape_dollars(&page.lines);
     // rebuild the lines
-    let mut cut: Vec<Vec<(usize, usize, Option<(String, bool)>)>> = vec![Vec::new(); n];
-    for (li, a, b, tex, display) in replace {
-        cut[li].push((a, b, Some((tex, display))));
+    let mut cut: Vec<Vec<(usize, usize, Option<(String, f64)>)>> = vec![Vec::new(); n];
+    for (li, a, b, tex, size) in replace {
+        cut[li].push((a, b, Some((tex, size))));
     }
     for (li, a, b) in remove {
         cut[li].push((a, b, None));
@@ -1278,7 +1297,7 @@ fn escape_dollars(lines: &[Rc<Line>]) -> Vec<Rc<Line>> {
 }
 
 /// A line with glyph ranges replaced by LaTeX words or removed. `None` if nothing is left.
-fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)]) -> Option<Line> {
+fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]) -> Option<Line> {
     let mut words: Vec<Word> = Vec::new();
     let mut i = 0usize;
     let mut k = 0usize;
@@ -1287,14 +1306,13 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)
         if k < cuts.len() && cuts[k].0 == i {
             let (a, b, ref what) = cuts[k];
             let b = b.max(a + 1).min(gs.len());
-            if let Some((tex, display)) = what {
+            if let Some((tex, fsize)) = what {
                 let span = &gs[a..b];
                 let x0 = span.iter().map(|g| g.atom.x0).fold(f64::INFINITY, f64::min);
                 let x1 = span.iter().map(|g| g.atom.x1).fold(f64::NEG_INFINITY, f64::max);
                 let first = &line.words[span[0].word];
                 let last = &line.words[span[span.len() - 1].word];
                 let ends_word = b >= gs.len() || gs[b].word != span[span.len() - 1].word;
-                let _ = display;
                 let text = tex.clone();
                 words.push(Word {
                     x0: x0.min(first.x0.max(x0)),
@@ -1304,7 +1322,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)
                     text: Rc::from(text),
                     bold: false,
                     italic: false,
-                    size: first.size,
+                    size: if *fsize > 0.0 { *fsize } else { first.size },
                     base: first.base,
                     space: if ends_word { last.space } else { false },
                     color: first.color.clone(),

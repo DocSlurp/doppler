@@ -710,3 +710,55 @@ fn display_formulas_are_their_own_paragraphs() {
     let (md, _) = convert(&page(&lines, &[]), &MATH);
     assert!(md.contains("\n\n$$x=y$$\n\n"), "{md}");
 }
+
+#[test]
+fn limits_wider_than_their_operator() {
+    // lim with "x -> 0^+" under it, wider than the word, then "x ln x"
+    let main = vec![
+        w(vec![g(283.0, 3.0, 0, "l"), g(286.0, 3.0, 0, "i"), g(289.0, 8.0, 0, "m")], 200.0, 10.0),
+        w(vec![g(305.0, 6.0, 1, "x")], 200.0, 10.0),
+    ];
+    let limit = vec![
+        w(vec![g(278.0, 4.0, 5, "x"), g(282.0, 8.0, 2, "→"), g(290.0, 4.0, 4, "0")], 207.0, 7.0),
+        w(vec![g(294.0, 4.0, 4, "+")], 204.5, 5.0),
+    ];
+    let (md, _) = convert(&page(&[prose(150.0), main, limit, prose(250.0)], &[]), &MATH);
+    assert_eq!(formulas(&md), vec!["\\lim_{x\\to0^{+}}x".to_string()], "{md}");
+    // a display sum from the extension font (baseline at its top) with limits wider than it
+    let sum = G { x: 280.0, w: 10.0, f: 3, t: "X", n: Some("summationdisplay"), src: 'c', b: None };
+    let main = vec![w(vec![sum], 190.0, 10.0), w(vec![g(296.0, 6.0, 1, "a"), g(302.0, 3.0, 5, "k")], 200.0, 10.0)];
+    let over = vec![w(vec![g(283.0, 4.0, 5, "n")], 187.0, 7.0)];
+    let under = vec![w(
+        vec![g(274.0, 3.0, 5, "k"), g(277.0, 6.0, 4, "="), g(283.0, 4.0, 4, "1"), g(287.0, 4.0, 4, "0")],
+        214.0,
+        7.0,
+    )];
+    let (md, _) = convert(&page(&[prose(150.0), over, main, under, prose(250.0)], &[]), &MATH);
+    assert!(formulas(&md)[0].starts_with("\\sum_{k=10}^{n}a"), "{md}");
+}
+
+#[test]
+fn norms_setminus_and_limsup() {
+    // ||x+y||_p <= ...: the closing bar carries a subscript
+    let line = vec![
+        w(
+            vec![
+                g(260.0, 5.0, 2, "‖"),
+                g(266.0, 6.0, 1, "x"),
+                g(273.0, 7.0, 0, "+"),
+                g(281.0, 6.0, 1, "y"),
+                g(287.0, 5.0, 2, "‖"),
+            ],
+            200.0,
+            10.0,
+        ),
+        w(vec![g(292.0, 4.0, 5, "p")], 203.0, 7.0),
+        w(
+            vec![g(300.0, 7.0, 2, "≤"), g(310.0, 6.0, 1, "A"), g(319.0, 5.0, 2, "\\"), g(327.0, 6.0, 1, "B")],
+            200.0,
+            10.0,
+        ),
+    ];
+    let md = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH).0;
+    assert_eq!(formulas(&md), vec!["\\lVert x+y\\rVert_{p}\\le A\\setminus B".to_string()], "{md}");
+}
