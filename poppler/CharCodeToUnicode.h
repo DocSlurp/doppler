@@ -72,6 +72,9 @@ public:
 
     // Parse a ToUnicode CMap for an 8- or 16-bit font.
     static std::unique_ptr<CharCodeToUnicode> parseCMap(const std::string &buf, int nBits);
+    // Strict bounded metadata pass: no external usecmap, at most 16-bit codes,
+    // and a shared mapping-work budget. Returns null on any budget violation.
+    static std::unique_ptr<CharCodeToUnicode> parseCMapLimited(const std::string &buf, int nBits, size_t &mappingsLeft);
     static std::unique_ptr<CharCodeToUnicode> parseCMapFromFile(const std::string &fileName, int nBits);
 
     // Parse a ToUnicode CMap for an 8- or 16-bit font, merging it into
@@ -102,7 +105,7 @@ public:
     CharCodeToUnicode(const std::optional<std::string> &tagA, std::vector<Unicode> &&mapA, std::vector<CharCodeToUnicodeString> &&sMapA, PrivateTag t = {});
 
 private:
-    bool parseCMap1(int (*getCharFunc)(void *), void *data, int nBits);
+    bool parseCMap1(int (*getCharFunc)(void *), void *data, int nBits, size_t *mappingsLeft = nullptr);
     void addMapping(CharCode code, char *uStr, int n, int offset);
     void addMappingInt(CharCode code, Unicode u);
     void setStringMapping(CharCode c, std::vector<Unicode> &&u);

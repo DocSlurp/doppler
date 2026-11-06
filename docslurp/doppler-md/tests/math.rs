@@ -1053,3 +1053,27 @@ fn incomplete_glyph_evidence_preserves_original_words() {
         assert_eq!(streamed_report.to_json(), report.to_json());
     }
 }
+
+#[test]
+fn glyph_tags_accept_xml_whitespace_across_streaming_splits() {
+    use doppler_md::{Converter, model::Parser};
+    let input =
+        page(&[vec![w(vec![g(80.0, 6.0, 1, "x"), g(86.0, 6.0, 0, "+"), g(92.0, 6.0, 1, "y")], 120.0, 10.0)]], &[]);
+    let p = Params::default();
+    let (expected, report) = to_markdown_report_with(&input, &p, &MATH);
+    for sep in ["\t", "\n", "\r"] {
+        let variant = input.replace("<g ", &format!("<g{sep}"));
+        for split in 0..=variant.len() {
+            let mut parser = Parser::with_glyphs(true);
+            let mut conv = Converter::new(&p, MATH, Some(1));
+            let mut output = Vec::new();
+            for part in [&variant[..split], &variant[split..]] {
+                parser.push(part, &mut |pg| conv.push(pg, &mut |_, md| output.push(md)));
+            }
+            let parsed = parser.finish(&mut |pg| conv.push(pg, &mut |_, md| output.push(md)));
+            let actual = conv.finish(parsed, &mut |_, md| output.push(md));
+            assert_eq!(output, expected, "separator {sep:?}, split {split}");
+            assert_eq!(actual.to_json(), report.to_json());
+        }
+    }
+}

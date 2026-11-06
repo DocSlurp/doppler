@@ -174,6 +174,19 @@ std::unique_ptr<CharCodeToUnicode> CharCodeToUnicode::parseCMap(const std::strin
     return ctu;
 }
 
+std::unique_ptr<CharCodeToUnicode> CharCodeToUnicode::parseCMapLimited(const std::string &buf, int nBits, size_t &mappingsLeft)
+{
+    if ((nBits != 8 && nBits != 16) || buf.size() > 256 * 1024 || mappingsLeft == 0) {
+        return nullptr;
+    }
+    auto ctu = std::make_unique<CharCodeToUnicode>(std::optional<std::string> {});
+    const char *p = buf.c_str();
+    if (!ctu->parseCMap1(&getCharFromString, static_cast<void *>(&p), nBits, &mappingsLeft)) {
+        return nullptr;
+    }
+    return ctu;
+}
+
 std::unique_ptr<CharCodeToUnicode> CharCodeToUnicode::parseCMapFromFile(const std::string &fileName, int nBits)
 {
     FILE *f;
@@ -196,7 +209,7 @@ bool CharCodeToUnicode::mergeCMap(const std::string &buf, int nBits)
     return parseCMap1(&getCharFromString, static_cast<void *>(&p), nBits);
 }
 
-bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int nBits)
+bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int nBits, size_t *mappingsLeft)
 {
     PSTokenizer *pst;
     char tok1[256], tok2[256], tok3[256];
@@ -206,11 +219,27 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
     FILE *f;
 
     bool ok = false;
+    size_t fontMappings = 0;
+    auto allowMapping = [&](CharCode code) {
+        if (!mappingsLeft) {
+            return true;
+        }
+        if (code > 0xffff || *mappingsLeft == 0 || fontMappings >= 4096) {
+            return false;
+        }
+        --*mappingsLeft;
+        ++fontMappings;
+        return true;
+    };
     maxCode = (nBits == 8) ? 0xff : (nBits == 16) ? 0xffff : 0xffffffff;
     pst = new PSTokenizer(getCharFunc, data);
     pst->getToken(tok1, sizeof(tok1), &n1);
     while (pst->getToken(tok2, sizeof(tok2), &n2)) {
         if (!strcmp(tok2, "usecmap")) {
+            if (mappingsLeft) {
+                delete pst;
+                return false;
+            }
             if (tok1[0] == '/') {
                 std::string name { tok1 + 1 };
                 if ((f = globalParams->findToUnicodeFile(name))) {
@@ -243,6 +272,10 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
                 }
                 if (code1 > maxCode) {
                     error(errSyntaxWarning, -1, "Invalid entry in bfchar block in ToUnicode CMap");
+                }
+                if (!allowMapping(code1)) {
+                    delete pst;
+                    return false;
                 }
                 addMapping(code1, tok2 + 1, n2 - 2, 0);
                 ok = true;
@@ -283,6 +316,10 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
                         }
                         if (tok1[0] == '<' && tok1[n1 - 1] == '>') {
                             tok1[n1 - 1] = '\0';
+                            if (!allowMapping(code1 + i)) {
+                                delete pst;
+                                return false;
+                            }
                             addMapping(code1 + i, tok1 + 1, n1 - 2, 0);
                             ok = true;
                         } else {
@@ -293,6 +330,10 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
                 } else if (tok3[0] == '<' && tok3[n3 - 1] == '>') {
                     tok3[n3 - 1] = '\0';
                     for (i = 0; code1 <= code2; ++code1, ++i) {
+                        if (!allowMapping(code1)) {
+                            delete pst;
+                            return false;
+                        }
                         addMapping(code1, tok3 + 1, n3 - 2, i);
                         ok = true;
                     }
@@ -327,6 +368,10 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
                 if (code1 > maxCode) {
                     error(errSyntaxWarning, -1, "Invalid entry in cidchar block in ToUnicode CMap");
                 }
+                if (!allowMapping(code1)) {
+                    delete pst;
+                    return false;
+                }
                 addMappingInt(code1, atoi(tok2));
                 ok = true;
             }
@@ -360,6 +405,10 @@ bool CharCodeToUnicode::parseCMap1(int (*getCharFunc)(void *), void *data, int n
                     }
                 }
                 for (i = atoi(tok3); code1 <= code2; ++code1, ++i) {
+                    if (!allowMapping(code1)) {
+                        delete pst;
+                        return false;
+                    }
                     addMappingInt(code1, i);
                     ok = true;
                 }

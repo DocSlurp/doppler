@@ -583,7 +583,7 @@ fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan, glyphs: bool) -> Option<(T
     // <g ([^>]*)/> and <font ([^>]*)/>
     if glyphs {
         for (n, kind) in [("g ", 0), ("font ", 1), ("xg ", 2)] {
-            if rest.starts_with(n) {
+            if rest.starts_with(n.trim_end()) && rest.as_bytes().get(n.len() - 1).is_some_and(u8::is_ascii_whitespace) {
                 let a = lt + 1 + n.len();
                 let gt = scan.gt(b, a)?;
                 if gt > a && b[gt - 1] == b'/' {
@@ -867,7 +867,13 @@ impl ParseState {
                 if !eof && undecided(s, lt, &mut scan) {
                     return lt;
                 }
-                if glyphs && (s[lt + 1..].starts_with("g ") || s[lt + 1..].starts_with("xg ")) {
+                if glyphs
+                    && ["g", "xg"].iter().any(|name| {
+                        s[lt + 1..].strip_prefix(name).is_some_and(|rest| {
+                            rest.as_bytes().first().is_none_or(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
+                        })
+                    })
+                {
                     report.glyphs_skipped += 1;
                     if let Some(pg) = page.as_mut() {
                         pg.glyphs_truncated = true;

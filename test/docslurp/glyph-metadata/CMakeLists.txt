@@ -1,0 +1,5 @@
+add_executable(docslurp-glyph-cmap-limits cmap-limits.cc)
+target_link_libraries(docslurp-glyph-cmap-limits PRIVATE poppler)
+target_include_directories(docslurp-glyph-cmap-limits PRIVATE ${PROJECT_SOURCE_DIR}/poppler ${PROJECT_BINARY_DIR}/poppler ${PROJECT_SOURCE_DIR} ${PROJECT_BINARY_DIR})
+add_test(NAME docslurp-glyph-cmap-limits COMMAND docslurp-glyph-cmap-limits)
+docslurp_add_test(glyph-metadata-caps test_metadata_caps.py)

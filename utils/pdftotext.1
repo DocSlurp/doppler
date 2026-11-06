@@ -222,7 +222,11 @@ With \-rules, thin axis-aligned stencil image masks (Ghostscript draws TeX rules
 this way) are output as rules with
 .IR src="mask" .
 A page has at most 100000 glyph records and the document 4000000, a page table at
-most 1000 fonts; past a cap the page gets
+most 1000 fonts. Glyph metadata is also limited to 64 document fonts, 256 KiB
+of decoded ToUnicode data per font and 8 MiB per document, 4096 mappings per
+font and 65536 per document, and a 128 MiB metadata reservation budget.
+External usecmap references are not followed for glyph metadata. Exceeding a
+metadata budget stops further metadata collection. Past a cap the page gets
 .I glyphsTruncated="1"
 or
 .IR fontsTruncated="1" .

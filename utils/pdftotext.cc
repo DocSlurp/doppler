@@ -362,6 +362,14 @@ namespace {
 constexpr size_t maxPageGlyphs = 100000;
 constexpr size_t maxDocGlyphs = 4000000;
 constexpr size_t maxPageFonts = 1000;
+constexpr size_t maxDocFonts = 64;
+constexpr size_t maxCMapBytes = 256 * 1024;
+constexpr size_t maxDocCMapBytes = 8 * 1024 * 1024;
+constexpr size_t maxDocMetadataBytes = 128 * 1024 * 1024;
+// Reserve before parsing: two 65536-entry maps, at most 4096 Unicode strings
+// (PSTokenizer tokens cap each at 256 bytes), their indices and vector slack.
+constexpr size_t fontMetadataReservation = 2 * 1024 * 1024;
+constexpr size_t maxDocSourceEntries = 262144;
 constexpr int maxGlyphCodePoints = 32;
 constexpr size_t maxGlyphNameBytes = 64;
 constexpr size_t maxFontNameBytes = 128;
@@ -448,6 +456,15 @@ public:
         pageFontIds.clear();
         pageCodes.clear();
         fontsTruncated = false;
+        truncated = false;
+        const size_t docLeft = maxDocGlyphs - std::min(maxDocGlyphs, docGlyphs);
+        const size_t limit = std::min(maxPageGlyphs, docLeft);
+        pageBudget = 0;
+        if (limit == 0 || metadataExhausted) {
+            truncated = true;
+            fontsTruncated = metadataExhausted;
+            return;
+        }
         size_t glyphs = 0;
         for (const TextFlow *flow = textOut->getFlows(); flow; flow = flow->getNext()) {
             for (const TextBlock *blk = flow->getBlocks(); blk; blk = blk->getNext()) {
@@ -457,9 +474,20 @@ public:
                             continue;
                         }
                         const int n = word->getLength();
+                        int codePoints = 0;
                         for (int i = 0; i < n; ++i) {
                             if (i > 0 && word->getCharPosAt(i) == word->getCharPosAt(i - 1) && word->getCharCode(i) == word->getCharCode(i - 1)) {
+                                if (++codePoints > maxGlyphCodePoints) {
+                                    truncated = true;
+                                }
                                 continue;
+                            }
+                            codePoints = 1;
+                            if (glyphs == limit) {
+                                truncated = true;
+                                pageBudget = limit;
+                                docGlyphs += limit;
+                                return;
                             }
                             ++glyphs;
                             GlyphFont *gf = fontOf(word->getFontInfo(i));
@@ -472,12 +500,17 @@ public:
             }
         }
         for (const TextPage::DroppedGlyph &d : textOut->getDroppedGlyphs()) {
+            if (glyphs == limit) {
+                truncated = true;
+                pageBudget = limit;
+                docGlyphs += limit;
+                return;
+            }
             fontOf(d.font);
             ++glyphs;
         }
-        const size_t docLeft = maxDocGlyphs - std::min(maxDocGlyphs, docGlyphs);
         pageBudget = std::min({ glyphs, maxPageGlyphs, docLeft });
-        truncated = glyphs > pageBudget;
+        truncated = truncated || fontsTruncated || metadataExhausted || glyphs > pageBudget;
         docGlyphs += pageBudget;
     }
 
@@ -640,6 +673,14 @@ private:
         if (!first) {
             src = it->second;
         } else {
+            if (sourceEntries >= maxDocSourceEntries || metadataBytes > maxDocMetadataBytes - 128) {
+                metadataExhausted = true;
+                truncated = true;
+                fontsTruncated = true;
+                return 'c';
+            }
+            ++sourceEntries;
+            metadataBytes += 128; // source cache node plus page-code accounting
             const Unicode *u = nullptr;
             if (gf.ownToUnicode && gf.ownToUnicode->mapToUnicode(code, &u) > 0) {
                 src = 't';
@@ -658,6 +699,11 @@ private:
 
     GlyphFont *fontOf(const TextFontInfo *info)
     {
+        if (metadataExhausted) {
+            fontsTruncated = true;
+            truncated = true;
+            return nullptr;
+        }
         const GfxFont *font = info ? info->getGfxFont() : nullptr;
         if (!font) {
             return nullptr;
@@ -665,7 +711,19 @@ private:
         const Ref ref = *font->getID();
         auto it = byRef.find({ ref.num, ref.gen });
         GlyphFont *gf;
+        if (pageFonts.size() >= maxPageFonts && (it == byRef.end() || !pageFontIds.count(it->second->id))) {
+            fontsTruncated = true;
+            truncated = true;
+            return nullptr;
+        }
         if (it == byRef.end()) {
+            if (fonts.size() >= maxDocFonts || metadataBytes > maxDocMetadataBytes - fontMetadataReservation) {
+                metadataExhausted = true;
+                fontsTruncated = true;
+                truncated = true;
+                return nullptr;
+            }
+            metadataBytes += fontMetadataReservation;
             auto made = std::make_unique<GlyphFont>();
             made->id = static_cast<int>(fonts.size());
             const std::optional<std::string> &fullName = font->getName();
@@ -687,9 +745,42 @@ private:
                     Object tuObj = fontObj.dictLookup("ToUnicode");
                     if (tuObj.isStream()) {
                         std::string buf;
-                        tuObj.getStream()->fillString(buf);
-                        tuObj.getStream()->close();
-                        made->ownToUnicode = CharCodeToUnicode::parseCMap(buf, made->cid ? 16 : 8);
+                        const size_t remaining = maxDocCMapBytes - cmapBytes;
+                        const size_t cap = std::min(maxCMapBytes, remaining);
+                        if (cap == 0 || mappingsLeft == 0) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        Stream *stream = tuObj.getStream();
+                        if (!stream->rewind()) {
+                            stream->close();
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        int c = EOF;
+                        while (buf.size() < cap && (c = stream->getChar()) != EOF) {
+                            buf.push_back(static_cast<char>(c));
+                        }
+                        const bool overflow = buf.size() == cap && stream->getChar() != EOF;
+                        stream->close();
+                        cmapBytes += buf.size();
+                        if (overflow) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        made->ownToUnicode = CharCodeToUnicode::parseCMapLimited(buf, made->cid ? 16 : 8, mappingsLeft);
+                        if (!made->ownToUnicode) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
                     }
                 }
             }
@@ -723,6 +814,8 @@ private:
     std::set<std::pair<int, CharCode>> pageCodes;
     bool fontsTruncated = false, truncated = false;
     size_t pageBudget = 0, docGlyphs = 0;
+    bool metadataExhausted = false;
+    size_t metadataBytes = 0, cmapBytes = 0, mappingsLeft = 65536, sourceEntries = 0;
 };
 
 GlyphContext *glyphContext = nullptr;
