@@ -1,6 +1,6 @@
 //! `doppler-md [--html] [--stream | --window N] [--params JSON] [--report] [FILE]`: doppler
 //! XHTML (file or stdin) to Markdown pages joined with form feeds on stdout. `--window N`
-//! writes each page once the next N have arrived (see `pdftomarkdown`).
+//! writes each page once the next N are complete (see `pdftomarkdown`).
 //!
 //! Exit status 2 (with a message on stderr) when the input has no `<page>`, which means it is
 //! not doppler XHTML. `--report` prints a one-line JSON report of skipped words and rules,

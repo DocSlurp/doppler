@@ -44,8 +44,9 @@ waits for the last one; output is unchanged.
 
 `--window N` decides them from a window instead: the body size from the first N + 1 pages,
 fixed after that, and headers and footers from the N pages either side of each page. Each
-page is written (and flushed) once the next N have arrived, so at most N + 1 parsed pages, and
-the margin keys of N more, are held at a time. `--stream` is `--window 16`. A document of at
+page is written (and flushed) once the next N are complete; the parser completes a page when
+the following `<page>` opens. So at most N + 2 pages are held at a time (N + 1 in the converter
+and the one being parsed), with the margin keys of N more. `--stream` is `--window 16`. A document of at
 most N + 1 pages converts exactly as without a window. The library API is
 `model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
 `Converter` without a window).
