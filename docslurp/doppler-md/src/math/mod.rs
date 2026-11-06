@@ -419,7 +419,7 @@ fn dangling(g: &G) -> bool {
 
 /// Runs of math glyphs on one line: `(start, end)` glyph indices, end exclusive.
 fn runs(gs: &[G]) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < gs.len() {
         if gs[i].ev == Ev::Text {
@@ -482,7 +482,13 @@ fn runs(gs: &[G]) -> Vec<(usize, usize)> {
         let strong = gs[s..e].iter().filter(|g| g.ev == Ev::Strong).count();
         let lone_mark = e - s == 1 && list_mark(&gs[s].atom.sym.text);
         if strong > 0 && !lone_mark && s < e {
-            out.push((s, e));
+            // Pulling a whole word into a script's base can reach a prior run in
+            // that word. Read the union once, never schedule overlapping rewrites.
+            if let Some(last) = out.last_mut().filter(|last| s < last.1) {
+                last.1 = last.1.max(e);
+            } else {
+                out.push((s, e));
+            }
         }
         i = j;
     }
@@ -1335,6 +1341,19 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             continue;
         }
         cut[li].sort_by_key(|c| c.0);
+        if !valid_cuts(&cut[li], lines[li].gs.len()) {
+            // An invalid plan cannot safely rewrite any part of a multi-line formula.
+            // Keep the whole page and report uncertainty instead of duplicating or
+            // losing glyphs (or letting the rebuilder stop making progress).
+            stats.uncertain += stats.inline + stats.display + 1;
+            stats.uncertain_limit += 1;
+            stats.inline = 0;
+            stats.display = 0;
+            stats.actual_text = 0;
+            stats.partial = 0;
+            stats.math_glyphs_left = stats.math_glyphs;
+            return (escaped, stats);
+        }
         if let Some(l) = rebuild(line, &lines[li].gs, &cut[li]) {
             out.push(Rc::new(l));
         }
@@ -1393,6 +1412,15 @@ fn escape_dollars(lines: &[Rc<Line>]) -> Vec<Rc<Line>> {
             Rc::new(Line::new(words, l.block, l.flow))
         })
         .collect()
+}
+
+fn valid_cuts(cuts: &[(usize, usize, Option<(String, f64)>)], len: usize) -> bool {
+    let mut end = 0;
+    cuts.iter().all(|&(a, b, _)| {
+        let valid = a >= end && a < b && b <= len;
+        end = b;
+        valid
+    })
 }
 
 /// A line with glyph ranges replaced by LaTeX words or removed. `None` if nothing is left.
@@ -1480,6 +1508,42 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_base_expansion_does_not_overlap_previous_run() {
+        let make = |x: f64, size: f64, base: f64, text: &str, ev: Ev| G {
+            word: 0,
+            text: text.into(),
+            ev,
+            atom: Atom {
+                x0: x,
+                x1: x + 4.0,
+                base,
+                size,
+                sym: symbols::classify(FontRole::Text, None, text, 0, false),
+                role: FontRole::Text,
+                upright_text: false,
+                tex_ext: false,
+                word_start: false,
+                span: None,
+            },
+        };
+        let glyphs = vec![
+            make(10.0, 10.0, 30.0, "a", Ev::Strong),
+            make(14.0, 10.0, 30.0, "b", Ev::Text),
+            make(18.0, 7.0, 25.0, "c", Ev::Strong),
+        ];
+        assert_eq!(runs(&glyphs), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn invalid_rewrite_ranges_are_rejected() {
+        assert!(!valid_cuts(&[(0, 3, None), (2, 4, None)], 4));
+        assert!(!valid_cuts(&[(1, 1, None)], 4));
+        assert!(!valid_cuts(&[(0, 5, None)], 4));
+        assert!(!valid_cuts(&[(2, 3, None), (0, 1, None)], 4));
+        assert!(valid_cuts(&[(0, 2, None), (2, 4, None)], 4));
+    }
 
     #[test]
     fn actual_text() {
