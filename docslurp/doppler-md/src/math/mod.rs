@@ -342,7 +342,8 @@ fn extra_atom(page: &Page, facts: &FontFacts, g: &Glyph) -> Atom {
     }
 }
 
-/// Merge runs of upright letters that spell an operator name (lim, sin, rank) into one atom.
+/// Merge runs of upright letters of one word into one atom: an operator name (lim, rank) or a
+/// word of text, so that limits and labels sit under and over the whole word.
 fn merge_operator_names(atoms: &mut Vec<Atom>) {
     let mut out: Vec<Atom> = Vec::with_capacity(atoms.len());
     let mut i = 0;
@@ -364,7 +365,7 @@ fn merge_operator_names(atoms: &mut Vec<Atom>) {
                 j += 1;
             }
             let name: String = atoms[i..j].iter().map(|a| a.sym.text.as_str()).collect();
-            if j - i >= 2 && (symbols::function_name(&name).is_some() || symbols::operator_name(&name)) {
+            if j - i >= 2 {
                 let mut a = atoms[i].clone();
                 a.x1 = atoms[j - 1].x1;
                 a.sym.text = name;
@@ -637,8 +638,9 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
         }
         let end = l.label.unwrap_or(l.gs.len());
         let body = &l.gs[..end];
-        let mut ok = true;
-        let mut text = 0usize;
+        let strong = body.iter().filter(|g| g.ev == Ev::Strong).count();
+        // text words: all short, or (on a centred line) a few words of any length
+        let (mut short, mut words, mut text) = (true, 0usize, 0usize);
         let mut k = 0;
         while k < body.len() {
             if body[k].ev != Ev::Text {
@@ -647,22 +649,17 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
             }
             let w = body[k].word;
             let letters = page.lines[li].words[w].text.chars().filter(|c| c.is_alphabetic()).count();
-            if letters > 3 {
-                ok = false;
-                break;
-            }
+            short &= letters <= 3;
+            words += 1;
             while k < body.len() && body[k].word == w {
                 text += 1;
                 k += 1;
             }
         }
-        if !ok || text * 2 > body.len() {
-            continue;
-        }
         // set off from prose: not starting at the left edge of the lines near it
         let line = &page.lines[li];
         let size = line.size().max(1.0);
-        let mut left = f64::INFINITY;
+        let (mut left, mut right) = (f64::INFINITY, f64::NEG_INFINITY);
         for (k, o) in page.lines.iter().enumerate() {
             if k == li || lines[k].math_only {
                 continue;
@@ -671,9 +668,22 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
                 (o.y1 > line.y0 - 6.0 * size && o.y0 < line.y0) || (o.y0 < line.y1 + 6.0 * size && o.y1 > line.y1);
             if near && o.x1 > line.x0 - 2.0 * size && o.x0 < line.x1 + 2.0 * size {
                 left = left.min(o.x0);
+                right = right.max(o.x1);
             }
         }
         if left.is_finite() && line.x0 - left <= 1.5 * size {
+            continue;
+        }
+        let centred = left.is_finite()
+            && right > left
+            && (((line.x0 + line.x1) / 2.0) - (left + right) / 2.0).abs() <= 0.12 * (right - left)
+            && line.x1 - line.x0 <= 0.85 * (right - left);
+        let ok = if short {
+            text * 2 <= body.len()
+        } else {
+            centred && strong >= 2 && words <= 10 && text * 4 <= body.len() * 3
+        };
+        if !ok {
             continue;
         }
         let l = &mut lines[li];
@@ -684,6 +694,65 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
         }
         l.math_only = true;
         l.runs = vec![(0, end)];
+    }
+}
+
+/// A line of smaller glyphs just over or under a math line, each of its words set over a math
+/// symbol of that line, holds labels or limits (`\xrightarrow{f}`, `\overset{def}{=}`,
+/// `\lim_{x\to 0}`): its glyphs are math candidates.
+fn stacked_labels(page: &Page, lines: &mut [LineMath]) {
+    if lines.len() > 3000 {
+        return;
+    }
+    let size_of = |l: &LineMath| l.gs.iter().map(|g| g.atom.size).fold(0.0, f64::max).max(1.0);
+    let mut promote = Vec::new();
+    for (li, l) in lines.iter().enumerate() {
+        if l.math_only || l.gs.is_empty() || l.gs.len() > 40 {
+            continue;
+        }
+        let ls = size_of(l);
+        let lbase = page.lines[li].base();
+        let (lx0, lx1) = (page.lines[li].x0, page.lines[li].x1);
+        for (mi, m) in lines.iter().enumerate() {
+            if mi == li || !(m.math_only || !m.runs.is_empty()) || m.gs.len() > 400 {
+                continue;
+            }
+            let ms = size_of(m);
+            if ls > 0.85 * ms {
+                continue;
+            }
+            let mbase = page.lines[mi].base();
+            let dy = lbase - mbase;
+            // over: its baseline up to 1.1 em above; under: up to 1.2 em below
+            if !((-1.1 * ms..-0.45 * ms).contains(&dy) || (0.45 * ms..1.2 * ms).contains(&dy)) {
+                continue;
+            }
+            if lx0 < page.lines[mi].x0 - ms || lx1 > page.lines[mi].x1 + ms {
+                continue;
+            }
+            // every word over or under a math symbol of the main line
+            let math: Vec<(f64, f64)> =
+                m.gs.iter().filter(|g| g.ev != Ev::Text).map(|g| (g.atom.x0, g.atom.x1)).collect();
+            let all = page.lines[li]
+                .words
+                .iter()
+                .all(|w| math.iter().any(|&(a, b)| w.x1 > a - 0.3 * ms && w.x0 < b + 0.3 * ms));
+            if all && !math.is_empty() {
+                promote.push(li);
+                break;
+            }
+        }
+    }
+    for li in promote {
+        let l = &mut lines[li];
+        for g in l.gs.iter_mut() {
+            if g.ev == Ev::Text {
+                g.ev = Ev::Weak;
+            }
+        }
+        l.math_only = true;
+        l.strong = true;
+        l.runs = vec![(0, l.gs.len())];
     }
 }
 
@@ -714,6 +783,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     let bars = bars_of(&page.rules);
     fraction_evidence(page, &mut lines, &bars);
     display_text_words(page, &mut lines);
+    stacked_labels(page, &mut lines);
     let n = lines.len();
     // per line, which glyphs are already in a formula
     let mut used: Vec<Vec<bool>> = lines.iter().map(|l| vec![false; l.gs.len()]).collect();

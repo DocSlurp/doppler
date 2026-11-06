@@ -70,6 +70,13 @@ pub enum Node {
         sub: Option<Box<Item>>,
         sup: Option<Box<Item>>,
     },
+    /// smaller symbols set wholly under and over a base: limits of an operator name, the label
+    /// of an extensible arrow, or an over/underset relation
+    Limits {
+        base: Box<Item>,
+        under: Option<Box<Item>>,
+        over: Option<Box<Item>>,
+    },
     /// rows at several baselines that are not yet resolved (scripts or a matrix)
     Stack(Vec<Item>),
     Matrix {
@@ -276,7 +283,83 @@ fn mark_big(atoms: &mut [Atom]) {
 }
 
 /// A formula's layout tree.
+/// Arrows drawn from touching pieces (a shaft of minus or equals signs and a head) are one
+/// long arrow.
+fn merge_arrows(atoms: Vec<Atom>) -> Vec<Atom> {
+    let head = |t: &str| matches!(t, "→" | "←" | "⇒" | "⇐" | "↔" | "⇔" | "⟶" | "⟵" | "⟹" | "⟸" | "↦");
+    let shaft = |t: &str| matches!(t, "−" | "-" | "=" | "—" | "–" | "⎯");
+    if !atoms.iter().any(|a| head(&a.sym.text)) {
+        return atoms;
+    }
+    let mut atoms = atoms;
+    atoms.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    let piece = |a: &Atom| head(&a.sym.text) || shaft(&a.sym.text);
+    let mut out: Vec<Atom> = Vec::with_capacity(atoms.len());
+    let mut i = 0;
+    while i < atoms.len() {
+        if piece(&atoms[i]) {
+            let s = atoms[i].size;
+            // the chain skips symbols on other baselines (an arrow's own label)
+            let mut members = vec![i];
+            let mut end = atoms[i].x1;
+            let mut k = i + 1;
+            while k < atoms.len() && atoms[k].x0 <= end + 0.06 * s {
+                if (atoms[k].base - atoms[i].base).abs() <= 0.15 * s {
+                    if !piece(&atoms[k]) {
+                        break;
+                    }
+                    members.push(k);
+                    end = end.max(atoms[k].x1);
+                }
+                k += 1;
+            }
+            let run: Vec<&Atom> = members.iter().map(|&m| &atoms[m]).collect();
+            let heads: Vec<&str> = run.iter().map(|a| a.sym.text.as_str()).filter(|t| head(t)).collect();
+            if members.len() >= 2 && !heads.is_empty() {
+                let any = |set: &[&str]| heads.iter().any(|t| set.contains(t));
+                let (both, dboth) = (any(&["↔"]), any(&["⇔"]));
+                let (right, left) = (any(&["→", "⟶"]) || both, any(&["←", "⟵"]) || both);
+                let (dright, dleft) = (any(&["⇒", "⟹"]) || dboth, any(&["⇐", "⟸"]) || dboth);
+                let text = if any(&["↦"]) {
+                    "⟼"
+                } else if dright && dleft {
+                    "⟺"
+                } else if dright {
+                    "⟹"
+                } else if dleft {
+                    "⟸"
+                } else if right && left {
+                    "⟷"
+                } else if left {
+                    "⟵"
+                } else {
+                    "⟶"
+                };
+                let mut a = run[0].clone();
+                a.x1 = end;
+                a.sym.text = text.to_string();
+                a.sym.class = Class::Rel;
+                a.sym.known = run.iter().all(|r| r.sym.known);
+                out.push(a);
+                // keep the skipped symbols, drop the pieces
+                let last = *members.last().unwrap();
+                for (m, at) in atoms.iter().enumerate().take(last + 1).skip(i + 1) {
+                    if !members.contains(&m) {
+                        out.push(at.clone());
+                    }
+                }
+                i = last + 1;
+                continue;
+            }
+        }
+        out.push(atoms[i].clone());
+        i += 1;
+    }
+    out
+}
+
 pub fn parse(mut atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx) -> Item {
+    atoms = merge_arrows(atoms);
     if atoms.len() <= 4000 {
         mark_big(&mut atoms);
     }
@@ -966,7 +1049,7 @@ fn rows_or_line(atoms: Vec<Atom>, ctx: &mut Ctx, depth: usize) -> Item {
             );
             let small = |a: &Atom| a.size < 0.9 * s && a.cx() >= fx0 - 0.2 * s && a.cx() <= fx1 + 0.2 * s;
             let under = |a: &Atom| small(a) && a.base > rb + 0.45 * s;
-            let over = |a: &Atom| small(a) && a.base < rb - 0.65 * s;
+            let over = |a: &Atom| small(a) && a.base < rb - 0.5 * s;
             if atoms.iter().any(|a| under(a) || over(a)) {
                 let (mut below, mut above, mut row) = (Vec::new(), Vec::new(), Vec::new());
                 for a in atoms {
@@ -988,7 +1071,7 @@ fn rows_or_line(atoms: Vec<Atom>, ctx: &mut Ctx, depth: usize) -> Item {
                 }
                 let (b, sz, v) = (base.base, base.size, base.votes);
                 return Item {
-                    node: Node::Scripts { base: Box::new(base), sub, sup },
+                    node: Node::Limits { base: Box::new(base), under: sub, over: sup },
                     x0,
                     x1,
                     base: b,
@@ -1446,6 +1529,7 @@ fn leaf_tex(a: &Atom) -> String {
         if symbols::operator_name(t) {
             return format!("\\operatorname{{{t}}}");
         }
+        return format!("\\text{{{t}}}");
     }
     let (Some(c), None) = (chars.next(), chars.next()) else {
         return t
@@ -1530,6 +1614,7 @@ fn emit(item: &Item, w: &mut Tex) {
                 }
             }
         }
+        Node::Limits { base, under, over } => emit_limits(base, under.as_deref(), over.as_deref(), w),
         Node::Stack(rows) => {
             w.push("\\begin{matrix}");
             for (k, r) in rows.iter().enumerate() {
@@ -1559,6 +1644,82 @@ fn emit(item: &Item, w: &mut Tex) {
             w.push(&format!("\\end{{{env}}}"));
             w.after_word = false;
         }
+    }
+}
+
+/// The x-arrow command for an arrow symbol.
+fn x_arrow(t: &str) -> Option<&'static str> {
+    Some(match t {
+        "→" | "⟶" => "\\xrightarrow",
+        "←" | "⟵" => "\\xleftarrow",
+        "⇒" | "⟹" => "\\xRightarrow",
+        "⇐" | "⟸" => "\\xLeftarrow",
+        "↔" | "⟷" => "\\xleftrightarrow",
+        "⇔" | "⟺" => "\\xLeftrightarrow",
+        "↦" | "⟼" => "\\xmapsto",
+        _ => return None,
+    })
+}
+
+/// Limits under and over a base: an operator's limits, an extensible arrow's labels, or
+/// over/underset for anything else.
+fn emit_limits(base: &Item, under: Option<&Item>, over: Option<&Item>, w: &mut Tex) {
+    let leaf = match &base.node {
+        Node::Leaf(a) => Some(a),
+        _ => None,
+    };
+    let operator = leaf.is_some_and(|a| {
+        a.sym.class == Class::LargeOp
+            || (a.upright_text
+                && (symbols::function_name(&a.sym.text).is_some() || symbols::operator_name(&a.sym.text)))
+    });
+    if operator {
+        emit(base, w);
+        if let Some(u) = under {
+            w.push("_");
+            w.group(u);
+        }
+        if let Some(o) = over {
+            w.push("^");
+            w.group(o);
+        }
+        return;
+    }
+    if let Some(cmd) = leaf.and_then(|a| x_arrow(&a.sym.text)) {
+        w.push(cmd);
+        if let Some(u) = under {
+            w.push("[");
+            w.after_word = false;
+            emit(u, w);
+            w.push("]");
+        }
+        match over {
+            Some(o) => w.group(o),
+            None => w.push("{}"),
+        }
+        return;
+    }
+    match (over, under) {
+        (Some(o), Some(u)) => {
+            w.push("\\overset");
+            w.group(o);
+            w.push("{\\underset");
+            w.after_word = false;
+            w.group(u);
+            w.group(base);
+            w.push("}");
+        }
+        (Some(o), None) => {
+            w.push("\\overset");
+            w.group(o);
+            w.group(base);
+        }
+        (None, Some(u)) => {
+            w.push("\\underset");
+            w.group(u);
+            w.group(base);
+        }
+        (None, None) => emit(base, w),
     }
 }
 
@@ -1614,9 +1775,14 @@ fn emit_row(items: &[Item], w: &mut Tex) {
                 continue;
             }
         }
+        let operator = |a: &Atom| {
+            a.sym.text.len() > 1
+                && (symbols::function_name(&a.sym.text).is_some() || symbols::operator_name(&a.sym.text))
+        };
         let upright = |a: &Atom| {
-            (a.upright_text && a.sym.style == Style::Default)
-                || (a.sym.style == Style::Upright && a.role != FontRole::EulerRoman)
+            ((a.upright_text && a.sym.style == Style::Default)
+                || (a.sym.style == Style::Upright && a.role != FontRole::EulerRoman))
+                && !operator(a)
         };
         if let Node::Leaf(a) = &items[i].node
             && upright(a)

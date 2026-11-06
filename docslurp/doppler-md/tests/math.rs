@@ -544,3 +544,105 @@ fn operator_names_in_text_fonts() {
     let (md, _) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
     assert!(md.contains("$$\\operatorname{rank}A+\\dim V=n$$"), "{md}");
 }
+
+/// A paragraph of prose lines at the left margin around `y`.
+fn paragraph(y: f64, n: usize) -> Vec<Vec<W>> {
+    (0..n)
+        .map(|k| {
+            let yy = y + 12.0 * k as f64;
+            // words across the column with ordinary word gaps
+            (0..12)
+                .map(|i| {
+                    let x = 72.0 + 30.0 * i as f64;
+                    w(
+                        vec![
+                            g(x, 6.0, 0, "w"),
+                            g(x + 6.0, 5.0, 0, "o"),
+                            g(x + 11.0, 5.0, 0, "r"),
+                            g(x + 16.0, 6.0, 0, "d"),
+                        ],
+                        yy,
+                        10.0,
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn centred_display_keeps_its_text_words() {
+    // "n is prime iff n > 1": centred, with text words between math symbols
+    let mut lines = paragraph(100.0, 3);
+    lines.push(vec![
+        w(vec![g(200.0, 6.0, 1, "n")], 200.0, 10.0),
+        w(vec![g(210.0, 3.0, 0, "i"), g(213.0, 4.0, 0, "s")], 200.0, 10.0),
+        w(
+            vec![
+                g(222.0, 5.0, 0, "p"),
+                g(227.0, 4.0, 0, "r"),
+                g(231.0, 3.0, 0, "i"),
+                g(234.0, 8.0, 0, "m"),
+                g(242.0, 4.0, 0, "e"),
+            ],
+            200.0,
+            10.0,
+        ),
+        w(vec![g(252.0, 12.0, 2, "⟺")], 200.0, 10.0),
+        w(vec![g(268.0, 6.0, 1, "n"), g(276.0, 7.0, 0, ">"), g(285.0, 5.0, 0, "1")], 200.0, 10.0),
+    ]);
+    lines.extend(paragraph(230.0, 3));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(
+        md.contains("$$n\\text{ is prime}\\Longleftrightarrow n>1$$")
+            || md.contains("$$n\\text{is prime}\\Longleftrightarrow n>1$$"),
+        "{md}"
+    );
+}
+
+#[test]
+fn text_beside_display_rows_joins_them() {
+    // a cases display whose conditions are separate text lines on the rows' baselines
+    let brace =
+        |y: f64, t: &'static str, n: &'static str| G { x: 230.0, w: 7.0, f: 3, t, n: Some(n), src: 't', b: Some(y) };
+    let mut lines = paragraph(100.0, 3);
+    lines.push(vec![
+        w(vec![g(200.0, 6.0, 1, "f"), g(208.0, 7.0, 0, "=")], 206.0, 10.0),
+        w(vec![brace(196.0, "{", "bracelefttp")], 196.0, 10.0),
+        w(vec![g(240.0, 6.0, 1, "x")], 200.0, 10.0),
+    ]);
+    lines.push(vec![
+        w(vec![g(270.0, 3.0, 0, "i"), g(273.0, 4.0, 0, "f")], 200.0, 10.0),
+        w(vec![g(280.0, 6.0, 1, "x"), g(288.0, 7.0, 2, "≥"), g(297.0, 5.0, 0, "0")], 200.0, 10.0),
+    ]);
+    lines.push(vec![w(vec![brace(206.0, "{", "braceleftmid"), brace(216.0, "{", "braceleftbt")], 206.0, 10.0)]);
+    lines.push(vec![w(vec![g(240.0, 5.0, 2, "−"), g(245.0, 6.0, 1, "x")], 212.0, 10.0)]);
+    lines.push(vec![
+        w(vec![g(270.0, 3.0, 0, "i"), g(273.0, 4.0, 0, "f")], 212.0, 10.0),
+        w(vec![g(280.0, 6.0, 1, "x"), g(288.0, 7.0, 0, "<"), g(297.0, 5.0, 0, "0")], 212.0, 10.0),
+    ]);
+    lines.extend(paragraph(240.0, 3));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    assert!(f[0].contains("\\begin{cases}x&\\text{if}x\\ge0\\\\-x&\\text{if}x<0\\end{cases}"), "{}", f[0]);
+}
+
+#[test]
+fn labelled_arrows_and_relations() {
+    // A --f--> B with the arrow drawn as touching minus signs and a head; "def" over an equals
+    let main = vec![
+        w(vec![g(250.0, 7.0, 1, "A")], 200.0, 10.0),
+        w(vec![g(260.0, 6.0, 2, "−"), g(265.0, 6.0, 2, "−"), g(270.0, 8.0, 2, "→")], 200.0, 10.0),
+        w(vec![g(281.0, 7.0, 1, "B"), g(292.0, 7.0, 0, "=")], 200.0, 10.0),
+        w(vec![g(303.0, 6.0, 1, "C")], 200.0, 10.0),
+    ];
+    let labels = vec![
+        w(vec![g(266.0, 4.0, 5, "f")], 194.0, 7.0),
+        w(vec![g(290.0, 4.0, 0, "d"), g(294.0, 3.0, 0, "e"), g(297.0, 3.0, 0, "f")], 193.0, 7.0),
+    ];
+    let (md, _) = convert(&page(&[prose(150.0), labels, main, prose(250.0)], &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    assert_eq!(f[0], "A\\xrightarrow{f}B\\overset{\\text{def}}{=}C", "{md}");
+}
