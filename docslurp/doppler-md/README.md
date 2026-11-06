@@ -44,6 +44,9 @@ byte-identical.
   OpenType math fonts, Symbol) or code point; runs on lines and clusters of math lines become
   formulas, read as a baseline layout tree (scripts, limits, fractions and radicals from
   rules, accents, matrices/cases/aligned rows) from `src/math/`.
+- Equation numbers separated from the formula (including split words or a separate PDF line)
+  stay as text after it. Touching numeric parentheses remain formula content. Closely spaced
+  barless stacks are read within their equation; derivation rows retain relation alignment.
 - A formula with an unknown glyph (U+FFFD, private use, a raw-code guess or a Latin letter in a
   math font), too much doubt, or over a work cap keeps its words. Its page is listed in the
   report's `mathUncertainPages` (one-based), so a caller can send only those pages to a vision

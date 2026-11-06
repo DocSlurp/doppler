@@ -634,12 +634,31 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
             bars.into_iter().enumerate().filter(|(i, _)| !bar_taken[*i]).map(|(_, b)| b).collect(),
         )
     };
-    // a whole display on several lines no bar explains: aligned rows, each read on its own
-    if depth == 0 && multi(&rest, &rest_bars) {
+    // a whole display on several lines no bar explains: aligned rows, each read on its own.
+    // Lines of a display are a line pitch apart; rows closer than that are a stack inside the
+    // line (a barless fraction, scripts set at full size) and are read where they stand
+    let lines_apart = |content: &[Atom], bars: &[Bar]| {
+        let rows = split_rows(content);
+        let s = max_size(content);
+        let unexplained = unexplained_rows(&rows, bars);
+        let bases: Vec<f64> = rows.iter().map(|r| row_baseline_of(r)).collect();
+        rows.len() >= 2
+            && unexplained.iter().any(|&u| u)
+            && unexplained.iter().zip(bases.windows(2)).all(|(&u, w)| !u || w[1] - w[0] >= 0.95 * s)
+    };
+    if depth == 0 && lines_apart(&rest, &rest_bars) {
         let m = matrix_rows(rest, rest_bars, out, "aligned", ctx, depth);
         return (Vec::new(), Vec::new(), vec![m]);
     }
     (rest, rest_bars, out)
+}
+
+/// The median baseline of a row's full-size symbols.
+fn row_baseline_of(r: &[Atom]) -> f64 {
+    let s = r.iter().filter(|a| !a.axis_symbol()).map(|a| a.size).fold(0.0, f64::max);
+    let mut b: Vec<f64> = r.iter().filter(|a| !a.axis_symbol() && a.size >= 0.9 * s).map(|a| a.base).collect();
+    b.sort_by(f64::total_cmp);
+    b.get(b.len() / 2).copied().unwrap_or(0.0)
 }
 
 /// A matrix from atoms on several rows: rows a bar explains are merged (fractions in cells),
@@ -1574,7 +1593,14 @@ fn matrices(items: Vec<Item>, ctx: &mut Ctx, depth: usize) -> Vec<Item> {
                 j += 1;
             }
             let inner: Vec<Item> = (i..j.max(i + 1)).filter_map(|k| items[k].take()).collect();
-            out.push(matrix(inner, if depth <= 2 { "aligned" } else { "matrix" }, ctx, depth));
+            // rows of an equation have relations; a stack without any (a barless fraction) is
+            // not a derivation
+            let rel = |it: &Item| match &it.node {
+                Node::Stack(rows) => rows.iter().any(|r| has_rel(r)),
+                _ => has_rel(it),
+            };
+            let env = if depth <= 2 && inner.iter().any(rel) { "aligned" } else { "matrix" };
+            out.push(matrix(inner, env, ctx, depth));
             i = j.max(i + 1);
             continue;
         }
@@ -1582,6 +1608,14 @@ fn matrices(items: Vec<Item>, ctx: &mut Ctx, depth: usize) -> Vec<Item> {
         i += 1;
     }
     out
+}
+
+/// Does an item hold a relation at its top level (or in a group's top level)?
+fn has_rel(it: &Item) -> bool {
+    match &it.node {
+        Node::Group(v) => v.iter().any(|i| i.class() == Some(Class::Rel)),
+        _ => it.class() == Some(Class::Rel),
+    }
 }
 
 fn text_of(it: &Item) -> String {
@@ -1676,6 +1710,23 @@ fn matrix(inner: Vec<Item>, env: &'static str, ctx: &mut Ctx, depth: usize) -> I
             .collect()
     };
     let env = if env == "aligned" && !cuts.is_empty() { "matrix" } else { env };
+    // two single cells spaced like a fraction's parts: a binomial or an \atop stack (see
+    // matrix_rows)
+    let env = if cells.len() == 2
+        && cells.iter().all(|r| r.len() == 1)
+        && rows_b.len() == 2
+        && rows_b[1] - rows_b[0] >= 1.30 * s
+    {
+        match env {
+            "pmatrix" => "binom",
+            "bmatrix" => "binom[",
+            "Bmatrix" => "binom{",
+            "matrix" => "atop",
+            e => e,
+        }
+    } else {
+        env
+    };
     let all: Vec<&Item> = cells.iter().flatten().collect();
     let x0 = all.iter().map(|i| i.x0).fold(f64::INFINITY, f64::min);
     let x1 = all.iter().map(|i| i.x1).fold(f64::NEG_INFINITY, f64::max);

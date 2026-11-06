@@ -504,20 +504,34 @@ struct LineMath {
 
 fn analyse_line(page: &Page, line: &Line, facts: &FontFacts) -> LineMath {
     let gs = line_glyphs(page, line, facts);
-    // an equation label: the last word, far right of the rest
+    // an equation label: the last words (a label can be cut into touching words, `(3.` `6)`)
+    let nw = line.words.len();
     let mut label = None;
-    if let Some(last) = gs.last() {
-        let lw = last.word;
-        let w = &line.words[lw];
-        if lw > 0 && equation_label(w.text.trim()) {
-            let prev = &line.words[lw - 1];
-            if w.x0 - prev.x1 > 2.0 * w.size.max(1.0) {
-                label = gs.iter().position(|g| g.word == lw);
-            }
+    let mut label_only = false;
+    for sw in (nw.saturating_sub(3)..nw).rev() {
+        let ws = &line.words[sw..];
+        let touching = ws.windows(2).all(|p| p[1].x0 - p[0].x1 < 0.3 * p[0].size.max(1.0));
+        let text: String = ws.iter().map(|w| w.text.trim()).collect();
+        if !touching || !equation_label(&text) {
+            continue;
         }
+        if sw == 0 {
+            // a line that is only an equation number (Word sets it apart with a tab)
+            label_only = true;
+            break;
+        }
+        let (w, prev) = (&line.words[sw], &line.words[sw - 1]);
+        let size = w.size.max(1.0);
+        let gap = w.x0 - prev.x1;
+        let Some(at) = gs.iter().position(|g| g.word == sw) else { break };
+        // Require geometric separation even after a pure math run: adjacent numeric
+        // parentheses can be a function argument or a factor, regardless of their font.
+        let math_line = at > 0 && gs[..at].iter().all(|g| g.ev != Ev::Text);
+        if gap > 2.0 * size || (math_line && gap >= 0.5 * size) {
+            label = Some(at);
+        }
+        break;
     }
-    // a line that is only an equation number (Word sets it apart with a tab)
-    let label_only = line.words.len() == 1 && equation_label(line.words[0].text.trim());
     if label_only {
         return LineMath { gs, runs: Vec::new(), math_only: false, label: None, strong: false, label_only };
     }
@@ -1016,6 +1030,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             cluster_taken[ci] = true;
         }
     }
+    let label_line_ids: Vec<usize> = (0..n).filter(|&i| lines[i].label_only).collect();
     // inline formulas: every run of a prose line, with the clusters attached to it
     for (li, l) in lines.iter().enumerate() {
         if l.math_only {
@@ -1031,7 +1046,18 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     }
                 }
             }
-            formulas.push(Formula { parts, display: false, label: None, label_lines: Vec::new() });
+            // an equation number on a line of its own level with a formula that ends its line
+            let mut label_lines = Vec::new();
+            if b == l.gs.len() || l.gs[b..].iter().all(dangling) {
+                let (_, x1, _, _, size) = bbox(l, a, b);
+                for &k in &label_line_ids {
+                    let lw = &page.lines[k];
+                    if lw.x0 > x1 && (page.lines[li].base() - lw.base()).abs() <= 0.5 * size {
+                        label_lines.push(k);
+                    }
+                }
+            }
+            formulas.push(Formula { parts, display: false, label: None, label_lines });
         }
     }
     // display formulas: the remaining clusters
@@ -1050,21 +1076,23 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         let label = c.iter().find_map(|&k| lines[k].label.map(|g| (k, g)));
         // a math-only line inside a paragraph (starting at its left edge) is inline
         let display = is_display(page, &lines, c, &bbox);
-        // equation numbers on lines of their own, right of a display line on their baseline
+        // equation numbers on lines of their own, right of the formula and level with one of
+        // its lines (or, for a formula of several lines, within its height)
         let mut label_lines = Vec::new();
-        if display {
-            for (li, l) in lines.iter().enumerate() {
-                if !l.label_only {
-                    continue;
-                }
-                let lw = &page.lines[li];
-                let beside = c.iter().any(|&k| {
-                    let (_, x1, _, _, size) = bbox(&lines[k], 0, body_end(&lines[k]));
-                    (page.lines[k].base() - lw.base()).abs() <= 0.5 * size && lw.x0 > x1
-                });
-                if beside {
-                    label_lines.push(li);
-                }
+        let (_, cx1, ctop, cbot, csize) =
+            c.iter().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64), |acc, &k| {
+                let (a, b, t, u, s) = bbox(&lines[k], 0, body_end(&lines[k]));
+                (acc.0.min(a), acc.1.max(b), acc.2.min(t), acc.3.max(u), acc.4.max(s))
+            });
+        for &li in &label_line_ids {
+            let lw = &page.lines[li];
+            if lw.x0 <= cx1 {
+                continue;
+            }
+            let level = c.iter().any(|&k| (page.lines[k].base() - lw.base()).abs() <= 0.5 * csize);
+            let within = c.len() > 1 && lw.base() > ctop + 0.5 * csize && lw.base() < cbot;
+            if level || within {
+                label_lines.push(li);
             }
         }
         formulas.push(Formula {

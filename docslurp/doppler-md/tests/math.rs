@@ -275,6 +275,17 @@ fn bounded_time_hostile_pages() {
     let rules: Vec<_> = (0..1000).map(|i| (72.0, 96.0 - i as f64 * 0.001, 500.0, 96.1 - i as f64 * 0.001)).collect();
     let x = page(&[prose(60.0), vec![W { gs, base: 100.0, size: 10.0 }], prose(140.0)], &rules);
     timed(limit, || convert(&x, &MATH));
+    // Many candidate labels beside math: label association remains bounded and does not
+    // duplicate a number when several formulas compete for it.
+    let mut lines = Vec::new();
+    for i in 0..500 {
+        let y = 30.0 + i as f64 * 1.4;
+        lines.push(vec![w(vec![g(250.0, 6.0, 1, "x"), g(260.0, 6.0, 0, "="), g(270.0, 6.0, 1, "y")], y, 1.0)]);
+        lines.push(vec![w(vec![g(480.0, 9.0, 0, "(9)")], y, 1.0)]);
+    }
+    let x = page(&lines, &[]);
+    let (md, _) = timed(limit, || convert(&x, &MATH));
+    assert_eq!(md.matches("(9)").count(), 500);
     // pages over the line cap are skipped and reported
     let lines: Vec<Vec<W>> =
         (0..6000).map(|i| vec![w(vec![g(300.0, 5.0, 1, "y")], 10.0 + i as f64 * 0.1, 10.0)]).collect();
@@ -880,4 +891,76 @@ fn primes_never_make_double_scripts() {
     assert_eq!(f.len(), 1, "{md}");
     // one subscript group with the prime after it, never `h_{j}'_{,j}` (a double subscript)
     assert!(matches!(f[0].as_str(), "h_{j,j}'=x" | "h'_{j,j}=x"), "{}", f[0]);
+}
+
+#[test]
+fn barless_stacks_in_one_line_are_not_aligned_rows() {
+    // a stack with no rule (n over k), then "=" and a display fraction p/q: one line, so the
+    // fraction keeps its bar and nothing becomes \underline or an aligned block
+    let lines = vec![
+        prose(150.0),
+        vec![w(vec![g(280.0, 6.0, 1, "n")], 193.0, 10.0), w(vec![g(310.0, 6.0, 1, "p")], 193.0, 10.0)],
+        vec![
+            w(vec![g(292.0, 7.0, 0, "=")], 200.0, 10.0),
+            w(vec![g(330.0, 7.0, 0, "+"), g(340.0, 6.0, 1, "z")], 200.0, 10.0),
+        ],
+        vec![w(vec![g(280.0, 5.0, 1, "k")], 207.0, 10.0), w(vec![g(310.0, 6.0, 1, "q")], 207.0, 10.0)],
+        prose(250.0),
+    ];
+    let (md, _) = convert(&page(&lines, &[(308.0, 196.6, 318.0, 197.0)]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    assert!(f[0].contains("\\frac{p}{q}"), "{}", f[0]);
+    assert!(!f[0].contains("aligned") && !f[0].contains("line{"), "{}", f[0]);
+    // two lines of a derivation, each with its relation, stay aligned rows
+    let lines = vec![
+        prose(150.0),
+        vec![w(vec![g(280.0, 6.0, 1, "y"), g(292.0, 7.0, 0, "="), g(304.0, 6.0, 1, "a")], 190.0, 10.0)],
+        vec![w(
+            vec![g(292.0, 7.0, 0, "="), g(304.0, 6.0, 1, "b"), g(312.0, 7.0, 0, "+"), g(322.0, 6.0, 1, "c")],
+            205.0,
+            10.0,
+        )],
+        prose(250.0),
+    ];
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f, vec!["\\begin{aligned}y&=a\\\\&=b+c\\end{aligned}".to_string()], "{md}");
+}
+
+#[test]
+fn split_equation_numbers_stay_after_the_formula() {
+    let eq = || w(vec![g(250.0, 6.0, 1, "v"), g(260.0, 7.0, 0, "="), g(272.0, 6.0, 1, "r")], 200.0, 10.0);
+    let label = || vec![w(vec![g(480.0, 9.0, 0, "(7.")], 200.0, 10.0), w(vec![g(489.0, 9.0, 0, "4)")], 200.0, 10.0)];
+    for separate in [false, true] {
+        let mut lines = vec![prose(150.0), vec![eq()]];
+        if separate { lines.push(label()); } else { lines[1].extend(label()); }
+        lines.push(prose(250.0));
+        let (md, _) = convert(&page(&lines, &[]), &MATH);
+        assert_eq!(formulas(&md), vec!["v=r"], "{md}");
+        assert!(md.find("v=r").unwrap() < md.find("(7.").unwrap(), "{md}");
+        assert!(!md.contains("- (7."), "{md}");
+    }
+}
+
+#[test]
+fn touching_numeric_function_argument_is_not_an_equation_label() {
+    let lines = vec![prose(150.0), vec![
+        w(vec![g(250.0, 6.0, 1, "u"), g(258.0, 7.0, 0, "="), g(268.0, 6.0, 1, "f"), g(274.0, 4.0, 1, "("), g(278.0, 5.0, 1, "x"), g(283.0, 4.0, 1, ")")], 200.0, 10.0),
+        w(vec![g(287.0, 4.0, 0, "("), g(291.0, 5.0, 0, "3"), g(296.0, 4.0, 0, ")")], 200.0, 10.0),
+    ], prose(250.0)];
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert_eq!(formulas(&md), vec!["u=f(x)(3)"], "{md}");
+}
+
+#[test]
+fn paired_scripts_attach_to_their_base_before_matrix_detection() {
+    let lines = vec![prose(150.0), vec![
+        w(vec![g(260.0, 7.0, 1, "T")], 200.0, 10.0),
+        w(vec![g(267.0, 5.0, 0, "-"), g(272.0, 4.0, 4, "2")], 194.0, 7.0),
+        w(vec![g(267.0, 4.0, 4, "5"), g(271.0, 4.0, 5, "k")], 204.0, 7.0),
+        w(vec![g(283.0, 7.0, 0, "="), g(296.0, 6.0, 1, "z")], 200.0, 10.0),
+    ], prose(250.0)];
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert_eq!(formulas(&md), vec!["T_{5k}^{-2}=z"], "{md}");
 }
