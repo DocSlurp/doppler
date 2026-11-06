@@ -1,0 +1,1 @@
+docslurp_add_test(pagecount test_pdfpagecount.py)

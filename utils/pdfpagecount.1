@@ -1,0 +1,97 @@
+.\" Copyright 2026 DocSlurp
+.TH pdfpagecount 1 "05 November 2026"
+.SH NAME
+pdfpagecount \- count the pages of a PDF by walking its page tree
+.SH SYNOPSIS
+.B pdfpagecount
+[options]
+.RI [ PDF-file ]
+.SH DESCRIPTION
+.B pdfpagecount
+opens a PDF the way the other Poppler utilities do (repairing a damaged
+xref table and trying an empty user password), walks the page tree from the
+catalog's /Pages root and prints the number of leaf page objects it reaches.
+.PP
+The count comes only from document structure. The root /Count entry, the
+linearization dictionary, the Info dictionary, XMP metadata and page content
+are never used, so a document cannot claim its own page count.
+.PP
+Kids are classified the way Poppler builds its page list: a kid that is
+/Type /Page, or a dictionary without /Kids, is a page; any other dictionary
+is an intermediate node; a kid that does not resolve to a dictionary is
+skipped. A page referenced from several places counts every time it is
+referenced, because Poppler renders it every time.
+.PP
+On success the only output is one decimal integer, at least 1, followed by a
+newline. Diagnostics go to standard error, are fixed strings and never include
+document data; Poppler's own messages are suppressed.
+.PP
+Run it under a memory limit and a timeout, and pass
+.B "\-f 1 \-l"
+.I N
+with the count to the other utilities: they clamp
+.B \-l
+to the claimed page count, so the count bounds their work but they may still
+process fewer pages.
+.SH OPTIONS
+.TP
+.BI \-max\-pages " number"
+Fail with exit code 3 if the tree holds more than
+.I number
+pages (default 100000, at most 1000000000). Kid entries examined, including
+ones that count nothing, are capped at twice this plus 64.
+.TP
+.BI \-max\-depth " number"
+Fail with exit code 3 if the tree is more than
+.I number
+levels deep (default 256).
+.TP
+.BI \-max\-memory " MiB"
+Limit the process address space to
+.I MiB
+mebibytes on POSIX systems (default 4096; 0 for no limit). Running out of
+memory exits with code 3.
+.TP
+.B \-claimed
+Also print the root /Count entry on a second line, or "none" if it is not
+an integer. For diagnostics only; never use it as the page count.
+.TP
+.B \-v
+Print copyright and version information.
+.TP
+.B \-h
+Print usage information.
+.RB ( \-help
+and
+.B \-\-help
+are equivalent.) Every long option also accepts a leading double dash.
+.SH EXIT CODES
+.TP
+0
+The page count was printed.
+.TP
+1
+The file could not be opened or is not a repairable PDF, or the output
+could not be written.
+.TP
+2
+The file is encrypted and needs a password (or uses an unknown security
+handler).
+.TP
+3
+The page count, tree depth or work budget exceeds its limit, or memory ran
+out.
+.TP
+4
+The page tree is malformed: no valid /Pages root, no pages, a kid that is not
+an indirect reference, a /Kids entry that is not an array, a page Poppler
+rejects, a cycle, or a root without /Kids that is not a lone page.
+.TP
+99
+Invalid command line.
+.PP
+On any failure nothing is printed on stdout.
+.SH SEE ALSO
+.BR pdfinfo (1),
+.BR pdftotext (1),
+.BR pdftoppm (1)
