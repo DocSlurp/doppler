@@ -89,6 +89,15 @@ target_link_libraries(pdfimages ${common_libs})
 install(TARGETS pdfimages DESTINATION bin)
 install(FILES pdfimages.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 
+# pdfpagecount
+set(pdfpagecount_SOURCES
+  pdfpagecount.cc
+)
+add_executable(pdfpagecount ${pdfpagecount_SOURCES})
+target_link_libraries(pdfpagecount ${common_libs})
+install(TARGETS pdfpagecount DESTINATION bin)
+install(FILES pdfpagecount.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+
 # pdfinfo
 set(pdfinfo_SOURCES
   pdfinfo.cc printencodings.cc

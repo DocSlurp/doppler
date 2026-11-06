@@ -36,6 +36,43 @@ docslurp/doppler-md/target/release/pdftomarkdown [--html] [--strict] FILE.pdf`. 
 tables as HTML, `--strict` keeps full-precision coordinates (the old pipe's exact output). See
 its README and PERF.md.
 
+## Page counts
+
+`pdfpagecount FILE.pdf` prints the page count that DocSlurp bills, authorizes and limits by.
+It walks the page tree from the catalog's `/Pages` root and counts leaf pages; it never reads
+`/Count`, the linearization dictionary, Info, XMP or text, so a document cannot claim its own
+count. Do not parse `pdfinfo`'s `Pages:` line or use `getNumPages()` for these decisions.
+
+- **Output:** one decimal integer and a newline on stdout, nothing else. `-claimed` adds the
+  root `/Count` (or `none`) on a second line for diagnostics only. Diagnostics go to stderr as
+  fixed strings; Poppler's own messages are suppressed because they can quote document data.
+- **Limits:** `-max-pages N` (default 100000) and `-max-depth N` (default 256). Exceeding either
+  exits 3 with nothing on stdout. Long options also accept `--`.
+- **Exit codes:** 0 ok, 1 cannot open (not a PDF, unrepairable), 2 encrypted and needs a password
+  (an empty user password is tried), 3 limit exceeded, 4 malformed page tree, 99 usage.
+- **Malformed (4):** no valid `/Pages` reference or dictionary, a kid that is not an indirect
+  reference, an intermediate node whose `/Kids` is not an array, a page that Poppler's `Page`
+  rejects (bad `/Contents`, 10000+ annotations), or a cycle.
+
+Kids are classified exactly as `Catalog::cacheSubTree` builds the page list every util renders
+from: `/Type /Page`, or any dictionary without `/Kids`, is a page; any other dictionary is an
+intermediate node whatever its `/Type`; a kid resolving to a non-dictionary is skipped. Pages are
+validated by constructing Poppler's own `Page`. Subtrees are memoized, so shared kids count every
+time they are referenced (Poppler renders them every time) without exponential work.
+
+How it differs from Poppler, so callers pass `-f 1 -l N` with this count to every util:
+
+- `getNumPages()` returns the root `/Count` (or linearization `/N`), not the walk. A `/Count`
+  above the xref size makes it 0, so the utils process nothing.
+- Poppler stops its page list at `/Count`: with `/Count 1` and 50 kids it renders 1 page; this
+  tool reports 50.
+- With `/Count` above the real pages but within the xref size, `pdftotext` emits only the real
+  pages but `pdftoppm` writes blank images up to `/Count`.
+- Poppler skips a kid that points back at an ancestor; this tool reports the tree as malformed.
+- A lone `/Type /Page` root counts as 1 only without a numeric `/Count`, as in Poppler.
+
+Tests: `test/docslurp/pagecount/`.
+
 ## DocSlurp regression tests
 
 `test/docslurp/` holds Python tests that build small PDFs in memory
