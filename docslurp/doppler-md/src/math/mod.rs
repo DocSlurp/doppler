@@ -389,6 +389,8 @@ struct LineMath {
     /// glyph index where an equation label starts
     label: Option<usize>,
     strong: bool,
+    /// the line is only an equation number
+    label_only: bool,
 }
 
 fn analyse_line(page: &Page, line: &Line) -> LineMath {
@@ -405,12 +407,17 @@ fn analyse_line(page: &Page, line: &Line) -> LineMath {
             }
         }
     }
+    // a line that is only an equation number (Word sets it apart with a tab)
+    let label_only = line.words.len() == 1 && equation_label(line.words[0].text.trim());
+    if label_only {
+        return LineMath { gs, runs: Vec::new(), math_only: false, label: None, strong: false, label_only };
+    }
     let body = &gs[..label.unwrap_or(gs.len())];
     let runs = runs(body);
     let strong = body.iter().any(|g| g.ev == Ev::Strong);
     let non_text = !body.is_empty() && body.iter().all(|g| g.ev != Ev::Text);
     let math_only = non_text;
-    LineMath { gs, runs, math_only, label, strong }
+    LineMath { gs, runs, math_only, label, strong, label_only }
 }
 
 /// Text of ActualText LaTeX, cleaned, if the span is LaTeX.
@@ -623,6 +630,8 @@ struct Formula {
     display: bool,
     /// the anchor line's equation label glyph start, for displays
     label: Option<usize>,
+    /// lines that are only an equation number beside this display
+    label_lines: Vec<usize>,
 }
 
 /// Read the math of a page and rewrite its lines. `bars` are the page's thin rules.
@@ -650,8 +659,21 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         let gs = &l.gs[a..b];
         let x0 = gs.iter().map(|g| g.atom.x0).fold(f64::INFINITY, f64::min);
         let x1 = gs.iter().map(|g| g.atom.x1).fold(f64::NEG_INFINITY, f64::max);
-        let top = gs.iter().map(|g| g.atom.base - 0.8 * g.atom.size).fold(f64::INFINITY, f64::min);
-        let bot = gs.iter().map(|g| g.atom.base + 0.3 * g.atom.size).fold(f64::NEG_INFINITY, f64::max);
+        // tall symbols (big operators, radicals, big delimiters) reach further; an extension-font
+        // glyph hangs from its baseline
+        let ext = |g: &G| {
+            let (a, s) = (&g.atom, g.atom.size);
+            let tall = matches!(a.sym.class, Class::LargeOp | Class::Radical | Class::Piece) || a.sym.big;
+            if a.tex_ext {
+                (a.base - 0.2 * s, a.base + 2.2 * s)
+            } else if tall {
+                (a.base - 1.4 * s, a.base + 0.9 * s)
+            } else {
+                (a.base - 0.8 * s, a.base + 0.3 * s)
+            }
+        };
+        let top = gs.iter().map(|g| ext(g).0).fold(f64::INFINITY, f64::min);
+        let bot = gs.iter().map(|g| ext(g).1).fold(f64::NEG_INFINITY, f64::max);
         let size = gs.iter().filter(|g| !g.atom.tex_ext).map(|g| g.atom.size).fold(0.0, f64::max).max(1.0);
         (x0, x1, top, bot, size)
     };
@@ -735,7 +757,17 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 let s = size.max(csize);
                 let vgap = (top - cbot).max(ctop - bot);
                 let overlap = x1.min(cx1) - x0.max(cx0);
+                // scripts and limits are smaller than the run; fraction parts sit across a bar
+                let smaller = csize <= 0.85 * size;
+                let (lo, hi) = (cx0.max(x0), cx1.min(x1));
+                let across_bar = bars.iter().any(|b| {
+                    b.x1 > lo
+                        && b.x0 < hi
+                        && ((b.y > cbot - 0.5 * s && b.y < top + 0.5 * s)
+                            || (b.y < ctop + 0.5 * s && b.y > bot - 0.5 * s))
+                });
                 if vgap < 0.3 * s
+                    && (smaller || across_bar)
                     && overlap > 0.3 * (cx1 - cx0).min(x1 - x0).max(0.5)
                     && best.is_none_or(|(_, _, g)| vgap < g)
                 {
@@ -764,7 +796,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     }
                 }
             }
-            formulas.push(Formula { parts, display: false, label: None });
+            formulas.push(Formula { parts, display: false, label: None, label_lines: Vec::new() });
         }
     }
     // display formulas: the remaining clusters
@@ -783,11 +815,34 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         let label = c.iter().find_map(|&k| lines[k].label.map(|g| (k, g)));
         // a math-only line inside a paragraph (starting at its left edge) is inline
         let display = is_display(page, &lines, c, &bbox);
+        // equation numbers on lines of their own, right of a display line on their baseline
+        let mut label_lines = Vec::new();
+        if display {
+            for (li, l) in lines.iter().enumerate() {
+                if !l.label_only {
+                    continue;
+                }
+                let lw = &page.lines[li];
+                let beside = c.iter().any(|&k| {
+                    let (_, x1, _, _, size) = bbox(&lines[k], 0, body_end(&lines[k]));
+                    (page.lines[k].base() - lw.base()).abs() <= 0.5 * size && lw.x0 > x1
+                });
+                if beside {
+                    label_lines.push(li);
+                }
+            }
+        }
         formulas.push(Formula {
             parts,
             display,
             label: label.map(|(_, g)| g).filter(|_| label.is_some_and(|(k, _)| k == anchor)),
+            label_lines,
         });
+    }
+    // a label line belongs to one display
+    let mut label_taken = vec![false; n];
+    for f in &mut formulas {
+        f.label_lines.retain(|&li| !std::mem::replace(&mut label_taken[li], true));
     }
 
     // read every formula
@@ -913,7 +968,13 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             Some(tex) => {
                 let (li, a, b) = f.parts[0];
                 let end = if f.display { f.label.unwrap_or(b) } else { b };
-                replace.push((li, a, end, tex, f.display));
+                let mut text = if f.display { format!("$${tex}$$") } else { format!("${tex}$") };
+                for &ll in &f.label_lines {
+                    text.push(' ');
+                    text.push_str(page.lines[ll].text().trim());
+                    remove.push((ll, 0, lines[ll].gs.len()));
+                }
+                replace.push((li, a, end, text, f.display));
                 for &(k, s, e) in &f.parts[1..] {
                     remove.push((k, s, e));
                 }
@@ -1011,7 +1072,8 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)
                 let first = &line.words[span[0].word];
                 let last = &line.words[span[span.len() - 1].word];
                 let ends_word = b >= gs.len() || gs[b].word != span[span.len() - 1].word;
-                let text = if *display { format!("$${tex}$$") } else { format!("${tex}$") };
+                let _ = display;
+                let text = tex.clone();
                 words.push(Word {
                     x0: x0.min(first.x0.max(x0)),
                     x1,
