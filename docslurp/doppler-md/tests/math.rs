@@ -674,3 +674,39 @@ fn binomials_and_column_vectors() {
     let (md, _) = convert(&page(&lines, &[]), &MATH);
     assert!(formulas(&md).contains(&"\\begin{pmatrix}n\\\\k\\end{pmatrix}".to_string()), "{md}");
 }
+
+#[test]
+fn invisible_struts_are_ignored_and_number_matrices_kept() {
+    // a zero-width-space glyph (web math struts) inside a formula is not an unknown symbol
+    let md = display_line(vec![
+        g(280.0, 5.0, 1, "x"),
+        g(285.0, 0.0, 2, "\u{200b}"),
+        g(286.0, 5.0, 2, "="),
+        g(292.0, 5.0, 1, "y"),
+    ]);
+    assert_eq!(formulas(&md), vec!["x=y".to_string()], "{md}");
+    // a matrix of numbers is a formula even though every symbol is a digit or a delimiter
+    let big = |x: f64, t: &'static str, n: &'static str| G { x, w: 7.0, f: 3, t, n: Some(n), src: 't', b: None };
+    let lines = vec![
+        prose(150.0),
+        vec![
+            w(vec![big(270.0, "[", "bracketleftbigg")], 192.0, 10.0),
+            w(vec![g(280.0, 5.0, 0, "1")], 194.0, 10.0),
+            w(vec![g(295.0, 5.0, 0, "0")], 194.0, 10.0),
+            w(vec![big(305.0, "]", "bracketrightbigg")], 192.0, 10.0),
+        ],
+        vec![w(vec![g(280.0, 5.0, 0, "0")], 206.0, 10.0), w(vec![g(295.0, 5.0, 0, "1")], 206.0, 10.0)],
+        prose(250.0),
+    ];
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(formulas(&md).contains(&"\\begin{bmatrix}1&0\\\\0&1\\end{bmatrix}".to_string()), "{md}");
+}
+
+#[test]
+fn display_formulas_are_their_own_paragraphs() {
+    let mut lines = paragraph(100.0, 2);
+    lines.push(vec![w(vec![g(250.0, 6.0, 1, "x"), g(258.0, 7.0, 0, "="), g(267.0, 6.0, 1, "y")], 125.0, 10.0)]);
+    lines.extend(paragraph(137.0, 2));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(md.contains("\n\n$$x=y$$\n\n"), "{md}");
+}

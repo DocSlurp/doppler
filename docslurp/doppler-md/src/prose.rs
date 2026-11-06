@@ -318,7 +318,12 @@ pub(crate) fn group_within(
             let width = pmax(cur_right - cur_left, 1.0);
             let sent_end = || rstrip(pv.text()).ends_with(SENT_END);
             let cur0 = st.cur.first();
-            new = if prefix.is_some() || col_change || gap <= 0.0 {
+            let display = |l: &Line| {
+                p.display_math_paragraphs
+                    && l.words.len() <= 3
+                    && l.words.first().is_some_and(|w| w.text.starts_with("$$"))
+            };
+            new = if prefix.is_some() || col_change || gap <= 0.0 || display(&line) || display(pv) {
                 true
             } else if use_blocks && line.block != pv.block {
                 true

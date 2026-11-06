@@ -334,6 +334,13 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
 pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
     let mut report = Report::default();
     let mut pages = model::parse_with(xhtml, &mut report.parse, o.math);
+    let math_params;
+    let p = if o.math {
+        math_params = Params { display_math_paragraphs: true, ..p.clone() };
+        &math_params
+    } else {
+        p
+    };
     if o.math {
         let mo = math::MathOptions::default();
         for page in &mut pages {

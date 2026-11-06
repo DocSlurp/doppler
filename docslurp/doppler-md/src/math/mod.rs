@@ -180,6 +180,12 @@ fn line_glyphs(page: &Page, line: &Line, facts: &FontFacts) -> Vec<G> {
         let letters = gs.iter().filter(|g| g.text.chars().all(|c| c.is_alphabetic())).count();
         let start = out.len();
         for (gi, g) in gs.iter().enumerate() {
+            // invisible glyphs (zero-width spaces, word joiners) carry nothing
+            if !g.text.is_empty()
+                && g.text.chars().all(|c| matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}'))
+            {
+                continue;
+            }
             let (atom, ev) = glyph_atom(page, facts, w, g, gi == 0, letters);
             out.push(G { word: wi, atom, ev, text: g.text.to_string() });
         }
@@ -241,6 +247,10 @@ fn glyph_atom(page: &Page, facts: &FontFacts, w: &Word, g: &Glyph, first: bool, 
         .filter(|&c| !(c < ' ' || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')))
         .collect();
     let mut sym = symbols::classify(role, g.name.as_deref(), &text, g.code, fallback);
+    // letters of an italic font of a math family (KaTeX_Math-Italic) are math italic
+    if italic && sym.style == symbols::Style::Upright && role == FontRole::UnicodeMath {
+        sym.style = symbols::Style::Default;
+    }
     // a math font whose text is a raw-code guess (no ToUnicode entry, no usable name) or a
     // Latin-1 letter is badly encoded: its symbols are unknown, not guessed
     if role.is_math() && role != FontRole::Symbol {
@@ -593,7 +603,7 @@ fn fraction_evidence(page: &Page, lines: &mut [LineMath], bars: &[Bar]) {
                 den = Some((li, base - b.y));
             } else if (base - b.y).abs() < 0.8 * s
                 && (x1 < b.x0 && b.x0 - x1 < 1.5 * s || x0 > b.x1 && x0 - b.x1 < 1.5 * s)
-                && page.lines[li].words.len() <= 4
+                && page.lines[li].words.len() <= 8
             {
                 side.push(li);
             }
@@ -661,7 +671,7 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
         let size = line.size().max(1.0);
         let (mut left, mut right) = (f64::INFINITY, f64::NEG_INFINITY);
         for (k, o) in page.lines.iter().enumerate() {
-            if k == li || lines[k].math_only {
+            if k == li || lines[k].math_only || lines[k].strong {
                 continue;
             }
             let near =
@@ -677,7 +687,8 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
         let centred = left.is_finite()
             && right > left
             && (((line.x0 + line.x1) / 2.0) - (left + right) / 2.0).abs() <= 0.12 * (right - left)
-            && line.x1 - line.x0 <= 0.85 * (right - left);
+            && line.x1 - line.x0 <= 0.85 * (right - left)
+            || line.x0 - left >= 4.0 * size;
         let ok = if short {
             text * 2 <= body.len()
         } else {
@@ -1048,26 +1059,29 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         let mut reason = 0u8;
         // numbers, equation numbers and delimiters alone (figure tick labels, a stray bracket,
         // a check mark drawn with a radical sign) stay text
+        let one_row = atoms.iter().all(|a| (a.base - atoms[0].base).abs() <= 0.3 * a.size.max(atoms[0].size));
         let numbers_only = !atoms.is_empty()
-            && (atoms.iter().all(|a| {
-                a.sym.text.chars().all(|c| {
-                    c.is_ascii_digit()
-                        || matches!(
-                            c,
-                            '.' | ',' | '−' | '-' | '+' | ' ' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '⟨' | '⟩'
-                        )
-                })
-            }) || (atoms.len() == 1
-                && matches!(
-                    atoms[0].sym.class,
-                    Class::Radical
-                        | Class::Open
-                        | Class::Close
-                        | Class::Fence
-                        | Class::Punct
-                        | Class::Piece
-                        | Class::Accent
-                )));
+            && ((one_row
+                && atoms.iter().all(|a| {
+                    a.sym.text.chars().all(|c| {
+                        c.is_ascii_digit()
+                            || matches!(
+                                c,
+                                '.' | ',' | '−' | '-' | '+' | ' ' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '⟨' | '⟩'
+                            )
+                    })
+                }))
+                || (atoms.len() == 1
+                    && matches!(
+                        atoms[0].sym.class,
+                        Class::Radical
+                            | Class::Open
+                            | Class::Close
+                            | Class::Fence
+                            | Class::Punct
+                            | Class::Piece
+                            | Class::Accent
+                    )));
         // a few unknown glyphs in a longer formula become placeholders instead of sending the
         // whole formula back to text
         let partial = unknown > 0 && atoms.len() >= 3 && unknown * 4 <= atoms.len() && unknown <= 3;
