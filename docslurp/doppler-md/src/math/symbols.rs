@@ -47,6 +47,20 @@ pub fn font_role(name: &str) -> FontRole {
     let lower = name.to_ascii_lowercase();
     let n = lower.as_str();
     let starts = |prefixes: &[&str]| prefixes.iter().any(|p| n.starts_with(p));
+    // web math (KaTeX, MathJax): every font of the family is used for math only
+    if let Some(rest) =
+        n.strip_prefix("katex_").or_else(|| n.strip_prefix("mathjax_")).or_else(|| n.strip_prefix("mjxc-tex-"))
+    {
+        return if rest.starts_with("ams") {
+            FontRole::AmsB
+        } else if rest.starts_with("fraktur") || rest.starts_with("frak") {
+            FontRole::Fraktur
+        } else if rest.starts_with("caligraphic") || rest.starts_with("cal") || rest.starts_with("script") {
+            FontRole::Script
+        } else {
+            FontRole::UnicodeMath
+        };
+    }
     if starts(&[
         "cmmi",
         "lmmathitalic",

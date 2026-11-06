@@ -50,6 +50,8 @@ pub struct Word {
     pub base: f64,
     pub space: bool,
     pub color: Rc<str>,
+    /// invisible text (render mode 3, such as an OCR layer over a scan); read only with glyphs
+    pub invisible: bool,
     /// This word's glyph records (`pdftotext -glyphs`) as a range of [`Page::glyphs`]; empty
     /// without glyph records.
     pub glyphs: GlyphRange,
@@ -314,7 +316,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 13] = [
+const KEYS: [&str; 14] = [
     "xMin",
     "yMin",
     "xMax",
@@ -328,6 +330,7 @@ const KEYS: [&str; 13] = [
     "height",
     "rulesTruncated",
     "glyphsTruncated",
+    "invisible",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -346,6 +349,7 @@ fn key_index(name: &str) -> Option<usize> {
         "height" => 10,
         "rulesTruncated" => 11,
         "glyphsTruncated" => 12,
+        "invisible" => 13,
         _ => return None,
     })
 }
@@ -652,6 +656,7 @@ const WIDTH: usize = 9;
 const HEIGHT: usize = 10;
 const RULES_TRUNCATED: usize = 11;
 const GLYPHS_TRUNCATED: usize = 12;
+const INVISIBLE: usize = 13;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -1016,6 +1021,7 @@ pub fn parse_with(xhtml: &str, report: &mut ParseReport, glyphs: bool) -> Vec<Pa
                     space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
                     color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
                     glyphs: GlyphRange::default(),
+                    invisible: glyphs && a.0[INVISIBLE] == Some("1"),
                 });
                 glyph_target = glyphs;
             }

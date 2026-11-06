@@ -762,3 +762,105 @@ fn norms_setminus_and_limsup() {
     let md = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH).0;
     assert_eq!(formulas(&md), vec!["\\lVert x+y\\rVert_{p}\\le A\\setminus B".to_string()], "{md}");
 }
+
+#[test]
+fn ocr_layers_and_unreadable_pages_are_flagged() {
+    // an invisible text layer (OCR over a scan) is never read as math, and the page is degraded
+    let line = vec![w(vec![g(250.0, 6.0, 1, "x"), g(258.0, 7.0, 0, "="), g(267.0, 6.0, 1, "y")], 200.0, 10.0)];
+    let x = page(&[prose(150.0), line, prose(250.0)], &[]).replace("invisible=\"0\"", "invisible=\"1\"");
+    let (md, report) = convert(&x, &MATH);
+    assert!(!md.contains('$'), "{md}");
+    assert!(report.to_json().contains("\"reason\":\"ocr_text_layer\""), "{}", report.to_json());
+    // a page whose characters are mostly controls and private-use values is unreadable
+    let junk: Vec<W> = (0..12)
+        .map(|i| {
+            w(
+                vec![g(72.0 + 20.0 * i as f64, 5.0, 0, "\u{e011}"), g(77.0 + 20.0 * i as f64, 5.0, 0, "\u{3}")],
+                100.0,
+                10.0,
+            )
+        })
+        .collect();
+    let (_, report) = convert(&page(&[junk, prose(150.0)], &[]), &MATH);
+    assert!(report.to_json().contains("\"reason\":\"unreadable_text\""), "{}", report.to_json());
+    // neither flag without math mode
+    let (_, report) = convert(&x, &PLAIN);
+    assert!(!report.to_json().contains("ocr_text_layer"));
+}
+
+#[test]
+fn indented_prose_with_math_stays_prose() {
+    // an indented paragraph line at normal line pitch is prose with inline math, not a display
+    let mut lines = paragraph(100.0, 2);
+    let y = 124.0;
+    lines.push(vec![
+        w(vec![g(130.0, 4.0, 0, "f"), g(134.0, 5.0, 0, "o"), g(139.0, 4.0, 0, "r")], y, 10.0),
+        w(vec![g(147.0, 5.0, 0, "a"), g(152.0, 3.0, 0, "l"), g(155.0, 3.0, 0, "l")], y, 10.0),
+        w(
+            vec![
+                g(163.0, 6.0, 1, "x"),
+                g(171.0, 7.0, 2, "≤"),
+                g(180.0, 6.0, 1, "y"),
+                g(188.0, 7.0, 0, "+"),
+                g(197.0, 6.0, 1, "z"),
+                g(205.0, 7.0, 0, "="),
+                g(214.0, 6.0, 1, "w"),
+            ],
+            y,
+            10.0,
+        ),
+        w(
+            vec![
+                g(225.0, 5.0, 0, "w"),
+                g(231.0, 5.0, 0, "e"),
+                g(236.0, 5.0, 0, "s"),
+                g(241.0, 4.0, 0, "e"),
+                g(245.0, 4.0, 0, "t"),
+            ],
+            y,
+            10.0,
+        ),
+    ]);
+    lines.extend(paragraph(136.0, 2));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(md.contains("for all $x\\le y+z=w$ weset"), "{md}");
+}
+
+#[test]
+fn scripts_pull_in_an_adjacent_base() {
+    // "J" in a math font, then "min" smaller and lowered in the text font: J_{min}
+    let line = vec![
+        w(vec![g(72.0, 5.0, 0, "S"), g(77.0, 5.0, 0, "e"), g(82.0, 4.0, 0, "t")], 100.0, 10.0),
+        w(vec![g(92.0, 7.0, 2, "J")], 100.0, 10.0),
+        w(vec![g(99.0, 6.0, 0, "m"), g(105.0, 2.0, 0, "i"), g(107.0, 4.0, 0, "n")], 102.0, 7.0),
+        w(vec![g(116.0, 4.0, 0, "s"), g(120.0, 3.0, 0, "o")], 100.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(80.0), line, prose(120.0)], &[]), &MATH);
+    assert!(md.contains("$\\mathcal{J}_{\\min}$ so"), "{md}");
+}
+
+#[test]
+fn a_run_starting_with_a_script_takes_its_base() {
+    // upright e (text font) with a math superscript: e^{-x}, not {}^{-x}
+    let line = vec![
+        w(vec![g(72.0, 5.0, 0, "S"), g(77.0, 5.0, 0, "e"), g(82.0, 4.0, 0, "t")], 100.0, 10.0),
+        w(vec![g(92.0, 5.0, 0, "e")], 100.0, 10.0),
+        w(vec![g(97.0, 5.0, 2, "−"), g(102.0, 4.0, 5, "x")], 96.0, 7.0),
+        w(vec![g(112.0, 4.0, 0, "s"), g(116.0, 3.0, 0, "o")], 100.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(80.0), line, prose(120.0)], &[]), &MATH);
+    assert!(md.contains("$\\mathrm{e}^{-x}$ so"), "{md}");
+    // a relation alone is not a formula
+    let md = display_line(vec![g(280.0, 7.0, 2, "≤")]);
+    assert!(formulas(&md).is_empty(), "{md}");
+}
+
+#[test]
+fn web_math_font_families() {
+    use doppler_md::math::symbols::{FontRole, font_role};
+    assert_eq!(font_role("KaTeX_Main-Regular"), FontRole::UnicodeMath);
+    assert_eq!(font_role("MathJax_AMS-Regular"), FontRole::AmsB);
+    assert_eq!(font_role("KaTeX_Fraktur-Regular"), FontRole::Fraktur);
+    assert_eq!(font_role("MathJax_Calligraphic-Regular"), FontRole::Script);
+    assert_eq!(font_role("KaTeX_Size2-Regular"), FontRole::UnicodeMath);
+}

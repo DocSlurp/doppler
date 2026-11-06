@@ -81,6 +81,11 @@ pub struct PageMath {
     pub math_glyphs_left: usize,
     /// math glyphs (math font or math code point) the page drew
     pub math_glyphs: usize,
+    /// most of the page's text is an invisible layer (OCR over a scan): not read for math
+    pub ocr_layer: bool,
+    /// most of the page's characters are controls, U+FFFD, private-use values or glyphs that
+    /// decode to nothing: the text layer cannot be read
+    pub unreadable: bool,
 }
 
 /// How strongly a glyph says "math".
@@ -460,6 +465,20 @@ fn runs(gs: &[G]) -> Vec<(usize, usize)> {
                 break;
             }
         }
+        // a run that starts with a script takes the short word just before it as its base
+        // (an upright e before a math exponent)
+        if s > 0 && s < e && gs[s - 1].ev == Ev::Text {
+            let line_size = gs.iter().map(|g| g.atom.size).fold(0.0, f64::max).max(1.0);
+            let (first, prev) = (&gs[s].atom, &gs[s - 1].atom);
+            let script = first.size < 0.85 * prev.size && (first.base - prev.base).abs() > 0.1 * prev.size;
+            let w = gs[s - 1].word;
+            let start = (0..s).rev().take_while(|&k| gs[k].word == w).last().unwrap_or(s - 1);
+            let short =
+                s - start <= 4 && gs[start..s].iter().all(|g| g.atom.sym.text.chars().all(char::is_alphanumeric));
+            if script && short && first.x0 - prev.x1 < 0.25 * line_size {
+                s = start;
+            }
+        }
         let strong = gs[s..e].iter().filter(|g| g.ev == Ev::Strong).count();
         let lone_mark = e - s == 1 && list_mark(&gs[s].atom.sym.text);
         if strong > 0 && !lone_mark && s < e {
@@ -705,6 +724,28 @@ fn display_text_words(page: &Page, lines: &mut [LineMath]) {
             && (((line.x0 + line.x1) / 2.0) - (left + right) / 2.0).abs() <= 0.12 * (right - left)
             && line.x1 - line.x0 <= 0.85 * (right - left)
             || line.x0 - left >= 4.0 * size;
+        // a display is set apart vertically: prose lines around it are more than a line pitch
+        // away (indented prose and list items have the normal pitch)
+        let lb = line.base();
+        let blank = |o: &Line| {
+            o.words.iter().all(|w| {
+                w.text.chars().all(|c| {
+                    c.is_whitespace() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')
+                })
+            })
+        };
+        let isolated = page.lines.iter().enumerate().all(|(k, o)| {
+            k == li
+                || blank(o)
+                || lines[k].math_only
+                || lines[k].strong
+                || o.x1 < line.x0 - 2.0 * size
+                || o.x0 > line.x1 + 2.0 * size
+                || (o.base() - lb).abs() >= 1.6 * size
+        });
+        if !isolated {
+            continue;
+        }
         let ok = if short {
             text * 2 <= body.len()
         } else {
@@ -804,6 +845,34 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     {
         stats.skipped = true;
         return (escape_dollars(&page.lines), stats);
+    }
+    // an OCR layer (invisible text over a scan) and an unreadable text layer go to OCR or a
+    // vision model instead
+    let words: Vec<&Word> = page.lines.iter().flat_map(|l| l.words.iter()).collect();
+    let invisible = words.iter().filter(|w| w.invisible).count();
+    if !words.is_empty() && invisible * 2 > words.len() {
+        stats.ocr_layer = true;
+        return (escape_dollars(&page.lines), stats);
+    }
+    let (mut chars, mut bad) = (0usize, 0usize);
+    for w in &words {
+        for g in page.word_glyphs(w) {
+            chars += 1;
+            let junk = |c: char| {
+                (c < ' ' && c != '\t')
+                    || ('\u{80}'..='\u{9f}').contains(&c)
+                    || c == '\u{fffd}'
+                    || ('\u{e000}'..='\u{f8ff}').contains(&c)
+            };
+            if g.text.is_empty() || g.text.chars().any(junk) {
+                bad += 1;
+            }
+        }
+    }
+    chars += page.extra_glyphs.len();
+    bad += page.extra_glyphs.iter().filter(|g| g.name.is_none()).count();
+    if chars >= 20 && bad * 100 > chars * 25 {
+        stats.unreadable = true;
     }
     let facts = font_facts(page);
     let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l, &facts)).collect();
@@ -1098,6 +1167,8 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                             | Class::Punct
                             | Class::Piece
                             | Class::Accent
+                            | Class::Rel
+                            | Class::Bin
                     )));
         // a few unknown glyphs in a longer formula become placeholders instead of sending the
         // whole formula back to text
@@ -1327,6 +1398,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     space: if ends_word { last.space } else { false },
                     color: first.color.clone(),
                     glyphs: Default::default(),
+                    invisible: false,
                 });
             }
             i = b;

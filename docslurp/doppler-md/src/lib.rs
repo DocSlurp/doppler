@@ -183,6 +183,11 @@ pub enum Degraded {
     PageWork,
     /// the document's `max_doc_work` was used up
     DocWork,
+    /// (math mode) most of the page's text is an invisible OCR layer
+    OcrTextLayer,
+    /// (math mode) the page's text layer cannot be read (garbage characters, glyphs that decode
+    /// to nothing)
+    UnreadableText,
 }
 
 impl Degraded {
@@ -192,6 +197,8 @@ impl Degraded {
             Degraded::PageRules => "page_rules",
             Degraded::PageWork => "page_work",
             Degraded::DocWork => "doc_work",
+            Degraded::OcrTextLayer => "ocr_text_layer",
+            Degraded::UnreadableText => "unreadable_text",
         }
     }
 }
@@ -257,7 +264,7 @@ impl Report {
                 pages(|m| m.skipped),
                 r.glyphs_skipped,
                 r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
-                pages(|m| m.uncertain > 0 || m.partial > 0)
+                pages(|m| m.uncertain > 0 || m.partial > 0 || m.ocr_layer || m.unreadable)
             )
         };
         format!(
@@ -343,9 +350,14 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
     };
     if o.math {
         let mo = math::MathOptions::default();
-        for page in &mut pages {
+        for (pi, page) in pages.iter_mut().enumerate() {
             let (lines, stats) = math::rewrite_page(page, &mo);
             page.lines = lines;
+            if stats.ocr_layer {
+                report.degraded.push((pi, Degraded::OcrTextLayer));
+            } else if stats.unreadable {
+                report.degraded.push((pi, Degraded::UnreadableText));
+            }
             report.math.push(stats);
         }
     }
