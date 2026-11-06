@@ -646,3 +646,31 @@ fn labelled_arrows_and_relations() {
     assert_eq!(f.len(), 1, "{md}");
     assert_eq!(f[0], "A\\xrightarrow{f}B\\overset{\\text{def}}{=}C", "{md}");
 }
+
+#[test]
+fn binomials_and_column_vectors() {
+    // two rows in big parentheses: fraction spacing (1.36 em) is a binomial, matrix spacing
+    // (1.2 em) a column vector
+    let big = |x: f64, t: &'static str, n: &'static str| G { x, w: 7.0, f: 3, t, n: Some(n), src: 't', b: None };
+    let stacked = |gap: f64| {
+        let top = 200.0 - gap / 2.0;
+        vec![
+            vec![
+                w(vec![big(270.0, "(", "parenleftbigg")], 192.0, 10.0),
+                w(vec![g(280.0, 6.0, 1, "n")], top, 10.0),
+                w(vec![big(290.0, ")", "parenrightbigg")], 192.0, 10.0),
+            ],
+            vec![w(vec![g(280.0, 5.0, 1, "k")], top + gap, 10.0)],
+        ]
+    };
+    let mut lines = vec![prose(150.0)];
+    lines.extend(stacked(13.6));
+    lines.push(prose(250.0));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(formulas(&md).contains(&"\\binom{n}{k}".to_string()), "{md}");
+    let mut lines = vec![prose(150.0)];
+    lines.extend(stacked(12.0));
+    lines.push(prose(250.0));
+    let (md, _) = convert(&page(&lines, &[]), &MATH);
+    assert!(formulas(&md).contains(&"\\begin{pmatrix}n\\\\k\\end{pmatrix}".to_string()), "{md}");
+}

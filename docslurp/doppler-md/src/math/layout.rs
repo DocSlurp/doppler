@@ -733,6 +733,23 @@ fn matrix_rows(
     );
     let base = row_bases.get(row_bases.len() / 2).copied().unwrap_or(0.0);
     let _ = depth;
+    // two single-cell rows spaced like a fraction's numerator and denominator (1.36 em in TeX's
+    // display style, against 1.2 em between matrix rows) are a binomial or an \atop stack
+    let env = if rows.len() == 2
+        && rows.iter().all(|r| r.len() == 1)
+        && row_bases.len() == 2
+        && row_bases[1] - row_bases[0] >= 1.30 * s
+    {
+        match env {
+            "pmatrix" => "binom",
+            "bmatrix" => "binom[",
+            "Bmatrix" => "binom{",
+            "matrix" => "atop",
+            e => e,
+        }
+    } else {
+        env
+    };
     Item { node: Node::Matrix { env, rows }, x0, x1, base, size: s, votes: false }
 }
 
@@ -1491,6 +1508,8 @@ struct Tex {
     out: String,
     /// the last thing written was a control word (`\alpha`): a letter must not follow directly
     after_word: bool,
+    /// inside a subscript, superscript or limit
+    script: usize,
 }
 
 impl Tex {
@@ -1602,7 +1621,9 @@ fn emit(item: &Item, w: &mut Tex) {
             }
             if let Some(s) = sub {
                 w.push("_");
+                w.script += 1;
                 w.group(s);
+                w.script -= 1;
             }
             if let Some(s) = sup {
                 if primes(s) {
@@ -1610,7 +1631,9 @@ fn emit(item: &Item, w: &mut Tex) {
                     w.push(&"'".repeat(n));
                 } else {
                     w.push("^");
+                    w.script += 1;
                     w.group(s);
+                    w.script -= 1;
                 }
             }
         }
@@ -1624,6 +1647,38 @@ fn emit(item: &Item, w: &mut Tex) {
                 emit(r, w);
             }
             w.push("\\end{matrix}");
+        }
+        Node::Matrix { env, rows } if env.starts_with("binom") || *env == "atop" => {
+            let delims = match *env {
+                "binom" => None,
+                "binom[" => Some("{[}{]}"),
+                "binom{" => Some("{\\{}{\\}}"),
+                _ => Some("{}{}"),
+            };
+            match delims {
+                None => w.push("\\binom"),
+                Some(d) => {
+                    w.push("\\genfrac");
+                    w.push(d);
+                    w.push("{0pt}{}");
+                }
+            }
+            for r in rows {
+                w.group(&r[0]);
+            }
+        }
+        Node::Matrix { env, rows } if *env == "matrix" && w.script > 0 && rows.iter().all(|r| r.len() == 1) => {
+            // a single-column stack in a script or limit
+            w.push("\\substack{");
+            w.after_word = false;
+            for (k, r) in rows.iter().enumerate() {
+                if k > 0 {
+                    w.push("\\\\");
+                    w.after_word = false;
+                }
+                emit(&r[0], w);
+            }
+            w.push("}");
         }
         Node::Matrix { env, rows } => {
             w.push(&format!("\\begin{{{env}}}"));
@@ -1675,6 +1730,7 @@ fn emit_limits(base: &Item, under: Option<&Item>, over: Option<&Item>, w: &mut T
     });
     if operator {
         emit(base, w);
+        w.script += 1;
         if let Some(u) = under {
             w.push("_");
             w.group(u);
@@ -1683,6 +1739,7 @@ fn emit_limits(base: &Item, under: Option<&Item>, over: Option<&Item>, w: &mut T
             w.push("^");
             w.group(o);
         }
+        w.script -= 1;
         return;
     }
     if let Some(cmd) = leaf.and_then(|a| x_arrow(&a.sym.text)) {
