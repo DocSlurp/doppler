@@ -606,33 +606,44 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
             gaps.push(gap);
             j += 1;
         }
-        let run = &rows[i..j];
+        let start = i;
         i = j;
-        // evenly spaced as a whole (the first gap, a header, may differ by twice the ratio);
-        // an uneven run is left as it was rather than cut into partial tables
-        let uneven = gaps.windows(2).enumerate().any(|(k, w)| {
-            let ratio = if k == 0 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio };
-            !even(w[0], w[1], ratio)
-        });
-        if (run.len() as f64) < p.sparse_min_rows || uneven {
+        // evenly spaced as a whole (the first gap, a header, may differ by twice the ratio). A
+        // final row after a wider gap (a total, a signature line) does not veto the rows above
+        // it: they are judged without it, and it joins only if its cells fit their columns.
+        // Unevenness anywhere else leaves the run as it was rather than cut into partial tables.
+        let uneven: Vec<usize> = gaps
+            .windows(2)
+            .enumerate()
+            .filter(|&(k, w)| !even(w[0], w[1], if k == 0 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio }))
+            .map(|(k, _)| k)
+            .collect();
+        let last_only = uneven.len() == 1 && uneven[0] + 2 == gaps.len() && gaps.len() >= 3;
+        if !(uneven.is_empty() || last_only) {
             continue;
         }
-        if !budget.spend(2 * row_words(run)) {
+        let core = &rows[start..if last_only { j - 1 } else { j }];
+        if (core.len() as f64) < p.sparse_min_rows {
+            continue;
+        }
+        if !budget.spend(2 * row_words(&rows[start..j])) {
             return None;
         }
-        let cols = gutter_columns(run, p);
-        if cols.len() < 2 || !whole(run, &cols) {
+        let cols = gutter_columns(core, p);
+        if cols.len() < 2 || !whole(core, &cols) {
             continue;
         }
-        // a multi-cell row just outside the run that fits its columns: the table goes on past
-        // a wider gap, and the run alone would be a fragment of it
-        let start = i - run.len();
-        let outside = [start.checked_sub(1), Some(i)];
-        if outside
+        let end = if last_only && whole(std::slice::from_ref(&rows[j - 1]), &cols) { j } else { start + core.len() };
+        let run = &rows[start..end];
+        // a multi-cell row next to the run (within sparse_row_gap) that fits its columns: the
+        // table goes on, and the run alone would be a fragment of it
+        let near = |a: &Row, b: &Row| (b.base - a.base).abs() <= p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0);
+        let before = start.checked_sub(1).map(|k| (&rows[k], &rows[start]));
+        let after = rows.get(end).map(|r| (r, &rows[end - 1]));
+        if [before, after]
             .into_iter()
             .flatten()
-            .filter_map(|k| rows.get(k))
-            .any(|r| r.multi && whole(std::slice::from_ref(r), &cols))
+            .any(|(r, edge)| r.multi && near(r, edge) && whole(std::slice::from_ref(r), &cols))
         {
             continue;
         }

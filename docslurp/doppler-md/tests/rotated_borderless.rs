@@ -523,3 +523,60 @@ fn rotated_stray_share_zero_tolerates_no_stray_line() {
     let (md, _) = to_markdown_report_with(&xhtml, &p, &HTML);
     assert!(tables(&md[0]).is_empty(), "{}", md[0]);
 }
+
+/// One upright page of rows at the given baselines.
+fn rows_at(rows: &[(f64, &[(f64, &str)])]) -> String {
+    let mut s = String::from("<doc>\n<page width=\"612\" height=\"792\">\n<flow>\n<block>\n");
+    for &(base, cells) in rows {
+        for &(x, t) in cells {
+            let x1 = x + 5.0 * t.chars().count() as f64;
+            s.push_str(&format!(
+                "<line><word xMin=\"{x}\" yMin=\"{}\" xMax=\"{x1}\" yMax=\"{}\" fontName=\"F\" fontSize=\"10\" \
+                 baseline=\"{base}\">{t}</word></line>\n",
+                base - 8.0,
+                base + 2.0
+            ));
+        }
+    }
+    s.push_str("</block>\n</flow>\n</page>\n</doc>\n");
+    s
+}
+
+const STOCK: [&[(f64, &str)]; 4] = [
+    &[(72.0, "Pump"), (220.0, "41"), (300.0, "(3)")],
+    &[(72.0, "Valve"), (220.0, "7"), (300.0, "12")],
+    &[(72.0, "Hose"), (220.0, "130"), (300.0, "(48)")],
+    &[(72.0, "Filter"), (220.0, "9"), (300.0, "5")],
+];
+
+fn stock_then(trailer: &[(f64, &str)], gap: f64) -> Vec<Vec<String>> {
+    let mut rows: Vec<(f64, &[(f64, &str)])> =
+        STOCK.iter().enumerate().map(|(i, r)| (100.0 + 28.0 * i as f64, *r)).collect();
+    rows.push((100.0 + 28.0 * 3.0 + gap, trailer));
+    let md = to_markdown_report_with(&rows_at(&rows), &Params::default(), &HTML).0.join("\x0c");
+    let ts = tables(&md);
+    assert_eq!(ts.len(), 1, "gap {gap}:\n{md}");
+    ts.into_iter().next().unwrap()
+}
+
+#[test]
+fn a_total_row_after_a_wider_gap_joins_the_table() {
+    for gap in [36.0, 44.0] {
+        let t = stock_then(&[(72.0, "Total"), (220.0, "187"), (300.0, "(34)")], gap);
+        assert_eq!(t.len(), 5, "gap {gap}: {t:?}");
+        assert_eq!(t[4], ["Total", "187", "(34)"], "gap {gap}");
+    }
+}
+
+#[test]
+fn a_trailing_two_cell_line_after_a_wider_gap_keeps_the_table() {
+    let t = stock_then(&[(72.0, "Prepared by"), (220.0, "J. Smith")], 40.0);
+    assert!(t.len() >= 4, "{t:?}");
+    assert_eq!(t[3], ["Filter", "9", "5"]);
+}
+
+#[test]
+fn a_far_row_that_fits_the_columns_does_not_veto_the_table() {
+    let t = stock_then(&[(72.0, "Page"), (220.0, "3")], 300.0);
+    assert_eq!(t.len(), 4, "{t:?}");
+}
