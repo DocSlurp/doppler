@@ -391,12 +391,16 @@ impl<'a> ColumnLookup<'a> {
         if k < cols.len() && cols[k].0 - 1.0 <= mid {
             return k;
         }
-        // centres ascend: the nearest is just below or at/above mid; ties go to the first index
+        // centres ascend: the nearest is just below or at/above mid; ties go to the left (lower
+        // index), and right of mid the first is the nearest
         let j = centers.partition_point(|&c| c < mid);
         let right = (j < centers.len()).then(|| (j, (centers[j] - mid).abs()));
+        // left of mid the distance never grows toward mid (rounded subtraction is monotonic), so
+        // the columns as near as the nearest form one block ending at j - 1: take its first,
+        // as the linear scan does (far from the columns, many distances round to one value)
         let left = (j > 0).then(|| {
-            let v = centers[j - 1];
-            (centers.partition_point(|&c| c < v), (v - mid).abs())
+            let dl = (centers[j - 1] - mid).abs();
+            (centers[..j].partition_point(|&c| (c - mid).abs() > dl), dl)
         });
         match (left, right) {
             (Some((l, dl)), Some((r, dr))) => {
@@ -1492,6 +1496,17 @@ mod tests {
             for q in 0..40 {
                 let mid = if q == 0 { f64::NAN } else { next(800) as f64 / 8.0 - 10.0 };
                 assert_eq!(lookup.column(mid), reference(&cols, mid), "{cols:?} {mid}");
+            }
+            // far away, distances round to ties: the first of the tied columns wins
+            for mid in [2e20, -2e20, 1e300, -1e300, f64::MAX, f64::MIN] {
+                assert_eq!(lookup.column(mid), reference(&cols, mid), "{cols:?} {mid}");
+            }
+            // huge columns, where neighbouring centres and 1-point slack round together
+            let big: Vec<(f64, f64)> = cols.iter().map(|&(a, b)| (a * 1e15, b * 1e15)).collect();
+            let lookup = ColumnLookup::new(&big);
+            for _ in 0..20 {
+                let mid = (next(800) as f64 / 8.0 - 10.0) * 1e15;
+                assert_eq!(lookup.column(mid), reference(&big, mid), "{big:?} {mid}");
             }
             // unordered lists take the scans
             let mut rev = cols.clone();
