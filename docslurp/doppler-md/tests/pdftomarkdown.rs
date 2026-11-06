@@ -209,11 +209,44 @@ fn stream_and_window_match_the_default_on_a_short_document() {
     let pdf = pdf.to_str().unwrap();
     let want = run(&pdftotext, &[pdf]);
     assert!(want.status.success());
-    for args in [&["--stream"][..], &["--window", "0"], &["--window", "3"]] {
+    for args in [&["--stream"][..], &["--window", "0"]] {
         let got = run(&pdftotext, &[args, &[pdf]].concat());
         assert!(got.status.success(), "{args:?}");
         assert_eq!(got.stdout, want.stdout, "{args:?}");
     }
     let bad = run(&pdftotext, &["--window", "x", pdf]);
     assert_eq!(bad.status.code(), Some(2));
+}
+
+/// A stand-in pdftotext that writes three pages of doppler XHTML, then exits 1.
+#[cfg(unix)]
+fn failing_pdftotext(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let page = |t: &str| {
+        format!(
+            "<page width=\"612\" height=\"792\"><flow><block><line><word xMin=\"72\" yMin=\"290\" \
+             xMax=\"200\" yMax=\"300\" fontName=\"F\" fontSize=\"10\" baseline=\"298\">{t}</word></line>\
+             </block></flow></page>\n"
+        )
+    };
+    let xhtml = format!("<doc>\n{}{}{}", page("first"), page("second"), page("third"));
+    let exe = dir.join("pdftotext");
+    std::fs::write(&exe, format!("#!/bin/sh\ncat <<'EOF'\n{xhtml}EOF\nexit 1\n")).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_pdftotext_fails_the_run_and_only_a_window_writes_early_pages() {
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-fail-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let fake = failing_pdftotext(&scratch.0);
+    let whole = run(&fake, &["x.pdf"]);
+    assert_eq!(whole.status.code(), Some(1));
+    assert!(whole.stdout.is_empty(), "{}", String::from_utf8_lossy(&whole.stdout));
+    // --window 0 writes a page once the next one opens: "third" waits for the end, which fails
+    let streamed = run(&fake, &["--window", "0", "x.pdf"]);
+    assert_eq!(streamed.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&streamed.stdout), "first\x0csecond");
 }
