@@ -12,6 +12,7 @@
 
 mod entities;
 pub mod layout;
+pub mod math;
 pub mod model;
 mod page_layout;
 pub mod params;
@@ -205,6 +206,8 @@ pub struct Report {
     pub doc_work: u64,
     /// the most layout work units one page used
     pub page_work_max: u64,
+    /// per page, what the math reader did (empty without [`Options::math`])
+    pub math: Vec<math::PageMath>,
 }
 
 impl Report {
@@ -222,12 +225,41 @@ impl Report {
             .iter()
             .map(|(i, why)| format!("{{\"page\":{},\"reason\":\"{}\"}}", i + 1, why.as_str()))
             .collect();
+        let math = if self.math.is_empty() {
+            String::new()
+        } else {
+            let sum = |f: fn(&math::PageMath) -> usize| self.math.iter().map(f).sum::<usize>();
+            let pages = |f: fn(&math::PageMath) -> bool| {
+                self.math
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| f(m))
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            format!(
+                concat!(
+                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"glyphsLeft\":{},",
+                    "\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
+                ),
+                sum(|m| m.inline),
+                sum(|m| m.display),
+                sum(|m| m.actual_text),
+                sum(|m| m.uncertain),
+                sum(|m| m.math_glyphs_left),
+                pages(|m| m.skipped),
+                r.glyphs_skipped,
+                r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+                pages(|m| m.uncertain > 0)
+            )
+        };
         format!(
             concat!(
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]}}"
+                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -243,7 +275,8 @@ impl Report {
             rules_truncated_pages.join(","),
             self.doc_work,
             self.page_work_max,
-            degraded.join(",")
+            degraded.join(","),
+            math
         )
     }
 }
@@ -281,6 +314,9 @@ pub enum TableFormat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     pub tables: TableFormat,
+    /// Read typeset math from `pdftotext -glyphs` records and write it as LaTeX (`$...$`,
+    /// `$$...$$`). Off: glyph records are ignored and the output is unchanged.
+    pub math: bool,
 }
 
 /// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
@@ -291,7 +327,16 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
 /// [`to_markdown_report`] with output [`Options`].
 pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
     let mut report = Report::default();
-    let pages = model::parse_report(xhtml, &mut report.parse);
+    let mut pages = model::parse_with(xhtml, &mut report.parse, o.math);
+    if o.math {
+        let mo = math::MathOptions::default();
+        for page in &mut pages {
+            let (lines, stats) = math::rewrite_page(page, &mo);
+            page.lines = lines;
+            report.math.push(stats);
+        }
+    }
+    let pages = pages;
     let (body, body_color) = body_size(&pages);
     let drop = furniture(&pages, p, body);
     let mut result = Vec::with_capacity(pages.len());

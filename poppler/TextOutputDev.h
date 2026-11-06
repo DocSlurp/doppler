@@ -232,6 +232,9 @@ public:
     int getCharPosAt(int i) const { return chars[i].charPos; }
     bool isActualTextChar(int i) const { return chars[i].actualText; }
     double getEdgeEnd() const { return edgeEnd; }
+    double getAdvance(int i) const { return chars[i].advance; }
+    // The character's text matrix: font transform (m[0..3]) and origin in page space (m[4], m[5]).
+    const Matrix &getTextMat(int i) const { return chars[i].textMat; }
     double getBaseline() const { return base; }
     bool hasSpaceAfter() const { return spaceAfter; }
     const TextWord *nextWord() const { return next; };
@@ -258,6 +261,7 @@ private:
         TextFontInfo *font;
         Matrix textMat;
         bool actualText = false; // replacement text from a marked-content /ActualText span
+        double advance = 0; // advance along the primary axis (0 for merged combining marks)
     };
     std::vector<CharInfo> chars;
     int charPosEnd = 0;
@@ -629,6 +633,19 @@ public:
     // Mark the characters added until the next call as /ActualText replacement text.
     void setActualTextChars(bool on) { actualTextChars = on; }
 
+    // Glyphs that text extraction drops because their Unicode is whitespace or NUL although
+    // the font names them as something else (a TeX extension glyph whose raw code is 0x0C,
+    // say). Recorded only with setCollectDroppedGlyphs, at most maxDroppedGlyphs per page.
+    struct DroppedGlyph
+    {
+        double x, y, advance, fontSize;
+        CharCode code;
+        const TextFontInfo *font;
+    };
+    void setCollectDroppedGlyphs(bool on) { collectDropped = on; }
+    const std::vector<DroppedGlyph> &getDroppedGlyphs() const { return dropped; }
+    static constexpr size_t maxDroppedGlyphs = 20000;
+
     // End the current word, sorting it into the list of words.
     void endWord();
 
@@ -770,6 +787,9 @@ private:
     std::vector<TextRule> rules;
     bool rulesTruncated = false;
     bool actualTextChars = false;
+    bool collectDropped = false;
+    std::vector<DroppedGlyph> dropped;
+    void recordDropped(const GfxState *state, double x1, double y1, double w1, CharCode c);
     std::vector<std::unique_ptr<TextLink>> links;
 
     friend class TextLine;
@@ -945,6 +965,9 @@ public:
     // (TextRule::imageMask). Ghostscript draws TeX rules (fraction bars) this way. Only the
     // image geometry is used; the image data is never decoded.
     void setCollectImageMaskRules(bool on) { collectImageMaskRules = on; }
+    // Record named glyphs that extraction drops as whitespace (TextPage::DroppedGlyph).
+    void setCollectDroppedGlyphs(bool on);
+    const std::vector<TextPage::DroppedGlyph> &getDroppedGlyphs() const;
     bool needImageMaskGeometry() override { return collectRules && collectImageMaskRules; }
     void imageMaskGeometry(GfxState *state) override;
     const std::vector<TextRule> &getRules() const;

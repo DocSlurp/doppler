@@ -448,6 +448,7 @@ TextWord::~TextWord() = default;
 void TextWord::addChar(TextFontInfo *fontA, double x, double y, double dx, double dy, int charPosA, int charLen, CharCode c, Unicode u, const Matrix &textMatA)
 {
     chars.push_back(CharInfo { .text = u, .charcode = c, .charPos = charPosA, .edge = 0.0, .font = fontA, .textMat = textMatA });
+    chars.back().advance = (rot == 0 || rot == 2) ? fabs(dx) : fabs(dy);
     charPosEnd = charPosA + charLen;
 
     if (len() == 1) {
@@ -2565,6 +2566,7 @@ void TextPage::clear()
     underlines.clear();
     rules.clear();
     rulesTruncated = false;
+    dropped.clear();
     links.clear();
 
     diagonal = false;
@@ -2732,12 +2734,18 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
 
     // break words at space character
     if (uLen == 1 && UnicodeIsWhitespace(u[0])) {
+        if (collectDropped && !actualTextChars) {
+            recordDropped(state, x1, y1, w1, c);
+        }
         charPos += nBytes;
         endWord();
         return;
     }
     if (uLen == 1 && u[0] == static_cast<Unicode>(0x0)) {
         // ignore null characters
+        if (collectDropped && !actualTextChars) {
+            recordDropped(state, x1, y1, w1, c);
+        }
         charPos += nBytes;
         return;
     }
@@ -2900,6 +2908,21 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         }
     }
     charPos += nBytes;
+}
+
+void TextPage::recordDropped(const GfxState *state, double x1, double y1, double w1, CharCode c)
+{
+    // only glyphs whose name says they are not a space (8-bit fonts with an encoding name)
+    const std::shared_ptr<GfxFont> &font = state->getFont();
+    if (!font || font->isCIDFont() || c > 255 || dropped.size() >= maxDroppedGlyphs || !curFont) {
+        return;
+    }
+    const char *name = static_cast<const Gfx8BitFont *>(font.get())->getCharName(static_cast<int>(c));
+    if (!name || !*name || !strcmp(name, "space") || !strcmp(name, "nbspace") || !strcmp(name, "nonbreakingspace") || !strncmp(name, "uni00A0", 7) || !strncmp(name, "uni20", 5) || !strcmp(name, ".notdef")
+        || !strcmp(name, "visiblespace")) {
+        return;
+    }
+    dropped.push_back(DroppedGlyph { .x = x1, .y = y1, .advance = fabs(w1), .fontSize = curFontSize, .code = c, .font = curFont });
 }
 
 void TextPage::incCharCount(int nChars)
@@ -5918,6 +5941,16 @@ void TextOutputDev::beginActualText(GfxState *state, const std::string &t)
 void TextOutputDev::endActualText(GfxState *state)
 {
     actualText->end(state);
+}
+
+void TextOutputDev::setCollectDroppedGlyphs(bool on)
+{
+    text->setCollectDroppedGlyphs(on);
+}
+
+const std::vector<TextPage::DroppedGlyph> &TextOutputDev::getDroppedGlyphs() const
+{
+    return text->getDroppedGlyphs();
 }
 
 const std::vector<TextRule> &TextOutputDev::getRules() const

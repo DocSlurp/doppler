@@ -25,6 +25,8 @@ usage: pdftomarkdown [--html] [--strict] [--report] [--params JSON] [-f N] [-l N
                      [--opw PW] [--upw PW] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
+  --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
+                 $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --report       print a one-line JSON report to stderr
@@ -65,6 +67,7 @@ fn main() -> ExitCode {
             "--" => options_done = true,
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
+            "--math" => opts.math = true,
             "--strict" => strict = true,
             "--params" => {
                 let Some(json) = args.next().and_then(|j| j.into_string().ok()) else {
@@ -118,6 +121,7 @@ fn main() -> ExitCode {
     let output = Command::new(&exe)
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
         .args(if strict { None } else { Some("-compact-layout") })
+        .args(if opts.math { Some("-glyphs") } else { None })
         .args(&pass)
         .arg(&file)
         .arg("-")

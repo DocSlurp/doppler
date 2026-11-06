@@ -295,6 +295,7 @@ pub(crate) fn group_within(
                     base: line.base(),
                     space: true,
                     color: Rc::from(""),
+                    glyphs: Default::default(),
                 };
                 Line::new(vec![w], line.block, line.flow)
             } else {

@@ -1140,7 +1140,17 @@ mod span_tests {
     use crate::model::Rule;
     // Source topology: 3x3 grid, upper-left 2x2 rectangle merged; other cells empty.
     fn fixture() -> Page {
-        let mut page = Page { width: 300., height: 300., lines: vec![], rules: vec![], rules_truncated: Some(false) };
+        let mut page = Page {
+            width: 300.,
+            height: 300.,
+            lines: vec![],
+            rules: vec![],
+            rules_truncated: Some(false),
+            glyphs: vec![],
+            fonts: vec![],
+            extra_glyphs: vec![],
+            glyphs_truncated: false,
+        };
         for (x0, y0, x1, y1) in [
             (0., 0., 300., 0.),
             (0., 300., 300., 300.),

@@ -15,7 +15,7 @@ use doppler_md::{Options, Params, TableFormat};
 
 mod cli;
 
-const USAGE: &str = "usage: doppler-md [--html] [--params JSON] [--report] [FILE|-]\n";
+const USAGE: &str = "usage: doppler-md [--html] [--math] [--params JSON] [--report] [FILE|-]\n";
 
 fn main() -> ExitCode {
     let mut params = Params::default();
@@ -31,6 +31,7 @@ fn main() -> ExitCode {
             }
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
+            "--math" => opts.math = true,
             "--params" => {
                 let Some(json) = args.next() else {
                     eprint!("--params needs a JSON object\n{USAGE}");

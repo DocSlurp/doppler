@@ -50,6 +50,87 @@ pub struct Word {
     pub base: f64,
     pub space: bool,
     pub color: Rc<str>,
+    /// This word's glyph records (`pdftotext -glyphs`) as a range of [`Page::glyphs`]; empty
+    /// without glyph records.
+    pub glyphs: GlyphRange,
+}
+
+/// A range of [`Page::glyphs`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlyphRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl GlyphRange {
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start) as usize
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start as usize..self.end.max(self.start) as usize
+    }
+}
+
+/// Where a glyph's Unicode came from (`s` of a `pdftotext -glyphs` record).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UniSource {
+    /// the font's ToUnicode CMap
+    ToUnicode,
+    /// the glyph name
+    Name,
+    /// a fallback from the character code, the built-in encoding or the CID collection
+    Code,
+    /// the text of an /ActualText span (one record for the whole span)
+    ActualText,
+}
+
+/// One glyph of a word (`<g>` after a `<word>` with `pdftotext -glyphs`).
+#[derive(Clone, Debug)]
+pub struct Glyph {
+    /// left edge and advance along the line
+    pub x: f64,
+    pub w: f64,
+    /// baseline and font size, when they differ from the word's
+    pub base: Option<f64>,
+    pub size: Option<f64>,
+    /// index into [`Page::fonts`], if the record named a font in the page's table
+    pub font: Option<u16>,
+    /// font-local character code (the CID for CID fonts); `u32::MAX` when absent
+    pub code: u32,
+    /// Unicode text (at most [`MAX_GLYPH_CHARS`] characters)
+    pub text: Rc<str>,
+    pub src: UniSource,
+    /// glyph name, when the record had one
+    pub name: Option<Rc<str>>,
+}
+
+/// Code points kept per glyph record (the producer writes at most 32).
+pub const MAX_GLYPH_CHARS: usize = 32;
+/// Glyph records kept per page and per document; later records are dropped and counted.
+pub const MAX_PAGE_GLYPHS: usize = 100_000;
+pub const MAX_DOC_GLYPHS: usize = 4_000_000;
+/// Fonts kept per page table.
+pub const MAX_PAGE_FONTS: usize = 1000;
+
+/// One entry of a page's font table (`<font>` with `pdftotext -glyphs`).
+#[derive(Clone, Debug, Default)]
+pub struct FontInfo {
+    /// the producer's document-wide font id
+    pub id: i64,
+    /// base font name without the subset tag
+    pub name: Rc<str>,
+    /// Type1, Type1C, TrueType, CIDType0C, Type3, ...
+    pub kind: Rc<str>,
+    pub encoding: Rc<str>,
+    pub embedded: bool,
+    pub symbolic: bool,
+    pub cid: bool,
+    pub has_to_unicode: bool,
+    /// codes used on the page that the ToUnicode CMap does not map
+    pub to_unicode_misses: u32,
 }
 
 impl Word {
@@ -210,10 +291,30 @@ pub struct Page {
     /// Upstream rule completeness: `Some(true)` for rulesTruncated="1", `Some(false)`
     /// for "0", and `None` when absent or unrecognized. Independent of kept rule count.
     pub rules_truncated: Option<bool>,
+    /// glyph records of the page's words (only when parsed with glyphs; see [`Word::glyphs`])
+    pub glyphs: Vec<Glyph>,
+    /// the page's font table (only when parsed with glyphs)
+    pub fonts: Vec<FontInfo>,
+    /// named glyphs that belong to no word (`<xg>`), with their baseline and size
+    pub extra_glyphs: Vec<Glyph>,
+    /// the producer or the parser dropped glyph records of this page
+    pub glyphs_truncated: bool,
+}
+
+impl Page {
+    /// The glyphs of a word of this page.
+    pub fn word_glyphs(&self, w: &Word) -> &[Glyph] {
+        self.glyphs.get(w.glyphs.range()).unwrap_or(&[])
+    }
+
+    /// The font of a glyph.
+    pub fn font(&self, g: &Glyph) -> Option<&FontInfo> {
+        g.font.and_then(|i| self.fonts.get(i as usize))
+    }
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "xMin",
     "yMin",
     "xMax",
@@ -226,6 +327,7 @@ const KEYS: [&str; 12] = [
     "width",
     "height",
     "rulesTruncated",
+    "glyphsTruncated",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -243,6 +345,7 @@ fn key_index(name: &str) -> Option<usize> {
         "width" => 9,
         "height" => 10,
         "rulesTruncated" => 11,
+        "glyphsTruncated" => 12,
         _ => return None,
     })
 }
@@ -271,8 +374,21 @@ impl<'a> Attrs<'a> {
 
     /// Clear and refill from `s`.
     pub fn parse_into(&mut self, s: &'a str) {
-        let out = &mut self.0;
-        *out = [None; KEYS.len()];
+        parse_attrs(s, &mut self.0, key_index);
+    }
+
+    /// The value of `k`, which must be one of [`KEYS`] (any other name reads as absent).
+    pub fn get(&self, k: &str) -> Option<&'a str> {
+        self.0[key_index(k)?]
+    }
+}
+
+/// `(\w+)="([^"]*)"` pairs of `s` into the slots `key` names (later duplicates win); other
+/// names are skipped. Linear: an unterminated value ends the scan.
+#[inline]
+fn parse_attrs<'a, const N: usize>(s: &'a str, out: &mut [Option<&'a str>; N], key: fn(&str) -> Option<usize>) {
+    {
+        *out = [None; N];
         let b = s.as_bytes();
         let mut i = 0;
         while i < b.len() {
@@ -303,7 +419,9 @@ impl<'a> Attrs<'a> {
                     // no closing quote anywhere, so no later pair can match either
                     break;
                 };
-                if let Some(k) = key_index(&s[i..j]) {
+                if let Some(k) = key(&s[i..j])
+                    && k < N
+                {
                     out[k] = Some(&s[j + 2..j + 2 + q]);
                 }
                 i = j + 2 + q + 1;
@@ -312,11 +430,77 @@ impl<'a> Attrs<'a> {
             i = j;
         }
     }
+}
 
-    /// The value of `k`, which must be one of [`KEYS`] (any other name reads as absent).
-    pub fn get(&self, k: &str) -> Option<&'a str> {
-        self.0[key_index(k)?]
+/// Attributes of a `<g>` glyph record.
+const G_X: usize = 0;
+const G_W: usize = 1;
+const G_F: usize = 2;
+const G_C: usize = 3;
+const G_U: usize = 4;
+const G_S: usize = 5;
+const G_N: usize = 6;
+const G_B: usize = 7;
+const G_Z: usize = 8;
+fn glyph_key(name: &str) -> Option<usize> {
+    Some(match name {
+        "x" => G_X,
+        "w" => G_W,
+        "f" => G_F,
+        "c" => G_C,
+        "u" => G_U,
+        "s" => G_S,
+        "n" => G_N,
+        "b" => G_B,
+        "z" => G_Z,
+        _ => return None,
+    })
+}
+
+/// Attributes of a `<font>` table entry.
+const F_ID: usize = 0;
+const F_NAME: usize = 1;
+const F_TYPE: usize = 2;
+const F_ENC: usize = 3;
+const F_EMB: usize = 4;
+const F_SYM: usize = 5;
+const F_CID: usize = 6;
+const F_TU: usize = 7;
+const F_TUMISS: usize = 8;
+fn font_key(name: &str) -> Option<usize> {
+    Some(match name {
+        "id" => F_ID,
+        "name" => F_NAME,
+        "type" => F_TYPE,
+        "enc" => F_ENC,
+        "emb" => F_EMB,
+        "sym" => F_SYM,
+        "cid" => F_CID,
+        "tu" => F_TU,
+        "tuMiss" => F_TUMISS,
+        _ => return None,
+    })
+}
+
+/// `u`: space-separated hex code points; invalid, surrogate or control values are dropped
+/// and at most [`MAX_GLYPH_CHARS`] are kept.
+fn glyph_text(u: &str) -> String {
+    let mut out = String::new();
+    for (n, h) in u.split(' ').filter(|h| !h.is_empty()).enumerate() {
+        if n >= MAX_GLYPH_CHARS {
+            break;
+        }
+        if h.len() > 8 {
+            continue;
+        }
+        if let Ok(v) = u32::from_str_radix(h, 16)
+            && let Some(c) = char::from_u32(v)
+            && !is_break(c)
+        {
+            out.push(c);
+        }
     }
+    out
 }
 
 enum Tag<'a> {
@@ -324,6 +508,12 @@ enum Tag<'a> {
     Close(&'a str),
     Word(&'a str, &'a str),
     Rule(bool, &'a str),
+    /// `<g .../>` (only when parsing glyphs)
+    Glyph(&'a str),
+    /// `<font .../>` (only when parsing glyphs)
+    Font(&'a str),
+    /// `<xg .../>`: a named glyph that belongs to no word (only when parsing glyphs)
+    Extra(&'a str),
 }
 
 const NAMES: [&str; 4] = ["page", "flow", "block", "line"];
@@ -379,9 +569,28 @@ impl Scan {
 
 /// One step of `TAG_RE.finditer`: the match starting at `lt` (a '<'), and its end. Calls must
 /// come in nondecreasing `lt` order (see [`Next`]).
-fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan) -> Option<(Tag<'s>, usize)> {
+fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan, glyphs: bool) -> Option<(Tag<'s>, usize)> {
     let b = s.as_bytes();
     let rest = &s[lt + 1..];
+    // <g ([^>]*)/> and <font ([^>]*)/>
+    if glyphs {
+        for (n, kind) in [("g ", 0), ("font ", 1), ("xg ", 2)] {
+            if rest.starts_with(n) {
+                let a = lt + 1 + n.len();
+                let gt = scan.gt(b, a)?;
+                if gt > a && b[gt - 1] == b'/' {
+                    let attrs = &s[a..gt - 1];
+                    let tag = match kind {
+                        0 => Tag::Glyph(attrs),
+                        1 => Tag::Font(attrs),
+                        _ => Tag::Extra(attrs),
+                    };
+                    return Some((tag, gt + 1));
+                }
+                return None;
+            }
+        }
+    }
     // </(page|flow|block|line)>
     if let Some(r) = rest.strip_prefix('/') {
         for n in NAMES {
@@ -442,6 +651,7 @@ const BASELINE: usize = 8;
 const WIDTH: usize = 9;
 const HEIGHT: usize = 10;
 const RULES_TRUNCATED: usize = 11;
+const GLYPHS_TRUNCATED: usize = 12;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -516,6 +726,12 @@ pub struct ParseReport {
     /// Zero-based page indices marked rulesTruncated="1" by the producer, including pages
     /// with no kept rules. This describes incomplete evidence, not layout degradation.
     pub rules_truncated_pages: Vec<usize>,
+    /// glyph records dropped: not after a kept word, malformed, or past the caps
+    pub glyphs_skipped: usize,
+    /// font table entries dropped (malformed or past the cap)
+    pub fonts_skipped: usize,
+    /// Zero-based page indices marked glyphsTruncated="1" by the producer
+    pub glyphs_truncated_pages: Vec<usize>,
 }
 
 /// Parse doppler XHTML into pages. A word or rule with a missing or malformed required number
@@ -524,8 +740,16 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
     parse_report(xhtml, &mut ParseReport::default())
 }
 
-/// [`parse`], counting what was skipped into `report`.
+/// [`parse`], counting what was skipped into `report`. Glyph records and font tables are
+/// skipped like any unknown element.
 pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
+    parse_with(xhtml, report, false)
+}
+
+/// [`parse_report`], also reading `pdftotext -glyphs` glyph records and font tables when
+/// `glyphs` is set. Records that do not follow a kept word, or that have a malformed number,
+/// are dropped and counted.
+pub fn parse_with(xhtml: &str, report: &mut ParseReport, glyphs: bool) -> Vec<Page> {
     let mut pages: Vec<Page> = Vec::new();
     // words of the open <line> (`words` in Python is None until the first <line>)
     let mut words: Vec<Word> = Vec::new();
@@ -537,16 +761,136 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
     let mut last_color: Option<Rc<str>> = None;
     // font names repeat word after word: cache the last style
     let mut last_font: Option<(&str, (bool, bool))> = None;
+    // glyph records go to the last word pushed, until the next element that is not a <g>
+    let mut glyph_target = false;
+    let mut ga: [Option<&str>; 9] = [None; 9];
+    let mut fa: [Option<&str>; 9] = [None; 9];
+    // glyphs of the open line, moved into the page with the line
+    let mut line_glyphs: Vec<Glyph> = Vec::new();
+    let mut doc_glyphs = 0usize;
+    let mut page_glyphs = 0usize;
+    let mut last_glyph_name: Option<Rc<str>> = None;
+    // the open page's font ids -> index in its table
+    let mut font_index: std::collections::HashMap<i64, u16> = std::collections::HashMap::new();
     let mut pos = 0;
     while let Some(off) = memchr(b'<', &b[pos..]) {
         let lt = pos + off;
-        let Some((tag, end)) = tag_at(xhtml, lt, &mut scan) else {
+        let Some((tag, end)) = tag_at(xhtml, lt, &mut scan, glyphs) else {
             pos = lt + 1;
             continue;
         };
         pos = end;
         let have_page = !pages.is_empty();
+        if !matches!(tag, Tag::Glyph(_)) {
+            glyph_target = false;
+        }
         match tag {
+            Tag::Extra(attrs) => {
+                let Some(pg) = pages.last_mut() else { continue };
+                if page_glyphs >= MAX_PAGE_GLYPHS || doc_glyphs >= MAX_DOC_GLYPHS {
+                    report.glyphs_skipped += 1;
+                    pg.glyphs_truncated = true;
+                    continue;
+                }
+                parse_attrs(attrs, &mut ga, glyph_key);
+                let (Some(x), Some(w), Some(base), Some(size)) = (
+                    ga[G_X].and_then(py_float),
+                    ga[G_W].and_then(py_float),
+                    ga[G_B].and_then(py_float),
+                    ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
+                ) else {
+                    report.glyphs_skipped += 1;
+                    continue;
+                };
+                let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
+                pg.extra_glyphs.push(Glyph {
+                    x,
+                    w,
+                    base: Some(base),
+                    size: Some(size),
+                    font,
+                    code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
+                    text: Rc::from(""),
+                    src: UniSource::Code,
+                    name: ga[G_N].map(|n| Rc::from(&*pyc::html_unescape(n))),
+                });
+                page_glyphs += 1;
+                doc_glyphs += 1;
+            }
+            Tag::Glyph(attrs) => {
+                let Some(word) = words.last_mut().filter(|_| glyph_target && in_line) else {
+                    report.glyphs_skipped += 1;
+                    continue;
+                };
+                if page_glyphs >= MAX_PAGE_GLYPHS || doc_glyphs >= MAX_DOC_GLYPHS {
+                    report.glyphs_skipped += 1;
+                    if let Some(pg) = pages.last_mut() {
+                        pg.glyphs_truncated = true;
+                    }
+                    continue;
+                }
+                parse_attrs(attrs, &mut ga, glyph_key);
+                let (Some(x), Some(w)) = (ga[G_X].and_then(py_float), ga[G_W].and_then(py_float)) else {
+                    report.glyphs_skipped += 1;
+                    continue;
+                };
+                let src = match ga[G_S] {
+                    Some("t") => UniSource::ToUnicode,
+                    Some("n") => UniSource::Name,
+                    Some("a") => UniSource::ActualText,
+                    _ => UniSource::Code,
+                };
+                let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
+                let name = ga[G_N].map(|n| match &last_glyph_name {
+                    Some(rc) if **rc == *n => rc.clone(),
+                    _ => {
+                        let rc: Rc<str> = Rc::from(&*pyc::html_unescape(n));
+                        last_glyph_name = Some(rc.clone());
+                        rc
+                    }
+                });
+                line_glyphs.push(Glyph {
+                    x,
+                    w,
+                    base: ga[G_B].and_then(py_float),
+                    size: ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
+                    font,
+                    code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
+                    text: Rc::from(glyph_text(ga[G_U].unwrap_or(""))),
+                    src,
+                    name,
+                });
+                word.glyphs.end += 1;
+                page_glyphs += 1;
+                doc_glyphs += 1;
+            }
+            Tag::Font(attrs) => {
+                let Some(pg) = pages.last_mut() else { continue };
+                if pg.fonts.len() >= MAX_PAGE_FONTS {
+                    report.fonts_skipped += 1;
+                    continue;
+                }
+                parse_attrs(attrs, &mut fa, font_key);
+                let Some(id) = fa[F_ID].and_then(|v| v.parse::<i64>().ok()).filter(|id| !font_index.contains_key(id))
+                else {
+                    report.fonts_skipped += 1;
+                    continue;
+                };
+                font_index.insert(id, pg.fonts.len() as u16);
+                let text = |k: usize| -> Rc<str> { Rc::from(&*pyc::html_unescape(fa[k].unwrap_or(""))) };
+                let flag = |k: usize| fa[k] == Some("1");
+                pg.fonts.push(FontInfo {
+                    id,
+                    name: text(F_NAME),
+                    kind: text(F_TYPE),
+                    encoding: text(F_ENC),
+                    embedded: flag(F_EMB),
+                    symbolic: flag(F_SYM),
+                    cid: flag(F_CID),
+                    has_to_unicode: flag(F_TU),
+                    to_unicode_misses: fa[F_TUMISS].and_then(|v| v.parse().ok()).unwrap_or(0),
+                });
+            }
             Tag::Rule(boxed, attrs) => {
                 if !have_page {
                     continue;
@@ -575,19 +919,30 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                 if rules_truncated == Some(true) {
                     report.rules_truncated_pages.push(report.pages - 1);
                 }
+                if glyphs && a.0[GLYPHS_TRUNCATED] == Some("1") {
+                    report.glyphs_truncated_pages.push(report.pages - 1);
+                }
                 pages.push(Page {
                     width: dim(WIDTH, 612.0),
                     height: dim(HEIGHT, 792.0),
                     lines: Vec::new(),
                     rules: Vec::new(),
                     rules_truncated,
+                    glyphs: Vec::new(),
+                    fonts: Vec::new(),
+                    extra_glyphs: Vec::new(),
+                    glyphs_truncated: glyphs && a.0[GLYPHS_TRUNCATED] == Some("1"),
                 });
+                page_glyphs = 0;
+                line_glyphs.clear();
+                font_index.clear();
             }
             Tag::Open("flow", _) => flow += 1,
             Tag::Open("block", _) => block += 1,
             Tag::Open(_, _) => {
                 report.words_unclosed_line += words.len();
                 words.clear();
+                line_glyphs.clear();
                 in_line = true;
             }
             Tag::Close(name) => {
@@ -598,9 +953,20 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                     // exact-size copy out of the reused buffer (mem::take would hand the line
                     // the grown buffer and regrow a new one for every line)
                     #[allow(clippy::drain_collect)]
-                    let ws: Vec<Word> = words.drain(..).collect();
+                    let mut ws: Vec<Word> = words.drain(..).collect();
                     in_line = false;
                     if let Some(pg) = pages.last_mut() {
+                        if glyphs {
+                            // word ranges were counted within the line: make them page ranges
+                            let base = pg.glyphs.len() as u32;
+                            let mut at = base;
+                            for w in &mut ws {
+                                let n = w.glyphs.len() as u32;
+                                w.glyphs = GlyphRange { start: at, end: at + n };
+                                at += n;
+                            }
+                            pg.glyphs.append(&mut line_glyphs);
+                        }
                         pg.lines.push(Rc::new(Line::new(ws, block, flow)));
                     }
                 }
@@ -610,6 +976,8 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                     report.words_outside_line += 1;
                     continue;
                 }
+                // glyph records after a skipped word must not attach to the previous one
+                glyph_target = false;
                 a.parse_into(attrs);
                 if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
                     report.words_missing_coord += 1;
@@ -647,7 +1015,9 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                     base,
                     space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
                     color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
+                    glyphs: GlyphRange::default(),
                 });
+                glyph_target = glyphs;
             }
         }
     }

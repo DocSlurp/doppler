@@ -344,8 +344,9 @@ static std::string wordMetaTsvColumns(const WordMetadata &meta)
 // Each <word> on a horizontal line (rotation 0) is followed by one <g> element per glyph, in
 // drawing order. Characters that one glyph produced (a ligature, a multi-character ToUnicode
 // entry) share a record. Attributes:
-//   x, w  left edge and advance width along the line (the word gives the vertical box,
-//         baseline and font size, which are the same for every glyph of a word)
+//   x, w  left edge and advance width along the line
+//   b, z  the glyph's baseline and font size, only when they differ from the word's (poppler
+//         merges overlapping words, such as a stacked superscript and subscript)
 //   f     the font's id in this page's <font> table (absent when the glyph has no font)
 //   c     the font-local character code (the CID for CID fonts)
 //   g     the glyph id, for CID TrueType fonts with a CIDToGIDMap
@@ -354,6 +355,9 @@ static std::string wordMetaTsvColumns(const WordMetadata &meta)
 //         the character code, the font's built-in encoding or the CID collection, a the text
 //         of an /ActualText span (that record stands for every glyph of the span)
 //   n     the glyph name from the font's encoding, only when it says more than u does
+// Named glyphs that extraction drops because their Unicode is whitespace or NUL (TeX
+// extension glyphs with raw codes 0x00-0x20, say) follow the font table as <xg> records with
+// x, w, b, z, f, c, s="c" and n; they belong to no word.
 // A page has at most maxPageGlyphs records and the document maxDocGlyphs; past either the
 // page is marked glyphsTruncated="1" and its remaining words get no records. The font table
 // has at most maxPageFonts entries (fontsTruncated="1"; glyphs of later fonts have no f).
@@ -471,6 +475,10 @@ public:
                 }
             }
         }
+        for (const TextPage::DroppedGlyph &d : textOut->getDroppedGlyphs()) {
+            fontOf(d.font);
+            ++glyphs;
+        }
         const size_t docLeft = maxDocGlyphs - std::min(maxDocGlyphs, docGlyphs);
         pageBudget = std::min({ glyphs, maxPageGlyphs, docLeft });
         truncated = glyphs > pageBudget;
@@ -493,6 +501,40 @@ public:
         }
     }
 
+    // Named glyphs that extraction dropped as whitespace, as <xg> records with a baseline
+    // and size (they belong to no word).
+    void writeDropped(FILE *f, const TextOutputDev *textOut)
+    {
+        std::string out;
+        for (const TextPage::DroppedGlyph &d : textOut->getDroppedGlyphs()) {
+            if (pageBudget == 0) {
+                truncated = true;
+                break;
+            }
+            --pageBudget;
+            GlyphFont *gf = fontOf(d.font);
+            out += "    <xg x=\"";
+            number(out, d.x);
+            out += "\" w=\"";
+            number(out, d.advance);
+            out += "\" b=\"";
+            number(out, d.y);
+            out += "\" z=\"";
+            number(out, d.fontSize);
+            out += '"';
+            if (gf) {
+                out += " f=\"" + std::to_string(gf->id) + "\"";
+            }
+            out += " c=\"" + std::to_string(d.code) + "\" s=\"c\"";
+            const char *name = glyphName(d.font, d.code);
+            if (name && *name) {
+                out += " n=\"" + myXmlTokenReplace(capped(name, maxGlyphNameBytes).c_str()) + "\"";
+            }
+            out += "/>\n";
+        }
+        fputs(out.c_str(), f);
+    }
+
     // The glyph records of one word, or nothing once the page's budget is used.
     void appendWordGlyphs(std::string &out, const TextWord *word)
     {
@@ -508,12 +550,30 @@ public:
             }
             --pageBudget;
             const double x0 = word->getEdge(i);
-            const double x1 = j < n ? word->getEdge(j) : word->getEdgeEnd();
+            double advance = 0;
+            for (int k = i; k < j; ++k) {
+                advance += word->getAdvance(k);
+            }
             out += "<g x=\"";
             number(out, x0);
             out += "\" w=\"";
-            number(out, x1 - x0);
+            number(out, advance);
             out += '"';
+            // words that poppler merged (stacked scripts) keep each glyph's own baseline and size
+            const Matrix &m = word->getTextMat(i);
+            const Matrix &m0 = word->getTextMat(0);
+            if (std::fabs(m.m[5] - word->getBaseline()) > 0.01) {
+                out += " b=\"";
+                number(out, m.m[5]);
+                out += '"';
+            }
+            const double scale = std::sqrt(std::fabs(m.m[0] * m.m[3] - m.m[1] * m.m[2]));
+            const double scale0 = std::sqrt(std::fabs(m0.m[0] * m0.m[3] - m0.m[1] * m0.m[2]));
+            if (scale0 > 0 && std::isfinite(scale) && std::fabs(scale / scale0 - 1) > 0.01) {
+                out += " z=\"";
+                number(out, word->getFontSize() * scale / scale0);
+                out += '"';
+            }
             const bool actual = word->isActualTextChar(i);
             const TextFontInfo *info = word->getFontInfo(i);
             GlyphFont *gf = fontOf(info);
@@ -899,6 +959,7 @@ int main(int argc, char *argv[])
             if (bboxLayout) {
                 textOut.setCollectRules(collectRules);
                 textOut.setCollectImageMaskRules(glyphRecords);
+                textOut.setCollectDroppedGlyphs(glyphRecords);
                 printDocBBox(f, doc.get(), &textOut, firstPage, lastPage);
             } else {
                 printWordBBox(f, doc.get(), &textOut, firstPage, lastPage);
@@ -1140,6 +1201,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if (glyphContext) {
             glyphContext->writeFontTable(f);
+            glyphContext->writeDropped(f, textOut);
         }
         for (flow = textOut->getFlows(); flow; flow = flow->getNext()) {
             fprintf(f, "    <flow>\n");
