@@ -1,5 +1,6 @@
 //! Assignment and reading order checked through the conversion interface. Expected output
-//! and work counts were verified against the baseline Rust converter (Python v24 parity).
+//! and work counts were verified against the baseline Rust converter (Python v24 parity); work
+//! counts now also include gutter-table runs (2 units per word), which Python does not charge.
 
 use doppler_md::{Degraded, Params, to_markdown_report};
 
@@ -63,7 +64,8 @@ fn wrapped_cells_keep_their_continuation_once() {
     let (md, report) = to_markdown_report(&page(&body), &Params::default());
     assert_eq!(md, ["Stock\n\n| Apples | 1.0 crates |\n| --- | --- |\n| Pears | 2.0 |\n| Plums | 3.0 |"]);
     assert!(report.degraded.is_empty());
-    assert_eq!((report.doc_work, report.page_work_max), (10, 5));
+    // gutter-table runs also charge their words twice (columns, then grid): 5 + 2 x 7
+    assert_eq!((report.doc_work, report.page_work_max), (24, 19));
 }
 
 fn overlapping_regions() -> String {
@@ -93,7 +95,8 @@ fn narrow_gutter_membership_belongs_to_each_overlapping_region() {
         )]
     );
     assert!(report.degraded.is_empty());
-    assert_eq!((report.doc_work, report.page_work_max), (46, 39));
+    // 39 layout units as in Python v24, plus 2 x 7 words for the gutter-table run
+    assert_eq!((report.doc_work, report.page_work_max), (60, 53));
 }
 
 #[test]
@@ -107,5 +110,5 @@ fn exhausted_layout_discards_all_partial_assignments() {
         )]
     );
     assert_eq!(report.degraded, [(0, Degraded::PageWork)]);
-    assert_eq!((report.doc_work, report.page_work_max), (46, 39));
+    assert_eq!((report.doc_work, report.page_work_max), (58, 51));
 }

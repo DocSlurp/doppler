@@ -254,3 +254,39 @@ fn sparse_pass_can_be_turned_off() {
     let off = to_markdown_report_with(&xhtml, &p, &HTML).0;
     assert!(tables(&off[0]).is_empty(), "{}", off[0]);
 }
+
+/// Three very wide rows of one-word cells, `pitch` apart: every word is its own column.
+fn wide_rows(per_row: usize, pitch: f64) -> String {
+    let mut s = format!("<doc>\n<page width=\"{}\" height=\"792\">\n", per_row * 60 + 100);
+    for r in 0..3 {
+        let y = 20.0 + r as f64 * pitch;
+        s.push_str("<flow><block><line>");
+        for j in 0..per_row {
+            let x = 20 + j * 60;
+            s.push_str(&format!(
+                "<word xMin=\"{x}\" yMin=\"{y}\" xMax=\"{}\" yMax=\"{}\" fontSize=\"9\" baseline=\"{}\">c{r}x{j}</word>",
+                x + 20,
+                y + 9.0,
+                y + 8.0
+            ));
+        }
+        s.push_str("</line></block></flow>\n");
+    }
+    s.push_str("</page>\n</doc>\n");
+    s
+}
+
+#[test]
+fn wide_rows_table_work_is_bounded_and_charged() {
+    // 180,000 cells in 3 rows: grid building must stay near linear, and its work counts
+    // against max_page_work
+    let words = 3 * 60_000;
+    for pitch in [12.0, 35.0] {
+        let t = Instant::now();
+        let (md, report) = to_markdown_report_with(&wide_rows(60_000, pitch), &Params::default(), &HTML);
+        let took = t.elapsed();
+        assert!(took < Duration::from_secs(5), "pitch {pitch}: {took:?}");
+        assert!(md[0].contains("c2x59999"), "pitch {pitch}");
+        assert!(report.page_work_max >= words as u64, "pitch {pitch}: {}", report.page_work_max);
+    }
+}

@@ -349,24 +349,73 @@ fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
     Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect() }
 }
 
+/// The column of a word's midpoint, as `build_grid` has always chosen it: the first column
+/// whose interval (1 point of slack each side) holds it, else the first column with the nearest
+/// centre. Columns from `gutter_columns` and ruled tables are finite and ordered (each ends
+/// where or before the next starts), so both are binary searches; any other column list takes
+/// the linear scans.
+struct ColumnLookup<'a> {
+    cols: &'a [(f64, f64)],
+    centers: Option<Vec<f64>>,
+}
+
+impl<'a> ColumnLookup<'a> {
+    fn new(cols: &'a [(f64, f64)]) -> Self {
+        let ordered = cols.iter().all(|&(a, b)| a.is_finite() && b.is_finite() && a <= b)
+            && cols.windows(2).all(|w| w[0].1 <= w[1].0);
+        let centers = ordered.then(|| cols.iter().map(|&(a, b)| (a + b) / 2.0).collect());
+        ColumnLookup { cols, centers }
+    }
+
+    fn column(&self, mid: f64) -> usize {
+        let cols = self.cols;
+        let Some(centers) = &self.centers else {
+            if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
+                return k;
+            }
+            let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
+            let mut best = 0;
+            for i in 1..cols.len() {
+                if d(i) < d(best) {
+                    best = i;
+                }
+            }
+            return best;
+        };
+        // b + 1 ascends, so the first column that can hold mid is the first with mid <= b + 1;
+        // if that one starts after mid, every later one does too
+        let k = cols.partition_point(|&(_, b)| b + 1.0 < mid);
+        if k < cols.len() && cols[k].0 - 1.0 <= mid {
+            return k;
+        }
+        // centres ascend: the nearest is just below or at/above mid; ties go to the first index
+        let j = centers.partition_point(|&c| c < mid);
+        let right = (j < centers.len()).then(|| (j, (centers[j] - mid).abs()));
+        let left = (j > 0).then(|| {
+            let v = centers[j - 1];
+            (centers.partition_point(|&c| c < v), (v - mid).abs())
+        });
+        match (left, right) {
+            (Some((l, dl)), Some((r, dr))) => {
+                if dr < dl {
+                    r
+                } else {
+                    l
+                }
+            }
+            (Some((l, _)), None) => l,
+            (None, Some((r, _))) => r,
+            (None, None) => 0,
+        }
+    }
+}
+
 pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
     if cols.is_empty() {
         return Table::default();
     }
-    let column = |w: &Word| {
-        let mid = (w.x0 + w.x1) / 2.0;
-        if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
-            return k;
-        }
-        let mut best = 0;
-        for i in 1..cols.len() {
-            let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
-            if d(i) < d(best) {
-                best = i;
-            }
-        }
-        best
-    };
+    let lookup = ColumnLookup::new(cols);
+    let column = |w: &Word| lookup.column((w.x0 + w.x1) / 2.0);
     let multi: Vec<&Row> = rows.iter().filter(|r| r.multi).collect();
     let pitches: Vec<f64> = multi.windows(2).map(|w| w[1].base - w[0].base).collect();
     let pitch = if pitches.is_empty() { None } else { Some(median(pitches)) };
@@ -456,14 +505,35 @@ fn section_label(row: &Row, run: &[Row], body: f64, p: &Params) -> bool {
 
 /// [(row ids, grid)] for runs of aligned multi-cell rows.
 pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Vec<usize>, Table)> {
+    find_tables_within(page, ids, p, body, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
+}
+
+/// Words in rows: the work units of building their columns and grid.
+fn row_words(rows: &[Row]) -> usize {
+    rows.iter().map(|r| r.cells.iter().map(|c| c.words.len()).sum::<usize>()).sum()
+}
+
+/// [`find_tables`] within a work budget: each run that reaches column detection charges its
+/// words twice (columns, then grid; grouping the rows is linear and is not charged, like
+/// parsing). `None` once the budget runs out.
+pub fn find_tables_within(
+    page: &Page,
+    ids: &[usize],
+    p: &Params,
+    body: f64,
+    budget: &mut Budget,
+) -> Option<Vec<(Vec<usize>, Table)>> {
     let rows = visual_rows(page, ids, p);
     let mut found = Vec::new();
     let mut run: Vec<Row> = Vec::new();
-    let flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| {
+    let mut flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| -> bool {
         while run.last().is_some_and(|r| !r.multi) {
             run.pop();
         }
         if run.iter().filter(|r| r.multi).count() as f64 >= p.table_min_rows {
+            if !budget.spend(2 * row_words(run)) {
+                return false;
+            }
             let cols = gutter_columns(run, p);
             if cols.len() >= 2 {
                 let grid = build_grid(run, &cols, p);
@@ -473,32 +543,37 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
             }
         }
         run.clear();
+        true
     };
-    for r in rows.iter().cloned() {
+    // the sparse pass reads the rows again; copy them only when it runs
+    let again = p.sparse_tables.then(|| rows.clone());
+    for r in rows {
         let near = run.last().is_some_and(|l| r.base - l.base <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
         if r.multi {
-            if !run.is_empty() && !near {
-                flush(&mut run, &mut found);
+            if !run.is_empty() && !near && !flush(&mut run, &mut found) {
+                return None;
             }
             run.push(r);
         } else if !run.is_empty() && near && r.cells.len() == 1 && !section_label(&r, &run, body, p) {
             run.push(r); // wrapped cell text or a section label inside a table
-        } else {
-            flush(&mut run, &mut found);
+        } else if !flush(&mut run, &mut found) {
+            return None;
         }
     }
-    flush(&mut run, &mut found);
-    if p.sparse_tables {
-        sparse_tables(&rows, &mut found, p);
+    if !flush(&mut run, &mut found) {
+        return None;
     }
-    found
+    if let Some(rows) = again {
+        sparse_tables(&rows, &mut found, p, budget)?;
+    }
+    Some(found)
 }
 
 /// Borderless tables whose rows are too far apart for the dense pass: maximal runs of
 /// consecutive multi-cell rows, none in a table already, with the same cell count, each column
 /// keeping an x range common to all its cells, evenly spaced baselines and clear gutters. A run
 /// grows row by row and the next run starts where it stopped, so this is linear in the rows.
-fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params) {
+fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params, budget: &mut Budget) -> Option<()> {
     let used: std::collections::HashSet<usize> = found.iter().flat_map(|(ids, _)| ids.iter().copied()).collect();
     let free = |r: &Row| r.multi && r.ids.iter().all(|i| !used.contains(i));
     let even = |a: f64, b: f64, ratio: f64| pmax(a, b) <= ratio * pmin(a, b);
@@ -540,6 +615,9 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params)
         if (run.len() as f64) < p.sparse_min_rows || !sparse_gutters(run, p) {
             continue;
         }
+        if !budget.spend(2 * row_words(run)) {
+            return None;
+        }
         let cols = gutter_columns(run, p);
         if cols.len() != k {
             continue;
@@ -549,6 +627,7 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params)
             found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
         }
     }
+    Some(())
 }
 
 /// Between every two columns of a wide-spaced run, a gutter of at least `min_gutter` x font
@@ -1278,5 +1357,60 @@ mod span_tests {
         page = fixture();
         page.rules.resize(2049, page.rules[0].clone());
         assert!(render(&page).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ColumnLookup;
+
+    /// The linear scans `build_grid` used before the binary search.
+    fn reference(cols: &[(f64, f64)], mid: f64) -> usize {
+        if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
+            return k;
+        }
+        let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
+        let mut best = 0;
+        for i in 1..cols.len() {
+            if d(i) < d(best) {
+                best = i;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn column_lookup_matches_linear_scan() {
+        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..4000 {
+            // ordered columns: touching (ruled), 1-2 point gaps (slack overlaps), zero width,
+            // and duplicates of the same interval
+            let n = 1 + next(8) as usize;
+            let mut x = next(50) as f64;
+            let mut cols = Vec::new();
+            for _ in 0..n {
+                let w = [0.0, 0.5, 3.0, 10.0][next(4) as usize];
+                cols.push((x, x + w));
+                x += w + [0.0, 0.0, 1.0, 1.5, 2.0, 7.0][next(6) as usize];
+            }
+            let lookup = ColumnLookup::new(&cols);
+            assert!(lookup.centers.is_some());
+            for q in 0..40 {
+                let mid = if q == 0 { f64::NAN } else { next(800) as f64 / 8.0 - 10.0 };
+                assert_eq!(lookup.column(mid), reference(&cols, mid), "{cols:?} {mid}");
+            }
+            // unordered lists take the scans
+            let mut rev = cols.clone();
+            rev.reverse();
+            let lookup = ColumnLookup::new(&rev);
+            let mid = next(800) as f64 / 8.0;
+            assert_eq!(lookup.column(mid), reference(&rev, mid));
+        }
     }
 }
