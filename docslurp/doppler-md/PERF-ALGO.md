@@ -159,12 +159,16 @@ the wide-spaced pass, which reached that path). Columns from `gutter_columns` an
 are finite and ordered, so the column is now two binary searches with the same answer (the
 first interval holding the midpoint with 1 point of slack, else the first nearest centre; a unit
 test checks it against the scan on random ordered columns, including touching, zero-width and
-duplicate intervals); any other column list keeps the scans. The reproducer takes 1.3 s.
+duplicate intervals, and midpoints far enough away that distances round to ties, which go to
+the first column as in the scan); any other column list keeps the scans. The reproducer takes
+1.3 s.
 
 Table detection now runs within the page `Budget`: each run of rows that reaches column
 detection, in the dense or the wide-spaced pass, charges twice its words (columns, then grid).
-Grouping rows is linear and is not charged. On the golden set the largest page goes from 20,617
-to 21,016 units and the largest document to 59,725; nothing degrades. `doppler_md.py` does not
+Grouping rows is linear and is not charged. On the golden set the largest page goes from 20,618
+to 21,052 units and the largest document from 54,463 to 59,725 (master measured with the same
+binary build; the 20,617 and 50,508 recorded above predate later master changes); nothing
+degrades. `doppler_md.py` does not
 charge these units, so the work counts in `tests/page_layout.rs` no longer equal Python's.
 
 The wide-spaced pass is one forward walk over the rows (a run grows row by row and the next
