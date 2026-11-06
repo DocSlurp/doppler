@@ -91,9 +91,10 @@ pub(crate) struct RotatedGroup {
 
 /// Lines (by id) to lay out upright, and the rotated groups to lay out in their own frames.
 ///
-/// A rotation forms a group when it has at least `rotated_min_lines` kept lines and no other
-/// kept line has its centre inside their extent (a rotated label among upright text stays
-/// where it was). Each group gets the rules that touch its extent, then those touching the
+/// A rotation forms a group when it has at least `rotated_min_lines` kept lines and at most
+/// `rotated_stray_share` of that many other kept lines (at least one) have their centre inside
+/// their extent; those stay upright. With more, the rotated lines are labels among upright
+/// text and stay where they were. Each group gets the rules that touch its extent, then those touching the
 /// grown extent (twice), so a ruled table's border far from its text comes along; rules are
 /// copied, not moved, since a rule group without member lines is no table in either frame.
 pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<RotatedGroup>) {
@@ -121,7 +122,10 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
             let (cx, cy) = ((l.x0 + l.x1) / 2.0, (l.y0 + l.y1) / 2.0);
             x0 < cx && cx < x1 && y0 < cy && cy < y1
         };
-        if (0..ids.len()).any(|k| rots[k] != rot && inside(&page.lines[ids[k]])) {
+        // a few other lines inside (a stamp, a Bates number) stay in the upright layout; more
+        // mean the rotated lines are labels among upright text, which keep the old treatment
+        let strays = (0..ids.len()).filter(|&k| rots[k] != rot && inside(&page.lines[ids[k]])).count();
+        if strays as f64 > pmax(1.0, p.rotated_stray_share * members.len() as f64) {
             continue;
         }
         let frame = Frame::new(rot, page.width, page.height);

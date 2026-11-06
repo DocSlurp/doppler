@@ -157,6 +157,7 @@ fn rotated_grid(rot: u8, cols: usize, nrows: usize) -> String {
             let vb = v0 + 0.65 * pitch;
             let (x0, y0, x1, y1, base) = match rot {
                 1 => (w - v1, u0, w - v0, u1, w - vb),
+                2 => (w - u1, h - v1, w - u0, h - v0, h - vb),
                 3 => (v0, h - u1, v1, h - u0, vb),
                 _ => (u0, v0, u1, v1, vb),
             };
@@ -189,7 +190,7 @@ fn large_rotated_page_is_bounded() {
 
 #[test]
 fn small_rotated_grid_reads_in_its_own_frame() {
-    for rot in [1u8, 3] {
+    for rot in [1u8, 2, 3] {
         let (md, _) = to_markdown_report_with(&rotated_grid(rot, 3, 4), &Params::default(), &HTML);
         let want: Vec<Vec<String>> = (0..4).map(|r| (0..3).map(|c| format!("{r}x{c}")).collect()).collect();
         assert_eq!(tables(&md[0]), vec![want], "rotation {rot}:\n{}", md[0]);
@@ -436,4 +437,18 @@ fn a_title_above_a_sparse_table_is_never_stuffed_into_one_cell() {
     assert!(!md.contains("<th>Stock on hand</th>"), "{md}");
     assert!(md.contains("Stock on hand"), "{md}");
     assert_eq!(tables(&md).len(), 1, "{md}");
+}
+
+#[test]
+fn a_stray_upright_line_inside_a_rotated_table_stays_upright() {
+    // a stamp in the middle of a sideways table: the table still forms, the stamp is kept
+    let stamp = "<line><word xMin=\"300\" yMin=\"390\" xMax=\"340\" yMax=\"400\" fontName=\"F\" \
+                 fontSize=\"10\" rotation=\"0\" baseline=\"398\">COPY</word></line>\n";
+    for rot in [1u8, 3] {
+        let xhtml = rotated_grid(rot, 3, 4).replacen("<block>\n", &format!("<block>\n{stamp}"), 1);
+        let (md, _) = to_markdown_report_with(&xhtml, &Params::default(), &HTML);
+        let want: Vec<Vec<String>> = (0..4).map(|r| (0..3).map(|c| format!("{r}x{c}")).collect()).collect();
+        assert_eq!(tables(&md[0]), vec![want], "rotation {rot}:\n{}", md[0]);
+        assert!(md[0].contains("COPY"), "rotation {rot}:\n{}", md[0]);
+    }
 }
