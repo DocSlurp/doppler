@@ -144,16 +144,15 @@ params! {
     table_cell_words: num = 4.0,
     /// share of right-side lines sharing a baseline with the left side
     table_align: num = 0.7,
-    /// borderless tables with widely spaced rows: rows the dense pass (`table_row_gap`) leaves
-    /// apart still form a table when at least `sparse_min_rows` consecutive rows have the same
-    /// number of cells, every column keeps an x range common to all its cells (left, right,
-    /// centre and decimal alignment all do) with a `min_gutter` gutter to the next, and the rows
-    /// are evenly spaced
+    /// second gutter-table pass over the rows the dense pass left (typically rows more than
+    /// `table_row_gap` apart; there is no lower bound): a run of at least `sparse_min_rows`
+    /// consecutive multi-cell rows becomes a table only whole (see `tables::sparse_tables`)
     sparse_tables: flag = true,
     sparse_min_rows: num = 3.0,
-    /// max baseline gap / font size between two rows of a wide-spaced table
+    /// max baseline gap / font size between two rows of such a run
     sparse_row_gap: num = 5.0,
-    /// max ratio between neighbouring row gaps; the first gap (a header) may differ by twice this
+    /// max ratio between neighbouring row gaps in a run; the first (header) gap may differ by
+    /// twice this
     sparse_pitch_ratio: num = 1.35,
     /// read the lines of one rotation (a table printed sideways) in their own reading frame
     rotated_frames: flag = true,

@@ -145,7 +145,9 @@ pub fn near_other(sorted: &[f64], x: f64, tol: f64) -> bool {
 /// call charges its element count, each band a gutter is followed through charges the band's
 /// elements, each gutter that reaches the column test charges its member count, and each
 /// same-baseline merge in [`crate::prose::paragraphs_within`] charges the merged word count.
-/// `doppler_md.py` charges the same units in the same places, so both stop on the same pages.
+/// `doppler_md.py` charges the same units in the same places. Gutter-table detection
+/// ([`crate::tables::find_tables_within`]) also charges twice the words of each run that
+/// reaches column detection; Python does not, so its pages stop slightly later.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
     pub used: u64,

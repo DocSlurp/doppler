@@ -59,9 +59,45 @@ every column gutter through every later band). A page over `max_page_lines` or `
 (20,000 each), or whose layout uses more than `max_page_work` units (10 million), is read as
 plain lines in poppler order, one per Markdown line, without layout, tables or headings. Once
 the document has used `max_doc_work` (50 million lines plus work units), the remaining pages are
-read the same way. The largest page in the 258-input golden set has 303 lines and uses 20,617
-units, the largest document 50,508. Every degraded page is listed in the report. See
-PERF-ALGO.md for the measurements.
+read the same way. Gutter-table detection counts too: each run of rows that reaches column
+detection charges twice its word count. The largest page in the 258-input golden set has 303
+lines and uses 21,016 units, the largest document 59,725. Every degraded page is listed in the
+report. See PERF-ALGO.md for the measurements.
+
+## Rotated text and wide-spaced borderless tables
+
+Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
+
+- **Rotated text** (`rotated_frames`, on by default). Words carry the producer's `rotation`
+  (quarter turns; absent reads as 0). On a page, the kept lines of one rotation are read in their
+  own reading frame when there are at least `rotated_min_lines` (3) of them and at most
+  `rotated_stray_share` (0.1, at least one) other lines have their centre inside their extent:
+  word boxes and baselines are turned back, the page's width and height swap for quarter turns,
+  the rules touching them come along as a copy, and the ordinary layout runs on that frame under
+  the same work budget. The result is placed on the page as one block at the lines' upright
+  extent, so the text around it keeps its order; the stray lines stay upright. A whole rotated
+  page is the same case. With more lines inside (rotated labels among upright text) the rotated
+  lines keep the upright treatment, as before.
+- **Wide-spaced borderless tables** (`sparse_tables`, on by default). After the dense gutter-table
+  pass, the rows it left are tried again: a run of at least `sparse_min_rows` (3) consecutive
+  multi-cell rows at most `sparse_row_gap` (5) font sizes apart, evenly spaced as a whole
+  (`sparse_pitch_ratio` 1.35 between neighbouring gaps, twice that for a header gap). The columns
+  are the gutters the run's rows share and a row may leave a column empty. The run becomes a
+  table only whole (every word inside a column, no column holding two cells of a row, every row
+  its own grid row, every column filled in two rows or more, and no row just outside the run that
+  fits its columns); otherwise its rows stay as before rather than becoming a partial table. Not
+  tables: a first column of list markers (`1.`, `a)`, `12a.`, bullets, or bare section numbers
+  beside prose), a first or last column counting 1, 2, 3 beside prose (footnotes, verse or
+  pleading line numbers), and a table of contents (text, then a non-decreasing bare page
+  number). A title above such a table becomes its header only when its words split into the
+  table's columns. These guards apply only to this pass; the dense pass is unchanged.
+
+Allowed on purpose: two-column key/value blocks (labels and values, also label/blank form
+pairs) and two-column checklists or signature blocks become two-column tables when their rows
+are evenly spaced. A two-column bullet list is a list when its first column is the bullets; when
+each bullet is part of its item's text there is no marker column and the pair of columns can
+become a table. A table split across layout regions (some columns read as separate text) can
+come out as a table of the columns its region holds.
 
 ## Output is untrusted Markdown
 
