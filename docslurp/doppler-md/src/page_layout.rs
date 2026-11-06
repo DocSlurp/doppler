@@ -192,12 +192,18 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                 previous_table = false;
             }
             FlowItem::Paragraph(it) => {
-                if p.table_titles
-                    && let Some(FlowItem::Table(tab)) = items.peek_mut()
-                    && table_title(&it, tab, p)
-                {
+                // a title the columns do not split stays out of a sparse table: one cell
+                // holding a whole line is not a header
+                let titled = match items.peek_mut() {
+                    Some(FlowItem::Table(tab)) if p.table_titles && table_title(&it, tab, p) => {
+                        let split = split_header(&it.lines[0].words, &tab.table.cols);
+                        (split.is_some() || !tab.table.sparse).then_some((tab, split))
+                    }
+                    _ => None,
+                };
+                if let Some((tab, split)) = titled {
                     let n = tab.table.rows[0].len();
-                    tab.header = Some(split_header(&it.lines[0].words, &tab.table.cols).unwrap_or_else(|| {
+                    tab.header = Some(split.unwrap_or_else(|| {
                         let mut header = vec![String::new(); n];
                         header[0] = it.text;
                         header

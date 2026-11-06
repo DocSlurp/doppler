@@ -337,6 +337,9 @@ pub struct Table {
     pub rows: Grid,
     pub spans: Option<String>,
     pub cols: Vec<(f64, f64)>,
+    /// found by the wide-spaced (sparse) borderless pass: a title above it becomes its header
+    /// only when the title's words split into its columns
+    pub sparse: bool,
 }
 
 /// (member line ids, table, bbox x0 y0 x1 y1)
@@ -346,7 +349,7 @@ pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
-    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect() }
+    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect(), sparse: false }
 }
 
 /// The column of a word's midpoint, as `build_grid` has always chosen it: the first column
@@ -569,10 +572,15 @@ pub fn find_tables_within(
     Some(found)
 }
 
-/// Borderless tables whose rows are too far apart for the dense pass: maximal runs of
-/// consecutive multi-cell rows, none in a table already, with the same cell count, each column
-/// keeping an x range common to all its cells, evenly spaced baselines and clear gutters. A run
-/// grows row by row and the next run starts where it stopped, so this is linear in the rows.
+/// Borderless tables whose rows are too far apart for the dense pass (or that it left for any
+/// other reason): maximal runs of consecutive multi-cell rows, none in a table already, with
+/// evenly spaced baselines at most `sparse_row_gap` font sizes apart. Rows may have different
+/// cell counts: the run's columns come from the gutters all its rows share (`gutter_columns`, as
+/// in the dense pass) and a row may leave a column empty. A run becomes a table only whole:
+/// every word must fall inside a column and no two cells of a row may share one, every row must
+/// stay its own grid row, and the grid must not read as a list, line or footnote numbers, or a
+/// table of contents. Otherwise its rows stay as they were. A run grows row by row and the next
+/// one starts where it stopped, so this is linear in the rows.
 fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params, budget: &mut Budget) -> Option<()> {
     let used: std::collections::HashSet<usize> = found.iter().flat_map(|(ids, _)| ids.iter().copied()).collect();
     let free = |r: &Row| r.multi && r.ids.iter().all(|i| !used.contains(i));
@@ -583,70 +591,150 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
             i += 1;
             continue;
         }
-        let k = rows[i].cells.len();
-        // per column: (max x0, min x1) over the run's cells, the x range they all share
-        let mut common: Vec<(f64, f64)> = rows[i].cells.iter().map(|c| (c.x0, c.x1)).collect();
         let mut gaps: Vec<f64> = Vec::new();
         let mut j = i + 1;
         while j < rows.len() {
             let (prev, r) = (&rows[j - 1], &rows[j]);
             let gap = r.base - prev.base;
-            if !free(r)
-                || r.cells.len() != k
-                || !(gap > 0.0 && gap <= p.sparse_row_gap * pmax(pmax(prev.size, r.size), 1.0))
-            {
+            if !free(r) || !(gap > 0.0 && gap <= p.sparse_row_gap * pmax(pmax(prev.size, r.size), 1.0)) {
                 break;
             }
-            let ratio = if gaps.len() == 1 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio };
-            if gaps.last().is_some_and(|&last| !even(gap, last, ratio)) {
-                break;
-            }
-            let next: Vec<(f64, f64)> =
-                common.iter().zip(&r.cells).map(|(&(a, b), c)| (pmax(a, c.x0), pmin(b, c.x1))).collect();
-            if next.iter().any(|&(a, b)| a.partial_cmp(&b).is_none_or(|o| o.is_gt())) {
-                break;
-            }
-            common = next;
             gaps.push(gap);
             j += 1;
         }
         let run = &rows[i..j];
         i = j;
-        if (run.len() as f64) < p.sparse_min_rows || !sparse_gutters(run, p) {
+        // evenly spaced as a whole (the first gap, a header, may differ by twice the ratio);
+        // an uneven run is left as it was rather than cut into partial tables
+        let uneven = gaps.windows(2).enumerate().any(|(k, w)| {
+            let ratio = if k == 0 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio };
+            !even(w[0], w[1], ratio)
+        });
+        if (run.len() as f64) < p.sparse_min_rows || uneven {
             continue;
         }
         if !budget.spend(2 * row_words(run)) {
             return None;
         }
         let cols = gutter_columns(run, p);
-        if cols.len() != k {
+        if cols.len() < 2 || !whole(run, &cols) {
             continue;
         }
-        let grid = build_grid(run, &cols, p);
-        if grid.rows.len() == run.len() && plausible(&grid.rows, p) && !marker_column(&grid.rows) {
+        // a multi-cell row just outside the run that fits its columns: the table goes on past
+        // a wider gap, and the run alone would be a fragment of it
+        let start = i - run.len();
+        let outside = [start.checked_sub(1), Some(i)];
+        if outside
+            .into_iter()
+            .flatten()
+            .filter_map(|k| rows.get(k))
+            .any(|r| r.multi && whole(std::slice::from_ref(r), &cols))
+        {
+            continue;
+        }
+        let mut grid = build_grid(run, &cols, p);
+        // every column filled in two rows or more: a column only one row fills is a
+        // misaligned header or a stray cell, not a column
+        let filled_twice = (0..grid.rows.first().map_or(0, Vec::len))
+            .all(|k| grid.rows.iter().filter(|r| !strip(&r[k]).is_empty()).count() >= 2);
+        if grid.rows.len() == run.len()
+            && filled_twice
+            && grid.rows.first().is_some_and(|r| r.len() >= 2)
+            && plausible(&grid.rows, p)
+            && !marker_column(&grid.rows)
+            && !counter_column(&grid.rows)
+            && !contents(&grid.rows)
+        {
+            grid.sparse = true;
             found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
         }
     }
     Some(())
 }
 
-/// Between every two columns of a wide-spaced run, a gutter of at least `min_gutter` x font
-/// size that no cell of either column reaches into.
-fn sparse_gutters(run: &[Row], p: &Params) -> bool {
-    let k = run[0].cells.len();
-    let size = pmax(median(run.iter().map(|r| r.size).collect()), 1.0);
-    (0..k.saturating_sub(1)).all(|c| {
-        let right = run.iter().map(|r| r.cells[c].x1).fold(f64::NEG_INFINITY, pmax);
-        let left = run.iter().map(|r| r.cells[c + 1].x0).fold(f64::INFINITY, pmin);
-        left - right >= p.min_gutter * size
+/// Every word of the run inside one of `cols` (1 point of slack), and no column holding words
+/// of two different cells of one row (a cell the gutters did not separate).
+fn whole(run: &[Row], cols: &[(f64, f64)]) -> bool {
+    let lookup = ColumnLookup::new(cols);
+    let mut owners: Vec<(usize, usize)> = Vec::new();
+    for r in run {
+        owners.clear();
+        for (ci, cell) in r.cells.iter().enumerate() {
+            for w in &cell.words {
+                let mid = (w.x0 + w.x1) / 2.0;
+                let k = lookup.column(mid);
+                if !(cols[k].0 - 1.0 <= mid && mid <= cols[k].1 + 1.0) {
+                    return false;
+                }
+                owners.push((k, ci));
+            }
+        }
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.windows(2).any(|w| w[0].0 == w[1].0) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A first column that reads as list markers: mostly punctuated markers (`1.`, `a)`, `12a.`,
+/// bullets), or mostly bare section numbers (`4.1`) beside prose (a median of 3 or more words).
+/// Bare codes beside short cells (an exhibit or part number column) stay a table.
+fn marker_column(grid: &Grid) -> bool {
+    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
+    if keys.is_empty() {
+        return false;
+    }
+    // `1.`, `a)`, `(iv)` (NUMBERED_RE ending in punctuation), or `12a.`: digits, then letters
+    let punctuated = |k: &str| {
+        let lettered = k.strip_suffix('.').is_some_and(|b| {
+            let d = b.bytes().take_while(u8::is_ascii_digit).count();
+            (1..=4).contains(&d) && b.len() - d <= 2 && b.bytes().skip(d).all(|c| c.is_ascii_lowercase())
+        });
+        bullet(k) || (numbered(k) && k.ends_with(['.', ')'])) || lettered
+    };
+    let half = |f: &dyn Fn(&str) -> bool| 2 * keys.iter().filter(|k| f(k)).count() >= keys.len();
+    half(&punctuated) || (half(&numbered) && grid[0].len() >= 2 && prose_column(grid, 1))
+}
+
+/// Column `k` holds prose: a median of 3 or more words.
+fn prose_column(grid: &Grid, k: usize) -> bool {
+    median(grid.iter().map(|r| split_count(&r[k]) as f64).collect()) >= 3.0
+}
+
+/// A bare count of 1 to 4 ASCII digits.
+fn small_int(t: &str) -> Option<u32> {
+    let t = strip(t);
+    (!t.is_empty() && t.len() <= 4 && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse().ok()).flatten()
+}
+
+/// The first or last column counts 1, 2, 3, ... (each row one more) beside a column of prose
+/// (a median of 3 or more words): footnote numbers, verse or pleading line numbers, or a list
+/// numbered without punctuation. A ranked table's index column sits beside short cells.
+fn counter_column(grid: &Grid) -> bool {
+    let n = grid[0].len();
+    [(0, 1), (n - 1, n - 2)].into_iter().any(|(k, text)| {
+        let nums: Option<Vec<u32>> = grid.iter().map(|r| small_int(&r[k])).collect();
+        nums.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && prose_column(grid, text)
     })
 }
 
-/// A first column mostly of list markers (`1.`, `a)`, bullets; a list may also number an
-/// item `12a.`): a list, not a table.
-fn marker_column(grid: &Grid) -> bool {
-    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
-    !keys.is_empty() && 2 * keys.iter().filter(|k| numbered(k) || bullet(k)).count() >= keys.len()
+/// A table of contents: every row ends in a bare page number, the numbers never decrease, and
+/// every other cell is text, apart from a first column of chapter or section numbers.
+fn contents(grid: &Grid) -> bool {
+    let n = grid[0].len();
+    let pages: Option<Vec<u32>> = grid.iter().map(|r| small_int(&r[n - 1])).collect();
+    let Some(pages) = pages else { return false };
+    if pages.windows(2).any(|w| w[1] < w[0]) {
+        return false;
+    }
+    let section =
+        |t: &str| small_int(t).is_some() || numbered(t) || strip(t).split('.').all(|x| small_int(x).is_some());
+    let first_numbers = grid.iter().all(|r| strip(&r[0]).is_empty() || section(&r[0]));
+    let text_from = if first_numbers && n > 2 { 1 } else { 0 };
+    grid.iter().all(|r| r[text_from..n - 1].iter().all(|c| strip(c).is_empty() || !numeric(c)))
+        && grid.iter().any(|r| r[text_from..n - 1].iter().any(|c| !strip(c).is_empty()))
 }
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).

@@ -290,3 +290,150 @@ fn wide_rows_table_work_is_bounded_and_charged() {
         assert!(report.page_work_max >= words as u64, "pitch {pitch}: {}", report.page_work_max);
     }
 }
+
+// --- borderless false positives and ragged rows -----------------------------------------------
+
+/// A row's cells as (x, text) at 5 points per character.
+fn md_of(rows: &[Vec<(f64, String)>], pitch: f64) -> String {
+    let borrowed: Vec<Vec<(f64, &str)>> =
+        rows.iter().map(|r| r.iter().map(|(x, t)| (*x, t.as_str())).collect()).collect();
+    let refs: Vec<&[(f64, &str)]> = borrowed.iter().map(|r| r.as_slice()).collect();
+    to_markdown_report_with(&upright_rows(&refs, pitch), &Params::default(), &HTML).0.join("\x0c")
+}
+
+fn row(cells: &[(f64, &str)]) -> Vec<(f64, String)> {
+    cells.iter().map(|&(x, t)| (x, t.to_string())).collect()
+}
+
+#[test]
+fn table_of_contents_without_leaders_is_not_a_table() {
+    let titles = [
+        "Getting started",
+        "Field kits",
+        "Calibration",
+        "Sampling plans",
+        "Storage",
+        "Shipping",
+        "Lab intake",
+        "Quality checks",
+        "Reporting",
+        "Archiving",
+        "Glossary",
+        "Index",
+    ];
+    let rows: Vec<_> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let n = (i + 1).to_string();
+            // one-digit numbers sit 13 points before the title, two-digit ones 8 (one cell)
+            let page = (3 + 7 * i).to_string();
+            vec![(72.0, n.clone()), (90.0, t.to_string()), (530.0 - 5.0 * page.len() as f64, page)]
+        })
+        .collect();
+    let md = md_of(&rows, 24.0);
+    assert!(tables(&md).is_empty(), "{md}");
+}
+
+#[test]
+fn widely_spaced_footnotes_are_not_a_table() {
+    let notes = [
+        "Readings were taken before the thaw began.",
+        "The north gauge was replaced in March.",
+        "Values are rounded to the nearest tenth.",
+        "Two sites were visited twice that week.",
+    ];
+    let rows: Vec<_> =
+        notes.iter().enumerate().map(|(i, t)| vec![(72.0, (i + 1).to_string()), (90.0, t.to_string())]).collect();
+    let md = md_of(&rows, 30.0);
+    assert!(tables(&md).is_empty(), "{md}");
+}
+
+#[test]
+fn verse_numbered_on_every_line_is_not_a_table() {
+    let verse = [
+        "The ferry waits beside the reeds",
+        "while herons count the slow grey tide",
+        "and every lamp along the quay",
+        "goes out before the bells have died",
+        "so morning finds the river wide",
+    ];
+    let rows: Vec<_> =
+        verse.iter().enumerate().map(|(i, t)| vec![(72.0, t.to_string()), (400.0, (i + 1).to_string())]).collect();
+    let md = md_of(&rows, 26.0);
+    assert!(tables(&md).is_empty(), "{md}");
+}
+
+#[test]
+fn pleading_paper_line_numbers_are_not_a_table() {
+    let rows: Vec<_> = (1..=28)
+        .map(|i| {
+            let n = i.to_string();
+            let x = 50.0 - 5.0 * n.len() as f64; // right-aligned in the margin
+            if i % 4 == 0 {
+                vec![(x, n)] // a blank pleading line
+            } else {
+                vec![(x, n), (90.0, format!("The parties agree that clause {i} applies to the lease."))]
+            }
+        })
+        .collect();
+    let md = md_of(&rows, 24.0);
+    assert!(tables(&md).is_empty(), "{md}");
+}
+
+#[test]
+fn ragged_wide_spaced_table_is_one_whole_table() {
+    // empty cells in the middle column: every row still lands in the shared columns
+    let rows = vec![
+        row(&[(72.0, "Code"), (160.0, "Form"), (260.0, "Ref"), (360.0, "Filed")]),
+        row(&[(72.0, "4.1"), (160.0, "S-3"), (260.0, "4.2"), (360.0, "1/12/21")]),
+        row(&[(72.0, "4.2"), (260.0, "4.7"), (360.0, "6/30/21")]),
+        row(&[(72.0, "4.3"), (160.0, "8-K"), (260.0, "4.1"), (360.0, "2/2/22")]),
+        row(&[(72.0, "4.4"), (260.0, "4.9"), (360.0, "9/9/22")]),
+        row(&[(72.0, "4.5"), (360.0, "3/3/23")]),
+    ];
+    let md = md_of(&rows, 30.0);
+    let want: Vec<Vec<String>> = vec![
+        vec!["Code", "Form", "Ref", "Filed"],
+        vec!["4.1", "S-3", "4.2", "1/12/21"],
+        vec!["4.2", "", "4.7", "6/30/21"],
+        vec!["4.3", "8-K", "4.1", "2/2/22"],
+        vec!["4.4", "", "4.9", "9/9/22"],
+        vec!["4.5", "", "", "3/3/23"],
+    ]
+    .into_iter()
+    .map(|r| r.into_iter().map(String::from).collect())
+    .collect();
+    assert_eq!(tables(&md), vec![want], "{md}");
+}
+
+#[test]
+fn ranked_table_with_an_index_column_stays_a_table() {
+    let rows = vec![
+        row(&[(72.0, "1"), (110.0, "Pump"), (220.0, "41"), (300.0, "(3)")]),
+        row(&[(72.0, "2"), (110.0, "Valve"), (220.0, "7"), (300.0, "12")]),
+        row(&[(72.0, "3"), (110.0, "Hose"), (220.0, "130"), (300.0, "(48)")]),
+        row(&[(72.0, "4"), (110.0, "Filter"), (220.0, "9"), (300.0, "5")]),
+    ];
+    let md = md_of(&rows, 30.0);
+    assert_eq!(tables(&md).len(), 1, "{md}");
+}
+
+#[test]
+fn a_title_above_a_sparse_table_is_never_stuffed_into_one_cell() {
+    // a short line just above the table whose words fall between its columns
+    let rows: &[&[(f64, &str)]] = &[
+        &[(72.0, "Pump"), (220.0, "41.5"), (300.0, "(3.25)")],
+        &[(72.0, "Valve"), (220.0, "7.0"), (300.0, "12.75")],
+        &[(72.0, "Hose"), (220.0, "130.5"), (300.0, "(48.0)")],
+    ];
+    let title = "<line><word xMin=\"120\" yMin=\"78\" xMax=\"150\" yMax=\"88\" fontName=\"F\" fontSize=\"10\" \
+                 baseline=\"86\">Stock</word><word xMin=\"153\" yMin=\"78\" xMax=\"163\" yMax=\"88\" \
+                 fontName=\"F\" fontSize=\"10\" baseline=\"86\">on</word><word xMin=\"166\" yMin=\"78\" \
+                 xMax=\"190\" yMax=\"88\" fontName=\"F\" fontSize=\"10\" baseline=\"86\">hand</word></line>\n";
+    let xhtml = upright_rows(rows, 30.0).replacen("<block>\n", &format!("<block>\n{title}"), 1);
+    let md = to_markdown_report_with(&xhtml, &Params::default(), &HTML).0.join("\x0c");
+    assert!(!md.contains("<th>Stock on hand</th>"), "{md}");
+    assert!(md.contains("Stock on hand"), "{md}");
+    assert_eq!(tables(&md).len(), 1, "{md}");
+}
