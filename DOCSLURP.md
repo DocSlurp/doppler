@@ -29,6 +29,22 @@ from the build tree without installing.
 
 ## PDF to Markdown
 
+**Use `pdftomarkdown` for text extraction, not `pdftotext`.** Calling `pdftotext` directly
+(plain, `-layout`, `-bbox`, `-tsv` or `-bbox-layout` XHTML piped into `doppler-md`) is
+deprecated for DocSlurp ingestion. `pdftomarkdown` chooses the pdftotext flags, applies the
+layout, table, heading and furniture handling, and its output is what the golden set and the
+quality measurements cover. `pdftotext` stays in the build because `pdftomarkdown` runs it;
+treat it as an internal backend and do not depend on its flags or output format.
+
+| Instead of | Use |
+|---|---|
+| `pdftotext FILE.pdf -` | `pdftomarkdown FILE.pdf` |
+| `pdftotext -f N -l M FILE.pdf -` | `pdftomarkdown -f N -l M FILE.pdf` |
+| `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
+| `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
+| `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
+
+
 `docslurp/doppler-md` builds `pdftomarkdown` (`cargo build --release` there), which runs this
 fork's `pdftotext -bbox-layout -wordmeta -rules -compact-layout` and converts its XHTML to
 Markdown in one step: `PDFTOTEXT=build/utils/pdftotext
