@@ -144,6 +144,23 @@ params! {
     table_cell_words: num = 4.0,
     /// share of right-side lines sharing a baseline with the left side
     table_align: num = 0.7,
+    /// second gutter-table pass over the rows the dense pass left (typically rows more than
+    /// `table_row_gap` apart; there is no lower bound): a run of at least `sparse_min_rows`
+    /// consecutive multi-cell rows becomes a table only whole (see `tables::sparse_tables`)
+    sparse_tables: flag = true,
+    sparse_min_rows: num = 3.0,
+    /// max baseline gap / font size between two rows of such a run
+    sparse_row_gap: num = 5.0,
+    /// max ratio between neighbouring row gaps in a run; the first (header) gap may differ by
+    /// twice this
+    sparse_pitch_ratio: num = 1.35,
+    /// read the lines of one rotation (a table printed sideways) in their own reading frame
+    rotated_frames: flag = true,
+    /// fewer kept lines of a rotation than this stay in the upright layout
+    rotated_min_lines: num = 3.0,
+    /// other lines allowed inside a rotated region, as a share of its lines rounded up (any
+    /// positive share allows one; 0 allows none); they stay in the upright layout
+    rotated_stray_share: num = 0.1,
     /// use doppler -rules table borders when present
     rules: flag = true,
     /// horizontal rule length / body size

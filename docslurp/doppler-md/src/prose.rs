@@ -31,6 +31,8 @@ pub enum Seq {
         x1: f64,
     },
     Line(Rc<Line>),
+    /// a rotated region rendered in its own frame: a barrier like a table
+    Rendered(Rc<Vec<String>>),
 }
 
 pub struct SeqItem {
@@ -247,6 +249,13 @@ pub(crate) fn group_within(
                 prev_is_last = false;
                 continue;
             }
+            Seq::Rendered(parts) => {
+                st.emit();
+                st.items.push(FlowItem::Rendered(parts.clone()));
+                prev = None;
+                prev_is_last = false;
+                continue;
+            }
             Seq::Line(l) => l.clone(),
         };
         if let Some(pv) = &prev
@@ -295,6 +304,7 @@ pub(crate) fn group_within(
                     base: line.base(),
                     space: true,
                     color: Rc::from(""),
+                    rot: 0,
                 };
                 Line::new(vec![w], line.block, line.flow)
             } else {

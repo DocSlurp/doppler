@@ -337,6 +337,9 @@ pub struct Table {
     pub rows: Grid,
     pub spans: Option<String>,
     pub cols: Vec<(f64, f64)>,
+    /// found by the wide-spaced (sparse) borderless pass: a title above it becomes its header
+    /// only when the title's words split into its columns
+    pub sparse: bool,
 }
 
 /// (member line ids, table, bbox x0 y0 x1 y1)
@@ -346,27 +349,80 @@ pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
-    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect() }
+    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect(), sparse: false }
+}
+
+/// The column of a word's midpoint, as `build_grid` has always chosen it: the first column
+/// whose interval (1 point of slack each side) holds it, else the first column with the nearest
+/// centre. Columns from `gutter_columns` and ruled tables are finite and ordered (each ends
+/// where or before the next starts), so both are binary searches; any other column list takes
+/// the linear scans.
+struct ColumnLookup<'a> {
+    cols: &'a [(f64, f64)],
+    centers: Option<Vec<f64>>,
+}
+
+impl<'a> ColumnLookup<'a> {
+    fn new(cols: &'a [(f64, f64)]) -> Self {
+        let ordered = cols.iter().all(|&(a, b)| a.is_finite() && b.is_finite() && a <= b)
+            && cols.windows(2).all(|w| w[0].1 <= w[1].0);
+        let centers = ordered.then(|| cols.iter().map(|&(a, b)| (a + b) / 2.0).collect());
+        ColumnLookup { cols, centers }
+    }
+
+    fn column(&self, mid: f64) -> usize {
+        let cols = self.cols;
+        let Some(centers) = &self.centers else {
+            if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
+                return k;
+            }
+            let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
+            let mut best = 0;
+            for i in 1..cols.len() {
+                if d(i) < d(best) {
+                    best = i;
+                }
+            }
+            return best;
+        };
+        // b + 1 ascends, so the first column that can hold mid is the first with mid <= b + 1;
+        // if that one starts after mid, every later one does too
+        let k = cols.partition_point(|&(_, b)| b + 1.0 < mid);
+        if k < cols.len() && cols[k].0 - 1.0 <= mid {
+            return k;
+        }
+        // centres ascend: the nearest is just below or at/above mid; ties go to the left (lower
+        // index), and right of mid the first is the nearest
+        let j = centers.partition_point(|&c| c < mid);
+        let right = (j < centers.len()).then(|| (j, (centers[j] - mid).abs()));
+        // left of mid the distance never grows toward mid (rounded subtraction is monotonic), so
+        // the columns as near as the nearest form one block ending at j - 1: take its first,
+        // as the linear scan does (far from the columns, many distances round to one value)
+        let left = (j > 0).then(|| {
+            let dl = (centers[j - 1] - mid).abs();
+            (centers[..j].partition_point(|&c| (c - mid).abs() > dl), dl)
+        });
+        match (left, right) {
+            (Some((l, dl)), Some((r, dr))) => {
+                if dr < dl {
+                    r
+                } else {
+                    l
+                }
+            }
+            (Some((l, _)), None) => l,
+            (None, Some((r, _))) => r,
+            (None, None) => 0,
+        }
+    }
 }
 
 pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
     if cols.is_empty() {
         return Table::default();
     }
-    let column = |w: &Word| {
-        let mid = (w.x0 + w.x1) / 2.0;
-        if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
-            return k;
-        }
-        let mut best = 0;
-        for i in 1..cols.len() {
-            let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
-            if d(i) < d(best) {
-                best = i;
-            }
-        }
-        best
-    };
+    let lookup = ColumnLookup::new(cols);
+    let column = |w: &Word| lookup.column((w.x0 + w.x1) / 2.0);
     let multi: Vec<&Row> = rows.iter().filter(|r| r.multi).collect();
     let pitches: Vec<f64> = multi.windows(2).map(|w| w[1].base - w[0].base).collect();
     let pitch = if pitches.is_empty() { None } else { Some(median(pitches)) };
@@ -456,14 +512,35 @@ fn section_label(row: &Row, run: &[Row], body: f64, p: &Params) -> bool {
 
 /// [(row ids, grid)] for runs of aligned multi-cell rows.
 pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Vec<usize>, Table)> {
+    find_tables_within(page, ids, p, body, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
+}
+
+/// Words in rows: the work units of building their columns and grid.
+fn row_words(rows: &[Row]) -> usize {
+    rows.iter().map(|r| r.cells.iter().map(|c| c.words.len()).sum::<usize>()).sum()
+}
+
+/// [`find_tables`] within a work budget: each run that reaches column detection charges its
+/// words twice (columns, then grid; grouping the rows is linear and is not charged, like
+/// parsing). `None` once the budget runs out.
+pub fn find_tables_within(
+    page: &Page,
+    ids: &[usize],
+    p: &Params,
+    body: f64,
+    budget: &mut Budget,
+) -> Option<Vec<(Vec<usize>, Table)>> {
     let rows = visual_rows(page, ids, p);
     let mut found = Vec::new();
     let mut run: Vec<Row> = Vec::new();
-    let flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| {
+    let mut flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| -> bool {
         while run.last().is_some_and(|r| !r.multi) {
             run.pop();
         }
         if run.iter().filter(|r| r.multi).count() as f64 >= p.table_min_rows {
+            if !budget.spend(2 * row_words(run)) {
+                return false;
+            }
             let cols = gutter_columns(run, p);
             if cols.len() >= 2 {
                 let grid = build_grid(run, &cols, p);
@@ -473,22 +550,281 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
             }
         }
         run.clear();
+        true
     };
+    // the sparse pass reads the rows again; copy them only when it runs
+    let again = p.sparse_tables.then(|| rows.clone());
     for r in rows {
         let near = run.last().is_some_and(|l| r.base - l.base <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
         if r.multi {
-            if !run.is_empty() && !near {
-                flush(&mut run, &mut found);
+            if !run.is_empty() && !near && !flush(&mut run, &mut found) {
+                return None;
             }
             run.push(r);
         } else if !run.is_empty() && near && r.cells.len() == 1 && !section_label(&r, &run, body, p) {
             run.push(r); // wrapped cell text or a section label inside a table
-        } else {
-            flush(&mut run, &mut found);
+        } else if !flush(&mut run, &mut found) {
+            return None;
         }
     }
-    flush(&mut run, &mut found);
-    found
+    if !flush(&mut run, &mut found) {
+        return None;
+    }
+    if let Some(rows) = again {
+        sparse_tables(&rows, &mut found, p, budget)?;
+    }
+    Some(found)
+}
+
+/// Borderless tables whose rows are too far apart for the dense pass (or that it left for any
+/// other reason): maximal runs of consecutive multi-cell rows, none in a table already, with
+/// evenly spaced baselines at most `sparse_row_gap` font sizes apart. Rows may have different
+/// cell counts: the run's columns come from the gutters all its rows share (`gutter_columns`, as
+/// in the dense pass) and a row may leave a column empty. A run becomes a table only whole:
+/// every word must fall inside a column and no two cells of a row may share one, every row must
+/// stay its own grid row, and the grid must not read as a list, line or footnote numbers, or a
+/// table of contents. Otherwise its rows stay as they were. A run grows row by row and the next
+/// one starts where it stopped, so this is linear in the rows.
+fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params, budget: &mut Budget) -> Option<()> {
+    let used: std::collections::HashSet<usize> = found.iter().flat_map(|(ids, _)| ids.iter().copied()).collect();
+    let free = |r: &Row| r.multi && r.ids.iter().all(|i| !used.contains(i));
+    let even = |a: f64, b: f64, ratio: f64| pmax(a, b) <= ratio * pmin(a, b);
+    let mut i = 0;
+    while i < rows.len() {
+        if !free(&rows[i]) {
+            i += 1;
+            continue;
+        }
+        let mut gaps: Vec<f64> = Vec::new();
+        let mut j = i + 1;
+        while j < rows.len() {
+            let (prev, r) = (&rows[j - 1], &rows[j]);
+            let gap = r.base - prev.base;
+            if !free(r) || !(gap > 0.0 && gap <= p.sparse_row_gap * pmax(pmax(prev.size, r.size), 1.0)) {
+                break;
+            }
+            gaps.push(gap);
+            j += 1;
+        }
+        let start = i;
+        i = j;
+        // evenly spaced as a whole (the first gap, a header, may differ by twice the ratio). A
+        // final row after a wider gap (a total, a signature line) does not veto the rows above
+        // it: they are judged without it, and it joins only if its cells fit their columns.
+        // Unevenness anywhere else leaves the run as it was rather than cut into partial tables.
+        let uneven: Vec<usize> = gaps
+            .windows(2)
+            .enumerate()
+            .filter(|&(k, w)| !even(w[0], w[1], if k == 0 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio }))
+            .map(|(k, _)| k)
+            .collect();
+        let last_only = uneven.len() == 1 && uneven[0] + 2 == gaps.len() && gaps.len() >= 3;
+        if !(uneven.is_empty() || last_only) {
+            continue;
+        }
+        let core = &rows[start..if last_only { j - 1 } else { j }];
+        if (core.len() as f64) < p.sparse_min_rows {
+            continue;
+        }
+        if !budget.spend(2 * row_words(&rows[start..j])) {
+            return None;
+        }
+        let cols = gutter_columns(core, p);
+        if cols.len() < 2 || !whole(core, &cols) {
+            continue;
+        }
+        let end = if last_only && whole(std::slice::from_ref(&rows[j - 1]), &cols) { j } else { start + core.len() };
+        let run = &rows[start..end];
+        // a multi-cell row next to the run (within twice sparse_row_gap: a table can go on past
+        // a gap too wide to chain, e.g. rows of varying height) that fits its columns: the
+        // table goes on, and the run alone would be a fragment of it. Rows further away (a
+        // page number at the foot) do not count.
+        let near =
+            |a: &Row, b: &Row| (b.base - a.base).abs() <= 2.0 * p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0);
+        let before = start.checked_sub(1).map(|k| (&rows[k], &rows[start]));
+        let after = rows.get(end).map(|r| (r, &rows[end - 1]));
+        if [before, after]
+            .into_iter()
+            .flatten()
+            .any(|(r, edge)| r.multi && near(r, edge) && whole(std::slice::from_ref(r), &cols))
+        {
+            continue;
+        }
+        let mut grid = build_grid(run, &cols, p);
+        // every column filled in two rows or more: a column only one row fills is a
+        // misaligned header or a stray cell, not a column
+        let filled_twice = (0..grid.rows.first().map_or(0, Vec::len))
+            .all(|k| grid.rows.iter().filter(|r| !strip(&r[k]).is_empty()).count() >= 2);
+        if grid.rows.len() == run.len()
+            && filled_twice
+            && grid.rows.first().is_some_and(|r| r.len() >= 2)
+            && plausible(&grid.rows, p)
+            && !marker_column(&grid.rows)
+            && !counter_column(&grid.rows)
+            && !contents(&grid.rows)
+            && !checklist(&grid.rows)
+        {
+            grid.sparse = true;
+            found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
+        }
+    }
+    Some(())
+}
+
+/// Every word of the run inside one of `cols` (1 point of slack), and no column holding words
+/// of two different cells of one row (a cell the gutters did not separate).
+fn whole(run: &[Row], cols: &[(f64, f64)]) -> bool {
+    let lookup = ColumnLookup::new(cols);
+    let mut owners: Vec<(usize, usize)> = Vec::new();
+    for r in run {
+        owners.clear();
+        for (ci, cell) in r.cells.iter().enumerate() {
+            for w in &cell.words {
+                let mid = (w.x0 + w.x1) / 2.0;
+                let k = lookup.column(mid);
+                if !(cols[k].0 - 1.0 <= mid && mid <= cols[k].1 + 1.0) {
+                    return false;
+                }
+                owners.push((k, ci));
+            }
+        }
+        owners.sort_unstable();
+        owners.dedup();
+        if owners.windows(2).any(|w| w[0].0 == w[1].0) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A first column that reads as list or note markers: mostly punctuated markers (`1.`, `a)`,
+/// `12a.`, bullets) or footnote symbols (`*`, `†`, `‡`, `§`, `¶`), letters counting `a`, `b`, `c`
+/// beside cells without numbers, or mostly bare section numbers (`4.1`) beside prose (a median of
+/// 3 or more words). Bare codes beside short cells (an exhibit or part number column) stay a
+/// table.
+fn marker_column(grid: &Grid) -> bool {
+    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
+    if keys.is_empty() {
+        return false;
+    }
+    // `1.`, `a)`, `(iv)` (NUMBERED_RE ending in punctuation), or `12a.`: digits, then letters
+    let punctuated = |k: &str| {
+        let lettered = k.strip_suffix('.').is_some_and(|b| {
+            let d = b.bytes().take_while(u8::is_ascii_digit).count();
+            (1..=4).contains(&d) && b.len() - d <= 2 && b.bytes().skip(d).all(|c| c.is_ascii_lowercase())
+        });
+        bullet(k) || (numbered(k) && k.ends_with(['.', ')'])) || lettered
+    };
+    let symbol = |k: &str| k.chars().count() <= 3 && k.chars().all(|c| matches!(c, '*' | '†' | '‡' | '§' | '¶' | '#'));
+    let half = |f: &dyn Fn(&str) -> bool| 2 * keys.iter().filter(|k| f(k)).count() >= keys.len();
+    let letters = {
+        let v: Option<Vec<u8>> = grid
+            .iter()
+            .map(|r| match strip(&r[0]).as_bytes() {
+                [c] if c.is_ascii_lowercase() => Some(*c),
+                _ => None,
+            })
+            .collect();
+        v.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && !numbers_beside(grid, 0)
+    };
+    half(&punctuated) || half(&symbol) || letters || (half(&numbered) && grid[0].len() >= 2 && prose_column(grid, 1))
+}
+
+/// Column `k` holds prose: a median of 3 or more words.
+fn prose_column(grid: &Grid, k: usize) -> bool {
+    median(grid.iter().map(|r| split_count(&r[k]) as f64).collect()) >= 3.0
+}
+
+/// Any cell outside column `k` is a number.
+fn numbers_beside(grid: &Grid, k: usize) -> bool {
+    grid.iter().any(|r| r.iter().enumerate().any(|(i, c)| i != k && !strip(c).is_empty() && numeric(c)))
+}
+
+/// A bare count of 1 to 4 ASCII digits.
+fn small_int(t: &str) -> Option<u32> {
+    let t = strip(t);
+    (!t.is_empty() && t.len() <= 4 && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse().ok()).flatten()
+}
+
+/// The first or last column counts 1, 2, 3, ... (each row one more) and no other column holds a
+/// number: footnote numbers, verse or pleading line numbers, or a list numbered without
+/// punctuation. A ranked table has numbers beside its index column and stays a table.
+fn counter_column(grid: &Grid) -> bool {
+    let n = grid[0].len();
+    [0, n - 1].into_iter().any(|k| {
+        let nums: Option<Vec<u32>> = grid.iter().map(|r| small_int(&r[k])).collect();
+        nums.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && !numbers_beside(grid, k)
+    })
+}
+
+/// A page number, or the first page of a range (`12-15`, `12–15`).
+fn page_ref(t: &str) -> Option<u32> {
+    let t = strip(t);
+    match t.split_once(['-', '–', '—']) {
+        Some((a, b)) => small_int(b).and(small_int(a)),
+        None => small_int(t),
+    }
+}
+
+/// A table of contents: every row ends in a page number or range, the pages never decrease,
+/// and every other cell is text, apart from a first column of chapter or section numbers. It
+/// needs evidence beyond that shape, since a sorted price list or a chronology has it too: the
+/// first column of section numbers, or a header row whose last cell is a page word (`Page`).
+fn contents(grid: &Grid) -> bool {
+    let n = grid[0].len();
+    let page_word = |t: &str| {
+        let t = pyc::py_lower(strip(t));
+        matches!(&*t, "page" | "pages" | "p." | "pp." | "pg." | "seite" | "página" | "pagina")
+    };
+    let header = page_word(&grid[0][n - 1]);
+    let body = if header { &grid[1..] } else { &grid[..] };
+    if body.len() < 2 {
+        return false;
+    }
+    let pages: Option<Vec<u32>> = body.iter().map(|r| page_ref(&r[n - 1])).collect();
+    let Some(pages) = pages else { return false };
+    if pages.windows(2).any(|w| w[1] < w[0]) {
+        return false;
+    }
+    let section =
+        |t: &str| small_int(t).is_some() || numbered(t) || strip(t).split('.').all(|x| small_int(x).is_some());
+    let first_numbers = n > 2 && body.iter().all(|r| !strip(&r[0]).is_empty() && section(&r[0]));
+    let text_from = if first_numbers { 1 } else { 0 };
+    let text = body.iter().all(|r| r[text_from..n - 1].iter().all(|c| strip(c).is_empty() || !numeric(c)))
+        && body.iter().any(|r| r[text_from..n - 1].iter().any(|c| !strip(c).is_empty()));
+    text && (first_numbers || header)
+}
+
+/// A checklist laid out in columns, not a table: every column's cells mostly start with a
+/// checkbox or tick, or (checkbox widgets are form fields, absent from the text layer) two
+/// columns of the same kind of item. Key/value tables differ between their columns: one is
+/// mostly numbers, cells carry `label:`, or one column is much longer than the other.
+fn checklist(grid: &Grid) -> bool {
+    let k = grid.first().map_or(0, Vec::len);
+    let column = |c: usize| grid.iter().map(|r| strip(&r[c])).filter(|t| !t.is_empty()).collect::<Vec<&str>>();
+    let mostly = |cells: &[&str], f: &dyn Fn(&str) -> bool| {
+        !cells.is_empty() && 2 * cells.iter().filter(|t| f(t)).count() >= cells.len()
+    };
+    let boxed = |t: &str| t.chars().next().is_some_and(is_checkbox_char);
+    if k >= 2 && (0..k).all(|c| mostly(&column(c), &boxed)) {
+        return true;
+    }
+    if k != 2 {
+        return false;
+    }
+    let (a, b) = (column(0), column(1));
+    let digits = |t: &str| t.chars().any(|ch| ch.is_numeric());
+    let label = |t: &str| t.contains([':', '：']);
+    if mostly(&a, &digits) || mostly(&b, &digits) || a.iter().chain(&b).any(|t| label(t)) {
+        return false;
+    }
+    let len = |cells: &[&str]| median(cells.iter().map(|t| char_len(t) as f64).collect());
+    let (la, lb) = (len(&a), len(&b));
+    pmax(la, lb) <= 2.0 * pmin(la, lb)
+}
+
+fn is_checkbox_char(c: char) -> bool {
+    matches!(c, '☐' | '☑' | '☒' | '□' | '▢' | '◻' | '◼' | '❏' | '❐' | '❑' | '❒' | '✓' | '✔' | '✗' | '✘')
 }
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).
@@ -1199,5 +1535,71 @@ mod span_tests {
         page = fixture();
         page.rules.resize(2049, page.rules[0].clone());
         assert!(render(&page).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ColumnLookup;
+
+    /// The linear scans `build_grid` used before the binary search.
+    fn reference(cols: &[(f64, f64)], mid: f64) -> usize {
+        if let Some(k) = cols.iter().position(|&(a, b)| a - 1.0 <= mid && mid <= b + 1.0) {
+            return k;
+        }
+        let d = |i: usize| ((cols[i].0 + cols[i].1) / 2.0 - mid).abs();
+        let mut best = 0;
+        for i in 1..cols.len() {
+            if d(i) < d(best) {
+                best = i;
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn column_lookup_matches_linear_scan() {
+        let mut seed: u64 = 0x9e3779b97f4a7c15;
+        let mut next = |m: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % m
+        };
+        for _ in 0..4000 {
+            // ordered columns: touching (ruled), 1-2 point gaps (slack overlaps), zero width,
+            // and duplicates of the same interval
+            let n = 1 + next(8) as usize;
+            let mut x = next(50) as f64;
+            let mut cols = Vec::new();
+            for _ in 0..n {
+                let w = [0.0, 0.5, 3.0, 10.0][next(4) as usize];
+                cols.push((x, x + w));
+                x += w + [0.0, 0.0, 1.0, 1.5, 2.0, 7.0][next(6) as usize];
+            }
+            let lookup = ColumnLookup::new(&cols);
+            assert!(lookup.centers.is_some());
+            for q in 0..40 {
+                let mid = if q == 0 { f64::NAN } else { next(800) as f64 / 8.0 - 10.0 };
+                assert_eq!(lookup.column(mid), reference(&cols, mid), "{cols:?} {mid}");
+            }
+            // far away, distances round to ties: the first of the tied columns wins
+            for mid in [2e20, -2e20, 1e300, -1e300, f64::MAX, f64::MIN] {
+                assert_eq!(lookup.column(mid), reference(&cols, mid), "{cols:?} {mid}");
+            }
+            // huge columns, where neighbouring centres and 1-point slack round together
+            let big: Vec<(f64, f64)> = cols.iter().map(|&(a, b)| (a * 1e15, b * 1e15)).collect();
+            let lookup = ColumnLookup::new(&big);
+            for _ in 0..20 {
+                let mid = (next(800) as f64 / 8.0 - 10.0) * 1e15;
+                assert_eq!(lookup.column(mid), reference(&big, mid), "{big:?} {mid}");
+            }
+            // unordered lists take the scans
+            let mut rev = cols.clone();
+            rev.reverse();
+            let lookup = ColumnLookup::new(&rev);
+            let mid = next(800) as f64 / 8.0;
+            assert_eq!(lookup.column(mid), reference(&rev, mid));
+        }
     }
 }
