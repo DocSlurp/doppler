@@ -33,8 +33,13 @@ pub struct MathOptions {
     /// layout work units per formula and per page
     pub max_formula_work: u64,
     pub max_page_work: u64,
-    /// pages with more glyphs than this are not read for math
+    /// pages with more glyphs, lines or rules than this are not read for math (the page-level
+    /// passes compare lines with lines)
     pub max_page_glyphs: usize,
+    pub max_page_lines: usize,
+    pub max_page_rules: usize,
+    /// bars per formula
+    pub max_formula_bars: usize,
 }
 
 impl Default for MathOptions {
@@ -45,6 +50,9 @@ impl Default for MathOptions {
             max_formula_work: 200_000,
             max_page_work: 2_000_000,
             max_page_glyphs: 60_000,
+            max_page_lines: 5_000,
+            max_page_rules: 5_000,
+            max_formula_bars: 200,
         }
     }
 }
@@ -601,7 +609,11 @@ struct Formula {
 /// Read the math of a page and rewrite its lines. `bars` are the page's thin rules.
 pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath) {
     let mut stats = PageMath::default();
-    if page.glyphs.is_empty() || page.glyphs.len() > opts.max_page_glyphs {
+    if page.glyphs.is_empty()
+        || page.glyphs.len() > opts.max_page_glyphs
+        || page.lines.len() > opts.max_page_lines
+        || page.rules.len() > opts.max_page_rules
+    {
         stats.skipped = true;
         return (page.lines.clone(), stats);
     }
@@ -762,6 +774,8 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     // read every formula
     let debug = std::env::var_os("DOPPLER_MATH_DEBUG").is_some();
     let mut extra_used = vec![false; page.extra_glyphs.len()];
+    let mut extra_order: Vec<usize> = (0..page.extra_glyphs.len()).collect();
+    extra_order.sort_by(|&a, &b| page.extra_glyphs[a].x.total_cmp(&page.extra_glyphs[b].x));
     let mut work: u64 = 0;
     let mut replace: Vec<(usize, usize, usize, String, bool)> = Vec::new(); // (line, start, end, tex, display)
     let mut remove: Vec<(usize, usize, usize)> = Vec::new();
@@ -797,9 +811,14 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                         acc.3.max(a.base + 1.0 * a.size),
                     )
                 });
-            for (k, g) in page.extra_glyphs.iter().enumerate() {
+            let from = extra_order.partition_point(|&k| page.extra_glyphs[k].x < x0 - 1.5 * em);
+            for &k in &extra_order[from..] {
+                let g = &page.extra_glyphs[k];
+                if g.x > x1 + 1.5 * em {
+                    break;
+                }
                 let b = g.base.unwrap_or(0.0);
-                if !extra_used[k] && g.x >= x0 - 1.5 * em && g.x <= x1 + 1.5 * em && b >= top && b <= bot {
+                if !extra_used[k] && b >= top && b <= bot {
                     let a = extra_atom(page, g);
                     if a.sym.known {
                         extra_used[k] = true;
@@ -809,6 +828,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             }
         }
         // numbers alone (figure tick labels, a negative number in prose) stay text
+        let mut ctx_failed_bars = false;
         let numbers_only = !atoms.is_empty()
             && atoms.iter().all(|a| {
                 a.sym.text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '−' | '-' | '+' | ' '))
@@ -843,6 +863,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             let top = top - 1.0 * em;
             let fb: Vec<Bar> =
                 bars.iter().copied().filter(|b| b.x0 >= x0 - em && b.x1 <= x1 + em && b.y > top && b.y < bot).collect();
+            if fb.len() > opts.max_formula_bars {
+                ctx_failed_bars = true;
+            }
             if debug && std::env::var("DOPPLER_MATH_DEBUG").as_deref() == Ok("2") {
                 for a in &atoms {
                     eprintln!(
@@ -855,6 +878,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
             }
             let mut ctx = Ctx::new(opts.max_formula_work);
+            ctx.failed = ctx_failed_bars;
             let tree = layout::parse(atoms, fb, &mut ctx);
             work += ctx.work;
             let tex = layout::latex(&tree);
