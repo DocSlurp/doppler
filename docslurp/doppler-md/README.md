@@ -56,6 +56,9 @@ byte-identical.
   math font), too much doubt, or over a work cap keeps its words. Its page is listed in the
   report's `mathUncertainPages` (one-based), so a caller can send only those pages to a vision
   model. A formula never gets a symbol that no glyph drew.
+- Incomplete glyph evidence (producer truncation, consumer caps, or rejected glyph records)
+  preserves the page’s original words and marks it uncertain. Partial words are never rewritten
+  from the surviving glyphs alone.
 - Caps: pages over 5,000 lines, 5,000 rules or 60,000 glyphs are not read for math (listed in
   `math.skippedPages`); a formula has at most 1,500 glyphs, 200 bars and 200,000 work units.
 

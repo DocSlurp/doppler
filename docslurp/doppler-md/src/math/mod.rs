@@ -858,6 +858,12 @@ struct Formula {
 /// Read the math of a page and rewrite its lines. `bars` are the page's thin rules.
 pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath) {
     let mut stats = PageMath::default();
+    if page.glyphs_truncated {
+        stats.skipped = true;
+        stats.uncertain = 1;
+        stats.uncertain_limit = 1;
+        return (escape_dollars(&page.lines), stats);
+    }
     if page.glyphs.is_empty()
         || page.glyphs.len() > opts.max_page_glyphs
         || page.lines.len() > opts.max_page_lines

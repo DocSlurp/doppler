@@ -867,6 +867,12 @@ impl ParseState {
                 if !eof && undecided(s, lt, &mut scan) {
                     return lt;
                 }
+                if glyphs && (s[lt + 1..].starts_with("g ") || s[lt + 1..].starts_with("xg ")) {
+                    report.glyphs_skipped += 1;
+                    if let Some(pg) = page.as_mut() {
+                        pg.glyphs_truncated = true;
+                    }
+                }
                 pos = lt + 1;
                 continue;
             };
@@ -891,6 +897,7 @@ impl ParseState {
                         ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
                     ) else {
                         report.glyphs_skipped += 1;
+                        pg.glyphs_truncated = true;
                         continue;
                     };
                     let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
@@ -911,6 +918,9 @@ impl ParseState {
                 Tag::Glyph(attrs) => {
                     let Some(word) = words.last_mut().filter(|_| *glyph_target && *in_line) else {
                         report.glyphs_skipped += 1;
+                        if let Some(pg) = page.as_mut() {
+                            pg.glyphs_truncated = true;
+                        }
                         continue;
                     };
                     if *page_glyphs >= MAX_PAGE_GLYPHS || *doc_glyphs >= MAX_DOC_GLYPHS {
@@ -923,8 +933,26 @@ impl ParseState {
                     parse_attrs(attrs, &mut ga, glyph_key);
                     let (Some(x), Some(w)) = (ga[G_X].and_then(py_float), ga[G_W].and_then(py_float)) else {
                         report.glyphs_skipped += 1;
+                        if let Some(pg) = page.as_mut() {
+                            pg.glyphs_truncated = true;
+                        }
                         continue;
                     };
+                    let unicode = ga[G_U].unwrap_or("");
+                    let invalid_text = unicode.split(' ').filter(|h| !h.is_empty()).enumerate().any(|(n, h)| {
+                        n >= MAX_GLYPH_CHARS
+                            || h.len() > 8
+                            || u32::from_str_radix(h, 16).ok().and_then(char::from_u32).is_none()
+                    });
+                    let invalid_geometry = ga[G_B].is_some_and(|v| py_float(v).is_none())
+                        || ga[G_Z].is_some_and(|v| py_float(v).is_none_or(|z| z <= 0.0));
+                    if invalid_text || invalid_geometry {
+                        report.glyphs_skipped += 1;
+                        if let Some(pg) = page.as_mut() {
+                            pg.glyphs_truncated = true;
+                        }
+                        continue;
+                    }
                     let src = match ga[G_S] {
                         Some("t") => UniSource::ToUnicode,
                         Some("n") => UniSource::Name,
@@ -1012,9 +1040,6 @@ impl ParseState {
                     if rules_truncated == Some(true) {
                         report.rules_truncated_pages.push(report.pages - 1);
                     }
-                    if glyphs && a.0[GLYPHS_TRUNCATED] == Some("1") {
-                        report.glyphs_truncated_pages.push(report.pages - 1);
-                    }
                     *page_glyphs = 0;
                     line_glyphs.clear();
                     font_index.clear();
@@ -1030,6 +1055,9 @@ impl ParseState {
                         rules_truncated,
                     };
                     if let Some(done) = page.replace(next) {
+                        if done.glyphs_truncated {
+                            report.glyphs_truncated_pages.push(report.pages - 2);
+                        }
                         emit(done);
                     }
                 }
@@ -1130,6 +1158,9 @@ impl ParseState {
             self.report.words_unclosed_line += self.words.len();
         }
         if let Some(pg) = self.page.take() {
+            if pg.glyphs_truncated {
+                self.report.glyphs_truncated_pages.push(self.report.pages - 1);
+            }
             emit(pg);
         }
         self.report
@@ -1222,6 +1253,25 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_glyph_budget_exhaustion_mid_word_marks_page_incomplete() {
+        let mut parser = Parser::with_glyphs(true);
+        parser.state.doc_glyphs = MAX_DOC_GLYPHS - 1;
+        let input = r#"<page><line><word xMin="1" yMin="1" xMax="20" yMax="12">a+b</word><g x="1" w="6" u="61"/><g x="7" w="6" u="2b"/><g x="13" w="6" u="62"/></line></page>"#;
+        let mut pages = Vec::new();
+        for chunk in input.as_bytes().chunks(1) {
+            parser.push(std::str::from_utf8(chunk).unwrap(), &mut |p| pages.push(p));
+        }
+        let report = parser.finish(&mut |p| pages.push(p));
+        assert_eq!(report.glyphs_skipped, 2);
+        assert_eq!(report.glyphs_truncated_pages, vec![0]);
+        assert!(pages[0].glyphs_truncated);
+        assert_eq!(pages[0].glyphs.len(), 1);
+        let (lines, stats) = crate::math::rewrite_page(&pages[0], &crate::math::MathOptions::default());
+        assert_eq!(&*lines[0].words[0].text, "a+b");
+        assert!(stats.skipped && stats.uncertain > 0);
+    }
 
     #[test]
     fn key_index_matches_keys() {

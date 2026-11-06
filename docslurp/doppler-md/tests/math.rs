@@ -228,16 +228,16 @@ fn malformed_records_are_dropped_and_counted() {
     );
     let (_, report) = convert(x, &MATH);
     let r = &report.parse;
-    // the orphan, the NaN, the one after a skipped word, and the xg without b/z
-    assert_eq!(r.glyphs_skipped, 4, "{r:?}");
+    // The orphan, NaN, invalid Unicode sequence, glyph after a skipped word, and xg without b/z.
+    assert_eq!(r.glyphs_skipped, 5, "{r:?}");
     assert_eq!(r.fonts_skipped, 2, "{r:?}");
     let pages = doppler_md::model::parse_with(x, &mut Default::default(), true);
-    assert_eq!(pages[0].glyphs.len(), 2);
+    assert_eq!(pages[0].glyphs.len(), 1);
     assert_eq!(pages[0].extra_glyphs.len(), 1);
-    // invalid code points are dropped; the unknown font id gives no font
+    // A malformed Unicode sequence invalidates the whole glyph, not just its bad scalars.
     assert_eq!(&*pages[0].glyphs[0].text, "x");
-    assert!(pages[0].glyphs[0].font.is_none());
-    assert_eq!(pages[0].glyphs[1].name.as_deref(), Some("<&"));
+    assert!(pages[0].glyphs_truncated);
+    assert_eq!(pages[0].glyphs[0].name.as_deref(), Some("<&"));
 }
 
 fn timed<T>(limit: Duration, f: impl FnOnce() -> T) -> T {
@@ -1021,5 +1021,35 @@ fn supplementary_unicode_glyph_names_recover_missing_alphabets() {
     assert_eq!(symbol.style, Style::DoubleStruck);
     for name in ["u110000", "uD800", "u1D53Cjunk", "u", "uniD800"] {
         assert!(!classify(FontRole::OtherMath, Some(name), "", 7, true).known, "{name}");
+    }
+}
+
+#[test]
+fn incomplete_glyph_evidence_preserves_original_words() {
+    let input =
+        page(&[vec![w(vec![g(80.0, 6.0, 1, "x"), g(86.0, 6.0, 0, "+"), g(92.0, 6.0, 1, "y")], 120.0, 10.0)]], &[]);
+    let start = input.find("<g ").unwrap();
+    let first_end = start + input[start..].find("/>").unwrap() + 2;
+    let line_end = input[first_end..].find("</line>").unwrap() + first_end;
+    let truncated =
+        format!("{}{}", &input[..first_end], &input[line_end..]).replace("<page ", "<page glyphsTruncated=\"1\" ");
+    let malformed = input.replacen("<g x=\"86\"", "<g x=\"invalid\"", 1);
+    for x in [&truncated, &malformed] {
+        let (md, report) = to_markdown_report_with(x, &Params::default(), &MATH);
+        assert_eq!(md[0].trim(), "x+y");
+        assert!(report.to_json().contains("\"mathUncertainPages\":[1]"));
+        assert!(report.to_json().contains("\"glyphsTruncatedPages\":[1]"));
+        use doppler_md::{Converter, model::Parser};
+        let p = Params::default();
+        let mut parser = Parser::with_glyphs(true);
+        let mut conv = Converter::new(&p, MATH, Some(1));
+        let mut streamed = Vec::new();
+        for b in x.as_bytes().chunks(1) {
+            parser.push(std::str::from_utf8(b).unwrap(), &mut |pg| conv.push(pg, &mut |_, s| streamed.push(s)));
+        }
+        let parsed = parser.finish(&mut |pg| conv.push(pg, &mut |_, s| streamed.push(s)));
+        let streamed_report = conv.finish(parsed, &mut |_, s| streamed.push(s));
+        assert_eq!(streamed, md);
+        assert_eq!(streamed_report.to_json(), report.to_json());
     }
 }
