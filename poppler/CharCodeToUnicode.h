@@ -40,10 +40,11 @@
 #include <deque>
 
 #include "CharTypes.h"
+#include "poppler_private_export.h"
 
 //------------------------------------------------------------------------
 
-class CharCodeToUnicode
+class POPPLER_PRIVATE_EXPORT CharCodeToUnicode
 {
     friend class UnicodeToCharCode;
     struct PrivateTag

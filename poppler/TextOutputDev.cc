@@ -2894,6 +2894,9 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         h1 /= uLen;
         for (i = 0; i < uLen; ++i) {
             curWord->addChar(curFont, x1 + i * w1, y1 + i * h1, w1, h1, charPos, nBytes, c, u[i], mat);
+            if (actualTextChars) {
+                curWord->chars.back().actualText = true;
+            }
         }
     }
     charPos += nBytes;
@@ -5772,7 +5775,9 @@ void ActualText::end(const GfxState *state)
         // text->addChar()
         assert(actualText.has_value());
         std::vector<Unicode> uni = TextStringToUCS4(actualText.value());
+        text->setActualTextChars(true);
         text->addChar(state, actualTextX0, actualTextY0, actualTextX1 - actualTextX0, actualTextY1 - actualTextY0, 0, actualTextNBytes, uni.data(), uni.size());
+        text->setActualTextChars(false);
     }
 
     actualText.reset();
@@ -5925,7 +5930,7 @@ bool TextOutputDev::getRulesTruncated() const
     return text->getRulesTruncated();
 }
 
-void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box)
+void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box, bool imageMask)
 {
     if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1)) {
         return;
@@ -5944,7 +5949,35 @@ void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, 
     if (x1 < x0 || y1 < y0 || (x1 - x0 <= 0.01 && y1 - y0 <= 0.01)) {
         return;
     }
-    text->addRule({ x0, y0, x1, y1, r, g, b, box }, remainingDocRules);
+    text->addRule({ x0, y0, x1, y1, r, g, b, box, imageMask }, remainingDocRules);
+}
+
+void TextOutputDev::imageMaskGeometry(GfxState *state)
+{
+    // The mask fills the unit square under the CTM. Keep only axis-aligned masks that are thin
+    // in one direction and at least four times longer in the other: rules, not glyph bitmaps
+    // or pictures. Colour is the fill colour the stencil paints with.
+    const std::array<double, 6> &m = state->getCTM();
+    constexpr double eps = 0.01;
+    if (!(std::fabs(m[1]) <= eps && std::fabs(m[2]) <= eps) && !(std::fabs(m[0]) <= eps && std::fabs(m[3]) <= eps)) {
+        return;
+    }
+    double x[4], y[4];
+    state->transform(0, 0, &x[0], &y[0]);
+    state->transform(1, 0, &x[1], &y[1]);
+    state->transform(0, 1, &x[2], &y[2]);
+    state->transform(1, 1, &x[3], &y[3]);
+    const double x0 = std::min({ x[0], x[1], x[2], x[3] }), x1 = std::max({ x[0], x[1], x[2], x[3] });
+    const double y0 = std::min({ y[0], y[1], y[2], y[3] }), y1 = std::max({ y[0], y[1], y[2], y[3] });
+    const double w = x1 - x0, h = y1 - y0;
+    const double maxThinRule = 1.5 * state->getHDPI() / 72.0;
+    const double thin = std::min(w, h), length = std::max(w, h);
+    if (!std::isfinite(thin) || !std::isfinite(length) || thin > maxThinRule || length < 4 * thin || length <= eps) {
+        return;
+    }
+    GfxRGB rgb;
+    state->getFillRGB(&rgb);
+    addClippedRule(state, x0, y0, x1, y1, colToDbl(rgb.r), colToDbl(rgb.g), colToDbl(rgb.b), false, true);
 }
 
 void TextOutputDev::collectPathRules(const GfxState *state, bool filled)

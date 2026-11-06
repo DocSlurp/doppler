@@ -4167,6 +4167,14 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
         if (out->needNonText()) {
             Object refObj = res->lookupXObjectNF(name);
             doImage(&refObj, obj1Stream, false);
+        } else if (out->needImageMaskGeometry()) {
+            // only stencil masks, and never a stream whose header doImage would decode
+            Object imObj = obj1StreamDict->lookup("ImageMask");
+            const StreamKind kind = obj1Stream->getKind();
+            if (imObj.isBool() && imObj.getBool() && kind != strDCT && kind != strJPX && kind != strJBIG2) {
+                Object refObj = res->lookupXObjectNF(name);
+                doImage(&refObj, obj1Stream, false);
+            }
         }
     } else if (obj2.isName("Form")) {
         Object refObj = res->lookupXObjectNF(name);
@@ -4365,8 +4373,15 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
             return;
         }
 
-        // if drawing is disabled, skip over inline image data
-        if (!ocState || !out->needNonText()) {
+        // a text device may want only where the mask is (thin masks are rules)
+        if (ocState && !out->needNonText() && out->needImageMaskGeometry() && !singular_matrix) {
+            out->imageMaskGeometry(state);
+        }
+
+        // if drawing is disabled, skip over inline image data (an XObject's data is never read)
+        if (!out->needNonText() && !inlineImg) {
+            // reached only for needImageMaskGeometry()
+        } else if (!ocState || !out->needNonText()) {
             if (!str->rewind()) {
                 error(errSyntaxError, getPos(), "Bad image parameters");
                 return;
@@ -4383,6 +4398,10 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
             }
         }
     } else {
+        // an image XObject reaches here without needNonText() only for needImageMaskGeometry()
+        if (!out->needNonText() && !inlineImg) {
+            return;
+        }
         if (bits == 0) {
             error(errSyntaxError, getPos(), "Bad image parameters");
             return;
