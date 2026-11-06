@@ -992,6 +992,7 @@ impl ParseState {
                 Tag::Font(attrs) => {
                     let Some(pg) = page.as_mut() else { continue };
                     if pg.fonts.len() >= MAX_PAGE_FONTS {
+                        pg.glyphs_truncated = true;
                         report.fonts_skipped += 1;
                         continue;
                     }
@@ -1277,6 +1278,29 @@ mod tests {
         let (lines, stats) = crate::math::rewrite_page(&pages[0], &crate::math::MathOptions::default());
         assert_eq!(&*lines[0].words[0].text, "a+b");
         assert!(stats.skipped && stats.uncertain > 0);
+    }
+
+    #[test]
+    fn font_cap_attributes_incomplete_evidence_to_each_affected_page() {
+        let mut input = String::from("<page></page><page>");
+        for id in 0..=MAX_PAGE_FONTS {
+            input.push_str(&format!("<font id=\"{id}\"/>"));
+        }
+        input.push_str("</page><page><font id=\"0\"/></page>");
+        for chunk_size in [1, 37, input.len()] {
+            let mut parser = Parser::with_glyphs(true);
+            let mut pages = Vec::new();
+            for chunk in input.as_bytes().chunks(chunk_size) {
+                parser.push(std::str::from_utf8(chunk).unwrap(), &mut |p| pages.push(p));
+            }
+            let report = parser.finish(&mut |p| pages.push(p));
+            assert_eq!(report.fonts_skipped, 1);
+            assert_eq!(report.glyphs_truncated_pages, vec![1]);
+            assert_eq!(pages.iter().map(|p| p.glyphs_truncated).collect::<Vec<_>>(), vec![false, true, false]);
+            assert_eq!(pages[1].fonts.len(), MAX_PAGE_FONTS);
+            let (_, stats) = crate::math::rewrite_page(&pages[1], &crate::math::MathOptions::default());
+            assert!(stats.skipped && stats.uncertain > 0);
+        }
     }
 
     #[test]
