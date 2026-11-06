@@ -1324,9 +1324,14 @@ pub fn classify(role: FontRole, name: Option<&str>, text: &str, code: u32, src_i
         if unknown_text && let Some((t, class)) = agl_math(n) {
             return sym(t, class);
         }
-        // AGL-style uniXXXX names
-        if let Some(hex) = n.strip_prefix("uni")
-            && hex.len() == 4
+        // AGL scalar names: uniXXXX (BMP) and uXXXX..uXXXXXX (including
+        // supplementary mathematical alphabets). Invalid scalars stay unknown.
+        let hex = n
+            .strip_prefix("uni")
+            .filter(|h| h.len() == 4)
+            .or_else(|| n.strip_prefix('u').filter(|h| (4..=6).contains(&h.len())));
+        if let Some(hex) = hex
+            && hex.bytes().all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
             && let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
         {
             return classify(role, None, &c.to_string(), code, false);

@@ -1011,3 +1011,15 @@ fn glyph_stream_matches_whole_input_at_every_chunk_boundary() {
         assert_eq!(actual.to_json(), report.to_json(), "chunk width {width}");
     }
 }
+
+#[test]
+fn supplementary_unicode_glyph_names_recover_missing_alphabets() {
+    use doppler_md::math::symbols::{FontRole, Style, classify};
+    let symbol = classify(FontRole::OtherMath, Some("u1D53C"), "", 7, true);
+    assert!(symbol.known);
+    assert_eq!(symbol.text, "E");
+    assert_eq!(symbol.style, Style::DoubleStruck);
+    for name in ["u110000", "uD800", "u1D53Cjunk", "u", "uniD800"] {
+        assert!(!classify(FontRole::OtherMath, Some(name), "", 7, true).known, "{name}");
+    }
+}
