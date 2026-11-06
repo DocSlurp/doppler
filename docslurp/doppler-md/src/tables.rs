@@ -528,7 +528,7 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params)
             }
             let next: Vec<(f64, f64)> =
                 common.iter().zip(&r.cells).map(|(&(a, b), c)| (pmax(a, c.x0), pmin(b, c.x1))).collect();
-            if next.iter().any(|&(a, b)| !(a <= b)) {
+            if next.iter().any(|&(a, b)| a.partial_cmp(&b).is_none_or(|o| o.is_gt())) {
                 break;
             }
             common = next;

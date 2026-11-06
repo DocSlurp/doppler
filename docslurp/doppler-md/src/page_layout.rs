@@ -27,14 +27,24 @@ pub(crate) struct PlacedTable {
 pub(crate) enum FlowItem {
     Paragraph(Paragraph),
     Table(PlacedTable),
+    /// a rotated region, already laid out and rendered in its own frame
+    Rendered(Rc<Vec<String>>),
 }
 
 pub(crate) enum Block {
     Text { text: String, heading: u8, list: bool, caption: bool },
     Table(PlacedTable),
+    Rendered(Rc<Vec<String>>),
 }
 
-type Placement = Elem<Option<Rc<PlacedTable>>>;
+/// What a non-line element carries through region splitting.
+#[derive(Clone, Debug)]
+pub(crate) enum Placed {
+    Table(Rc<PlacedTable>),
+    Rendered(Rc<Vec<String>>),
+}
+
+type Placement = Elem<Option<Placed>>;
 
 /// A page whose content has its final ownership and reading order.
 pub(crate) struct PageLayout {
@@ -62,6 +72,18 @@ impl PageLayout {
             UseBlocks::Auto => !per_block.is_empty() && median(per_block.counts().map(|c| c as f64).collect()) >= 1.5,
             UseBlocks::Off => false,
         };
+        // lines of a rotation read in their own frame are laid out there (sharing the budget)
+        // and come back as one rendered element at their upright extent
+        let (ids, groups) = crate::rotation::split(page, &ids, p);
+        let mut rendered = Vec::with_capacity(groups.len());
+        for g in groups {
+            let keep = vec![false; g.page.lines.len()];
+            let sub = PageLayout::within(&g.page, &keep, body, body_color, p, format, budget)?;
+            let parts: Vec<String> =
+                render_blocks(sub.blocks, format).into_iter().filter(|s| !strip(s).is_empty()).collect();
+            let item = Some(Placed::Rendered(Rc::new(parts)));
+            rendered.push(Elem { line: None, table: item, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1 });
+        }
         let mut elements: Vec<Placement> = ids
             .iter()
             .map(|&i| {
@@ -73,11 +95,12 @@ impl PageLayout {
             let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
                 |(members, table, (x0, y0, x1, y1))| {
                     let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
-                    (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
+                    (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
                 },
             );
             elements = replace_members(elements, tables);
         }
+        elements.extend(rendered);
         let mut blocks = Vec::new();
         for region in regions_within(&elements, &page.lines, body, p, 0, budget)? {
             // A narrow gutter can place the same line in two regions. Each region assigns
@@ -123,7 +146,7 @@ fn assign_region(page: &Page, mut region: Vec<Placement>, body: f64, p: &Params)
             let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, header: None };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.
-            (members, Elem { line: None, table: Some(Rc::new(table)), x0: 0.0, x1, y0, y1: y0 })
+            (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 })
         });
         region = replace_members(region, tables);
     }
@@ -134,7 +157,8 @@ fn assign_region(page: &Page, mut region: Vec<Placement>, body: f64, p: &Params)
         .chain(lines)
         .map(|e| {
             let item = match e.table {
-                Some(t) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1 },
+                Some(Placed::Table(t)) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1 },
+                Some(Placed::Rendered(r)) => Seq::Rendered(r),
                 None => Seq::Line(page.lines[e.line.expect("line placement")].clone()),
             };
             SeqItem { item, y0: e.y0, x0: e.x0 }
@@ -156,6 +180,10 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
             FlowItem::Table(table) => {
                 out.push(Block::Table(table));
                 previous_table = true;
+            }
+            FlowItem::Rendered(parts) => {
+                out.push(Block::Rendered(parts));
+                previous_table = false;
             }
             FlowItem::Paragraph(it) => {
                 if p.table_titles
@@ -192,27 +220,31 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
 pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<String> {
     blocks
         .into_iter()
-        .map(|block| match block {
-            Block::Table(t) => match (tables, t.header) {
-                (TableFormat::Html, header) => {
-                    if header.is_none() {
-                        t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
-                    } else {
-                        grid_html(header.as_deref(), &t.table.rows)
+        .flat_map(|block| -> Vec<String> {
+            let one = match block {
+                Block::Rendered(parts) => return parts.to_vec(),
+                Block::Table(t) => match (tables, t.header) {
+                    (TableFormat::Html, header) => {
+                        if header.is_none() {
+                            t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
+                        } else {
+                            grid_html(header.as_deref(), &t.table.rows)
+                        }
                     }
-                }
-                (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
-                (TableFormat::Gfm, Some(header)) => {
-                    let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
-                    rows.push(header);
-                    rows.extend(t.table.rows.iter().cloned());
-                    grid_markdown(&rows)
-                }
-            },
-            Block::Text { text, caption: true, .. } => format!("*{text}*"),
-            Block::Text { text, heading, .. } if heading != 0 => format!("{} {text}", "#".repeat(heading as usize)),
-            Block::Text { text, list: true, .. } => format!("- {text}"),
-            Block::Text { text, .. } => text,
+                    (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
+                    (TableFormat::Gfm, Some(header)) => {
+                        let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
+                        rows.push(header);
+                        rows.extend(t.table.rows.iter().cloned());
+                        grid_markdown(&rows)
+                    }
+                },
+                Block::Text { text, caption: true, .. } => format!("*{text}*"),
+                Block::Text { text, heading, .. } if heading != 0 => format!("{} {text}", "#".repeat(heading as usize)),
+                Block::Text { text, list: true, .. } => format!("- {text}"),
+                Block::Text { text, .. } => text,
+            };
+            vec![one]
         })
         .collect()
 }

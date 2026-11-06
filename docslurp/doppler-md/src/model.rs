@@ -50,6 +50,9 @@ pub struct Word {
     pub base: f64,
     pub space: bool,
     pub color: Rc<str>,
+    /// quarter turns of the glyphs (doppler `rotation`: 0 upright, 1 reading top to bottom,
+    /// 2 upside down, 3 reading bottom to top); absent or any other value reads as 0
+    pub rot: u8,
 }
 
 impl Word {
@@ -213,7 +216,7 @@ pub struct Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 12] = [
+const KEYS: [&str; 13] = [
     "xMin",
     "yMin",
     "xMax",
@@ -226,6 +229,7 @@ const KEYS: [&str; 12] = [
     "width",
     "height",
     "rulesTruncated",
+    "rotation",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -243,6 +247,7 @@ fn key_index(name: &str) -> Option<usize> {
         "width" => 9,
         "height" => 10,
         "rulesTruncated" => 11,
+        "rotation" => 12,
         _ => return None,
     })
 }
@@ -442,6 +447,7 @@ const BASELINE: usize = 8;
 const WIDTH: usize = 9;
 const HEIGHT: usize = 10;
 const RULES_TRUNCATED: usize = 11;
+const ROTATION: usize = 12;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -647,6 +653,12 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
                     base,
                     space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
                     color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
+                    rot: match a.0[ROTATION] {
+                        Some("1") => 1,
+                        Some("2") => 2,
+                        Some("3") => 3,
+                        _ => 0,
+                    },
                 });
             }
         }

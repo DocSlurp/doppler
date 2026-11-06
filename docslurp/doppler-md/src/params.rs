@@ -155,6 +155,10 @@ params! {
     sparse_row_gap: num = 5.0,
     /// max ratio between neighbouring row gaps; the first gap (a header) may differ by twice this
     sparse_pitch_ratio: num = 1.35,
+    /// read the lines of one rotation (a table printed sideways) in their own reading frame
+    rotated_frames: flag = true,
+    /// fewer kept lines of a rotation than this stay in the upright layout
+    rotated_min_lines: num = 3.0,
     /// use doppler -rules table borders when present
     rules: flag = true,
     /// horizontal rule length / body size

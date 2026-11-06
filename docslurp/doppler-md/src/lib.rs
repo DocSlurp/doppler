@@ -18,6 +18,7 @@ pub mod params;
 pub mod patterns;
 pub mod prose;
 pub mod pyc;
+mod rotation;
 pub mod tables;
 mod unicode_tables;
 
