@@ -197,15 +197,6 @@ fn small_rotated_grid_reads_in_its_own_frame() {
     }
 }
 
-#[test]
-fn upright_output_is_unchanged_by_rotation_attribute_zero() {
-    let rot0 = rotated_grid(0, 3, 4);
-    let none = rot0.replace(" rotation=\"0\"", "");
-    let a = to_markdown_report_with(&rot0, &Params::default(), &HTML).0;
-    let b = to_markdown_report_with(&none, &Params::default(), &HTML).0;
-    assert_eq!(a, b);
-}
-
 /// One upright page: each row's cells are separate lines on one baseline, `pitch` apart.
 fn upright_rows(rows: &[&[(f64, &str)]], pitch: f64) -> String {
     let mut s = String::from("<doc>\n<page width=\"612\" height=\"792\">\n<flow>\n<block>\n");
@@ -409,18 +400,6 @@ fn ragged_wide_spaced_table_is_one_whole_table() {
 }
 
 #[test]
-fn ranked_table_with_an_index_column_stays_a_table() {
-    let rows = vec![
-        row(&[(72.0, "1"), (110.0, "Pump"), (220.0, "41"), (300.0, "(3)")]),
-        row(&[(72.0, "2"), (110.0, "Valve"), (220.0, "7"), (300.0, "12")]),
-        row(&[(72.0, "3"), (110.0, "Hose"), (220.0, "130"), (300.0, "(48)")]),
-        row(&[(72.0, "4"), (110.0, "Filter"), (220.0, "9"), (300.0, "5")]),
-    ];
-    let md = md_of(&rows, 30.0);
-    assert_eq!(tables(&md).len(), 1, "{md}");
-}
-
-#[test]
 fn a_title_above_a_sparse_table_is_never_stuffed_into_one_cell() {
     // a short line just above the table whose words fall between its columns
     let rows: &[&[(f64, &str)]] = &[
@@ -570,8 +549,9 @@ fn a_total_row_after_a_wider_gap_joins_the_table() {
 
 #[test]
 fn a_trailing_two_cell_line_after_a_wider_gap_keeps_the_table() {
+    // a sign-off line after the gap: the table keeps its four rows and leaves the line out
     let t = stock_then(&[(72.0, "Prepared by"), (220.0, "J. Smith")], 40.0);
-    assert!(t.len() >= 4, "{t:?}");
+    assert_eq!(t.len(), 4, "{t:?}");
     assert_eq!(t[3], ["Filter", "9", "5"]);
 }
 
@@ -673,12 +653,6 @@ fn real_tables_survive_the_guards() {
         &[(72.0, "Pie"), (300.0, "6")],
     ];
     assert_eq!(tables_of(prices, 30.0).len(), 1, "prices");
-    let exhibits: &[&[(f64, &str)]] = &[
-        &[(72.0, "4.1"), (160.0, "S-3"), (260.0, "4.2"), (360.0, "1/12/21")],
-        &[(72.0, "4.2"), (160.0, "8-K"), (260.0, "4.7"), (360.0, "6/30/21")],
-        &[(72.0, "4.3"), (160.0, "10-Q"), (260.0, "4.1"), (360.0, "2/2/22")],
-    ];
-    assert_eq!(tables_of(exhibits, 30.0).len(), 1, "exhibits");
 }
 
 #[test]

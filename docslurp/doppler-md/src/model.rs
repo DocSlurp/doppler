@@ -570,14 +570,22 @@ impl Default for ParseState {
 
 /// Whether more input could change what [`tag_at`] decided (`None`) for the `<` at `lt`: a
 /// `Some` only ever comes from delimiters found in `s`, but a `None` may come from one not
-/// found yet. The longest fixed prefix tag_at reads is under 16 bytes.
-fn undecided(s: &str, lt: usize) -> bool {
+/// found yet. The longest fixed prefix tag_at reads is under 16 bytes. The searches go through
+/// the run's forward-only caches, so a long run of rejected `<` stays linear.
+fn undecided(s: &str, lt: usize, scan: &mut Scan) -> bool {
     let b = s.as_bytes();
     if b.len() < lt + 16 {
         return true;
     }
-    let Some(gt) = memchr(b'>', &b[lt..]) else { return true };
-    b[lt + 1..].starts_with(b"word ") && memmem::find(&b[lt + gt..], b"</word>").is_none()
+    let Some(gt) = scan.gt(b, lt + 1) else { return true };
+    if !b[lt + 1..].starts_with(b"word ") {
+        return false;
+    }
+    // still open without a `</word>`, unless a newline after the tag has already ruled it out:
+    // a `</word>` can only start after it
+    let t = gt + 1;
+    let finder = &scan.finder;
+    scan.word_close.find(b, t, |h| finder.find(h)).is_none() && scan.newline.find(b, t, |h| memchr(b'\n', h)).is_none()
 }
 
 impl ParseState {
@@ -595,7 +603,7 @@ impl ParseState {
         while let Some(off) = memchr(b'<', &b[pos..]) {
             let lt = pos + off;
             let Some((tag, end)) = tag_at(s, lt, &mut scan) else {
-                if !eof && undecided(s, lt) {
+                if !eof && undecided(s, lt, &mut scan) {
                     return lt;
                 }
                 pos = lt + 1;

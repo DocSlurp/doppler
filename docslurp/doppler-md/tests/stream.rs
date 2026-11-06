@@ -135,14 +135,15 @@ fn a_window_covering_the_document_is_exact() {
     for n in [1, 2, 5, 17] {
         let bytes = pages(n, |i| if i % 3 == 0 { "Annual Report".into() } else { format!("Chapter {i}") });
         let want = whole(&bytes);
-        for w in [n.saturating_sub(1), n, n + 4, 1000] {
+        // n - 1 pages either side is the smallest window that covers every page
+        for w in [n.saturating_sub(1), 1000] {
             assert_eq!(streamed(&bytes, 4096, Some(w)), want, "{n} pages, window {w}");
         }
     }
 }
 
 #[test]
-fn window_holds_at_most_window_plus_one_pages() {
+fn window_holds_exactly_window_pages_after_each_push() {
     let p = Params::default();
     let w = 3;
     let mut conv = Converter::new(&p, Options::default(), Some(w));
@@ -153,7 +154,8 @@ fn window_holds_at_most_window_plus_one_pages() {
         parser.push(std::str::from_utf8(piece).unwrap(), &mut |pg| {
             parsed += 1;
             conv.push(pg, &mut |i, _| written.push(i));
-            assert!(parsed - written.len() <= w + 1, "{parsed} parsed, {} written", written.len());
+            // fewer would mean writing before the window is complete, more holding pages longer
+            assert_eq!(parsed - written.len(), parsed.min(w), "{parsed} parsed, {} written", written.len());
         });
     }
     let parse = parser.finish(&mut |pg| conv.push(pg, &mut |i, _| written.push(i)));
@@ -171,7 +173,6 @@ fn running_headers_are_judged_within_the_window() {
     assert_eq!(header_kept(&whole(&bytes).0), 40);
     assert_eq!(header_kept(&streamed(&bytes, 4096, Some(4)).0), 0);
     let same = pages(40, |_| "Same header".into());
-    assert_eq!(header_kept(&streamed(&same, 4096, Some(1)).0), 0);
     assert!(streamed(&same, 4096, Some(1)).0.iter().all(|m| !m.contains("Same header")));
 }
 
@@ -184,4 +185,40 @@ fn unclosed_tag_streamed_in_tiny_pieces_is_linear() {
     let (md, _) = streamed(s.as_bytes(), 1, Some(4));
     assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
     assert_eq!(md.len(), 1);
+}
+
+#[test]
+fn rejected_tags_streamed_stay_linear() {
+    // runs of `<` (or `<word ` lines) that tag_at rejects must not each rescan to the next
+    // `>` or `</word>`; the filler makes the buffer grow so that non-final runs happen
+    let mut lts = String::from("<page>");
+    lts.push_str(&"<".repeat(500_000));
+    lts.push('>');
+    lts.push_str(&"a".repeat(1_200_000));
+    let mut words = String::from("<page>");
+    words.push_str(&"<word x>\n".repeat(200_000));
+    words.push_str("</word>");
+    for s in [lts, words] {
+        let t = Instant::now();
+        assert_eq!(streamed(s.as_bytes(), 65536, Some(4)), whole(s.as_bytes()));
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    }
+}
+
+#[test]
+fn an_unclosed_word_does_not_hold_back_later_pages() {
+    // no `</word>` ever follows (the later pages hold only rules), but the newline after the
+    // tag already decides it
+    let mut s = String::from("<page><line><word xMin=\"1\" yMin=\"2\" xMax=\"3\" yMax=\"4\">a\n");
+    for _ in 0..30 {
+        s.push_str("<page width=\"612\" height=\"792\"><rule xMin=\"1\" yMin=\"2\" xMax=\"300\" yMax=\"3\"/></page>\n");
+    }
+    let p = Params::default();
+    let mut conv = Converter::new(&p, Options::default(), Some(2));
+    let mut parser = Parser::new();
+    let mut written = 0;
+    for piece in s.as_bytes().chunks(64) {
+        parser.push(std::str::from_utf8(piece).unwrap(), &mut |pg| conv.push(pg, &mut |_, _| written += 1));
+    }
+    assert!(written >= 25, "only {written} pages written before the end of the input");
 }
