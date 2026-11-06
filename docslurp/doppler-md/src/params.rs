@@ -158,8 +158,8 @@ params! {
     rotated_frames: flag = true,
     /// fewer kept lines of a rotation than this stay in the upright layout
     rotated_min_lines: num = 3.0,
-    /// other lines (share of the rotated lines, at least one) allowed inside a rotated region;
-    /// they stay in the upright layout
+    /// other lines allowed inside a rotated region, as a share of its lines rounded up (any
+    /// positive share allows one; 0 allows none); they stay in the upright layout
     rotated_stray_share: num = 0.1,
     /// use doppler -rules table borders when present
     rules: flag = true,

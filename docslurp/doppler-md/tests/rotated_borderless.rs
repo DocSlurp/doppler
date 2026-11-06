@@ -452,3 +452,74 @@ fn a_stray_upright_line_inside_a_rotated_table_stays_upright() {
         assert!(md[0].contains("COPY"), "rotation {rot}:\n{}", md[0]);
     }
 }
+
+/// Word texts in the input (`>text</word>`) and their counts.
+fn input_words(xhtml: &str) -> std::collections::BTreeMap<String, usize> {
+    let mut m = std::collections::BTreeMap::new();
+    for chunk in xhtml.split("</word>").filter(|c| c.contains("<word")) {
+        *m.entry(chunk.rsplit('>').next().unwrap_or("").to_string()).or_insert(0) += 1;
+    }
+    m
+}
+
+/// A page of lines given in the reading frame of rotation `rot`: each word is (u0, u1, v, text)
+/// with u along the line and v its top; boxes are 10 high. Mapped to page coordinates as the
+/// producer writes them (an inverted u interval stays inverted).
+fn rotated_page(rot: u8, lines: &[Vec<(f64, f64, f64, String)>]) -> String {
+    let (w, h) = (612.0, 792.0);
+    let mut s = format!("<doc>\n<page width=\"{w}\" height=\"{h}\">\n<flow>\n<block>\n");
+    for words in lines {
+        s.push_str("<line>");
+        for (u0, u1, v0, t) in words {
+            let (v1, vb) = (v0 + 10.0, v0 + 8.0);
+            let (x0, y0, x1, y1, base) = match rot {
+                1 => (w - v1, *u0, w - v0, *u1, w - vb),
+                2 => (w - u1, h - v1, w - u0, h - v0, h - vb),
+                3 => (*v0, h - u1, v1, h - u0, vb),
+                _ => (*u0, *v0, *u1, v1, vb),
+            };
+            s.push_str(&format!(
+                "<word xMin=\"{x0}\" yMin=\"{y0}\" xMax=\"{x1}\" yMax=\"{y1}\" fontName=\"F\" fontSize=\"10\" \
+                 rotation=\"{rot}\" baseline=\"{base}\">{t}</word>"
+            ));
+        }
+        s.push_str("</line>\n");
+    }
+    s.push_str("</block>\n</flow>\n</page>\n</doc>\n");
+    s
+}
+
+#[test]
+fn inverted_word_boxes_in_rotated_text_are_not_duplicated() {
+    // two columns of rotated prose and a one-word line whose box the producer wrote inverted
+    // (u0 > u1), reaching across the column gutter: every word must come out once
+    let mut lines = Vec::new();
+    for r in 0..8 {
+        for (c, u) in [(0, 40.0), (1, 330.0)] {
+            let v = 60.0 + 14.0 * r as f64;
+            lines.push(
+                (0..6).map(|k| (u + 36.0 * k as f64, u + 36.0 * k as f64 + 30.0, v, format!("c{c}r{r}k{k}"))).collect(),
+            );
+        }
+    }
+    lines.push(vec![(560.0, 120.0, 60.0 + 14.0 * 8.0, "flipped".to_string())]);
+    for rot in [1u8, 2, 3] {
+        let xhtml = rotated_page(rot, &lines);
+        let md = to_markdown_report_with(&xhtml, &Params::default(), &HTML).0.join("\x0c");
+        for (w, n) in input_words(&xhtml) {
+            let got = md.matches(w.as_str()).count();
+            assert_eq!(got, n, "rotation {rot}: {w} x{got}\n{md}");
+        }
+    }
+}
+
+#[test]
+fn rotated_stray_share_zero_tolerates_no_stray_line() {
+    let stamp = "<line><word xMin=\"300\" yMin=\"390\" xMax=\"340\" yMax=\"400\" fontName=\"F\" \
+                 fontSize=\"10\" rotation=\"0\" baseline=\"398\">COPY</word></line>\n";
+    let xhtml = rotated_grid(1, 3, 4).replacen("<block>\n", &format!("<block>\n{stamp}"), 1);
+    let mut p = Params::default();
+    p.apply_json(r#"{"rotated_stray_share": 0}"#).unwrap();
+    let (md, _) = to_markdown_report_with(&xhtml, &p, &HTML);
+    assert!(tables(&md[0]).is_empty(), "{}", md[0]);
+}

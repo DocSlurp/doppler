@@ -41,14 +41,19 @@ impl Frame {
     /// A box (x0, y0, x1, y1) in the reading frame. Rotation 1 reads down the page (+y) with
     /// lines advancing toward -x; rotation 3 reads up the page with lines advancing toward +x;
     /// rotation 2 is upside down.
+    ///
+    /// The result is always ordered (x0 <= x1, y0 <= y1): the producer can write an inverted
+    /// box (xMin > xMax), and in the reframed layout such a box would sit on both sides of a
+    /// column gutter and be read twice.
     pub(crate) fn rect(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> (f64, f64, f64, f64) {
         let (w, h) = (self.width, self.height);
-        match self.rot {
+        let (a, b, c, d) = match self.rot {
             1 => (y0, w - x1, y1, w - x0),
             2 => (w - x1, h - y1, w - x0, h - y0),
             3 => (h - y1, x0, h - y0, x1),
             _ => (x0, y0, x1, y1),
-        }
+        };
+        (pmin(a, c), pmin(b, d), pmax(a, c), pmax(b, d))
     }
 
     /// A baseline (an x coordinate for rotations 1 and 3) in the reading frame; 0 stays 0, the
@@ -91,8 +96,9 @@ pub(crate) struct RotatedGroup {
 
 /// Lines (by id) to lay out upright, and the rotated groups to lay out in their own frames.
 ///
-/// A rotation forms a group when it has at least `rotated_min_lines` kept lines and at most
-/// `rotated_stray_share` of that many other kept lines (at least one) have their centre inside
+/// A rotation forms a group when every word box of it is ordered and within a page's distance
+/// of the page, it has at least `rotated_min_lines` kept lines and at most
+/// `rotated_stray_share` of that many other kept lines (rounded up) have their centre inside
 /// their extent; those stay upright. With more, the rotated lines are labels among upright
 /// text and stay where they were. Each group gets the rules that touch its extent, then those touching the
 /// grown extent (twice), so a ruled table's border far from its text comes along; rules are
@@ -111,6 +117,18 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
         }
         let lines = |ks: &[usize]| ks.iter().map(|&k| &page.lines[ids[k]]).collect::<Vec<_>>();
         let ls = lines(&members);
+        // only well-formed geometry is reframed: an inverted word box (xMin > xMax) or one far
+        // off the page keeps the upright treatment, which reads every word once
+        let (pw, ph) = (pmax(page.width.abs(), 1.0), pmax(page.height.abs(), 1.0));
+        let sane = |w: &Word| {
+            w.x0 <= w.x1
+                && w.y0 <= w.y1
+                && [w.x0, w.x1].iter().all(|&x| -pw <= x && x <= 2.0 * pw)
+                && [w.y0, w.y1].iter().all(|&y| -ph <= y && y <= 2.0 * ph)
+        };
+        if !ls.iter().all(|l| l.words.iter().all(sane)) {
+            continue;
+        }
         let x0 = ls.iter().map(|l| l.x0).fold(f64::INFINITY, pmin);
         let y0 = ls.iter().map(|l| l.y0).fold(f64::INFINITY, pmin);
         let x1 = ls.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
@@ -125,7 +143,8 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
         // a few other lines inside (a stamp, a Bates number) stay in the upright layout; more
         // mean the rotated lines are labels among upright text, which keep the old treatment
         let strays = (0..ids.len()).filter(|&k| rots[k] != rot && inside(&page.lines[ids[k]])).count();
-        if strays as f64 > pmax(1.0, p.rotated_stray_share * members.len() as f64) {
+        // rounded up: any positive share allows at least one, 0 allows none
+        if strays as f64 > (p.rotated_stray_share * members.len() as f64).ceil() {
             continue;
         }
         let frame = Frame::new(rot, page.width, page.height);
