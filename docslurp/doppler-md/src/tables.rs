@@ -635,9 +635,12 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
         }
         let end = if last_only && whole(std::slice::from_ref(&rows[j - 1]), &cols) { j } else { start + core.len() };
         let run = &rows[start..end];
-        // a multi-cell row next to the run (within sparse_row_gap) that fits its columns: the
-        // table goes on, and the run alone would be a fragment of it
-        let near = |a: &Row, b: &Row| (b.base - a.base).abs() <= p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0);
+        // a multi-cell row next to the run (within twice sparse_row_gap: a table can go on past
+        // a gap too wide to chain, e.g. rows of varying height) that fits its columns: the
+        // table goes on, and the run alone would be a fragment of it. Rows further away (a
+        // page number at the foot) do not count.
+        let near =
+            |a: &Row, b: &Row| (b.base - a.base).abs() <= 2.0 * p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0);
         let before = start.checked_sub(1).map(|k| (&rows[k], &rows[start]));
         let after = rows.get(end).map(|r| (r, &rows[end - 1]));
         if [before, after]
@@ -693,9 +696,11 @@ fn whole(run: &[Row], cols: &[(f64, f64)]) -> bool {
     true
 }
 
-/// A first column that reads as list markers: mostly punctuated markers (`1.`, `a)`, `12a.`,
-/// bullets), or mostly bare section numbers (`4.1`) beside prose (a median of 3 or more words).
-/// Bare codes beside short cells (an exhibit or part number column) stay a table.
+/// A first column that reads as list or note markers: mostly punctuated markers (`1.`, `a)`,
+/// `12a.`, bullets) or footnote symbols (`*`, `†`, `‡`, `§`, `¶`), letters counting `a`, `b`, `c`
+/// beside cells without numbers, or mostly bare section numbers (`4.1`) beside prose (a median of
+/// 3 or more words). Bare codes beside short cells (an exhibit or part number column) stay a
+/// table.
 fn marker_column(grid: &Grid) -> bool {
     let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
     if keys.is_empty() {
@@ -709,13 +714,29 @@ fn marker_column(grid: &Grid) -> bool {
         });
         bullet(k) || (numbered(k) && k.ends_with(['.', ')'])) || lettered
     };
+    let symbol = |k: &str| k.chars().count() <= 3 && k.chars().all(|c| matches!(c, '*' | '†' | '‡' | '§' | '¶' | '#'));
     let half = |f: &dyn Fn(&str) -> bool| 2 * keys.iter().filter(|k| f(k)).count() >= keys.len();
-    half(&punctuated) || (half(&numbered) && grid[0].len() >= 2 && prose_column(grid, 1))
+    let letters = {
+        let v: Option<Vec<u8>> = grid
+            .iter()
+            .map(|r| match strip(&r[0]).as_bytes() {
+                [c] if c.is_ascii_lowercase() => Some(*c),
+                _ => None,
+            })
+            .collect();
+        v.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && !numbers_beside(grid, 0)
+    };
+    half(&punctuated) || half(&symbol) || letters || (half(&numbered) && grid[0].len() >= 2 && prose_column(grid, 1))
 }
 
 /// Column `k` holds prose: a median of 3 or more words.
 fn prose_column(grid: &Grid, k: usize) -> bool {
     median(grid.iter().map(|r| split_count(&r[k]) as f64).collect()) >= 3.0
+}
+
+/// Any cell outside column `k` is a number.
+fn numbers_beside(grid: &Grid, k: usize) -> bool {
+    grid.iter().any(|r| r.iter().enumerate().any(|(i, c)| i != k && !strip(c).is_empty() && numeric(c)))
 }
 
 /// A bare count of 1 to 4 ASCII digits.
@@ -724,32 +745,53 @@ fn small_int(t: &str) -> Option<u32> {
     (!t.is_empty() && t.len() <= 4 && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse().ok()).flatten()
 }
 
-/// The first or last column counts 1, 2, 3, ... (each row one more) beside a column of prose
-/// (a median of 3 or more words): footnote numbers, verse or pleading line numbers, or a list
-/// numbered without punctuation. A ranked table's index column sits beside short cells.
+/// The first or last column counts 1, 2, 3, ... (each row one more) and no other column holds a
+/// number: footnote numbers, verse or pleading line numbers, or a list numbered without
+/// punctuation. A ranked table has numbers beside its index column and stays a table.
 fn counter_column(grid: &Grid) -> bool {
     let n = grid[0].len();
-    [(0, 1), (n - 1, n - 2)].into_iter().any(|(k, text)| {
+    [0, n - 1].into_iter().any(|k| {
         let nums: Option<Vec<u32>> = grid.iter().map(|r| small_int(&r[k])).collect();
-        nums.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && prose_column(grid, text)
+        nums.is_some_and(|v| v.windows(2).all(|w| w[1] == w[0] + 1)) && !numbers_beside(grid, k)
     })
 }
 
-/// A table of contents: every row ends in a bare page number, the numbers never decrease, and
-/// every other cell is text, apart from a first column of chapter or section numbers.
+/// A page number, or the first page of a range (`12-15`, `12–15`).
+fn page_ref(t: &str) -> Option<u32> {
+    let t = strip(t);
+    match t.split_once(['-', '–', '—']) {
+        Some((a, b)) => small_int(b).and(small_int(a)),
+        None => small_int(t),
+    }
+}
+
+/// A table of contents: every row ends in a page number or range, the pages never decrease,
+/// and every other cell is text, apart from a first column of chapter or section numbers. It
+/// needs evidence beyond that shape, since a sorted price list or a chronology has it too: the
+/// first column of section numbers, or a header row whose last cell is a page word (`Page`).
 fn contents(grid: &Grid) -> bool {
     let n = grid[0].len();
-    let pages: Option<Vec<u32>> = grid.iter().map(|r| small_int(&r[n - 1])).collect();
+    let page_word = |t: &str| {
+        let t = pyc::py_lower(strip(t));
+        matches!(&*t, "page" | "pages" | "p." | "pp." | "pg." | "seite" | "página" | "pagina")
+    };
+    let header = page_word(&grid[0][n - 1]);
+    let body = if header { &grid[1..] } else { &grid[..] };
+    if body.len() < 2 {
+        return false;
+    }
+    let pages: Option<Vec<u32>> = body.iter().map(|r| page_ref(&r[n - 1])).collect();
     let Some(pages) = pages else { return false };
     if pages.windows(2).any(|w| w[1] < w[0]) {
         return false;
     }
     let section =
         |t: &str| small_int(t).is_some() || numbered(t) || strip(t).split('.').all(|x| small_int(x).is_some());
-    let first_numbers = grid.iter().all(|r| strip(&r[0]).is_empty() || section(&r[0]));
-    let text_from = if first_numbers && n > 2 { 1 } else { 0 };
-    grid.iter().all(|r| r[text_from..n - 1].iter().all(|c| strip(c).is_empty() || !numeric(c)))
-        && grid.iter().any(|r| r[text_from..n - 1].iter().any(|c| !strip(c).is_empty()))
+    let first_numbers = n > 2 && body.iter().all(|r| !strip(&r[0]).is_empty() && section(&r[0]));
+    let text_from = if first_numbers { 1 } else { 0 };
+    let text = body.iter().all(|r| r[text_from..n - 1].iter().all(|c| strip(c).is_empty() || !numeric(c)))
+        && body.iter().any(|r| r[text_from..n - 1].iter().any(|c| !strip(c).is_empty()));
+    text && (first_numbers || header)
 }
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).

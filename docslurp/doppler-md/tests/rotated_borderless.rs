@@ -580,3 +580,103 @@ fn a_far_row_that_fits_the_columns_does_not_veto_the_table() {
     let t = stock_then(&[(72.0, "Page"), (220.0, "3")], 300.0);
     assert_eq!(t.len(), 4, "{t:?}");
 }
+
+/// Tables in an upright page of evenly spaced rows.
+fn tables_of(rows: &[&[(f64, &str)]], pitch: f64) -> Vec<Vec<Vec<String>>> {
+    let md = to_markdown_report_with(&upright_rows(rows, pitch), &Params::default(), &HTML).0.join("\x0c");
+    tables(&md)
+}
+
+#[test]
+fn contents_with_a_header_row_or_page_ranges_is_not_a_table() {
+    let header: &[&[(f64, &str)]] = &[
+        &[(72.0, "Section"), (500.0, "Page")],
+        &[(72.0, "Field kits"), (500.0, "3")],
+        &[(72.0, "Calibration"), (500.0, "9")],
+        &[(72.0, "Sampling plans"), (500.0, "14")],
+        &[(72.0, "Storage"), (500.0, "22")],
+    ];
+    assert!(tables_of(header, 24.0).is_empty());
+    let ranges: &[&[(f64, &str)]] = &[
+        &[(72.0, "1"), (90.0, "Field kits"), (500.0, "1-4")],
+        &[(72.0, "2"), (90.0, "Calibration"), (500.0, "5-11")],
+        &[(72.0, "3"), (90.0, "Sampling plans"), (500.0, "12-19")],
+        &[(72.0, "4"), (90.0, "Storage"), (500.0, "20-23")],
+    ];
+    assert!(tables_of(ranges, 24.0).is_empty());
+}
+
+#[test]
+fn footnotes_with_symbol_or_letter_markers_or_short_notes_are_not_tables() {
+    let symbols: &[&[(f64, &str)]] = &[
+        &[(72.0, "*"), (90.0, "Readings were taken before the thaw.")],
+        &[(72.0, "†"), (90.0, "The north gauge was replaced.")],
+        &[(72.0, "‡"), (90.0, "Rounded to the nearest tenth.")],
+    ];
+    assert!(tables_of(symbols, 30.0).is_empty());
+    let letters: &[&[(f64, &str)]] = &[
+        &[(72.0, "a"), (90.0, "Adjusted for the dry spell.")],
+        &[(72.0, "b"), (90.0, "Two sites visited twice.")],
+        &[(72.0, "c"), (90.0, "Estimated from the logs.")],
+    ];
+    assert!(tables_of(letters, 30.0).is_empty());
+    let legal: &[&[(f64, &str)]] = &[
+        &[(72.0, "1"), (90.0, "Id.")],
+        &[(72.0, "2"), (90.0, "Id. at 4.")],
+        &[(72.0, "3"), (90.0, "Ibid.")],
+        &[(72.0, "4"), (90.0, "Id. at 9.")],
+    ];
+    assert!(tables_of(legal, 30.0).is_empty());
+}
+
+#[test]
+fn pleading_captions_beside_line_numbers_are_not_tables() {
+    let two_col: &[&[(f64, &str)]] = &[
+        &[(40.0, "1"), (90.0, "JANE ROE,"), (340.0, "Case No. 26-CV-0417")],
+        &[(40.0, "2"), (90.0, "Plaintiff,"), (340.0, "COMPLAINT FOR")],
+        &[(40.0, "3"), (90.0, "v."), (340.0, "DAMAGES")],
+        &[(40.0, "4"), (90.0, "RIVERSIDE LLC,"), (340.0, "JURY DEMANDED")],
+        &[(40.0, "5"), (90.0, "Defendant."), (340.0, "Dept. 12")],
+    ];
+    assert!(tables_of(two_col, 24.0).is_empty());
+    let one_col: &[&[(f64, &str)]] = &[
+        &[(40.0, "1"), (90.0, "COMPLAINT")],
+        &[(40.0, "2"), (90.0, "JANE ROE,")],
+        &[(40.0, "3"), (90.0, "Plaintiff,")],
+        &[(40.0, "4"), (90.0, "v.")],
+        &[(40.0, "5"), (90.0, "RIVERSIDE LLC,")],
+        &[(40.0, "6"), (90.0, "Defendant.")],
+        &[(40.0, "7"), (90.0, "INTRODUCTION")],
+    ];
+    assert!(tables_of(one_col, 24.0).is_empty());
+}
+
+#[test]
+fn real_tables_survive_the_guards() {
+    let rank: &[&[(f64, &str)]] = &[
+        &[(72.0, "1"), (100.0, "Harbor Mutual Savings Association"), (400.0, "2,450")],
+        &[(72.0, "2"), (100.0, "First Prairie Trust Company"), (400.0, "1,980")],
+        &[(72.0, "3"), (100.0, "Northgate Cooperative Bank"), (400.0, "1,105")],
+    ];
+    assert_eq!(tables_of(rank, 30.0).len(), 1, "rank");
+    let chronology: &[&[(f64, &str)]] = &[
+        &[(72.0, "Mill opened on the river"), (400.0, "1871")],
+        &[(72.0, "Footbridge rebuilt"), (400.0, "1902")],
+        &[(72.0, "Gauge station added"), (400.0, "1958")],
+        &[(72.0, "Towpath reopened"), (400.0, "2011")],
+    ];
+    assert_eq!(tables_of(chronology, 30.0).len(), 1, "chronology");
+    let prices: &[&[(f64, &str)]] = &[
+        &[(72.0, "Coffee"), (300.0, "3")],
+        &[(72.0, "Tea"), (300.0, "3")],
+        &[(72.0, "Scone"), (300.0, "4")],
+        &[(72.0, "Pie"), (300.0, "6")],
+    ];
+    assert_eq!(tables_of(prices, 30.0).len(), 1, "prices");
+    let exhibits: &[&[(f64, &str)]] = &[
+        &[(72.0, "4.1"), (160.0, "S-3"), (260.0, "4.2"), (360.0, "1/12/21")],
+        &[(72.0, "4.2"), (160.0, "8-K"), (260.0, "4.7"), (360.0, "6/30/21")],
+        &[(72.0, "4.3"), (160.0, "10-Q"), (260.0, "4.1"), (360.0, "2/2/22")],
+    ];
+    assert_eq!(tables_of(exhibits, 30.0).len(), 1, "exhibits");
+}
