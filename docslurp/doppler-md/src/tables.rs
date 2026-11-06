@@ -662,6 +662,7 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
             && !marker_column(&grid.rows)
             && !counter_column(&grid.rows)
             && !contents(&grid.rows)
+            && !checklist(&grid.rows)
         {
             grid.sparse = true;
             found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
@@ -792,6 +793,38 @@ fn contents(grid: &Grid) -> bool {
     let text = body.iter().all(|r| r[text_from..n - 1].iter().all(|c| strip(c).is_empty() || !numeric(c)))
         && body.iter().any(|r| r[text_from..n - 1].iter().any(|c| !strip(c).is_empty()));
     text && (first_numbers || header)
+}
+
+/// A checklist laid out in columns, not a table: every column's cells mostly start with a
+/// checkbox or tick, or (checkbox widgets are form fields, absent from the text layer) two
+/// columns of the same kind of item. Key/value tables differ between their columns: one is
+/// mostly numbers, cells carry `label:`, or one column is much longer than the other.
+fn checklist(grid: &Grid) -> bool {
+    let k = grid.first().map_or(0, Vec::len);
+    let column = |c: usize| grid.iter().map(|r| strip(&r[c])).filter(|t| !t.is_empty()).collect::<Vec<&str>>();
+    let mostly = |cells: &[&str], f: &dyn Fn(&str) -> bool| {
+        !cells.is_empty() && 2 * cells.iter().filter(|t| f(t)).count() >= cells.len()
+    };
+    let boxed = |t: &str| t.chars().next().is_some_and(is_checkbox_char);
+    if k >= 2 && (0..k).all(|c| mostly(&column(c), &boxed)) {
+        return true;
+    }
+    if k != 2 {
+        return false;
+    }
+    let (a, b) = (column(0), column(1));
+    let digits = |t: &str| t.chars().any(|ch| ch.is_numeric());
+    let label = |t: &str| t.contains([':', '：']);
+    if mostly(&a, &digits) || mostly(&b, &digits) || a.iter().chain(&b).any(|t| label(t)) {
+        return false;
+    }
+    let len = |cells: &[&str]| median(cells.iter().map(|t| char_len(t) as f64).collect());
+    let (la, lb) = (len(&a), len(&b));
+    pmax(la, lb) <= 2.0 * pmin(la, lb)
+}
+
+fn is_checkbox_char(c: char) -> bool {
+    matches!(c, '☐' | '☑' | '☒' | '□' | '▢' | '◻' | '◼' | '❏' | '❐' | '❑' | '❒' | '✓' | '✔' | '✗' | '✘')
 }
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).

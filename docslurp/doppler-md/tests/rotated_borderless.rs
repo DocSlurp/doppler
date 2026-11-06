@@ -680,3 +680,44 @@ fn real_tables_survive_the_guards() {
     ];
     assert_eq!(tables_of(exhibits, 30.0).len(), 1, "exhibits");
 }
+
+#[test]
+fn two_column_checklist_is_not_a_table() {
+    // checkbox widgets are form fields, absent from the text layer: only the items remain
+    let xhtml = upright_rows(
+        &[
+            &[(88.0, "Has a valid passport"), (330.0, "Receives child benefit")],
+            &[(88.0, "Changing schools"), (330.0, "Owns a registered seal")],
+            &[(88.0, "Holds a care certificate"), (330.0, "Updating the ID card")],
+        ],
+        40.0,
+    );
+    let md = to_markdown_report_with(&xhtml, &Params::default(), &HTML).0;
+    assert!(tables(&md[0]).is_empty(), "{}", md[0]);
+    assert!(before(&md[0], "Has a valid passport", "Updating the ID card"), "{}", md[0]);
+}
+
+#[test]
+fn checkbox_glyph_columns_are_not_a_table() {
+    let xhtml = upright_rows(
+        &[
+            &[(72.0, "☐ Passport"), (330.0, "☐ Utility bill")],
+            &[(72.0, "☑ Birth certificate"), (330.0, "☐ Bank statement 2025")],
+            &[(72.0, "☐ Driving licence"), (330.0, "☒ Tax return 2024")],
+        ],
+        40.0,
+    );
+    let md = to_markdown_report_with(&xhtml, &Params::default(), &HTML).0;
+    assert!(tables(&md[0]).is_empty(), "{}", md[0]);
+}
+
+#[test]
+fn identifier_and_description_columns_stay_a_table() {
+    let rows: &[&[(f64, &str)]] = &[
+        &[(72.0, "PS_DISTILL"), (200.0, "Converts a stream to a document.")],
+        &[(72.0, "CREATE_XPS"), (200.0, "Writes a copy of the document.")],
+        &[(72.0, "SAVE_RESULT"), (200.0, "Saves the result to disk.")],
+    ];
+    let md = to_markdown_report_with(&upright_rows(rows, 34.0), &Params::default(), &HTML).0;
+    assert_eq!(tables(&md[0]).len(), 1, "{}", md[0]);
+}
