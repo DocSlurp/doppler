@@ -952,6 +952,51 @@ fn with_rest(item: Item, rest: Vec<Atom>, ctx: &mut Ctx, depth: usize) -> Item {
 fn rows_or_line(atoms: Vec<Atom>, ctx: &mut Ctx, depth: usize) -> Item {
     let rows = split_rows(&atoms);
     if rows.len() <= 1 {
+        // smaller symbols wholly under or over the full-size ones (limits under an upright
+        // operator name, a label over a relation) are limits, not part of the row
+        let s = atoms.iter().filter(|a| !a.axis_symbol()).map(|a| a.size).fold(0.0, f64::max);
+        let full: Vec<&Atom> = atoms.iter().filter(|a| !a.axis_symbol() && a.size >= 0.9 * s).collect();
+        if !full.is_empty() && full.len() < atoms.len() {
+            let mut fb: Vec<f64> = full.iter().map(|a| a.base).collect();
+            fb.sort_by(f64::total_cmp);
+            let rb = fb[fb.len() / 2];
+            let (fx0, fx1) = (
+                full.iter().map(|a| a.x0).fold(f64::INFINITY, f64::min),
+                full.iter().map(|a| a.x1).fold(f64::NEG_INFINITY, f64::max),
+            );
+            let small = |a: &Atom| a.size < 0.9 * s && a.cx() >= fx0 - 0.2 * s && a.cx() <= fx1 + 0.2 * s;
+            let under = |a: &Atom| small(a) && a.base > rb + 0.45 * s;
+            let over = |a: &Atom| small(a) && a.base < rb - 0.65 * s;
+            if atoms.iter().any(|a| under(a) || over(a)) {
+                let (mut below, mut above, mut row) = (Vec::new(), Vec::new(), Vec::new());
+                for a in atoms {
+                    if under(&a) {
+                        below.push(a);
+                    } else if over(&a) {
+                        above.push(a);
+                    } else {
+                        row.push(a);
+                    }
+                }
+                let base = parse_row(row, Vec::new(), ctx, depth + 1);
+                let sub = (!below.is_empty()).then(|| Box::new(parse_row(below, Vec::new(), ctx, depth + 1)));
+                let sup = (!above.is_empty()).then(|| Box::new(parse_row(above, Vec::new(), ctx, depth + 1)));
+                let (mut x0, mut x1) = (base.x0, base.x1);
+                for c in [&sub, &sup].into_iter().flatten() {
+                    x0 = x0.min(c.x0);
+                    x1 = x1.max(c.x1);
+                }
+                let (b, sz, v) = (base.base, base.size, base.votes);
+                return Item {
+                    node: Node::Scripts { base: Box::new(base), sub, sup },
+                    x0,
+                    x1,
+                    base: b,
+                    size: sz,
+                    votes: v,
+                };
+            }
+        }
         let mut atoms = atoms;
         atoms.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         // same baseline: the glyphs just touch or kern into each other
@@ -1390,8 +1435,23 @@ impl Tex {
 fn leaf_tex(a: &Atom) -> String {
     let t = &a.sym.text;
     let mut chars = t.chars();
+    if !a.sym.known {
+        // never a symbol for a glyph the text layer does not identify
+        return "\\boxed{?}".to_string();
+    }
+    if a.upright_text && t.len() > 1 && t.chars().all(|c| c.is_ascii_alphabetic()) {
+        if let Some(f) = symbols::function_name(t) {
+            return format!("\\{f}");
+        }
+        if symbols::operator_name(t) {
+            return format!("\\operatorname{{{t}}}");
+        }
+    }
     let (Some(c), None) = (chars.next(), chars.next()) else {
-        return t.chars().map(|c| symbols::tex_of_char(c).map_or_else(|| c.to_string(), str::to_string)).collect();
+        return t
+            .chars()
+            .map(|c| symbols::spell(c).map_or_else(|| "\\boxed{?}".to_string(), |s| s.into_owned()))
+            .collect();
     };
     if c.is_ascii_alphabetic() || matches!(c, 'ı' | 'ȷ') || ('\u{391}'..='\u{3ff}').contains(&c) {
         let core = symbols::tex_of_char(c).map_or_else(|| c.to_string(), str::to_string);
@@ -1414,7 +1474,7 @@ fn leaf_tex(a: &Atom) -> String {
             _ => c.to_string(),
         };
     }
-    symbols::tex_of_char(c).map_or_else(|| c.to_string(), str::to_string)
+    symbols::spell(c).map_or_else(|| "\\boxed{?}".to_string(), |s| s.into_owned())
 }
 
 fn emit(item: &Item, w: &mut Tex) {
@@ -1582,6 +1642,9 @@ fn emit_row(items: &[Item], w: &mut Tex) {
                 }
                 if let Some(f) = symbols::function_name(&word) {
                     w.push(&format!("\\{f}"));
+                } else if symbols::operator_name(&word) {
+                    w.push(&format!("\\operatorname{{{word}}}"));
+                    w.after_word = false;
                 } else {
                     w.push(&format!("\\text{{{}}}", symbols::text_escape(&word)));
                     w.after_word = false;

@@ -240,13 +240,14 @@ impl Report {
             };
             format!(
                 concat!(
-                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"uncertainWhy\":{{\"unknownGlyph\":{},\"doubt\":{},\"limit\":{},\"mixedActualText\":{}}},\"glyphsLeft\":{},",
+                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"partial\":{},\"uncertainWhy\":{{\"unknownGlyph\":{},\"doubt\":{},\"limit\":{},\"mixedActualText\":{}}},\"glyphsLeft\":{},",
                     "\"mathGlyphs\":{},\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
                 ),
                 sum(|m| m.inline),
                 sum(|m| m.display),
                 sum(|m| m.actual_text),
                 sum(|m| m.uncertain),
+                sum(|m| m.partial),
                 sum(|m| m.uncertain_unknown),
                 sum(|m| m.uncertain_doubt),
                 sum(|m| m.uncertain_limit),
@@ -256,7 +257,7 @@ impl Report {
                 pages(|m| m.skipped),
                 r.glyphs_skipped,
                 r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
-                pages(|m| m.uncertain > 0)
+                pages(|m| m.uncertain > 0 || m.partial > 0)
             )
         };
         format!(

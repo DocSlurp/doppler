@@ -372,3 +372,175 @@ fn fuzz_mutated_math_pages() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// round 2: every emitted formula is ASCII LaTeX; unknown glyphs never become symbols
+
+/// The LaTeX of every formula in a page's Markdown.
+fn formulas(md: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let b = md.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'$' && (i == 0 || b[i - 1] != b'\\') {
+            let dd = b.get(i + 1) == Some(&b'$');
+            let start = i + if dd { 2 } else { 1 };
+            let mut j = start;
+            while j < b.len() && !(b[j] == b'$' && b[j - 1] != b'\\') {
+                j += 1;
+            }
+            out.push(md[start..j.min(md.len())].to_string());
+            i = j + if dd { 2 } else { 1 };
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn display_line(gs: Vec<G>) -> String {
+    let line = vec![W { gs, base: 200.0, size: 10.0 }];
+    convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH).0
+}
+
+#[test]
+fn unicode_symbols_are_spelled_as_commands() {
+    // increment, square root as a symbol, en dash as minus, AMS relations, a thin space
+    let md = display_line(vec![
+        g(280.0, 5.0, 1, "x"),
+        g(285.0, 5.0, 2, "\u{2206}"),
+        g(290.0, 5.0, 2, "√"),
+        g(295.0, 5.0, 2, "–"),
+        g(300.0, 5.0, 2, "⋛"),
+        g(305.0, 5.0, 2, "≾"),
+        g(310.0, 2.0, 2, "\u{202f}"),
+        g(312.0, 5.0, 1, "y"),
+        g(317.0, 5.0, 2, "⩽"),
+        g(322.0, 5.0, 1, "z"),
+    ]);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    assert!(f[0].is_ascii(), "{}", f[0]);
+    for cmd in ["\\Delta", "\\surd", "\\gtreqless", "\\precsim", "\\leqslant"] {
+        assert!(f[0].contains(cmd), "{cmd} in {}", f[0]);
+    }
+}
+
+#[test]
+fn every_formula_is_ascii() {
+    // a stand-alone combining mark and Latin-1 letters stay spellable
+    let md = display_line(vec![
+        g(280.0, 5.0, 1, "x"),
+        g(290.0, 0.0, 2, "\u{302}"),
+        g(300.0, 5.0, 2, "="),
+        g(305.0, 6.0, 1, "Ø"),
+        g(311.0, 5.0, 2, "°"),
+    ]);
+    for f in formulas(&md) {
+        assert!(f.is_ascii(), "{f}");
+    }
+}
+
+#[test]
+fn garbage_code_points_are_unknown_not_symbols() {
+    // C1 controls and currency signs from a mis-encoded font are not math symbols: the
+    // formula keeps its words or marks the glyph unknown, and never spells them
+    let md = display_line(vec![
+        g(280.0, 5.0, 1, "x"),
+        g(285.0, 5.0, 2, "\u{95}"),
+        g(290.0, 5.0, 2, "¥"),
+        g(295.0, 5.0, 1, "y"),
+    ]);
+    for f in formulas(&md) {
+        assert!(f.is_ascii() && !f.contains("yen"), "{f}");
+    }
+}
+
+#[test]
+fn one_unknown_glyph_marks_only_that_glyph() {
+    // a long formula with a single private-use glyph keeps its structure; the glyph becomes a
+    // visible placeholder, and the page is still reported as uncertain
+    let mut gs = Vec::new();
+    for (k, t) in ["a", "+", "b", "=", "c", "+", "d", "\u{e123}", "e"].iter().enumerate() {
+        gs.push(g(280.0 + 6.0 * k as f64, 5.0, if k % 2 == 0 { 1 } else { 2 }, t));
+    }
+    let line = vec![W { gs, base: 200.0, size: 10.0 }];
+    let (md, report) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    assert!(f[0].contains("\\boxed{?}") && f[0].starts_with("a+b=c+d"), "{}", f[0]);
+    assert!(report.to_json().contains("\"mathUncertainPages\":[1]"), "{}", report.to_json());
+}
+
+#[test]
+fn junk_formulas_stay_text() {
+    // an equation number alone, a lone delimiter, and a lone check mark are not formulas
+    for t in ["(41)", "[", "√"] {
+        let gs: Vec<G> = t.chars().enumerate().map(|(k, _)| g(280.0 + 4.0 * k as f64, 4.0, 2, "")).collect();
+        let gs: Vec<G> = gs
+            .into_iter()
+            .zip(t.chars())
+            .map(|(mut gl, c)| {
+                gl.t = Box::leak(c.to_string().into_boxed_str());
+                gl
+            })
+            .collect();
+        let md = display_line(gs);
+        assert!(formulas(&md).is_empty(), "{t}: {md}");
+    }
+}
+
+#[test]
+fn dollar_signs_in_prose_are_escaped() {
+    let line = vec![
+        w(
+            vec![
+                g(72.0, 5.0, 0, "c"),
+                g(77.0, 5.0, 0, "o"),
+                g(82.0, 5.0, 0, "s"),
+                g(87.0, 5.0, 0, "t"),
+                g(92.0, 5.0, 0, "s"),
+            ],
+            100.0,
+            10.0,
+        ),
+        w(vec![g(100.0, 5.0, 0, "$"), g(105.0, 5.0, 0, "5")], 100.0, 10.0),
+        w(vec![g(115.0, 5.0, 0, "f"), g(120.0, 5.0, 0, "o"), g(125.0, 5.0, 0, "r")], 100.0, 10.0),
+        w(vec![g(135.0, 5.7, 1, "x")], 100.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(80.0), line, prose(120.0)], &[]), &MATH);
+    assert!(md.contains("\\$5 for $x$"), "{md}");
+}
+
+#[test]
+fn operator_names_with_limits_below() {
+    // an upright "lim" with a smaller limit line under it, then the argument
+    let main = vec![
+        w(vec![g(280.0, 3.0, 0, "l"), g(283.0, 3.0, 0, "i"), g(286.0, 8.0, 0, "m")], 200.0, 10.0),
+        w(
+            vec![g(298.0, 6.0, 1, "f"), g(304.0, 4.0, 0, "("), g(308.0, 5.0, 1, "x"), g(313.0, 4.0, 0, ")")],
+            200.0,
+            10.0,
+        ),
+    ];
+    let limit = vec![w(vec![g(280.0, 4.0, 5, "x"), g(284.0, 7.0, 2, "→"), g(291.0, 4.0, 4, "0")], 207.0, 7.0)];
+    let (md, _) = convert(&page(&[prose(150.0), main, limit, prose(250.0)], &[]), &MATH);
+    assert!(md.contains("\\lim_{x\\to0}f(x)"), "{md}");
+}
+
+#[test]
+fn operator_names_in_text_fonts() {
+    // rank and dim in an upright text font between math symbols
+    let line = vec![
+        w(
+            vec![g(250.0, 4.0, 0, "r"), g(254.0, 5.0, 0, "a"), g(259.0, 5.0, 0, "n"), g(264.0, 5.0, 0, "k")],
+            200.0,
+            10.0,
+        ),
+        w(vec![g(272.0, 7.0, 1, "A"), g(280.0, 7.0, 0, "+")], 200.0, 10.0),
+        w(vec![g(290.0, 5.0, 0, "d"), g(295.0, 3.0, 0, "i"), g(298.0, 8.0, 0, "m")], 200.0, 10.0),
+        w(vec![g(310.0, 7.0, 1, "V"), g(318.0, 7.0, 0, "="), g(326.0, 6.0, 1, "n")], 200.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
+    assert!(md.contains("$$\\operatorname{rank}A+\\dim V=n$$"), "{md}");
+}

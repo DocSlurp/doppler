@@ -999,6 +999,243 @@ pub fn tex_of_char(c: char) -> Option<&'static str> {
     })
 }
 
+/// AMS and other symbols that have amssymb spellings; superscript digits, vulgar fractions,
+/// Unicode spaces and invisible operators.
+fn tex_ams(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{2206}' => "\\Delta",
+        '√' => "\\surd",
+        '–' | '‐' | '‑' | '‒' | '—' => "-",
+        '⩽' => "\\leqslant",
+        '⩾' => "\\geqslant",
+        '⋛' => "\\gtreqless",
+        '⋚' => "\\lesseqgtr",
+        '⪌' => "\\gtreqqless",
+        '⪋' => "\\lesseqqgtr",
+        '≾' => "\\precsim",
+        '≿' => "\\succsim",
+        '⪷' => "\\precapprox",
+        '⪸' => "\\succapprox",
+        '⪉' => "\\lnapprox",
+        '⪊' => "\\gnapprox",
+        '⪇' => "\\lneq",
+        '⪈' => "\\gneq",
+        '≨' => "\\lneqq",
+        '≩' => "\\gneqq",
+        '⋦' => "\\lnsim",
+        '⋧' => "\\gnsim",
+        '⪵' => "\\precneqq",
+        '⪶' => "\\succneqq",
+        '⋨' => "\\precnsim",
+        '⋩' => "\\succnsim",
+        '≮' => "\\nless",
+        '≯' => "\\ngtr",
+        '≰' => "\\nleq",
+        '≱' => "\\ngeq",
+        '⊀' => "\\nprec",
+        '⊁' => "\\nsucc",
+        '≁' => "\\nsim",
+        '≇' => "\\ncong",
+        '≉' => "\\not\\approx",
+        '≢' => "\\not\\equiv",
+        '⊄' => "\\not\\subset",
+        '⊅' => "\\not\\supset",
+        '⊈' => "\\nsubseteq",
+        '⊉' => "\\nsupseteq",
+        '∌' => "\\not\\ni",
+        '∦' => "\\nparallel",
+        '⊬' => "\\nvdash",
+        '⊭' => "\\nvDash",
+        '⊮' => "\\nVdash",
+        '⊯' => "\\nVDash",
+        '⊩' => "\\Vdash",
+        '⊪' => "\\Vvdash",
+        '⊫' => "\\VDash",
+        '≊' => "\\approxeq",
+        '∽' => "\\backsim",
+        '⋍' => "\\backsimeq",
+        '≏' => "\\bumpeq",
+        '≎' => "\\Bumpeq",
+        '≑' => "\\doteqdot",
+        '≒' => "\\fallingdotseq",
+        '≓' => "\\risingdotseq",
+        '≖' => "\\eqcirc",
+        '≗' => "\\circeq",
+        '≬' => "\\between",
+        '⋔' => "\\pitchfork",
+        '⋐' => "\\Subset",
+        '⋑' => "\\Supset",
+        '⫅' => "\\subseteqq",
+        '⫆' => "\\supseteqq",
+        '⫋' => "\\subsetneqq",
+        '⫌' => "\\supsetneqq",
+        '⋪' => "\\ntriangleleft",
+        '⋫' => "\\ntriangleright",
+        '⋬' => "\\ntrianglelefteq",
+        '⋭' => "\\ntrianglerighteq",
+        '⪅' => "\\lessapprox",
+        '⪆' => "\\gtrapprox",
+        '≶' => "\\lessgtr",
+        '≷' => "\\gtrless",
+        '⋖' => "\\lessdot",
+        '⋗' => "\\gtrdot",
+        '⋘' => "\\lll",
+        '⋙' => "\\ggg",
+        '⪕' => "\\eqslantless",
+        '⪖' => "\\eqslantgtr",
+        '⋞' => "\\curlyeqprec",
+        '⋟' => "\\curlyeqsucc",
+        '≼' => "\\preccurlyeq",
+        '≽' => "\\succcurlyeq",
+        '⊰' => "\\prec",
+        '⊱' => "\\succ",
+        '∺' => "\\div",
+        '≝' => "\\stackrel{\\mathrm{def}}{=}",
+        '≟' => "\\stackrel{?}{=}",
+        '⊞' => "\\boxplus",
+        '⊟' => "\\boxminus",
+        '⊠' => "\\boxtimes",
+        '⊡' => "\\boxdot",
+        '⋉' => "\\ltimes",
+        '⋊' => "\\rtimes",
+        '⋋' => "\\leftthreetimes",
+        '⋌' => "\\rightthreetimes",
+        '⋒' => "\\Cap",
+        '⋓' => "\\Cup",
+        '∔' => "\\dotplus",
+        '⊻' => "\\veebar",
+        '⊼' => "\\barwedge",
+        '⨿' => "\\amalg",
+        '⨯' => "\\times",
+        '⊺' => "\\intercal",
+        '⊛' => "\\circledast",
+        '⊚' => "\\circledcirc",
+        '⊝' => "\\circleddash",
+        '⋇' => "\\divideontimes",
+        '⋏' => "\\curlywedge",
+        '⋎' => "\\curlyvee",
+        '∡' => "\\measuredangle",
+        '∢' => "\\sphericalangle",
+        '℧' => "\\mho",
+        'ℶ' => "\\beth",
+        'ℷ' => "\\gimel",
+        'ℸ' => "\\daleth",
+        '∁' => "\\complement",
+        'Ⅎ' => "\\Finv",
+        '⅁' => "\\Game",
+        '▲' => "\\blacktriangle",
+        '▼' => "\\blacktriangledown",
+        '◀' => "\\blacktriangleleft",
+        '▶' => "\\blacktriangleright",
+        '◁' => "\\triangleleft",
+        '▷' => "\\triangleright",
+        '■' => "\\blacksquare",
+        '◆' => "\\blacklozenge",
+        '◊' => "\\lozenge",
+        '✶' => "\\bigstar",
+        '✓' | '✔' => "\\checkmark",
+        '⇇' => "\\leftleftarrows",
+        '⇉' => "\\rightrightarrows",
+        '⇆' => "\\leftrightarrows",
+        '⇄' => "\\rightleftarrows",
+        '⇚' => "\\Lleftarrow",
+        '⇛' => "\\Rrightarrow",
+        '↞' => "\\twoheadleftarrow",
+        '↠' => "\\twoheadrightarrow",
+        '↢' => "\\leftarrowtail",
+        '↣' => "\\rightarrowtail",
+        '↫' => "\\looparrowleft",
+        '↬' => "\\looparrowright",
+        '↶' => "\\curvearrowleft",
+        '↷' => "\\curvearrowright",
+        '↺' => "\\circlearrowleft",
+        '↻' => "\\circlearrowright",
+        '↰' => "\\Lsh",
+        '↱' => "\\Rsh",
+        '⊸' => "\\multimap",
+        '↭' => "\\leftrightsquigarrow",
+        '⇝' => "\\rightsquigarrow",
+        '↚' => "\\nleftarrow",
+        '↛' => "\\nrightarrow",
+        '↮' => "\\nleftrightarrow",
+        '⇍' => "\\nLeftarrow",
+        '⇏' => "\\nRightarrow",
+        '⇎' => "\\nLeftrightarrow",
+        '⟦' => "[\\![",
+        '⟧' => "]\\!]",
+        '∄' => "\\nexists",
+        '∯' => "\\oiint",
+        '⨅' => "\\bigsqcap",
+        '¹' => "^{1}",
+        '²' => "^{2}",
+        '³' => "^{3}",
+        '⁰' => "^{0}",
+        '⁴' => "^{4}",
+        '⁵' => "^{5}",
+        '⁶' => "^{6}",
+        '⁷' => "^{7}",
+        '⁸' => "^{8}",
+        '⁹' => "^{9}",
+        '⁺' => "^{+}",
+        '⁻' => "^{-}",
+        'ⁿ' => "^{n}",
+        '₀' => "_{0}",
+        '₁' => "_{1}",
+        '₂' => "_{2}",
+        '₃' => "_{3}",
+        '₄' => "_{4}",
+        '¼' => "\\tfrac{1}{4}",
+        '½' => "\\tfrac{1}{2}",
+        '¾' => "\\tfrac{3}{4}",
+        '\u{2009}' | '\u{2006}' | '\u{200a}' | '\u{202f}' | '\u{2005}' | '\u{2004}' => "\\,",
+        '\u{a0}' | '\u{2002}' | '\u{2003}' | '\u{2007}' | '\u{2008}' | '\u{205f}' => "\\ ",
+        '\u{2061}' | '\u{2062}' | '\u{2063}' | '\u{2064}' | '\u{200b}' | '\u{2060}' | '\u{feff}' | '\u{ad}' => "",
+        '⋰' => "\\iddots",
+        '℃' => "^{\\circ}\\mathrm{C}",
+        'Å' => "\\mathring{A}",
+        '∤' => "\\nmid",
+        '⌜' => "\\ulcorner",
+        '⌝' => "\\urcorner",
+        '⌞' => "\\llcorner",
+        '⌟' => "\\lrcorner",
+        '♯' => "\\sharp",
+        '♭' => "\\flat",
+        '♮' => "\\natural",
+        '⟂' => "\\perp",
+        '⊲' => "\\vartriangleleft",
+        '⊳' => "\\vartriangleright",
+        _ => return None,
+    })
+}
+
+/// ASCII LaTeX for one character in math mode, or `None` when LaTeX (amsmath, amssymb) has no
+/// spelling for it. Latin letters with diacritics go through `\text`.
+pub fn spell(c: char) -> Option<Cow<'static, str>> {
+    if let Some(t) = tex_ams(c) {
+        return Some(Cow::Borrowed(t));
+    }
+    if let Some(t) = tex_of_char(c) {
+        return Some(Cow::Borrowed(t));
+    }
+    if !c.is_ascii()
+        && let Some(a) = accent_command(c)
+    {
+        return Some(Cow::Owned(format!("{a}{{}}")));
+    }
+    if (' '..='~').contains(&c) {
+        return Some(Cow::Owned(c.to_string()));
+    }
+    if (('\u{c0}'..='\u{17f}').contains(&c) && c.is_alphabetic()) || matches!(c, 'ß' | 'æ' | 'ø' | 'œ' | 'Œ') {
+        return Some(Cow::Owned(format!("\\text{{{c}}}")));
+    }
+    None
+}
+
+/// Every character of `t` has an ASCII LaTeX spelling.
+pub fn spellable(t: &str) -> bool {
+    t.chars().all(|c| spell(c).is_some())
+}
+
 /// The LaTeX accent command for a combining or spacing accent character.
 pub fn accent_command(c: char) -> Option<&'static str> {
     Some(match c {
@@ -1028,6 +1265,17 @@ pub fn function_name(word: &str) -> Option<&'static str> {
         "sup", "tan", "tanh", "mod",
     ];
     NAMES.iter().find(|n| **n == word).copied()
+}
+
+/// Upright names that are operators without a LaTeX command of their own (`\operatorname`).
+pub fn operator_name(word: &str) -> bool {
+    const NAMES: [&str; 44] = [
+        "rank", "tr", "Tr", "Var", "Cov", "Corr", "sgn", "sign", "diag", "span", "Re", "Im", "im", "lcm", "erf",
+        "erfc", "id", "ord", "card", "supp", "dom", "rk", "Ker", "Hom", "End", "Aut", "Gal", "Spec", "grad", "div",
+        "curl", "rot", "argmin", "argmax", "adj", "vol", "proj", "arsinh", "arcosh", "artanh", "sech", "csch", "Res",
+        "Ad",
+    ];
+    NAMES.contains(&word)
 }
 
 /// What a glyph is, from everything the record says: its font, glyph name, Unicode text and
@@ -1136,7 +1384,36 @@ pub fn classify(role: FontRole, name: Option<&str>, text: &str, code: u32, src_i
         if rest_empty { c.to_string() } else { text.to_string() },
         if rest_empty { char_class(c) } else { Class::Ord },
     );
-    s.known = known;
+    // C1 controls and currency or quotation signs are what a mis-encoded symbol font decodes
+    // to; a symbol LaTeX cannot spell is unknown too
+    let garbage = |c: char| {
+        ('\u{80}'..='\u{9f}').contains(&c)
+            || matches!(
+                c,
+                '¡' | '¢'
+                    | '£'
+                    | '¤'
+                    | '¥'
+                    | '¦'
+                    | '§'
+                    | '¨'
+                    | '©'
+                    | 'ª'
+                    | '«'
+                    | '®'
+                    | '´'
+                    | '¶'
+                    | '¸'
+                    | 'º'
+                    | '»'
+                    | '¿'
+                    | '‹'
+                    | '›'
+                    | '„'
+                    | '‚'
+            )
+    };
+    s.known = known && !text.chars().any(garbage) && spellable(&s.text);
     // a caret or tilde in a math font is an accent (OpenSymbol draws hat and tilde this way)
     if rest_empty && role.is_math() && matches!(c, '^' | '\u{2dc}') {
         s.class = Class::Accent;

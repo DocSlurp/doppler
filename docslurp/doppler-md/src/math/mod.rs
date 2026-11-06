@@ -72,6 +72,9 @@ pub struct PageMath {
     pub uncertain_doubt: usize,
     pub uncertain_limit: usize,
     pub uncertain_mixed: usize,
+    /// formulas written with an unknown glyph shown as a placeholder (`\boxed{?}`); their page is
+    /// listed as uncertain too
+    pub partial: usize,
     /// the page was not read for math (too many glyphs, or no glyph records)
     pub skipped: bool,
     /// math glyphs the page drew outside any formula that was rewritten
@@ -180,9 +183,18 @@ fn line_glyphs(page: &Page, line: &Line, facts: &FontFacts) -> Vec<G> {
             let (atom, ev) = glyph_atom(page, facts, w, g, gi == 0, letters);
             out.push(G { word: wi, atom, ev, text: g.text.to_string() });
         }
+        // an upright operator name (lim, sin, rank) is a math candidate
+        let word = &mut out[start..];
+        let letters: String = word.iter().map(|g| g.atom.sym.text.as_str()).collect();
+        if word.iter().all(|g| g.ev == Ev::Text && g.atom.upright_text)
+            && (symbols::function_name(&letters).is_some() || symbols::operator_name(&letters))
+        {
+            for g in word.iter_mut() {
+                g.ev = Ev::Weak;
+            }
+        }
         // text-font letters in a word with math glyphs (the d of \mathrm{d}t, a function name
         // next to its argument) belong to the math, unless they spell a longer word
-        let word = &mut out[start..];
         if word.iter().any(|g| g.ev == Ev::Strong) {
             let text_letters =
                 word.iter().filter(|g| g.ev == Ev::Text && g.atom.sym.text.chars().all(char::is_alphabetic)).count();
@@ -328,6 +340,43 @@ fn extra_atom(page: &Page, facts: &FontFacts, g: &Glyph) -> Atom {
         word_start: true,
         span: None,
     }
+}
+
+/// Merge runs of upright letters that spell an operator name (lim, sin, rank) into one atom.
+fn merge_operator_names(atoms: &mut Vec<Atom>) {
+    let mut out: Vec<Atom> = Vec::with_capacity(atoms.len());
+    let mut i = 0;
+    while i < atoms.len() {
+        let letter = |a: &Atom| {
+            a.upright_text
+                && a.sym.style == symbols::Style::Default
+                && a.sym.text.len() == 1
+                && a.sym.text.chars().all(|c| c.is_ascii_alphabetic())
+        };
+        if letter(&atoms[i]) {
+            let mut j = i + 1;
+            while j < atoms.len()
+                && letter(&atoms[j])
+                && !atoms[j].word_start
+                && (atoms[j].base - atoms[i].base).abs() < 0.1 * atoms[i].size
+                && atoms[j].x0 - atoms[j - 1].x1 < 0.15 * atoms[i].size
+            {
+                j += 1;
+            }
+            let name: String = atoms[i..j].iter().map(|a| a.sym.text.as_str()).collect();
+            if j - i >= 2 && (symbols::function_name(&name).is_some() || symbols::operator_name(&name)) {
+                let mut a = atoms[i].clone();
+                a.x1 = atoms[j - 1].x1;
+                a.sym.text = name;
+                out.push(a);
+                i = j;
+                continue;
+            }
+        }
+        out.push(atoms[i].clone());
+        i += 1;
+    }
+    *atoms = out;
 }
 
 /// Is the glyph an operator that must not start or end a formula?
@@ -658,7 +707,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         || page.rules.len() > opts.max_page_rules
     {
         stats.skipped = true;
-        return (page.lines.clone(), stats);
+        return (escape_dollars(&page.lines), stats);
     }
     let facts = font_facts(page);
     let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l, &facts)).collect();
@@ -891,6 +940,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
                 atoms.push(g.atom.clone());
             }
+            // an upright operator name drawn letter by letter is one symbol (its limits can then
+            // sit under the whole name)
+            merge_operator_names(&mut atoms);
         }
         // named glyphs that belong to no word (big delimiters with raw whitespace codes) inside
         // the formula's box
@@ -924,10 +976,31 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         // numbers alone (figure tick labels, a negative number in prose) stay text
         let mut ctx_failed_bars = false;
         let mut reason = 0u8;
+        // numbers, equation numbers and delimiters alone (figure tick labels, a stray bracket,
+        // a check mark drawn with a radical sign) stay text
         let numbers_only = !atoms.is_empty()
-            && atoms.iter().all(|a| {
-                a.sym.text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '−' | '-' | '+' | ' '))
-            });
+            && (atoms.iter().all(|a| {
+                a.sym.text.chars().all(|c| {
+                    c.is_ascii_digit()
+                        || matches!(
+                            c,
+                            '.' | ',' | '−' | '-' | '+' | ' ' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '⟨' | '⟩'
+                        )
+                })
+            }) || (atoms.len() == 1
+                && matches!(
+                    atoms[0].sym.class,
+                    Class::Radical
+                        | Class::Open
+                        | Class::Close
+                        | Class::Fence
+                        | Class::Punct
+                        | Class::Piece
+                        | Class::Accent
+                )));
+        // a few unknown glyphs in a longer formula become placeholders instead of sending the
+        // whole formula back to text
+        let partial = unknown > 0 && atoms.len() >= 3 && unknown * 4 <= atoms.len() && unknown <= 3;
         let tex = if numbers_only {
             None
         } else if !actual.is_empty() && atoms.is_empty() {
@@ -938,7 +1011,11 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
                 None => None,
             }
-        } else if glyphs > opts.max_formula_glyphs || work > opts.max_page_work || unknown > 0 || !actual.is_empty() {
+        } else if glyphs > opts.max_formula_glyphs
+            || work > opts.max_page_work
+            || (unknown > 0 && !partial)
+            || !actual.is_empty()
+        {
             reason = if unknown > 0 {
                 1
             } else if !actual.is_empty() {
@@ -1015,6 +1092,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 } else {
                     stats.inline += 1;
                 }
+                if unknown > 0 {
+                    stats.partial += 1;
+                }
             }
             None if numbers_only => {}
             None => {
@@ -1035,8 +1115,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         .map(|(li, l)| l.gs.iter().enumerate().filter(|(gi, g)| g.ev == Ev::Strong && !used[li][*gi]).count())
         .sum();
     if replace.is_empty() {
-        return (page.lines.clone(), stats);
+        return (escape_dollars(&page.lines), stats);
     }
+    let escaped = escape_dollars(&page.lines);
     // rebuild the lines
     let mut cut: Vec<Vec<(usize, usize, Option<(String, bool)>)>> = vec![Vec::new(); n];
     for (li, a, b, tex, display) in replace {
@@ -1046,7 +1127,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         cut[li].push((a, b, None));
     }
     let mut out = Vec::with_capacity(n);
-    for (li, line) in page.lines.iter().enumerate() {
+    for (li, line) in escaped.iter().enumerate() {
         if cut[li].is_empty() {
             out.push(line.clone());
             continue;
@@ -1090,6 +1171,26 @@ fn is_display(
         return true;
     }
     x0 - left > 1.5 * size || (right - x1 > 4.0 * size && x0 - left > 0.5 * size)
+}
+
+/// `$` in prose would open a formula in Markdown: escape it (math mode only).
+fn escape_dollar(t: &str) -> std::borrow::Cow<'_, str> {
+    if t.contains('$') { std::borrow::Cow::Owned(t.replace('$', "\\$")) } else { std::borrow::Cow::Borrowed(t) }
+}
+
+/// The lines with `$` in word text escaped (shared when nothing changes).
+fn escape_dollars(lines: &[Rc<Line>]) -> Vec<Rc<Line>> {
+    lines
+        .iter()
+        .map(|l| {
+            if !l.words.iter().any(|w| w.text.contains('$')) {
+                return l.clone();
+            }
+            let words =
+                l.words.iter().map(|w| Word { text: Rc::from(&*escape_dollar(&w.text)), ..w.clone() }).collect();
+            Rc::new(Line::new(words, l.block, l.flow))
+        })
+        .collect()
 }
 
 /// A line with glyph ranges replaced by LaTeX words or removed. `None` if nothing is left.
@@ -1142,7 +1243,8 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)
         if whole {
             words.push(word.clone());
         } else {
-            let text: String = gs[i..j].iter().map(|g| g.text.as_str()).collect();
+            let text: String =
+                escape_dollar(&gs[i..j].iter().map(|g| g.text.as_str()).collect::<String>()).into_owned();
             let x0 = gs[i].atom.x0;
             let x1 = gs[j - 1].atom.x1;
             let ends_word = j >= gs.len() || gs[j].word != w;
