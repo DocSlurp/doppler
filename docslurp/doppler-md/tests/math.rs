@@ -864,3 +864,20 @@ fn web_math_font_families() {
     assert_eq!(font_role("MathJax_Calligraphic-Regular"), FontRole::Script);
     assert_eq!(font_role("KaTeX_Size2-Regular"), FontRole::UnicodeMath);
 }
+
+#[test]
+fn primes_never_make_double_scripts() {
+    // h, subscript j, prime, then more subscript: valid LaTeX with the prime kept
+    let line = vec![
+        w(vec![g(280.0, 6.0, 1, "h")], 200.0, 10.0),
+        w(vec![g(286.0, 3.0, 5, "j")], 202.0, 7.0),
+        w(vec![g(289.0, 2.0, 2, "′")], 197.0, 7.0),
+        w(vec![g(291.0, 2.0, 5, ","), g(293.0, 3.0, 5, "j")], 202.0, 7.0),
+        w(vec![g(300.0, 7.0, 0, "="), g(310.0, 6.0, 1, "x")], 200.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 1, "{md}");
+    // one subscript group with the prime after it, never `h_{j}'_{,j}` (a double subscript)
+    assert!(matches!(f[0].as_str(), "h_{j,j}'=x" | "h'_{j,j}=x"), "{}", f[0]);
+}
