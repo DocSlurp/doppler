@@ -474,7 +474,7 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
         }
         run.clear();
     };
-    for r in rows {
+    for r in rows.iter().cloned() {
         let near = run.last().is_some_and(|l| r.base - l.base <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
         if r.multi {
             if !run.is_empty() && !near {
@@ -488,7 +488,86 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
         }
     }
     flush(&mut run, &mut found);
+    if p.sparse_tables {
+        sparse_tables(&rows, &mut found, p);
+    }
     found
+}
+
+/// Borderless tables whose rows are too far apart for the dense pass: maximal runs of
+/// consecutive multi-cell rows, none in a table already, with the same cell count, each column
+/// keeping an x range common to all its cells, evenly spaced baselines and clear gutters. A run
+/// grows row by row and the next run starts where it stopped, so this is linear in the rows.
+fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params) {
+    let used: std::collections::HashSet<usize> = found.iter().flat_map(|(ids, _)| ids.iter().copied()).collect();
+    let free = |r: &Row| r.multi && r.ids.iter().all(|i| !used.contains(i));
+    let even = |a: f64, b: f64, ratio: f64| pmax(a, b) <= ratio * pmin(a, b);
+    let mut i = 0;
+    while i < rows.len() {
+        if !free(&rows[i]) {
+            i += 1;
+            continue;
+        }
+        let k = rows[i].cells.len();
+        // per column: (max x0, min x1) over the run's cells, the x range they all share
+        let mut common: Vec<(f64, f64)> = rows[i].cells.iter().map(|c| (c.x0, c.x1)).collect();
+        let mut gaps: Vec<f64> = Vec::new();
+        let mut j = i + 1;
+        while j < rows.len() {
+            let (prev, r) = (&rows[j - 1], &rows[j]);
+            let gap = r.base - prev.base;
+            if !free(r)
+                || r.cells.len() != k
+                || !(gap > 0.0 && gap <= p.sparse_row_gap * pmax(pmax(prev.size, r.size), 1.0))
+            {
+                break;
+            }
+            let ratio = if gaps.len() == 1 { 2.0 * p.sparse_pitch_ratio } else { p.sparse_pitch_ratio };
+            if gaps.last().is_some_and(|&last| !even(gap, last, ratio)) {
+                break;
+            }
+            let next: Vec<(f64, f64)> =
+                common.iter().zip(&r.cells).map(|(&(a, b), c)| (pmax(a, c.x0), pmin(b, c.x1))).collect();
+            if next.iter().any(|&(a, b)| !(a <= b)) {
+                break;
+            }
+            common = next;
+            gaps.push(gap);
+            j += 1;
+        }
+        let run = &rows[i..j];
+        i = j;
+        if (run.len() as f64) < p.sparse_min_rows || !sparse_gutters(run, p) {
+            continue;
+        }
+        let cols = gutter_columns(run, p);
+        if cols.len() != k {
+            continue;
+        }
+        let grid = build_grid(run, &cols, p);
+        if grid.rows.len() == run.len() && plausible(&grid.rows, p) && !marker_column(&grid.rows) {
+            found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
+        }
+    }
+}
+
+/// Between every two columns of a wide-spaced run, a gutter of at least `min_gutter` x font
+/// size that no cell of either column reaches into.
+fn sparse_gutters(run: &[Row], p: &Params) -> bool {
+    let k = run[0].cells.len();
+    let size = pmax(median(run.iter().map(|r| r.size).collect()), 1.0);
+    (0..k.saturating_sub(1)).all(|c| {
+        let right = run.iter().map(|r| r.cells[c].x1).fold(f64::NEG_INFINITY, pmax);
+        let left = run.iter().map(|r| r.cells[c + 1].x0).fold(f64::INFINITY, pmin);
+        left - right >= p.min_gutter * size
+    })
+}
+
+/// A first column mostly of list markers (`1.`, `a)`, bullets; a list may also number an
+/// item `12a.`): a list, not a table.
+fn marker_column(grid: &Grid) -> bool {
+    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
+    !keys.is_empty() && 2 * keys.iter().filter(|k| numbered(k) || bullet(k)).count() >= keys.len()
 }
 
 /// A table whose text is mostly right-to-left (`grid_rtl`).

@@ -144,6 +144,17 @@ params! {
     table_cell_words: num = 4.0,
     /// share of right-side lines sharing a baseline with the left side
     table_align: num = 0.7,
+    /// borderless tables with widely spaced rows: rows the dense pass (`table_row_gap`) leaves
+    /// apart still form a table when at least `sparse_min_rows` consecutive rows have the same
+    /// number of cells, every column keeps an x range common to all its cells (left, right,
+    /// centre and decimal alignment all do) with a `min_gutter` gutter to the next, and the rows
+    /// are evenly spaced
+    sparse_tables: flag = true,
+    sparse_min_rows: num = 3.0,
+    /// max baseline gap / font size between two rows of a wide-spaced table
+    sparse_row_gap: num = 5.0,
+    /// max ratio between neighbouring row gaps; the first gap (a header) may differ by twice this
+    sparse_pitch_ratio: num = 1.35,
     /// use doppler -rules table borders when present
     rules: flag = true,
     /// horizontal rule length / body size
