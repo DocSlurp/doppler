@@ -532,142 +532,283 @@ pub fn parse(xhtml: &str) -> Vec<Page> {
 
 /// [`parse`], counting what was skipped into `report`.
 pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
+    let mut st = ParseState { report: std::mem::take(report), ..ParseState::default() };
     let mut pages: Vec<Page> = Vec::new();
+    st.run(xhtml, true, &mut |pg| pages.push(pg));
+    *report = st.finish(&mut |pg| pages.push(pg));
+    pages
+}
+
+/// [`parse_report`] state between pieces of input: the open page and `<line>`, and the flow and
+/// block counters, which run across pages.
+struct ParseState {
+    /// the last `<page>`: complete once the next `<page>` opens or the input ends (lines and
+    /// rules after its `</page>` still belong to it)
+    page: Option<Page>,
     // words of the open <line> (`words` in Python is None until the first <line>)
-    let mut words: Vec<Word> = Vec::new();
-    let mut in_line = false;
-    let (mut flow, mut block) = (-1i64, -1i64);
-    let b = xhtml.as_bytes();
-    let mut a = Attrs([None; KEYS.len()]);
-    let mut scan = Scan::new();
-    let mut last_color: Option<Rc<str>> = None;
-    // font names repeat word after word: cache the last style
-    let mut last_font: Option<(&str, (bool, bool))> = None;
-    let mut pos = 0;
-    while let Some(off) = memchr(b'<', &b[pos..]) {
-        let lt = pos + off;
-        let Some((tag, end)) = tag_at(xhtml, lt, &mut scan) else {
-            pos = lt + 1;
-            continue;
-        };
-        pos = end;
-        let have_page = !pages.is_empty();
-        match tag {
-            Tag::Rule(boxed, attrs) => {
-                if !have_page {
-                    continue;
+    words: Vec<Word>,
+    in_line: bool,
+    flow: i64,
+    block: i64,
+    last_color: Option<Rc<str>>,
+    report: ParseReport,
+}
+
+impl Default for ParseState {
+    fn default() -> Self {
+        ParseState {
+            page: None,
+            words: Vec::new(),
+            in_line: false,
+            flow: -1,
+            block: -1,
+            last_color: None,
+            report: ParseReport::default(),
+        }
+    }
+}
+
+/// Whether more input could change what [`tag_at`] decided (`None`) for the `<` at `lt`: a
+/// `Some` only ever comes from delimiters found in `s`, but a `None` may come from one not
+/// found yet. The longest fixed prefix tag_at reads is under 16 bytes.
+fn undecided(s: &str, lt: usize) -> bool {
+    let b = s.as_bytes();
+    if b.len() < lt + 16 {
+        return true;
+    }
+    let Some(gt) = memchr(b'>', &b[lt..]) else { return true };
+    b[lt + 1..].starts_with(b"word ") && memmem::find(&b[lt + gt..], b"</word>").is_none()
+}
+
+impl ParseState {
+    /// Parses `s` (the input after what earlier runs consumed) and passes each completed page
+    /// to `emit`. Unless `eof`, stops before a tag that more input could change and returns
+    /// where it stopped; the next run starts there.
+    fn run(&mut self, s: &str, eof: bool, emit: &mut dyn FnMut(Page)) -> usize {
+        let ParseState { page, words, in_line, flow, block, last_color, report } = self;
+        let b = s.as_bytes();
+        let mut a = Attrs([None; KEYS.len()]);
+        let mut scan = Scan::new();
+        // font names repeat word after word: cache the last style
+        let mut last_font: Option<(&str, (bool, bool))> = None;
+        let mut pos = 0;
+        while let Some(off) = memchr(b'<', &b[pos..]) {
+            let lt = pos + off;
+            let Some((tag, end)) = tag_at(s, lt, &mut scan) else {
+                if !eof && undecided(s, lt) {
+                    return lt;
                 }
-                a.parse_into(attrs);
-                let (Some(x0), Some(y0), Some(x1), Some(y1)) =
-                    (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
-                else {
-                    report.rules_skipped += 1;
-                    continue;
-                };
-                let color = a.0[COLOR].unwrap_or("#000000").to_string();
-                if let Some(pg) = pages.last_mut() {
-                    pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
-                }
-            }
-            Tag::Open("page", attrs) => {
-                report.pages += 1;
-                a.parse_into(attrs);
-                let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
-                let rules_truncated = match a.0[RULES_TRUNCATED] {
-                    Some("1") => Some(true),
-                    Some("0") => Some(false),
-                    _ => None,
-                };
-                if rules_truncated == Some(true) {
-                    report.rules_truncated_pages.push(report.pages - 1);
-                }
-                pages.push(Page {
-                    width: dim(WIDTH, 612.0),
-                    height: dim(HEIGHT, 792.0),
-                    lines: Vec::new(),
-                    rules: Vec::new(),
-                    rules_truncated,
-                });
-            }
-            Tag::Open("flow", _) => flow += 1,
-            Tag::Open("block", _) => block += 1,
-            Tag::Open(_, _) => {
-                report.words_unclosed_line += words.len();
-                words.clear();
-                in_line = true;
-            }
-            Tag::Close(name) => {
-                report.page_closes += (name == "page") as usize;
-                if name == "line" && have_page && in_line && !words.is_empty() {
-                    report.lines += 1;
-                    report.words += words.len();
-                    // exact-size copy out of the reused buffer (mem::take would hand the line
-                    // the grown buffer and regrow a new one for every line)
-                    #[allow(clippy::drain_collect)]
-                    let ws: Vec<Word> = words.drain(..).collect();
-                    in_line = false;
-                    if let Some(pg) = pages.last_mut() {
-                        pg.lines.push(Rc::new(Line::new(ws, block, flow)));
+                pos = lt + 1;
+                continue;
+            };
+            pos = end;
+            let have_page = page.is_some();
+            match tag {
+                Tag::Rule(boxed, attrs) => {
+                    if !have_page {
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+                        (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
+                    else {
+                        report.rules_skipped += 1;
+                        continue;
+                    };
+                    let color = a.0[COLOR].unwrap_or("#000000").to_string();
+                    if let Some(pg) = page.as_mut() {
+                        pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
                     }
                 }
-            }
-            Tag::Word(attrs, text) => {
-                if !in_line {
-                    report.words_outside_line += 1;
-                    continue;
-                }
-                a.parse_into(attrs);
-                if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
-                    report.words_missing_coord += 1;
-                    continue;
-                }
-                let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
-                    coord(&a, X_MIN),
-                    coord(&a, Y_MIN),
-                    coord(&a, X_MAX),
-                    coord(&a, Y_MAX),
-                    opt_num(&a, FONT_SIZE),
-                    opt_num(&a, BASELINE),
-                ) else {
-                    report.words_bad_number += 1;
-                    continue;
-                };
-                let font = a.0[FONT_NAME].unwrap_or("");
-                let (bold, italic) = match last_font {
-                    Some((f, style)) if f == font => style,
-                    _ => {
-                        let style = Word::font_style(font);
-                        last_font = Some((font, style));
-                        style
+                Tag::Open("page", attrs) => {
+                    report.pages += 1;
+                    a.parse_into(attrs);
+                    let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
+                    let rules_truncated = match a.0[RULES_TRUNCATED] {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    };
+                    if rules_truncated == Some(true) {
+                        report.rules_truncated_pages.push(report.pages - 1);
                     }
-                };
-                words.push(Word {
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    text: word_text(text),
-                    bold,
-                    italic,
-                    size,
-                    base,
-                    space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
-                    color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
-                    rot: match a.0[ROTATION] {
-                        Some("1") => 1,
-                        Some("2") => 2,
-                        Some("3") => 3,
-                        _ => 0,
-                    },
-                });
+                    let next = Page {
+                        width: dim(WIDTH, 612.0),
+                        height: dim(HEIGHT, 792.0),
+                        lines: Vec::new(),
+                        rules: Vec::new(),
+                        rules_truncated,
+                    };
+                    if let Some(done) = page.replace(next) {
+                        emit(done);
+                    }
+                }
+                Tag::Open("flow", _) => *flow += 1,
+                Tag::Open("block", _) => *block += 1,
+                Tag::Open(_, _) => {
+                    report.words_unclosed_line += words.len();
+                    words.clear();
+                    *in_line = true;
+                }
+                Tag::Close(name) => {
+                    report.page_closes += (name == "page") as usize;
+                    if name == "line" && have_page && *in_line && !words.is_empty() {
+                        report.lines += 1;
+                        report.words += words.len();
+                        // exact-size copy out of the reused buffer (mem::take would hand the line
+                        // the grown buffer and regrow a new one for every line)
+                        #[allow(clippy::drain_collect)]
+                        let ws: Vec<Word> = words.drain(..).collect();
+                        *in_line = false;
+                        if let Some(pg) = page.as_mut() {
+                            pg.lines.push(Rc::new(Line::new(ws, *block, *flow)));
+                        }
+                    }
+                }
+                Tag::Word(attrs, text) => {
+                    if !*in_line {
+                        report.words_outside_line += 1;
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
+                        report.words_missing_coord += 1;
+                        continue;
+                    }
+                    let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
+                        coord(&a, X_MIN),
+                        coord(&a, Y_MIN),
+                        coord(&a, X_MAX),
+                        coord(&a, Y_MAX),
+                        opt_num(&a, FONT_SIZE),
+                        opt_num(&a, BASELINE),
+                    ) else {
+                        report.words_bad_number += 1;
+                        continue;
+                    };
+                    let font = a.0[FONT_NAME].unwrap_or("");
+                    let (bold, italic) = match last_font {
+                        Some((f, style)) if f == font => style,
+                        _ => {
+                            let style = Word::font_style(font);
+                            last_font = Some((font, style));
+                            style
+                        }
+                    };
+                    words.push(Word {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        text: word_text(text),
+                        bold,
+                        italic,
+                        size,
+                        base,
+                        space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
+                        color: interned(last_color, a.0[COLOR].unwrap_or("")),
+                        rot: match a.0[ROTATION] {
+                            Some("1") => 1,
+                            Some("2") => 2,
+                            Some("3") => 3,
+                            _ => 0,
+                        },
+                    });
+                }
+            }
+        }
+        s.len()
+    }
+
+    /// The end of the input: emits the last page and returns the report.
+    fn finish(mut self, emit: &mut dyn FnMut(Page)) -> ParseReport {
+        if self.in_line && !self.words.is_empty() {
+            self.report.unclosed_line_at_eof = true;
+            self.report.words_unclosed_line += self.words.len();
+        }
+        if let Some(pg) = self.page.take() {
+            emit(pg);
+        }
+        self.report
+    }
+}
+
+/// Appends `bytes` to `out` as `String::from_utf8_lossy` decodes the whole input (each invalid
+/// sequence becomes one U+FFFD; Python read the XHTML with errors='replace'). A sequence cut off
+/// at the end of `bytes` waits in `partial` (at most 3 bytes) for the next call, unless `eof`.
+pub fn decode_lossy(partial: &mut Vec<u8>, bytes: &[u8], eof: bool, out: &mut String) {
+    let joined;
+    let mut rest: &[u8] = if partial.is_empty() {
+        bytes
+    } else {
+        partial.extend_from_slice(bytes);
+        joined = std::mem::take(partial);
+        &joined
+    };
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                out.push_str(s);
+                return;
+            }
+            Err(e) => {
+                let (valid, after) = rest.split_at(e.valid_up_to());
+                // valid_up_to is a char boundary, so this never falls back
+                out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                match e.error_len() {
+                    Some(n) => {
+                        out.push('\u{FFFD}');
+                        rest = &after[n..];
+                    }
+                    None if eof => {
+                        out.push('\u{FFFD}');
+                        return;
+                    }
+                    None => {
+                        *partial = after.to_vec();
+                        return;
+                    }
+                }
             }
         }
     }
-    if in_line && !words.is_empty() {
-        report.unclosed_line_at_eof = true;
-        report.words_unclosed_line += words.len();
+}
+
+/// [`parse_report`] over input that arrives in pieces: [`Parser::push`] text as it comes, and
+/// each page comes out as soon as the next `<page>` opens. Pages and report are the same as one
+/// `parse_report` over the whole input, however it is split. Only unconsumed input stays
+/// buffered: usually part of a tag.
+#[derive(Default)]
+pub struct Parser {
+    buf: String,
+    /// rescan once `buf` reaches this length: after a stop, the pending bytes must double
+    /// first, so an unclosed tag that keeps growing is rescanned O(log n) times, not per push
+    retry_at: usize,
+    state: ParseState,
+}
+
+impl Parser {
+    pub fn new() -> Self {
+        Self::default()
     }
-    pages
+
+    /// Appends `text` and passes each page it completes to `emit`.
+    pub fn push(&mut self, text: &str, emit: &mut dyn FnMut(Page)) {
+        self.buf.push_str(text);
+        if self.buf.len() < self.retry_at {
+            return;
+        }
+        let used = self.state.run(&self.buf, false, emit);
+        self.buf.drain(..used);
+        self.retry_at = 2 * self.buf.len();
+    }
+
+    /// Ends the input: passes the remaining pages to `emit` and returns the report.
+    pub fn finish(mut self, emit: &mut dyn FnMut(Page)) -> ParseReport {
+        let buf = std::mem::take(&mut self.buf);
+        self.state.run(&buf, true, emit);
+        self.state.finish(emit)
+    }
 }
 
 #[cfg(test)]

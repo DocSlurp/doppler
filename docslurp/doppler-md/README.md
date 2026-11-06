@@ -4,8 +4,8 @@ Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML. 
 byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-10-26/`, v24).
 
 ```sh
-doppler-md [--html] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--strict] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
+doppler-md [--html] [--stream | --window N] [--params JSON] [--report] [FILE|-]
+pdftomarkdown [--html] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -23,7 +23,7 @@ you already have.
 
 `pdftomarkdown FILE.pdf` is PDF to Markdown in one step. It runs
 `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout` with `-f`, `-l`, `-opw` and `-upw`
-passed through (`--opw`/`--upw` are accepted too), reads the XHTML into memory and converts it.
+passed through (`--opw`/`--upw` are accepted too) and converts its XHTML as it arrives.
 pdftotext's stderr is passed through. pdftotext is `$PDFTOTEXT` if set, else a `pdftotext` next
 to the `pdftomarkdown` executable, else `pdftotext` on `PATH`; it must be the DocSlurp fork.
 Passwords are visible in the process list, as with pdftotext. `--` ends the options.
@@ -33,6 +33,33 @@ Passwords are visible in the process list, as with pdftotext. `--` ends the opti
 a layout threshold can change the output, so `--strict` drops it: `pdftomarkdown --strict
 FILE.pdf` writes the same bytes as `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - |
 doppler-md`, the form the golden set and `parity.sh` use.
+
+## Streaming
+
+Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw
+XHTML is never held whole. Two decisions look past one page: the body font size and colour
+(the most common in the document) and running headers and footers (margin lines repeated on
+`furniture_min_share` of the pages). By default both see the whole document, so every page
+waits for the last one; output is unchanged.
+
+`--window N` decides them from a window instead: the body size from the first N + 1 pages,
+fixed after that, and headers and footers from the N pages either side of each page. Each
+page is written (and flushed) once the next N have arrived, so at most N + 1 parsed pages, and
+the margin keys of N more, are held at a time. `--stream` is `--window 16`. A document of at
+most N + 1 pages converts exactly as without a window. The library API is
+`model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
+`Converter` without a window).
+
+On the 258-input golden set, `--stream` changes one document, the 477-page Ghostscript manual,
+where running chapter headers ("Chapter 6. Using") on under 40% of the document's pages now
+drop within their chapter instead of joining the body text. `--window 8` also changes the
+26-page inaugural scan (heading levels, from a body size taken over its OCR'd cover pages);
+`--window 64` changes nothing. On the Ghostscript manual, the first Markdown arrives after
+about 0.1 s instead of when pdftotext finishes (4 to 6 s on a loaded machine), and peak
+memory drops from 69 MB to that of pdftotext (about 25 MB) with or without a window.
+
+With a window, pages already written stay written when pdftotext later fails: the exit
+status, not the output, says whether the conversion finished.
 
 ## Exit status and report
 

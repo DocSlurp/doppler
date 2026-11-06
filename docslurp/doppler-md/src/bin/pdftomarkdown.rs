@@ -1,7 +1,9 @@
 //! `pdftomarkdown [--html] [--strict] [--report] [--params JSON] [-f N] [-l N] [--opw PW]
 //! [--upw PW] [--] FILE.pdf`: PDF to Markdown in one step. Runs the DocSlurp fork's
-//! `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout FILE -`, converts its XHTML in
-//! memory and writes the pages joined with form feeds on stdout. `--strict` drops
+//! `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout FILE -`, converts its XHTML as
+//! it arrives and writes the pages joined with form feeds on stdout. By default every page
+//! waits for the whole document; `--stream` (or `--window N`) writes each page once the next N
+//! have arrived, holding at most N + 1 pages. `--strict` drops
 //! `-compact-layout` (full-precision coordinates): the same bytes as piping
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
@@ -20,13 +22,20 @@ use doppler_md::{Options, Params, TableFormat};
 #[path = "../cli.rs"]
 mod cli;
 
+/// `--stream`'s lookahead, in pages.
+const STREAM_WINDOW: usize = 16;
+
 const USAGE: &str = "\
-usage: pdftomarkdown [--html] [--strict] [--report] [--params JSON] [-f N] [-l N]
-                     [--opw PW] [--upw PW] [--] FILE.pdf
+usage: pdftomarkdown [--html] [--strict] [--stream | --window N] [--report] [--params JSON]
+                     [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
+  --stream       write pages as they are converted (--window 16)
+  --window N     body size and running headers/footers from N pages either side of each
+                 page, not the whole document; each page is written once the next N arrive.
+                 A document of at most N + 1 pages converts exactly as without it
   --report       print a one-line JSON report to stderr
   --params JSON  override layout tuning parameters
   -f N, -l N     first and last page to convert
@@ -42,6 +51,7 @@ fn main() -> ExitCode {
     let mut opts = Options::default();
     let mut want_report = false;
     let mut strict = false;
+    let mut window: Option<usize> = None;
     // pdftotext options, in order
     let mut pass: Vec<OsString> = Vec::new();
     let (mut first, mut last): (Option<i32>, Option<i32>) = (None, None);
@@ -66,6 +76,11 @@ fn main() -> ExitCode {
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
             "--strict" => strict = true,
+            "--stream" => window = Some(STREAM_WINDOW),
+            "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
+                Ok(w) => window = Some(w),
+                Err(e) => return usage_error(&e),
+            },
             "--params" => {
                 let Some(json) = args.next().and_then(|j| j.into_string().ok()) else {
                     return usage_error("--params needs a JSON object");
@@ -115,24 +130,54 @@ fn main() -> ExitCode {
     };
 
     let exe = pdftotext();
-    let output = Command::new(&exe)
+    let child = Command::new(&exe)
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
         .args(if strict { None } else { Some("-compact-layout") })
         .args(&pass)
         .arg(&file)
         .arg("-")
         .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output();
-    let output = match output {
-        Ok(o) => o,
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("pdftomarkdown: cannot run {}: {e}", exe.display());
             return ExitCode::FAILURE;
         }
     };
-    if !output.status.success() {
-        match output.status.code() {
+    let no_page = format!(
+        "no <page> in the output of {} (probably not the DocSlurp pdftotext, which needs \
+         -bbox-layout -wordmeta -rules)",
+        exe.display()
+    );
+    let mut run = cli::Run::new(&params, &opts, window);
+    let read = match child.stdout.take() {
+        Some(mut out) => run.read_from(&mut out),
+        None => Ok(()),
+    };
+    // the pipe is closed here: after a write error on our stdout pdftotext stops on EPIPE
+    // instead of blocking, and its status no longer matters
+    if run.write_failed() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return run.finish("pdftomarkdown", want_report, &no_page);
+    }
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("pdftomarkdown: cannot wait for {}: {e}", exe.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = read {
+        eprintln!("pdftomarkdown: reading the output of {}: {e}", exe.display());
+        return ExitCode::FAILURE;
+    }
+    // a failed pdftotext leaves stdout empty, except for the pages a --window run already wrote
+    if !status.success() {
+        match status.code() {
             // 99 is poppler's usage error: a page range past the end of the document, or a
             // pdftotext without the fork's options
             Some(99) => eprintln!(
@@ -149,16 +194,11 @@ fn main() -> ExitCode {
             ),
             Some(3) => eprintln!("pdftomarkdown: {} was refused by the PDF's permissions (status 3)", exe.display()),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
-            None => eprintln!("pdftomarkdown: {} {}", exe.display(), output.status),
+            None => eprintln!("pdftomarkdown: {} {}", exe.display(), status),
         }
         return ExitCode::FAILURE;
     }
-    let no_page = format!(
-        "no <page> in the output of {} (probably not the DocSlurp pdftotext, which needs \
-         -bbox-layout -wordmeta -rules)",
-        exe.display()
-    );
-    cli::convert("pdftomarkdown", &output.stdout, &params, &opts, want_report, &no_page)
+    run.finish("pdftomarkdown", want_report, &no_page)
 }
 
 /// `$PDFTOTEXT`, else `pdftotext` beside this executable, else `pdftotext` (looked up on `PATH`).
