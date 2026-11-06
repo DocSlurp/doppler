@@ -22,19 +22,24 @@ is an intermediate node; a kid that does not resolve to a dictionary is
 skipped. A page referenced from several places counts every time it is
 referenced, because Poppler renders it every time.
 .PP
-On success the only output is one decimal integer followed by a newline.
-Diagnostics go to standard error, are fixed strings and never include
-document data.
+On success the only output is one decimal integer, at least 1, followed by a
+newline. Diagnostics go to standard error, are fixed strings and never include
+document data; Poppler's own messages are suppressed.
 .PP
-If
-.I PDF-file
-is \'-\', the PDF is read from stdin.
+Run it under a memory limit and a timeout, and pass
+.B "\-f 1 \-l"
+.I N
+with the count to the other utilities: they clamp
+.B \-l
+to the claimed page count, so the count bounds their work but they may still
+process fewer pages.
 .SH OPTIONS
 .TP
 .BI \-max\-pages " number"
 Fail with exit code 3 if the tree holds more than
 .I number
-pages (default 100000).
+pages (default 100000, at most 1000000000). Kid entries examined, including
+ones that count nothing, are capped at twice this plus 64.
 .TP
 .BI \-max\-depth " number"
 Fail with exit code 3 if the tree is more than
@@ -60,21 +65,26 @@ are equivalent.) Every long option also accepts a leading double dash.
 The page count was printed.
 .TP
 1
-The file could not be opened or is not a repairable PDF.
+The file could not be opened or is not a repairable PDF, or the output
+could not be written.
 .TP
 2
-The file is encrypted and needs a password.
+The file is encrypted and needs a password (or uses an unknown security
+handler).
 .TP
 3
-The page count or tree depth exceeds its limit. Nothing is printed on stdout.
+The page count, tree depth or work budget exceeds its limit, or memory ran
+out.
 .TP
 4
-The page tree is malformed: no valid /Pages root, a kid that is not an
-indirect reference, a /Kids entry that is not an array, a page Poppler
-rejects, or a cycle.
+The page tree is malformed: no valid /Pages root, no pages, a kid that is not
+an indirect reference, a /Kids entry that is not an array, a page Poppler
+rejects, a cycle, or a root without /Kids that is not a lone page.
 .TP
 99
 Invalid command line.
+.PP
+On any failure nothing is printed on stdout.
 .SH SEE ALSO
 .BR pdfinfo (1),
 .BR pdftotext (1),

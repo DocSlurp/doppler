@@ -64,7 +64,7 @@ class FormField;
 // PageAttrs
 //------------------------------------------------------------------------
 
-class POPPLER_PRIVATE_EXPORT PageAttrs
+class PageAttrs
 {
 public:
     // Construct a new PageAttrs object by merging a dictionary

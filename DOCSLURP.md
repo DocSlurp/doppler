@@ -43,33 +43,53 @@ It walks the page tree from the catalog's `/Pages` root and counts leaf pages; i
 `/Count`, the linearization dictionary, Info, XMP or text, so a document cannot claim its own
 count. Do not parse `pdfinfo`'s `Pages:` line or use `getNumPages()` for these decisions.
 
-- **Output:** one decimal integer and a newline on stdout, nothing else. `-claimed` adds the
-  root `/Count` (or `none`) on a second line for diagnostics only. Diagnostics go to stderr as
-  fixed strings; Poppler's own messages are suppressed because they can quote document data.
-- **Limits:** `-max-pages N` (default 100000) and `-max-depth N` (default 256). Exceeding either
-  exits 3 with nothing on stdout. Long options also accept `--`.
-- **Exit codes:** 0 ok, 1 cannot open (not a PDF, unrepairable), 2 encrypted and needs a password
-  (an empty user password is tried), 3 limit exceeded, 4 malformed page tree, 99 usage.
-- **Malformed (4):** no valid `/Pages` reference or dictionary, a kid that is not an indirect
-  reference, an intermediate node whose `/Kids` is not an array, a page that Poppler's `Page`
-  rejects (bad `/Contents`, 10000+ annotations), or a cycle.
+- **Output:** one decimal integer (at least 1) and a newline on stdout, nothing else. `-claimed`
+  adds the root `/Count` (or `none` if it is not an integer) on a second line, for diagnostics
+  only. Every failure leaves stdout empty.
+- **Diagnostics:** fixed strings on stderr, never document data. Poppler's messages are dropped
+  and, on POSIX, fd 2 points at `/dev/null` while the file is processed, so Poppler code that
+  writes to stderr directly is silenced too.
+- **Limits:** `-max-pages N` (default 100000, at most 10^9) and `-max-depth N` (default 256).
+  Kid entries examined, including ones that count nothing, are capped at `2 * max-pages + 64`.
+  Exceeding any limit, or running out of memory, exits 3. Long options also accept `--`.
+- **Exit codes:** 0 ok; 1 cannot open (missing, not a PDF, unrepairable) or stdout cannot be
+  written; 2 encrypted and needs a password (an empty user password is tried; an unknown
+  security handler also lands here); 3 limit exceeded; 4 malformed page tree; 99 usage. Treat
+  any other status (a signal, say) as failure.
+- **Malformed (4):** no valid `/Pages` reference or dictionary; zero pages; a kid that is not an
+  indirect reference; an intermediate node whose `/Kids` is not an array; a page Poppler's `Page`
+  rejects (bad `/Contents`, 10000+ annotations); a cycle; a root without `/Kids` that is not a
+  lone page.
 
-Kids are classified exactly as `Catalog::cacheSubTree` builds the page list every util renders
-from: `/Type /Page`, or any dictionary without `/Kids`, is a page; any other dictionary is an
-intermediate node whatever its `/Type`; a kid resolving to a non-dictionary is skipped. Pages are
-validated by constructing Poppler's own `Page`. Subtrees are memoized, so shared kids count every
-time they are referenced (Poppler renders them every time) without exponential work.
+Kids are classified as `Catalog::cacheSubTree` builds the page list every util renders from:
+`/Type /Page`, or any dictionary without `/Kids`, is a page; any other dictionary is an
+intermediate node whatever its `/Type`; a kid resolving to a non-dictionary is skipped. Subtrees
+are memoized, so shared kids count every time they are referenced (Poppler renders them every
+time) without exponential work. If a fetch rebuilds the xref mid-walk, the walk restarts once on
+the rebuilt table. Stdin is not supported; pass a path.
 
-How it differs from Poppler, so callers pass `-f 1 -l N` with this count to every util:
+**Calling it.** Run it, and the utils, under a memory rlimit and a wall-clock timeout: a small
+compressed file can still expand to gigabytes while Poppler parses one `/Kids` array. Then pass
+`-f 1 -l N` with the count to every util. That caps their work at the billed pages, but it does
+not make them process all N: `pdftotext` and `pdftoppm` clamp `-l` to `getNumPages()`, so
+compare the pages produced with N.
+
+How the count differs from what Poppler processes:
 
 - `getNumPages()` returns the root `/Count` (or linearization `/N`), not the walk. A `/Count`
-  above the xref size makes it 0, so the utils process nothing.
+  above the xref size, or a root with no numeric `/Count`, makes it 0 and the utils process
+  nothing; this tool still reports the walked pages.
 - Poppler stops its page list at `/Count`: with `/Count 1` and 50 kids it renders 1 page; this
-  tool reports 50.
-- With `/Count` above the real pages but within the xref size, `pdftotext` emits only the real
-  pages but `pdftoppm` writes blank images up to `/Count`.
+  tool reports 50. A linearized `/N` below the walk has the same effect.
+- With `/Count` (or `/N`) above the walk and no `-l`, `pdftotext` emits only real pages but
+  `pdftoppm` writes blank images up to `/Count`. `-l N` stops that.
 - Poppler skips a kid that points back at an ancestor; this tool reports the tree as malformed.
-- A lone `/Type /Page` root counts as 1 only without a numeric `/Count`, as in Poppler.
+- A `/Type /Page` root without a numeric `/Count` is 1 page, ignoring any `/Kids`, as in Poppler.
+  When `/Pages` points at a leaf inside a tree, Poppler renders only that leaf (or nothing if it
+  is untyped); this tool reports 1, or malformed.
+- Utils fetch lazily, so a page-content fetch can rebuild the xref at a different point than the
+  walk does; `-l N` still bounds them.
+- `-max-depth` is measured on the first path that reaches a shared subtree.
 
 Tests: `test/docslurp/pagecount/`.
 

@@ -139,10 +139,6 @@ with t.TempDir() as d:
     rc, stdout, _ = run("pdfinfo", path)
     t.check(b"Pages:           250" in stdout, "nested-250: pdfinfo agrees on an honest file")
 
-    # stdin
-    rc = subprocess.run([os.path.join(utils.bindir, "pdfpagecount"), "-"], input=tree_pdf(7), capture_output=True, timeout=60)
-    t.check(rc.returncode == OK and rc.stdout == b"7\n", "stdin: reads '-'", repr(rc.stdout))
-
     # --- forged claims ------------------------------------------------------
     for label, title in (
         ("title-newline", "(Report\\nPages: 1 %s)" % MARKER),
@@ -243,7 +239,7 @@ with t.TempDir() as d:
         kid = nodes[i + 1] if i + 1 < len(nodes) else leaf
         objs.set(num, "<< /Type /Pages /Kids [%d 0 R %d 0 R] /Count 2 >>" % (kid, kid))
     expect(d, "dag-2pow64.pdf", objs.pdf(), LIMIT)
-    expect(d, "dag-2pow64.pdf", objs.pdf(), LIMIT, args=("-max-pages", 2**31 - 1), what="dag-2pow64 -max-pages 2^31-1")
+    expect(d, "dag-2pow64.pdf", objs.pdf(), LIMIT, args=("-max-pages", 10**9), what="dag-2pow64 -max-pages 10^9")
 
     # --- /Type handling (Catalog::cacheSubTree rules) -----------------------
     objs = Objects()
@@ -280,10 +276,47 @@ with t.TempDir() as d:
     path = expect(d, "non-dict-kids.pdf", objs.pdf(), OK, b"1\n")
     t.check(poppler_rendered_pages(path) == 1, "non-dict-kids: matches pages pdftotext renders")
 
-    # A lone page as the root, without /Count.
+    # A lone page as the root, without /Count (Catalog::getNumPages recovery).
     objs = Objects()
     objs.set(objs.alloc(), "<< /Type /Page /MediaBox [0 0 612 792] >>")
-    expect(d, "root-is-page.pdf", objs.pdf(), OK, b"1\n")
+    path = expect(d, "root-is-page.pdf", objs.pdf(), OK, b"1\n")
+    t.check(poppler_rendered_pages(path) == 1, "root-is-page: pdftotext renders 1 page")
+    # ... even with /Kids, which Poppler then ignores.
+    objs = Objects()
+    root = objs.alloc()
+    kids = [objs.add(page_body(root)) for _ in range(3)]
+    objs.set(root, "<< /Type /Page /MediaBox [0 0 612 792] /Kids [%s] >>" % " ".join("%d 0 R" % k for k in kids))
+    path = expect(d, "root-page-with-kids.pdf", objs.pdf(), OK, b"1\n")
+    t.check(poppler_rendered_pages(path) == 1, "root-page-with-kids: pdftotext renders 1 page")
+    # /Pages pointing at a leaf: Poppler renders only that leaf, or nothing if untyped.
+    for typed, code, out in ((True, OK, b"1\n"), (False, MALFORMED, None)):
+        objs = Objects()
+        parent = objs.alloc()
+        leaves = [objs.add(page_body(parent, typed=typed)) for _ in range(4)]
+        objs.set(parent, "<< /Type /Pages /Kids [%s] /Count 4 >>" % " ".join("%d 0 R" % k for k in leaves))
+        label = "pages-points-at-%sleaf" % ("" if typed else "untyped-")
+        path = expect(d, label + ".pdf", objs.pdf(pages=leaves[0]), code, out)
+        t.check(poppler_rendered_pages(path) == (1 if typed else 0), "%s: matches pages pdftotext renders" % label)
+
+    # Zero pages is never a count: every util reads -l 0 as "all pages".
+    expect(d, "empty-kids.pdf", tree_pdf(0, count=50), MALFORMED)
+    objs = Objects()
+    root = objs.alloc()
+    junk = objs.add("42")
+    objs.set(root, "<< /Type /Pages /Kids [%d 0 R] /Count 50 >>" % junk)
+    for _ in range(60):
+        objs.add("null")
+    expect(d, "only-junk-kids.pdf", objs.pdf(), MALFORMED)
+    expect(d, "empty-kids.pdf", tree_pdf(0, count=50), MALFORMED, args=("-claimed",), what="empty-kids -claimed")
+
+    # Kids that count nothing still spend the work budget (2 * max-pages + 64).
+    objs = Objects()
+    root = objs.alloc()
+    leaf = objs.add(page_body(root))
+    junk = objs.add("42")
+    objs.set(root, "<< /Type /Pages /Kids [%d 0 R %s] /Count 1 >>" % (leaf, " ".join(["%d 0 R" % junk] * 300)))
+    expect(d, "padded-kids.pdf", objs.pdf(), LIMIT, args=("-max-pages", 100), what="padded-kids -max-pages 100")
+    expect(d, "padded-kids.pdf", objs.pdf(), OK, b"1\n")
 
     # Structural errors that stop Poppler's page list.
     objs = Objects()
@@ -321,16 +354,44 @@ with t.TempDir() as d:
     rc, stdout, stderr = run("pdfpagecount", os.path.join(d.path, "missing.pdf"))
     t.check(rc == OPEN_ERROR and stdout == b"", "missing file: exit 1", repr((rc, stdout, stderr)))
 
+    # An xref rebuild triggered mid-walk (bad offset for obj 6) redefines obj 4
+    # through an object appended after %%EOF. The walk restarts on the rebuilt
+    # xref instead of mixing objects from before and after.
+    objs = Objects()
+    root = objs.alloc()
+    objs.add(page_body(root))  # 3, unused
+    four = objs.add(page_body(root))
+    objs.add("null")  # 5
+    six = objs.add(page_body(root))
+    for _ in range(60):
+        objs.add("null")
+    objs.set(root, "<< /Type /Pages /Kids [%d 0 R %d 0 R %d 0 R] /Count 50 >>" % (four, six, four))
+    pdf = bytearray(objs.pdf())
+    xr = pdf.rfind(b"\nxref\n") + 1
+    lines = pdf[xr:].split(b"\n")
+    lines[2 + six] = b"0000000001 00000 n "
+    pdf = bytes(pdf[:xr] + b"\n".join(lines))
+    pdf += b"\n%d 0 obj\n<< /Type /Pages /Parent 2 0 R /Kids [%s] /Count 5 >>\nendobj\n" % (four, b" ".join(b"%d 0 R" % (70 + i) for i in range(5)))
+    for i in range(5):
+        pdf += b"%d 0 obj\n%s\nendobj\n" % (70 + i, page_body(four).encode())
+    path = expect(d, "rebuild-mid-walk.pdf", pdf, OK, b"11\n")
+    rc, stdout, _ = run("pdftotext", "-f", 1, "-l", 11, path, "-")
+    t.check(stdout.count(b"\f") <= 11, "rebuild-mid-walk: pdftotext -l 11 stays within the count", repr(stdout.count(b"\f")))
+
     # --- encryption ---------------------------------------------------------
     path = expect(d, "encrypted-empty-user.pdf", encrypted_pdf(b""), OK, b"4\n")
     t.check(poppler_rendered_pages(path) == 4, "encrypted-empty-user: Poppler opens it too")
     expect(d, "encrypted-user-pw.pdf", encrypted_pdf(b"secret"), ENCRYPTED)
 
     # --- command line -------------------------------------------------------
-    for args in ((), ("a.pdf", "b.pdf"), ("-max-pages", -1, "x.pdf"), ("-max-depth", 0, "x.pdf"), ("-nope", "x.pdf")):
+    for args in ((), ("a.pdf", "b.pdf"), ("-max-pages", -1, "x.pdf"), ("-max-pages", 4294967297, "x.pdf"), ("-max-pages", "12x", "x.pdf"), ("-max-depth", 0, "x.pdf"), ("-nope", "x.pdf")):
         rc, stdout, _ = run("pdfpagecount", *args)
         t.check(rc == USAGE and stdout == b"", "usage %r: exit 99" % (args,), repr((rc, stdout)))
     rc, _, _ = run("pdfpagecount", "-h")
     t.check(rc == OK, "-h: exit 0")
+    flat = d.write("flat-full.pdf", tree_pdf(2))
+    with open("/dev/full", "wb") as full:
+        rc = subprocess.run([os.path.join(utils.bindir, "pdfpagecount"), flat], stdout=full, stderr=subprocess.PIPE, timeout=60).returncode
+    t.check(rc == OPEN_ERROR, "stdout write failure: exit 1", repr(rc))
 
 t.finish()
