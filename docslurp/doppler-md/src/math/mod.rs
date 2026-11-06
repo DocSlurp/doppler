@@ -140,7 +140,18 @@ fn equation_label(t: &str) -> bool {
 
 /// The atoms of one line's glyphs. Words without glyph records give no atoms (their glyphs
 /// count as text).
-fn line_glyphs(page: &Page, line: &Line) -> Vec<G> {
+/// Per font of a page: its math role and whether it is italic (computed once per page).
+type FontFacts = [(FontRole, bool)];
+
+fn font_facts(page: &Page) -> Vec<(FontRole, bool)> {
+    page.fonts.iter().map(|f| (symbols::font_role(&f.name), symbols::font_bold_italic(&f.name).1)).collect()
+}
+
+fn facts_of(facts: &FontFacts, g: &Glyph) -> (FontRole, bool) {
+    g.font.and_then(|i| facts.get(i as usize).copied()).unwrap_or((FontRole::Text, false))
+}
+
+fn line_glyphs(page: &Page, line: &Line, facts: &FontFacts) -> Vec<G> {
     let mut out = Vec::new();
     for (wi, w) in line.words.iter().enumerate() {
         let gs = page.word_glyphs(w);
@@ -160,7 +171,7 @@ fn line_glyphs(page: &Page, line: &Line) -> Vec<G> {
         let letters = gs.iter().filter(|g| g.text.chars().all(|c| c.is_alphabetic())).count();
         let start = out.len();
         for (gi, g) in gs.iter().enumerate() {
-            let (atom, ev) = glyph_atom(page, w, g, gi == 0, letters);
+            let (atom, ev) = glyph_atom(page, facts, w, g, gi == 0, letters);
             out.push(G { word: wi, atom, ev, text: g.text.to_string() });
         }
         // text-font letters in a word with math glyphs (the d of \mathrm{d}t, a function name
@@ -201,10 +212,9 @@ fn text_atom(w: &Word) -> Atom {
     }
 }
 
-fn glyph_atom(page: &Page, w: &Word, g: &Glyph, first: bool, letters: usize) -> (Atom, Ev) {
+fn glyph_atom(page: &Page, facts: &FontFacts, w: &Word, g: &Glyph, first: bool, letters: usize) -> (Atom, Ev) {
     let font = page.font(g);
-    let name = font.map_or("", |f| &f.name);
-    let role = symbols::font_role(name);
+    let (role, italic) = facts_of(facts, g);
     let fallback = g.src == UniSource::Code;
     // invisible and control characters say nothing
     let text: String = g
@@ -226,7 +236,6 @@ fn glyph_atom(page: &Page, w: &Word, g: &Glyph, first: bool, letters: usize) -> 
             sym.known = false;
         }
     }
-    let (_, italic) = symbols::font_bold_italic(name);
     let size = g.size.unwrap_or(w.size).max(1.0);
     let base = g.base.unwrap_or(w.base);
     let c = sym.text.chars().next();
@@ -294,10 +303,9 @@ fn glyph_atom(page: &Page, w: &Word, g: &Glyph, first: bool, letters: usize) -> 
 }
 
 /// An atom for a named glyph that belongs to no word.
-fn extra_atom(page: &Page, g: &Glyph) -> Atom {
+fn extra_atom(page: &Page, facts: &FontFacts, g: &Glyph) -> Atom {
     let font = page.font(g);
-    let name = font.map_or("", |f| &f.name);
-    let role = symbols::font_role(name);
+    let (role, _) = facts_of(facts, g);
     let mut sym = symbols::classify(role, g.name.as_deref(), &g.text, g.code, true);
     // only names the tables know: a raw code says nothing
     sym.known = sym.known && g.name.is_some() && !sym.text.is_empty() && !sym.text.chars().all(char::is_whitespace);
@@ -393,8 +401,8 @@ struct LineMath {
     label_only: bool,
 }
 
-fn analyse_line(page: &Page, line: &Line) -> LineMath {
-    let gs = line_glyphs(page, line);
+fn analyse_line(page: &Page, line: &Line, facts: &FontFacts) -> LineMath {
+    let gs = line_glyphs(page, line, facts);
     // an equation label: the last word, far right of the rest
     let mut label = None;
     if let Some(last) = gs.last() {
@@ -506,6 +514,7 @@ fn fraction_evidence(page: &Page, lines: &mut [LineMath], bars: &[Bar]) {
         let s = l.gs.iter().map(|g| g.atom.size).fold(1.0, f64::max);
         (x0, x1, s)
     };
+    let exts: Vec<(f64, f64, f64)> = lines.iter().map(|l| ext(l)).collect();
     let mut promote: Vec<usize> = Vec::new();
     for b in bars {
         if b.x1 - b.x0 > 0.5 * page.width {
@@ -517,7 +526,7 @@ fn fraction_evidence(page: &Page, lines: &mut [LineMath], bars: &[Bar]) {
             if l.gs.is_empty() || l.gs.len() > 80 {
                 continue;
             }
-            let (x0, x1, s) = ext(l);
+            let (x0, x1, s) = exts[li];
             let base = page.lines[li].base();
             let centred = x0 >= b.x0 - 0.5 * s
                 && x1 <= b.x1 + 0.5 * s
@@ -534,8 +543,8 @@ fn fraction_evidence(page: &Page, lines: &mut [LineMath], bars: &[Bar]) {
             }
         }
         let (Some((n, _)), Some((d, _))) = (num, den) else { continue };
-        let (nx0, nx1, _) = ext(&lines[n]);
-        let (dx0, dx1, s) = ext(&lines[d]);
+        let (nx0, nx1, _) = exts[n];
+        let (dx0, dx1, s) = exts[d];
         if b.x1 - b.x0 > (nx1 - nx0).max(dx1 - dx0) + 2.0 * s {
             continue;
         }
@@ -645,7 +654,8 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         stats.skipped = true;
         return (page.lines.clone(), stats);
     }
-    let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l)).collect();
+    let facts = font_facts(page);
+    let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l, &facts)).collect();
     let bars = bars_of(&page.rules);
     fraction_evidence(page, &mut lines, &bars);
     display_text_words(page, &mut lines);
@@ -732,6 +742,14 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
         eprintln!("clusters {clusters:?}");
     }
+    // boxes of every run of a prose line, once
+    let run_boxes: Vec<(usize, usize, (f64, f64, f64, f64, f64))> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.math_only)
+        .flat_map(|(li, l)| l.runs.iter().enumerate().map(move |(ri, &(a, b))| (li, ri, (a, b))))
+        .map(|(li, ri, (a, b))| (li, ri, bbox(&lines[li], a, b)))
+        .collect();
     // a cluster next to a prose line's run belongs to that run (an inline fraction or limits)
     let mut attached: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
     let mut cluster_taken = vec![false; clusters.len()];
@@ -748,12 +766,8 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             });
         // the nearest prose line with a run under or over the cluster
         let mut best: Option<(usize, usize, f64)> = None;
-        for (li, l) in lines.iter().enumerate() {
-            if l.math_only || l.runs.is_empty() {
-                continue;
-            }
-            for (ri, &(a, b)) in l.runs.iter().enumerate() {
-                let (x0, x1, top, bot, size) = bbox(l, a, b);
+        for &(li, ri, (x0, x1, top, bot, size)) in &run_boxes {
+            {
                 let s = size.max(csize);
                 let vgap = (top - cbot).max(ctop - bot);
                 let overlap = x1.min(cx1) - x0.max(cx0);
@@ -893,7 +907,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
                 let b = g.base.unwrap_or(0.0);
                 if !extra_used[k] && b >= top && b <= bot {
-                    let a = extra_atom(page, g);
+                    let a = extra_atom(page, &facts, g);
                     if a.sym.known {
                         extra_used[k] = true;
                         atoms.push(a);
