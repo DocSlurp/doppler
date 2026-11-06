@@ -46,6 +46,12 @@ Fail with exit code 3 if the tree is more than
 .I number
 levels deep (default 256).
 .TP
+.BI \-max\-memory " MiB"
+Limit the process address space to
+.I MiB
+mebibytes on POSIX systems (default 4096; 0 for no limit). Running out of
+memory exits with code 3.
+.TP
 .B \-claimed
 Also print the root /Count entry on a second line, or "none" if it is not
 an integer. For diagnostics only; never use it as the page count.

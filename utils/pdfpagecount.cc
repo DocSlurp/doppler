@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 #ifndef _WIN32
+#    include <sys/resource.h>
 #    include <unistd.h>
 #endif
 #include "parseargs.h"
@@ -58,6 +59,7 @@ enum ExitCode
 
 static char maxPagesArg[32] = "100000";
 static char maxDepthArg[32] = "256";
+static char maxMemoryArg[32] = "4096";
 static bool printClaimed = false;
 static bool printVersion = false;
 static bool printHelp = false;
@@ -66,6 +68,8 @@ static const ArgDesc argDesc[] = { { .arg = "-max-pages", .kind = argString, .va
                                    { .arg = "--max-pages", .kind = argString, .val = maxPagesArg, .size = sizeof(maxPagesArg), .usage = "same as -max-pages" },
                                    { .arg = "-max-depth", .kind = argString, .val = maxDepthArg, .size = sizeof(maxDepthArg), .usage = "fail with exit code 3 above this page tree depth (default 256)" },
                                    { .arg = "--max-depth", .kind = argString, .val = maxDepthArg, .size = sizeof(maxDepthArg), .usage = "same as -max-depth" },
+                                   { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 4096)" },
+                                   { .arg = "--max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "same as -max-memory" },
                                    { .arg = "-claimed", .kind = argFlag, .val = &printClaimed, .size = 0, .usage = "also print the root /Count claim on a second line (diagnostic only)" },
                                    { .arg = "--claimed", .kind = argFlag, .val = &printClaimed, .size = 0, .usage = "same as -claimed" },
                                    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
@@ -106,6 +110,24 @@ static void silenceStderr()
     if (devNull >= 0) {
         close(devNull);
     }
+#endif
+}
+
+// Caps this process's address space; a small compressed file can make
+// Poppler allocate gigabytes while parsing.
+static void limitMemory(long long mebibytes)
+{
+#ifndef _WIN32
+    if (mebibytes > 0) {
+        const rlim_t bytes = static_cast<rlim_t>(mebibytes) * 1024 * 1024;
+        struct rlimit current;
+        if (getrlimit(RLIMIT_AS, &current) == 0 && (current.rlim_max == RLIM_INFINITY || bytes < current.rlim_max)) {
+            const struct rlimit wanted = { bytes, current.rlim_max };
+            setrlimit(RLIMIT_AS, &wanted);
+        }
+    }
+#else
+    (void)mebibytes;
 #endif
 }
 
@@ -310,6 +332,21 @@ struct Result
     const char *message;
 };
 
+// Fetches every in-use object so that a damaged entry rebuilds the xref now,
+// as it would later when a util reads page content, and the walk sees the
+// table the utils end up using.
+void fetchAllObjects(XRef *xref)
+{
+    for (int num = 1; num < xref->getNumObjects(); ++num) {
+        const XRefEntry *entry = xref->getEntry(num, false);
+        if (entry->type == xrefEntryUncompressed) {
+            xref->fetch(num, entry->gen);
+        } else if (entry->type == xrefEntryCompressed) {
+            xref->fetch(num, 0);
+        }
+    }
+}
+
 Result countPages(XRef *xref, uint64_t maxPages, int maxDepth)
 {
     Object catalog = xref->getCatalog();
@@ -354,9 +391,9 @@ int main(int argc, char *argv[])
 {
     Win32Console win32Console(&argc, &argv);
 
-    long long maxPages = 0, maxDepth = 0;
+    long long maxPages = 0, maxDepth = 0, maxMemory = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);
-    const bool limitsOk = parseLimit(maxPagesArg, 0, 1000000000LL, &maxPages) && parseLimit(maxDepthArg, 1, 100000, &maxDepth);
+    const bool limitsOk = parseLimit(maxPagesArg, 0, 1000000000LL, &maxPages) && parseLimit(maxDepthArg, 1, 100000, &maxDepth) && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfpagecount version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
@@ -372,6 +409,7 @@ int main(int argc, char *argv[])
     }
 
     silenceStderr();
+    limitMemory(maxMemory);
     std::set_new_handler(outOfMemory);
     globalParams = std::make_unique<GlobalParams>();
     setErrorCallback(quietErrorCallback);
@@ -392,6 +430,7 @@ int main(int argc, char *argv[])
         return fail(exitOpenError, "cannot open document");
     }
 
+    fetchAllObjects(doc->getXRef());
     reconstructed = false;
     Result result = countPages(doc->getXRef(), static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
     if (reconstructed) {

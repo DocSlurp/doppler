@@ -378,18 +378,43 @@ with t.TempDir() as d:
     rc, stdout, _ = run("pdftotext", "-f", 1, "-l", 11, path, "-")
     t.check(stdout.count(b"\f") <= 11, "rebuild-mid-walk: pdftotext -l 11 stays within the count", repr(stdout.count(b"\f")))
 
+    # A rebuild only page content would trigger (bad offset for a /Contents
+    # stream) is forced before the walk, so the count follows the rebuilt
+    # tree the utils end up rendering.
+    objs = Objects()
+    root = objs.alloc()
+    contents = objs.add(t.stream("", "BT ET"))
+    first = objs.add(page_body(root, "/Contents %d 0 R" % contents))
+    nine = objs.add(page_body(root))
+    for _ in range(60):
+        objs.add("null")
+    objs.set(root, "<< /Type /Pages /Kids [%d 0 R %d 0 R] /Count 50 >>" % (first, nine))
+    pdf = bytearray(objs.pdf())
+    xr = pdf.rfind(b"\nxref\n") + 1
+    lines = pdf[xr:].split(b"\n")
+    lines[2 + contents] = b"0000000001 00000 n "
+    pdf = bytes(pdf[:xr] + b"\n".join(lines))
+    pdf += b"\n%d 0 obj\n<< /Type /Pages /Parent 2 0 R /Kids [%s] /Count 5 >>\nendobj\n" % (nine, b" ".join(b"%d 0 R" % (70 + i) for i in range(5)))
+    for i in range(5):
+        pdf += b"%d 0 obj\n%s\nendobj\n" % (70 + i, page_body(nine).encode())
+    path = expect(d, "rebuild-from-contents.pdf", pdf, OK, b"6\n")
+    t.check(poppler_rendered_pages(path) == 6, "rebuild-from-contents: matches pages pdftotext renders")
+
     # --- encryption ---------------------------------------------------------
     path = expect(d, "encrypted-empty-user.pdf", encrypted_pdf(b""), OK, b"4\n")
     t.check(poppler_rendered_pages(path) == 4, "encrypted-empty-user: Poppler opens it too")
     expect(d, "encrypted-user-pw.pdf", encrypted_pdf(b"secret"), ENCRYPTED)
 
     # --- command line -------------------------------------------------------
-    for args in ((), ("a.pdf", "b.pdf"), ("-max-pages", -1, "x.pdf"), ("-max-pages", 4294967297, "x.pdf"), ("-max-pages", "12x", "x.pdf"), ("-max-depth", 0, "x.pdf"), ("-nope", "x.pdf")):
+    for args in ((), ("a.pdf", "b.pdf"), ("-max-pages", -1, "x.pdf"), ("-max-pages", 4294967297, "x.pdf"), ("-max-pages", "12x", "x.pdf"), ("-max-depth", 0, "x.pdf"), ("-max-memory", -5, "x.pdf"), ("-nope", "x.pdf")):
         rc, stdout, _ = run("pdfpagecount", *args)
         t.check(rc == USAGE and stdout == b"", "usage %r: exit 99" % (args,), repr((rc, stdout)))
     rc, _, _ = run("pdfpagecount", "-h")
     t.check(rc == OK, "-h: exit 0")
     flat = d.write("flat-full.pdf", tree_pdf(2))
+    for mem in (0, 64):
+        rc, stdout, _ = run("pdfpagecount", "-max-memory", mem, flat)
+        t.check(rc == OK and stdout == b"2\n", "-max-memory %d: counts a small file" % mem, repr((rc, stdout)))
     with open("/dev/full", "wb") as full:
         rc = subprocess.run([os.path.join(utils.bindir, "pdfpagecount"), flat], stdout=full, stderr=subprocess.PIPE, timeout=60).returncode
     t.check(rc == OPEN_ERROR, "stdout write failure: exit 1", repr(rc))
