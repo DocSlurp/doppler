@@ -206,7 +206,26 @@ fn glyph_atom(page: &Page, w: &Word, g: &Glyph, first: bool, letters: usize) -> 
     let name = font.map_or("", |f| &f.name);
     let role = symbols::font_role(name);
     let fallback = g.src == UniSource::Code;
-    let sym = symbols::classify(role, g.name.as_deref(), &g.text, g.code, fallback);
+    // invisible and control characters say nothing
+    let text: String = g
+        .text
+        .chars()
+        .filter(|&c| !(c < ' ' || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}')))
+        .collect();
+    let mut sym = symbols::classify(role, g.name.as_deref(), &text, g.code, fallback);
+    // a math font whose text is a raw-code guess (no ToUnicode entry, no usable name) or a
+    // Latin-1 letter is badly encoded: its symbols are unknown, not guessed
+    if role.is_math() && role != FontRole::Symbol {
+        let named = g.name.as_deref().is_some_and(|n| {
+            symbols::classify(role, Some(n), "", g.code, true).known && !n.starts_with('g') && !n.starts_with("cid")
+        });
+        let latin1 = sym.text.chars().any(|c| {
+            ('\u{c0}'..='\u{24f}').contains(&c) && c != '×' && c != '÷' || ('\u{2018}'..='\u{201f}').contains(&c)
+        });
+        if (fallback && !named && !g.text.is_empty()) || latin1 {
+            sym.known = false;
+        }
+    }
     let (_, italic) = symbols::font_bold_italic(name);
     let size = g.size.unwrap_or(w.size).max(1.0);
     let base = g.base.unwrap_or(w.base);

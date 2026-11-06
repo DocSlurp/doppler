@@ -1013,12 +1013,19 @@ pub fn classify(role: FontRole, name: Option<&str>, text: &str, code: u32, src_i
     let first = chars.next();
     let rest_empty = chars.clone().next().is_none();
     // 2. Symbol-encoded fonts: raw codes and U+F0xx private-use values
+    // (a ToUnicode that maps a Symbol font's codes to ASCII is the same identity mistake)
     if role == FontRole::Symbol
         && let Some(c) = first
         && rest_empty
-        && ((src_is_fallback && code < 256) || ('\u{F020}'..='\u{F0FF}').contains(&c))
+        && ((src_is_fallback && code < 256) || ('\u{F020}'..='\u{F0FF}').contains(&c) || (' '..='~').contains(&c))
     {
-        let k = if ('\u{F020}'..='\u{F0FF}').contains(&c) { c as u32 - 0xF000 } else { code };
+        let k = if ('\u{F020}'..='\u{F0FF}').contains(&c) {
+            c as u32 - 0xF000
+        } else if src_is_fallback && code < 256 {
+            code
+        } else {
+            c as u32
+        };
         if let Some(m) = symbol_encoding(k) {
             return classify(FontRole::UnicodeMath, None, &m.to_string(), code, false);
         }

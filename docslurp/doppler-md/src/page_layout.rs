@@ -13,7 +13,7 @@ use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
 use crate::pyc::{Counter, char_len, fcmp, median, pmax, pmin, rstrip, split_count, strip};
-use crate::tables::{Table, find_tables, grid_html, grid_markdown, ruled_tables};
+use crate::tables::{Table, find_tables, grid_html, grid_markdown_with, ruled_tables};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedTable {
@@ -89,8 +89,12 @@ impl PageLayout {
         Some(Self { blocks })
     }
 
-    pub(crate) fn markdown(self, tables: TableFormat) -> String {
-        render_blocks(self.blocks, tables).into_iter().filter(|s| !strip(s).is_empty()).collect::<Vec<_>>().join("\n\n")
+    pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
+        render_blocks(self.blocks, tables, math)
+            .into_iter()
+            .filter(|s| !strip(s).is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 
@@ -189,7 +193,7 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
     out
 }
 
-pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<String> {
+pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat, math: bool) -> Vec<String> {
     blocks
         .into_iter()
         .map(|block| match block {
@@ -201,12 +205,12 @@ pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<Stri
                         grid_html(header.as_deref(), &t.table.rows)
                     }
                 }
-                (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
+                (TableFormat::Gfm, None) => grid_markdown_with(&t.table.rows, math),
                 (TableFormat::Gfm, Some(header)) => {
                     let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
                     rows.push(header);
                     rows.extend(t.table.rows.iter().cloned());
-                    grid_markdown(&rows)
+                    grid_markdown_with(&rows, math)
                 }
             },
             Block::Text { text, caption: true, .. } => format!("*{text}*"),
