@@ -105,7 +105,11 @@ Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
     values beside its index, stays a table;
   - a table of contents: a page number or range ending every row, never decreasing, text in
     the other cells, and either a first column of section numbers or a `Page` header. A sorted
-    price list or a chronology with the year last has no such evidence and stays a table.
+    price list or a chronology with the year last stays a table only without that evidence: one
+    whose first column counts 1, 2, 3, or whose header says `Page`/`Pages` (a count of pages per
+    model, say), reads as a contents list and stays as lines. So do all-text lists numbered
+    1, 2, 3 without a header (`1 | Brazil | Samba`); with a header (`Rank | ...`) they stay
+    tables. Content is kept either way.
 
   A title above such a table becomes its header only when its words split into the table's
   columns. These guards apply only to this pass; the dense pass is unchanged.
