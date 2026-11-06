@@ -195,3 +195,25 @@ fn real_pdf_combined_span() {
         assert_eq!(html.matches(t).count(), 1, "{html}");
     }
 }
+
+#[test]
+fn stream_and_window_match_the_default_on_a_short_document() {
+    let Some(pdftotext) = pdftotext() else {
+        eprintln!("skipped: set PDFTOTEXT to the DocSlurp pdftotext (or build it in ../../build)");
+        return;
+    };
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-stream-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let pdf = scratch.0.join("tiny.pdf");
+    std::fs::write(&pdf, tiny_pdf()).unwrap();
+    let pdf = pdf.to_str().unwrap();
+    let want = run(&pdftotext, &[pdf]);
+    assert!(want.status.success());
+    for args in [&["--stream"][..], &["--window", "0"], &["--window", "3"]] {
+        let got = run(&pdftotext, &[args, &[pdf]].concat());
+        assert!(got.status.success(), "{args:?}");
+        assert_eq!(got.stdout, want.stdout, "{args:?}");
+    }
+    let bad = run(&pdftotext, &["--window", "x", pdf]);
+    assert_eq!(bad.status.code(), Some(2));
+}
