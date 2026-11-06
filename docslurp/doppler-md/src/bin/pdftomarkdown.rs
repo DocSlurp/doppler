@@ -3,7 +3,7 @@
 //! `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout FILE -`, converts its XHTML as
 //! it arrives and writes the pages joined with form feeds on stdout. By default every page
 //! waits for the whole document; `--stream` (or `--window N`) writes each page once the next N
-//! have arrived, holding at most N + 1 pages. `--strict` drops
+//! are complete, holding at most N + 2 pages (the window and the page being parsed). `--strict` drops
 //! `-compact-layout` (full-precision coordinates): the same bytes as piping
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
@@ -34,7 +34,7 @@ usage: pdftomarkdown [--html] [--strict] [--stream | --window N] [--report] [--p
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --stream       write pages as they are converted (--window 16)
   --window N     body size and running headers/footers from N pages either side of each
-                 page, not the whole document; each page is written once the next N arrive.
+                 page, not the whole document; each page is written once the next N are complete.
                  A document of at most N + 1 pages converts exactly as without it
   --report       print a one-line JSON report to stderr
   --params JSON  override layout tuning parameters
