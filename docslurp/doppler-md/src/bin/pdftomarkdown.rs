@@ -21,7 +21,7 @@ use doppler_md::{Options, Params, TableFormat};
 mod cli;
 
 const USAGE: &str = "\
-usage: pdftomarkdown [--html] [--strict] [--report] [--params JSON] [-f N] [-l N]
+usage: pdftomarkdown [--html] [--math] [--strict] [--report] [--params JSON] [-f N] [-l N]
                      [--opw PW] [--upw PW] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)

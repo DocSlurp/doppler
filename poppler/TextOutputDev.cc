@@ -2918,8 +2918,7 @@ void TextPage::recordDropped(const GfxState *state, double x1, double y1, double
         return;
     }
     const char *name = static_cast<const Gfx8BitFont *>(font.get())->getCharName(static_cast<int>(c));
-    if (!name || !*name || !strcmp(name, "space") || !strcmp(name, "nbspace") || !strcmp(name, "nonbreakingspace") || !strncmp(name, "uni00A0", 7) || !strncmp(name, "uni20", 5) || !strcmp(name, ".notdef")
-        || !strcmp(name, "visiblespace")) {
+    if (!name || !*name || !strcmp(name, "space") || !strcmp(name, "nbspace") || !strcmp(name, "nonbreakingspace") || !strncmp(name, "uni00A0", 7) || !strncmp(name, "uni20", 5) || !strcmp(name, ".notdef") || !strcmp(name, "visiblespace")) {
         return;
     }
     dropped.push_back(DroppedGlyph { .x = x1, .y = y1, .advance = fabs(w1), .fontSize = curFontSize, .code = c, .font = curFont });
