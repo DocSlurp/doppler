@@ -30,6 +30,8 @@ pub struct Atom {
     pub tex_ext: bool,
     /// gap to the previous glyph of the same word is a space (for `\text` runs)
     pub word_start: bool,
+    /// the vertical extent of a delimiter merged from stacked pieces (top, bottom)
+    pub span: Option<(f64, f64)>,
 }
 
 impl Atom {
@@ -183,6 +185,7 @@ pub fn merge_pieces(atoms: Vec<Atom>) -> Vec<Atom> {
             group.iter().map(|p| p.base).fold(f64::NEG_INFINITY, f64::max),
         );
         a.base = (top + bottom) / 2.0;
+        a.span = Some((top - a.size, bottom + 0.5 * a.size));
         a.sym.class = match a.sym.text.as_str() {
             "(" | "[" | "{" | "⌈" | "⌊" | "⟨" => Class::Open,
             ")" | "]" | "}" | "⌉" | "⌋" | "⟩" => Class::Close,
@@ -282,14 +285,20 @@ pub fn parse(mut atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx) -> Item {
 }
 
 fn parse_row(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize) -> Item {
+    parse_row_with(atoms, bars, Vec::new(), ctx, depth)
+}
+
+/// [`parse_row`] with items already read (matrices) that belong to the row.
+fn parse_row_with(atoms: Vec<Atom>, bars: Vec<Bar>, extra: Vec<Item>, ctx: &mut Ctx, depth: usize) -> Item {
     if atoms.is_empty() {
-        return Item::group(Vec::new());
+        return assemble(extra, ctx, depth + 1);
     }
     if depth > MAX_DEPTH || !ctx.charge(atoms.len() + bars.len()) {
         ctx.failed = true;
         return flat(atoms);
     }
     let (atoms, bars, mut items) = matrix_regions(atoms, bars, ctx, depth);
+    items.extend(extra);
     if atoms.is_empty() && bars.is_empty() {
         return assemble(items, ctx, depth + 1);
     }
@@ -328,10 +337,17 @@ fn unexplained_rows(rows: &[Vec<Atom>], bars: &[Bar]) -> Vec<bool> {
             if o1 - o0 < 0.3 * (a1 - a0).min(c1 - c0) {
                 return false;
             }
-            let width = (o1 - o0).max(0.5 * s);
-            !bars.iter().any(|b| {
-                b.y >= b0 - 0.6 * s && b.y <= b1 && (b.x1.min(o1 + 0.5 * s) - b.x0.max(o0 - 0.5 * s)) >= 0.6 * width
-            })
+            // explained: every full-size symbol of the upper row is a numerator (over a bar
+            // between the rows), or every one of the lower row is a denominator
+            let between = |b: &Bar| b.y >= b0 - 0.6 * s && b.y <= b1;
+            let full = |r: &Vec<Atom>| {
+                let m = r.iter().filter(|a| !a.axis_symbol()).map(|a| a.size).fold(0.0, f64::max);
+                r.iter().filter(move |a| !a.axis_symbol() && a.size >= 0.9 * m).cloned().collect::<Vec<Atom>>()
+            };
+            let under = |a: &Atom, b: &Bar| a.cx() >= b.x0 - 0.1 * s && a.cx() <= b.x1 + 0.1 * s;
+            let nums = full(&w[0]).iter().all(|a| bars.iter().any(|b| between(b) && b.y > a.base && under(a, b)));
+            let dens = full(&w[1]).iter().all(|a| bars.iter().any(|b| between(b) && b.y < a.base && under(a, b)));
+            !(nums || dens)
         })
         .collect()
 }
@@ -407,9 +423,6 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
             None => k += 1,
         }
     }
-    if regions.is_empty() && depth <= 1 {
-        regions.push((None, None, f64::NEG_INFINITY, f64::INFINITY));
-    }
     let mut taken = vec![false; atoms.len()];
     let mut bar_taken = vec![false; bars.len()];
     let mut out = Vec::new();
@@ -420,6 +433,32 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
         if inside.is_empty() {
             continue;
         }
+        // only what the delimiters reach vertically
+        let reach = |d: &Atom| -> (f64, f64) {
+            if let Some(sp) = d.span {
+                sp
+            } else if d.tex_ext {
+                // an extension-font glyph hangs from its baseline
+                (d.base - 0.6 * d.size, d.base + 3.4 * d.size)
+            } else if d.sym.big {
+                (d.base - 2.2 * d.size, d.base + 1.6 * d.size)
+            } else {
+                (d.base - 3.0 * d.size, d.base + 3.0 * d.size)
+            }
+        };
+        let (top, bottom) = [l, r]
+            .into_iter()
+            .flatten()
+            .map(|i| reach(&atoms[i]))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, (t, b)| (acc.0.min(t), acc.1.max(b)));
+        let inside: Vec<usize> = if top.is_finite() {
+            inside.into_iter().filter(|&i| atoms[i].base >= top && atoms[i].base <= bottom).collect()
+        } else {
+            inside
+        };
+        if inside.is_empty() {
+            continue;
+        }
         let content: Vec<Atom> = inside.iter().map(|&i| atoms[i].clone()).collect();
         if let Some(d) = l.map(|i| &atoms[i]).filter(|d| !d.sym.big) {
             // rows above and below the delimiter's own baseline
@@ -427,6 +466,22 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
             let above = content.iter().any(|a| !a.axis_symbol() && a.size >= 0.85 * s && a.base < d.base - 0.2 * s);
             let below = content.iter().any(|a| !a.axis_symbol() && a.size >= 0.85 * s && a.base > d.base + 0.2 * s);
             if !(above && below) {
+                continue;
+            }
+            // matrix rows stay between the delimiters; lines of a multi-line equation do not
+            let (lx, rx) = (d.x0, r.map_or(f64::INFINITY, |j| atoms[j].x1));
+            let outside = content
+                .iter()
+                .filter(|a| (a.base - d.base).abs() > 0.3 * s && !a.axis_symbol() && a.size >= 0.85 * s)
+                .any(|a| {
+                    atoms.iter().any(|b| {
+                        !b.axis_symbol()
+                            && b.size >= 0.85 * s
+                            && (b.base - a.base).abs() <= 0.3 * s
+                            && (b.x1 <= lx || b.x0 >= rx)
+                    })
+                });
+            if outside {
                 continue;
             }
         }
@@ -448,7 +503,7 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
             (None, None) => "aligned",
             _ => "matrix",
         };
-        let mut m = matrix_rows(content, bv, env, ctx, depth);
+        let mut m = matrix_rows(content, bv, Vec::new(), env, ctx, depth);
         if env == "matrix" {
             // delimiters the environment cannot spell stay symbols around it
             for i in [l, r].into_iter().flatten() {
@@ -470,17 +525,32 @@ fn matrix_regions(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize)
         }
         out.push(m);
     }
-    if out.is_empty() {
-        return (atoms, bars, out);
+    let (rest, rest_bars) = if out.is_empty() {
+        (atoms, bars)
+    } else {
+        (
+            atoms.into_iter().enumerate().filter(|(i, _)| !taken[*i]).map(|(_, a)| a).collect(),
+            bars.into_iter().enumerate().filter(|(i, _)| !bar_taken[*i]).map(|(_, b)| b).collect(),
+        )
+    };
+    // a whole display on several lines no bar explains: aligned rows, each read on its own
+    if depth == 0 && multi(&rest, &rest_bars) {
+        let m = matrix_rows(rest, rest_bars, out, "aligned", ctx, depth);
+        return (Vec::new(), Vec::new(), vec![m]);
     }
-    let rest: Vec<Atom> = atoms.into_iter().enumerate().filter(|(i, _)| !taken[*i]).map(|(_, a)| a).collect();
-    let rest_bars: Vec<Bar> = bars.into_iter().enumerate().filter(|(i, _)| !bar_taken[*i]).map(|(_, b)| b).collect();
     (rest, rest_bars, out)
 }
 
 /// A matrix from atoms on several rows: rows a bar explains are merged (fractions in cells),
 /// each row is read on its own, and cells are cut at gaps common to every row.
-fn matrix_rows(content: Vec<Atom>, bars: Vec<Bar>, env: &'static str, ctx: &mut Ctx, depth: usize) -> Item {
+fn matrix_rows(
+    content: Vec<Atom>,
+    bars: Vec<Bar>,
+    extra: Vec<Item>,
+    env: &'static str,
+    ctx: &mut Ctx,
+    depth: usize,
+) -> Item {
     let rows = split_rows(&content);
     let unexplained = unexplained_rows(&rows, &bars);
     let mut merged: Vec<Vec<Atom>> = Vec::new();
@@ -492,15 +562,42 @@ fn matrix_rows(content: Vec<Atom>, bars: Vec<Bar>, env: &'static str, ctx: &mut 
         }
     }
     let s = max_size(&content);
+    // items already read go to the row whose vertical span holds their baseline
+    let spans: Vec<(f64, f64)> = merged
+        .iter()
+        .map(|r| {
+            (
+                r.iter().map(|a| a.base - a.size).fold(f64::INFINITY, f64::min),
+                r.iter().map(|a| a.base + 0.5 * a.size).fold(f64::NEG_INFINITY, f64::max),
+            )
+        })
+        .collect();
+    let mut extras: Vec<Vec<Item>> = vec![Vec::new(); merged.len().max(1)];
+    for it in extra {
+        let k = spans
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                let d = |(t, u): &(f64, f64)| {
+                    if it.base < *t {
+                        t - it.base
+                    } else if it.base > *u {
+                        it.base - u
+                    } else {
+                        0.0
+                    }
+                };
+                d(a.1).total_cmp(&d(b.1))
+            })
+            .map_or(0, |(k, _)| k);
+        extras[k].push(it);
+    }
     let mut row_items: Vec<Vec<Item>> = Vec::new();
     let mut row_bases = Vec::new();
-    for r in merged {
-        let (top, bot) = (
-            r.iter().map(|a| a.base - a.size).fold(f64::INFINITY, f64::min),
-            r.iter().map(|a| a.base + 0.5 * a.size).fold(f64::NEG_INFINITY, f64::max),
-        );
+    for (k, r) in merged.into_iter().enumerate() {
+        let (top, bot) = spans[k];
         let rb: Vec<Bar> = bars.iter().copied().filter(|b| b.y > top && b.y < bot).collect();
-        let it = parse_row(r, rb, ctx, depth + 1);
+        let it = parse_row_with(r, rb, std::mem::take(&mut extras[k]), ctx, depth + 1);
         row_bases.push(it.base);
         row_items.push(match it.node {
             Node::Group(v) => v,
@@ -518,12 +615,14 @@ fn matrix_rows(content: Vec<Atom>, bars: Vec<Bar>, env: &'static str, ctx: &mut 
         }
         end = end.max(b);
     }
-    let aligned = env == "aligned" && cuts.is_empty();
+    let aligned = env == "aligned";
+    let any_rel = row_items.iter().any(|row| row.iter().skip(1).any(|i| i.class() == Some(Class::Rel)));
     let rows: Vec<Vec<Item>> = row_items
         .into_iter()
         .map(|row| {
             if aligned {
-                // split each row before its first relation
+                // split each row before its first relation; a continuation line (no relation)
+                // goes after the alignment point
                 let k = row.iter().position(|i| i.class() == Some(Class::Rel)).filter(|&k| k > 0);
                 let mut row = row;
                 match k {
@@ -531,6 +630,7 @@ fn matrix_rows(content: Vec<Atom>, bars: Vec<Bar>, env: &'static str, ctx: &mut 
                         let rhs = row.split_off(k);
                         vec![Item::group(row), Item::group(rhs)]
                     }
+                    None if any_rel => vec![Item::group(Vec::new()), Item::group(row)],
                     None => vec![Item::group(row)],
                 }
             } else {
@@ -543,7 +643,7 @@ fn matrix_rows(content: Vec<Atom>, bars: Vec<Bar>, env: &'static str, ctx: &mut 
             }
         })
         .collect();
-    let env = if env == "aligned" && !aligned { "matrix" } else { env };
+
     let (x0, x1) = (
         content.iter().map(|a| a.x0).fold(f64::INFINITY, f64::min),
         content.iter().map(|a| a.x1).fold(f64::NEG_INFINITY, f64::max),
@@ -961,7 +1061,7 @@ fn assemble(mut items: Vec<Item>, ctx: &mut Ctx, depth: usize) -> Item {
 fn resolve_stack(it: Item, ctx: &mut Ctx, depth: usize) -> Item {
     match it.node {
         Node::Stack(rows) => {
-            ctx.doubt += 0.1;
+            ctx.doubt += 0.15;
             let rows = rows.into_iter().map(|r| vec![r]).collect();
             let _ = depth;
             Item { node: Node::Matrix { env: "matrix", rows }, ..it }
@@ -1014,7 +1114,8 @@ fn attach(out: &mut Vec<Item>, pending: Vec<Item>, b: f64, s: f64, ctx: &mut Ctx
     let base = match out.pop() {
         Some(prev) => prev,
         None => {
-            ctx.doubt += 0.05;
+            // a script with no base before it: a prescript, or a misread
+            ctx.doubt += 0.12;
             Item::group(Vec::new())
         }
     };

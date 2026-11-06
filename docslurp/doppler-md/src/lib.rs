@@ -241,13 +241,14 @@ impl Report {
             format!(
                 concat!(
                     ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"glyphsLeft\":{},",
-                    "\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
+                    "\"mathGlyphs\":{},\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
                 ),
                 sum(|m| m.inline),
                 sum(|m| m.display),
                 sum(|m| m.actual_text),
                 sum(|m| m.uncertain),
                 sum(|m| m.math_glyphs_left),
+                sum(|m| m.math_glyphs),
                 pages(|m| m.skipped),
                 r.glyphs_skipped,
                 r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),

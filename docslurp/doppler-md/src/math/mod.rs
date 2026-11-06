@@ -62,6 +62,8 @@ pub struct PageMath {
     pub skipped: bool,
     /// math glyphs the page drew outside any formula that was rewritten
     pub math_glyphs_left: usize,
+    /// math glyphs (math font or math code point) the page drew
+    pub math_glyphs: usize,
 }
 
 /// How strongly a glyph says "math".
@@ -187,6 +189,7 @@ fn text_atom(w: &Word) -> Atom {
         upright_text: false,
         tex_ext: false,
         word_start: true,
+        span: None,
     }
 }
 
@@ -248,8 +251,18 @@ fn glyph_atom(page: &Page, w: &Word, g: &Glyph, first: bool, letters: usize) -> 
         }
     }
     let tex_ext = role == FontRole::MathExtension && !font.is_some_and(|f| f.cid);
-    let atom =
-        Atom { x0: g.x, x1: g.x + g.w.max(0.0), base, size, sym, role, upright_text, tex_ext, word_start: first };
+    let atom = Atom {
+        x0: g.x,
+        x1: g.x + g.w.max(0.0),
+        base,
+        size,
+        sym,
+        role,
+        upright_text,
+        tex_ext,
+        word_start: first,
+        span: None,
+    };
     (atom, ev)
 }
 
@@ -272,6 +285,7 @@ fn extra_atom(page: &Page, g: &Glyph) -> Atom {
         upright_text: false,
         tex_ext: role == FontRole::MathExtension && !font.is_some_and(|f| f.cid),
         word_start: true,
+        span: None,
     }
 }
 
@@ -794,7 +808,14 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
             }
         }
-        let tex = if !actual.is_empty() && atoms.is_empty() {
+        // numbers alone (figure tick labels, a negative number in prose) stay text
+        let numbers_only = !atoms.is_empty()
+            && atoms.iter().all(|a| {
+                a.sym.text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '−' | '-' | '+' | ' '))
+            });
+        let tex = if numbers_only {
+            None
+        } else if !actual.is_empty() && atoms.is_empty() {
             match actual.iter().map(|t| actual_text_latex(t)).collect::<Option<Vec<String>>>() {
                 Some(v) => {
                     stats.actual_text += 1;
@@ -862,9 +883,11 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     stats.inline += 1;
                 }
             }
+            None if numbers_only => {}
             None => stats.uncertain += 1,
         }
     }
+    stats.math_glyphs = lines.iter().map(|l| l.gs.iter().filter(|g| g.ev == Ev::Strong).count()).sum();
     stats.math_glyphs_left = lines
         .iter()
         .enumerate()
@@ -995,6 +1018,14 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, bool)>)
     words.retain(|w| !w.text.is_empty());
     if words.is_empty() {
         return None;
+    }
+    // `$a$$b$` would read as a display delimiter, and `$a$2` does not close: keep a space
+    for k in 1..words.len() {
+        let next_digit_or_math =
+            words[k].text.starts_with('$') || words[k].text.starts_with(|c: char| c.is_ascii_digit());
+        if !words[k - 1].space && words[k - 1].text.ends_with('$') && next_digit_or_math {
+            words[k - 1].space = true;
+        }
     }
     Some(Line::new(words, line.block, line.flow))
 }

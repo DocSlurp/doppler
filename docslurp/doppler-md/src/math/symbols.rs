@@ -141,7 +141,6 @@ pub fn font_role(name: &str) -> FontRole {
         "mtsy",
         "mnsymbol",
         "fdsymbol",
-        "advp",
         "wasy",
         "stmary",
     ]) {
