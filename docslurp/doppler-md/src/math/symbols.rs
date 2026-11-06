@@ -504,6 +504,45 @@ fn tex_name(name: &str) -> Option<Sym> {
     Some(sym(text, class))
 }
 
+/// Standard (Adobe Glyph List) names of math symbols, for glyphs whose text is private-use or
+/// missing but whose name is known.
+fn agl_math(name: &str) -> Option<(&'static str, Class)> {
+    Some(match name {
+        "parenleft" => ("(", Class::Open),
+        "parenright" => (")", Class::Close),
+        "bracketleft" => ("[", Class::Open),
+        "bracketright" => ("]", Class::Close),
+        "braceleft" => ("{", Class::Open),
+        "braceright" => ("}", Class::Close),
+        "angleleft" => ("⟨", Class::Open),
+        "angleright" => ("⟩", Class::Close),
+        "bar" => ("|", Class::Fence),
+        "slash" => ("/", Class::Ord),
+        "radical" => ("√", Class::Radical),
+        "integral" => ("∫", Class::LargeOp),
+        "summation" => ("∑", Class::LargeOp),
+        "product" => ("∏", Class::LargeOp),
+        "minus" => ("−", Class::Bin),
+        "plus" => ("+", Class::Bin),
+        "plusminus" => ("±", Class::Bin),
+        "multiply" => ("×", Class::Bin),
+        "divide" => ("÷", Class::Bin),
+        "equal" => ("=", Class::Rel),
+        "less" => ("<", Class::Rel),
+        "greater" => (">", Class::Rel),
+        "lessequal" => ("≤", Class::Rel),
+        "greaterequal" => ("≥", Class::Rel),
+        "notequal" => ("≠", Class::Rel),
+        "approxequal" => ("≈", Class::Rel),
+        "infinity" => ("∞", Class::Ord),
+        "partialdiff" => ("∂", Class::Ord),
+        "arrowright" => ("→", Class::Rel),
+        "arrowleft" => ("←", Class::Rel),
+        "element" => ("∈", Class::Rel),
+        _ => return None,
+    })
+}
+
 /// The Adobe Symbol encoding (codes 0x20-0xFE) as Unicode, for Symbol fonts whose text
 /// came out as raw codes or as private-use U+F0xx values.
 fn symbol_encoding(code: u32) -> Option<char> {
@@ -1000,6 +1039,28 @@ pub fn classify(role: FontRole, name: Option<&str>, text: &str, code: u32, src_i
         if let Some(mut s) = tex_name(n) {
             s.style = Style::Default;
             return s;
+        }
+        // a variant name (parenleft.alt4, summation.display): the base name, drawn big
+        if let Some((base, _)) = n.split_once('.')
+            && !base.is_empty()
+        {
+            if let Some(mut s) = tex_name(base) {
+                s.big = true;
+                return s;
+            }
+            if let Some((t, class)) = agl_math(base) {
+                let mut s = sym(t, class);
+                s.big = true;
+                return s;
+            }
+        }
+        // a standard name whose text is private-use or missing
+        let unknown_text = text
+            .chars()
+            .next()
+            .is_none_or(|c| c == '\u{fffd}' || ('\u{e000}'..='\u{f8ff}').contains(&c) || (c as u32) < 0x20);
+        if unknown_text && let Some((t, class)) = agl_math(n) {
+            return sym(t, class);
         }
         // AGL-style uniXXXX names
         if let Some(hex) = n.strip_prefix("uni")

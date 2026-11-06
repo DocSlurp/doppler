@@ -240,13 +240,17 @@ impl Report {
             };
             format!(
                 concat!(
-                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"glyphsLeft\":{},",
+                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"uncertainWhy\":{{\"unknownGlyph\":{},\"doubt\":{},\"limit\":{},\"mixedActualText\":{}}},\"glyphsLeft\":{},",
                     "\"mathGlyphs\":{},\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
                 ),
                 sum(|m| m.inline),
                 sum(|m| m.display),
                 sum(|m| m.actual_text),
                 sum(|m| m.uncertain),
+                sum(|m| m.uncertain_unknown),
+                sum(|m| m.uncertain_doubt),
+                sum(|m| m.uncertain_limit),
+                sum(|m| m.uncertain_mixed),
                 sum(|m| m.math_glyphs_left),
                 sum(|m| m.math_glyphs),
                 pages(|m| m.skipped),

@@ -66,6 +66,12 @@ pub struct PageMath {
     pub actual_text: usize,
     /// formulas found but left as text (too doubtful, unknown glyphs, or limits)
     pub uncertain: usize,
+    /// why formulas stayed text: an unknown glyph, too much doubt, a cap or failed parse,
+    /// ActualText that is not LaTeX mixed with glyphs
+    pub uncertain_unknown: usize,
+    pub uncertain_doubt: usize,
+    pub uncertain_limit: usize,
+    pub uncertain_mixed: usize,
     /// the page was not read for math (too many glyphs, or no glyph records)
     pub skipped: bool,
     /// math glyphs the page drew outside any formula that was rewritten
@@ -917,6 +923,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
         // numbers alone (figure tick labels, a negative number in prose) stay text
         let mut ctx_failed_bars = false;
+        let mut reason = 0u8;
         let numbers_only = !atoms.is_empty()
             && atoms.iter().all(|a| {
                 a.sym.text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | '−' | '-' | '+' | ' '))
@@ -932,6 +939,13 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 None => None,
             }
         } else if glyphs > opts.max_formula_glyphs || work > opts.max_page_work || unknown > 0 || !actual.is_empty() {
+            reason = if unknown > 0 {
+                1
+            } else if !actual.is_empty() {
+                4
+            } else {
+                3
+            };
             if debug {
                 let t: String = atoms.iter().map(|a| a.sym.text.as_str()).collect();
                 eprintln!("math: skipped glyphs={glyphs} unknown={unknown} actual={} text={t}", actual.len());
@@ -976,6 +990,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     f.display, glyphs, ctx.doubt, ctx.failed, ctx.work, tex
                 );
             }
+            reason = if ctx.failed { 3 } else { 2 };
             (!ctx.failed && ctx.doubt <= opts.max_doubt && !tex.is_empty()).then_some(tex)
         };
         match tex {
@@ -1002,7 +1017,15 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
             }
             None if numbers_only => {}
-            None => stats.uncertain += 1,
+            None => {
+                stats.uncertain += 1;
+                match reason {
+                    1 => stats.uncertain_unknown += 1,
+                    2 => stats.uncertain_doubt += 1,
+                    4 => stats.uncertain_mixed += 1,
+                    _ => stats.uncertain_limit += 1,
+                }
+            }
         }
     }
     stats.math_glyphs = lines.iter().map(|l| l.gs.iter().filter(|g| g.ev == Ev::Strong).count()).sum();
