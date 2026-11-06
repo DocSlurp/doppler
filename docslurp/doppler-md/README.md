@@ -16,6 +16,11 @@ same choice as `Options` in `to_markdown_report_with`.
 
 ## pdftomarkdown
 
+`pdftomarkdown` is the supported way to get text out of a PDF; running `pdftotext` yourself,
+or piping its XHTML into `doppler-md`, is deprecated (see the table in
+[DOCSLURP.md](../../DOCSLURP.md#pdf-to-markdown)). `doppler-md` remains for converting XHTML
+you already have.
+
 `pdftomarkdown FILE.pdf` is PDF to Markdown in one step. It runs
 `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout` with `-f`, `-l`, `-opw` and `-upw`
 passed through (`--opw`/`--upw` are accepted too), reads the XHTML into memory and converts it.
