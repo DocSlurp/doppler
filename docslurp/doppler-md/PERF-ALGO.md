@@ -150,3 +150,29 @@ interleaved launches over the 258 inputs: 0.643 s CPU before, 0.636 s after).
 
 A sub-quadratic `regions` that keeps output exact is still open (see the walk memo above); the
 budget makes it unnecessary for safety.
+
+## Gutter-table grid work (2026-11-05)
+
+`build_grid` placed every word with a linear scan of the columns, O(words x columns): three
+rows of 160,000 one-word cells (each its own column) took 62 s on the review host (0.7 s before
+the wide-spaced pass, which reached that path). Columns from `gutter_columns` and ruled tables
+are finite and ordered, so the column is now two binary searches with the same answer (the
+first interval holding the midpoint with 1 point of slack, else the first nearest centre; a unit
+test checks it against the scan on random ordered columns, including touching, zero-width and
+duplicate intervals, and midpoints far enough away that distances round to ties, which go to
+the first column as in the scan); any other column list keeps the scans. The reproducer takes
+1.3 s.
+
+Table detection now runs within the page `Budget`: each run of rows that reaches column
+detection, in the dense or the wide-spaced pass, charges twice its words (columns, then grid).
+Grouping rows is linear and is not charged. On the golden set the largest page goes from 20,618
+to 21,052 units and the largest document from 54,463 to 59,725 (master measured with the same
+binary build; the 20,617 and 50,508 recorded above predate later master changes); nothing
+degrades. `doppler_md.py` does not
+charge these units, so the work counts in `tests/page_layout.rs` no longer equal Python's.
+
+The wide-spaced pass is one forward walk over the rows (a run grows row by row and the next
+starts where it stopped) plus the column and grid work charged above. The rotated-text pass
+copies each rotated line once and scans the rules three times per rotation; the reframed layout
+shares the page budget, and a 19,800-line rotated page stays under the limits
+(`tests/rotated_borderless.rs`).

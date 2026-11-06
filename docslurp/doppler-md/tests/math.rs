@@ -934,7 +934,11 @@ fn split_equation_numbers_stay_after_the_formula() {
     let label = || vec![w(vec![g(480.0, 9.0, 0, "(7.")], 200.0, 10.0), w(vec![g(489.0, 9.0, 0, "4)")], 200.0, 10.0)];
     for separate in [false, true] {
         let mut lines = vec![prose(150.0), vec![eq()]];
-        if separate { lines.push(label()); } else { lines[1].extend(label()); }
+        if separate {
+            lines.push(label());
+        } else {
+            lines[1].extend(label());
+        }
         lines.push(prose(250.0));
         let (md, _) = convert(&page(&lines, &[]), &MATH);
         assert_eq!(formulas(&md), vec!["v=r"], "{md}");
@@ -945,22 +949,65 @@ fn split_equation_numbers_stay_after_the_formula() {
 
 #[test]
 fn touching_numeric_function_argument_is_not_an_equation_label() {
-    let lines = vec![prose(150.0), vec![
-        w(vec![g(250.0, 6.0, 1, "u"), g(258.0, 7.0, 0, "="), g(268.0, 6.0, 1, "f"), g(274.0, 4.0, 1, "("), g(278.0, 5.0, 1, "x"), g(283.0, 4.0, 1, ")")], 200.0, 10.0),
-        w(vec![g(287.0, 4.0, 0, "("), g(291.0, 5.0, 0, "3"), g(296.0, 4.0, 0, ")")], 200.0, 10.0),
-    ], prose(250.0)];
+    let lines = vec![
+        prose(150.0),
+        vec![
+            w(
+                vec![
+                    g(250.0, 6.0, 1, "u"),
+                    g(258.0, 7.0, 0, "="),
+                    g(268.0, 6.0, 1, "f"),
+                    g(274.0, 4.0, 1, "("),
+                    g(278.0, 5.0, 1, "x"),
+                    g(283.0, 4.0, 1, ")"),
+                ],
+                200.0,
+                10.0,
+            ),
+            w(vec![g(287.0, 4.0, 0, "("), g(291.0, 5.0, 0, "3"), g(296.0, 4.0, 0, ")")], 200.0, 10.0),
+        ],
+        prose(250.0),
+    ];
     let (md, _) = convert(&page(&lines, &[]), &MATH);
     assert_eq!(formulas(&md), vec!["u=f(x)(3)"], "{md}");
 }
 
 #[test]
 fn paired_scripts_attach_to_their_base_before_matrix_detection() {
-    let lines = vec![prose(150.0), vec![
-        w(vec![g(260.0, 7.0, 1, "T")], 200.0, 10.0),
-        w(vec![g(267.0, 5.0, 0, "-"), g(272.0, 4.0, 4, "2")], 194.0, 7.0),
-        w(vec![g(267.0, 4.0, 4, "5"), g(271.0, 4.0, 5, "k")], 204.0, 7.0),
-        w(vec![g(283.0, 7.0, 0, "="), g(296.0, 6.0, 1, "z")], 200.0, 10.0),
-    ], prose(250.0)];
+    let lines = vec![
+        prose(150.0),
+        vec![
+            w(vec![g(260.0, 7.0, 1, "T")], 200.0, 10.0),
+            w(vec![g(267.0, 5.0, 0, "-"), g(272.0, 4.0, 4, "2")], 194.0, 7.0),
+            w(vec![g(267.0, 4.0, 4, "5"), g(271.0, 4.0, 5, "k")], 204.0, 7.0),
+            w(vec![g(283.0, 7.0, 0, "="), g(296.0, 6.0, 1, "z")], 200.0, 10.0),
+        ],
+        prose(250.0),
+    ];
     let (md, _) = convert(&page(&lines, &[]), &MATH);
     assert_eq!(formulas(&md), vec!["T_{5k}^{-2}=z"], "{md}");
+}
+
+#[test]
+fn glyph_stream_matches_whole_input_at_every_chunk_boundary() {
+    use doppler_md::{Converter, model::Parser};
+    let first =
+        page(&[vec![w(vec![g(80.0, 6.0, 1, "x"), g(88.0, 6.0, 0, "="), g(96.0, 6.0, 0, "2")], 120.0, 10.0)]], &[]);
+    let input = first.repeat(3);
+    let p = Params::default();
+    let (expected, report) = to_markdown_report_with(&input, &p, &MATH);
+    assert!(expected[0].contains('$'));
+    for width in [1, 2, 7, 31, 64, 257, input.len()] {
+        let mut parser = Parser::with_glyphs(true);
+        let mut converter = Converter::new(&p, MATH, Some(16));
+        let mut output = Vec::new();
+        for chunk in input.as_bytes().chunks(width) {
+            parser
+                .push(std::str::from_utf8(chunk).unwrap(), &mut |pg| converter.push(pg, &mut |_, md| output.push(md)));
+        }
+        let parsed = parser.finish(&mut |pg| converter.push(pg, &mut |_, md| output.push(md)));
+        let actual = converter.finish(parsed, &mut |_, md| output.push(md));
+        assert_eq!(output, expected, "chunk width {width}");
+        assert_eq!(actual.to_json(), report.to_json(), "chunk width {width}");
+    }
 }

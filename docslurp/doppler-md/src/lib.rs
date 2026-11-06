@@ -19,12 +19,13 @@ pub mod params;
 pub mod patterns;
 pub mod prose;
 pub mod pyc;
+mod rotation;
 pub mod tables;
 mod unicode_tables;
 
 pub use model::ParseReport;
 pub use params::{Params, UseBlocks};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
 use layout::Budget;
@@ -97,48 +98,89 @@ fn norm_key(text: &str) -> String {
     out
 }
 
-/// Per page, per line: a repeated header/footer line or a page number.
-fn furniture(pages: &[Page], p: &Params, _body: f64) -> Vec<Vec<bool>> {
-    let mut drop: Vec<Vec<bool>> = pages.iter().map(|pg| vec![false; pg.lines.len()]).collect();
-    let band = p.furniture_band;
-    let mut counts: HashMap<(bool, String), usize> = HashMap::new();
-    let mut exact: HashMap<(bool, String), usize> = HashMap::new();
-    let mut cand = Vec::new();
-    for (pi, page) in pages.iter().enumerate() {
-        let mut seen = HashSet::new();
-        let mut seen_exact = HashSet::new();
+/// A margin line's repetition keys: digit-normalized and literal (case-folded), with the band.
+type MarginKey = (bool, String);
+
+/// A page's top- and bottom-band lines, the candidates for running headers and footers.
+struct Margins {
+    /// (line index, normalized key, literal key)
+    cand: Vec<(usize, MarginKey, MarginKey)>,
+    /// distinct keys of each kind: a page counts once per key
+    keys: HashSet<MarginKey>,
+    literals: HashSet<MarginKey>,
+}
+
+impl Margins {
+    fn of(page: &Page, p: &Params) -> Margins {
+        let band = p.furniture_band;
+        let mut m = Margins { cand: Vec::new(), keys: HashSet::new(), literals: HashSet::new() };
         for (li, line) in page.lines.iter().enumerate() {
             let mid = (line.y0 + line.y1) / 2.0;
             let top = mid < page.height * band;
             if top || mid > page.height * (1.0 - band) {
                 let key = (top, norm_key(line.text()));
                 let literal = (top, pyc::py_lower(strip(line.text())).into_owned());
-                if seen.insert(key.clone()) {
-                    *counts.entry(key.clone()).or_default() += 1;
+                m.keys.insert(key.clone());
+                m.literals.insert(literal.clone());
+                m.cand.push((li, key, literal));
+            }
+        }
+        m
+    }
+}
+
+/// How many pages of a window have each margin key.
+#[derive(Default)]
+struct MarginCounts {
+    keys: HashMap<MarginKey, usize>,
+    literals: HashMap<MarginKey, usize>,
+}
+
+impl MarginCounts {
+    fn add(&mut self, m: &Margins) {
+        for k in &m.keys {
+            *self.keys.entry(k.clone()).or_default() += 1;
+        }
+        for k in &m.literals {
+            *self.literals.entry(k.clone()).or_default() += 1;
+        }
+    }
+
+    fn remove(&mut self, m: &Margins) {
+        for (map, keys) in [(&mut self.keys, &m.keys), (&mut self.literals, &m.literals)] {
+            for k in keys {
+                if let Some(n) = map.get_mut(k) {
+                    *n -= 1;
+                    if *n == 0 {
+                        map.remove(k);
+                    }
                 }
-                if seen_exact.insert(literal.clone()) {
-                    *exact.entry(literal.clone()).or_default() += 1;
-                }
-                cand.push((pi, li, key, literal));
             }
         }
     }
-    let need = pmax(2.0, p.furniture_min_share * pages.len() as f64);
-    // each page's line baselines, sorted on first use: "no other line on this baseline" is a
+}
+
+/// Per line of `page`: a header/footer line repeated on enough of the `pages` pages that
+/// `counts` covers, or a page number.
+fn furniture(page: &Page, m: &Margins, counts: &MarginCounts, pages: usize, p: &Params) -> Vec<bool> {
+    let mut drop = vec![false; page.lines.len()];
+    let need = pmax(2.0, p.furniture_min_share * pages as f64);
+    // the page's line baselines, sorted on first use: "no other line on this baseline" is a
     // neighbour lookup instead of a scan of the page
-    let mut bases: Vec<Option<Vec<f64>>> = vec![None; pages.len()];
-    for (pi, li, key, literal) in cand {
-        let lines = &pages[pi].lines;
-        let line = &lines[li];
+    let mut bases: Option<Vec<f64>> = None;
+    let lines = &page.lines;
+    for (li, key, literal) in &m.cand {
+        let line = &lines[*li];
         // Different numbers can carry document meaning. In preservation mode,
         // only literal repetition is evidence of a running header or footer;
         // typography and distance from body text cannot justify deleting it.
-        let count =
-            if p.furniture_preserve_headings { exact.get(&literal) } else { counts.get(&key) }.copied().unwrap_or(0);
-        let repeated = pages.len() >= 2 && count as f64 >= need;
+        let count = if p.furniture_preserve_headings { counts.literals.get(literal) } else { counts.keys.get(key) }
+            .copied()
+            .unwrap_or(0);
+        let repeated = pages >= 2 && count as f64 >= need;
         let mut page_number = || {
             page_number(line.text()) && {
-                let sorted = bases[pi].get_or_insert_with(|| {
+                let sorted = bases.get_or_insert_with(|| {
                     let mut v: Vec<f64> = lines.iter().map(|o| o.base()).collect();
                     v.sort_by(|a, b| fcmp(*a, *b));
                     v
@@ -147,14 +189,14 @@ fn furniture(pages: &[Page], p: &Params, _body: f64) -> Vec<Vec<bool>> {
             }
         };
         if repeated || page_number() {
-            drop[pi][li] = true;
+            drop[*li] = true;
         }
     }
     drop
 }
 
 /// (body font size, body colour): the most common rounded size and colour by character count.
-fn body_size(pages: &[Page]) -> (f64, String) {
+fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, String) {
     let mut c = FloatCounter::new();
     let mut colors: Counter<Rc<str>> = Counter::new();
     for page in pages {
@@ -339,37 +381,115 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
 
 /// [`to_markdown_report`] with output [`Options`].
 pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
-    let mut report = Report::default();
-    let mut pages = model::parse_with(xhtml, &mut report.parse, o.math);
-    let math_params;
-    let p = if o.math {
-        math_params = Params { display_math_paragraphs: true, ..p.clone() };
-        &math_params
-    } else {
-        p
-    };
-    if o.math {
-        let mo = math::MathOptions::default();
-        for (pi, page) in pages.iter_mut().enumerate() {
-            let (lines, stats) = math::rewrite_page(page, &mo);
-            page.lines = lines;
-            if stats.ocr_layer {
-                report.degraded.push((pi, Degraded::OcrTextLayer));
-            } else if stats.unreadable {
-                report.degraded.push((pi, Degraded::UnreadableText));
-            }
-            report.math.push(stats);
+    let mut parse = ParseReport::default();
+    let pages = model::parse_with(xhtml, &mut parse, o.math);
+    let mut out = Vec::with_capacity(pages.len());
+    let mut c = Converter::new(p, *o, None);
+    for page in pages {
+        c.push(page, &mut |_, md| out.push(md));
+    }
+    let report = c.finish(parse, &mut |_, md| out.push(md));
+    (out, report)
+}
+
+/// Page-at-a-time conversion with a bounded lookahead. Two decisions look beyond the page: the
+/// body font size and colour (the most common over the pages buffered when the first page is
+/// written, then fixed), and running headers and footers (a margin line repeated on
+/// `furniture_min_share` of the pages within `window` pages either side). The converter keeps
+/// at most `window + 1` parsed pages, and the margin keys of `window` written ones.
+///
+/// With `window: None`, or a window at least as long as the document, both decisions see the
+/// whole document and the output is [`to_markdown_report_with`]'s.
+pub struct Converter<'p> {
+    p: &'p Params,
+    o: Options,
+    window: Option<usize>,
+    /// received pages not yet written, oldest first: page `next` onwards
+    ahead: VecDeque<(Page, Margins)>,
+    /// margins of written pages still inside the window, oldest first
+    behind: VecDeque<Margins>,
+    counts: MarginCounts,
+    /// pages in `counts`: the window around the next page to write
+    counted: usize,
+    next: usize,
+    body: Option<(f64, String)>,
+    spent: u64,
+    report: Report,
+}
+
+impl<'p> Converter<'p> {
+    pub fn new(p: &'p Params, o: Options, window: Option<usize>) -> Self {
+        Converter {
+            p,
+            o,
+            window,
+            ahead: VecDeque::new(),
+            behind: VecDeque::new(),
+            counts: MarginCounts::default(),
+            counted: 0,
+            next: 0,
+            body: None,
+            spent: 0,
+            report: Report::default(),
         }
     }
-    let pages = pages;
-    let (body, body_color) = body_size(&pages);
-    let drop = furniture(&pages, p, body);
-    let mut result = Vec::with_capacity(pages.len());
-    let mut spent: u64 = 0;
-    for (pi, page) in pages.iter().enumerate() {
-        let lines = &page.lines;
-        let n = lines.len();
-        let doc_left = p.max_doc_work - spent as f64 - n as f64;
+
+    /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
+    /// is now complete.
+    pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
+        if self.o.math {
+            let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
+            page.lines = lines;
+            let pi = self.next + self.ahead.len();
+            if stats.ocr_layer {
+                self.report.degraded.push((pi, Degraded::OcrTextLayer));
+            } else if stats.unreadable {
+                self.report.degraded.push((pi, Degraded::UnreadableText));
+            }
+            self.report.math.push(stats);
+        }
+        let m = Margins::of(&page, self.p);
+        self.counts.add(&m);
+        self.counted += 1;
+        self.ahead.push_back((page, m));
+        while self.window.is_some_and(|w| self.ahead.len() > w) {
+            self.write_next(out);
+        }
+    }
+
+    /// Ends the input: writes the remaining pages and returns the report, with `parse` as its
+    /// parse report.
+    pub fn finish(mut self, parse: ParseReport, out: &mut dyn FnMut(usize, String)) -> Report {
+        while !self.ahead.is_empty() {
+            self.write_next(out);
+        }
+        self.report.parse = parse;
+        self.report.doc_work = self.spent;
+        self.report
+    }
+
+    fn write_next(&mut self, out: &mut dyn FnMut(usize, String)) {
+        let math_params = Params { display_math_paragraphs: true, ..self.p.clone() };
+        let p = if self.o.math { &math_params } else { self.p };
+        let (body, body_color) =
+            self.body.get_or_insert_with(|| body_size(self.ahead.iter().map(|(pg, _)| pg))).clone();
+        let Some((page, m)) = self.ahead.pop_front() else { return };
+        let pi = self.next;
+        self.next += 1;
+        if let Some(w) = self.window {
+            while self.behind.len() > w {
+                if let Some(old) = self.behind.pop_front() {
+                    self.counts.remove(&old);
+                    self.counted -= 1;
+                }
+            }
+        }
+        let drop = furniture(&page, &m, &self.counts, self.counted, p);
+        if self.window.is_some() {
+            self.behind.push_back(m);
+        }
+        let n = page.lines.len();
+        let doc_left = p.max_doc_work - self.spent as f64 - n as f64;
         let early = if n as f64 > p.max_page_lines {
             Some(Degraded::PageLines)
         } else if page.rules.len() as f64 > p.max_page_rules {
@@ -380,23 +500,22 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
             None
         };
         if let Some(why) = early {
-            report.degraded.push((pi, why));
-            result.push(plain_lines(page, &drop[pi]));
-            continue;
+            self.report.degraded.push((pi, why));
+            out(pi, plain_lines(&page, &drop));
+            return;
         }
-        spent += n as u64;
+        self.spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
-        match PageLayout::within(page, &drop[pi], body, &body_color, p, o.tables, &mut budget) {
-            Some(layout) => result.push(layout.markdown(o.tables, o.math)),
+        let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget) {
+            Some(layout) => layout.markdown(self.o.tables, self.o.math),
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
-                report.degraded.push((pi, why));
-                result.push(plain_lines(page, &drop[pi]));
+                self.report.degraded.push((pi, why));
+                plain_lines(&page, &drop)
             }
-        }
-        spent += budget.used;
-        report.page_work_max = report.page_work_max.max(budget.used);
+        };
+        self.spent += budget.used;
+        self.report.page_work_max = self.report.page_work_max.max(budget.used);
+        out(pi, md);
     }
-    report.doc_work = spent;
-    (result, report)
 }

@@ -1427,6 +1427,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     color: first.color.clone(),
                     glyphs: Default::default(),
                     invisible: false,
+                    rot: first.rot,
                 });
             }
             i = b;

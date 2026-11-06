@@ -12,6 +12,16 @@ pdftotext \- Portable Document Format (PDF) to text converter
 .B Pdftotext
 converts Portable Document Format (PDF) files to plain text.
 .PP
+.B Deprecated in the DocSlurp fork:
+use
+.BR pdftomarkdown " FILE.pdf"
+to extract text instead.
+It runs pdftotext with the right options and converts the result to
+Markdown with layout, tables and headings.
+Direct use of pdftotext, and of its output formats, is not supported for
+DocSlurp ingestion; pdftotext is kept as the backend pdftomarkdown calls.
+See DOCSLURP.md in the source tree.
+.PP
 Pdftotext reads the PDF file,
 .IR PDF-file ,
 and writes a text file,

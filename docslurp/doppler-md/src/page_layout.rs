@@ -13,7 +13,7 @@ use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
 use crate::pyc::{Counter, char_len, fcmp, median, pmax, pmin, rstrip, split_count, strip};
-use crate::tables::{Table, find_tables, grid_html, grid_markdown_with, ruled_tables};
+use crate::tables::{Table, find_tables_within, grid_html, grid_markdown_with, ruled_tables};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedTable {
@@ -27,14 +27,24 @@ pub(crate) struct PlacedTable {
 pub(crate) enum FlowItem {
     Paragraph(Paragraph),
     Table(PlacedTable),
+    /// a rotated region, already laid out and rendered in its own frame
+    Rendered(Rc<Vec<String>>),
 }
 
 pub(crate) enum Block {
     Text { text: String, heading: u8, list: bool, caption: bool },
     Table(PlacedTable),
+    Rendered(Rc<Vec<String>>),
 }
 
-type Placement = Elem<Option<Rc<PlacedTable>>>;
+/// What a non-line element carries through region splitting.
+#[derive(Clone, Debug)]
+pub(crate) enum Placed {
+    Table(Rc<PlacedTable>),
+    Rendered(Rc<Vec<String>>),
+}
+
+type Placement = Elem<Option<Placed>>;
 
 /// A page whose content has its final ownership and reading order.
 pub(crate) struct PageLayout {
@@ -62,6 +72,20 @@ impl PageLayout {
             UseBlocks::Auto => !per_block.is_empty() && median(per_block.counts().map(|c| c as f64).collect()) >= 1.5,
             UseBlocks::Off => false,
         };
+        // lines of a rotation read in their own frame are laid out there (sharing the budget)
+        // and come back as one rendered element at their upright extent
+        let (ids, groups) = crate::rotation::split(page, &ids, p);
+        let mut rendered = Vec::with_capacity(groups.len());
+        for g in groups {
+            let no_drop = vec![false; g.page.lines.len()];
+            let sub = PageLayout::within(&g.page, &no_drop, body, body_color, p, format, budget)?;
+            let parts: Vec<String> = render_blocks(sub.blocks, format, p.display_math_paragraphs)
+                .into_iter()
+                .filter(|s| !strip(s).is_empty())
+                .collect();
+            let item = Some(Placed::Rendered(Rc::new(parts)));
+            rendered.push(Elem { line: None, table: item, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1 });
+        }
         let mut elements: Vec<Placement> = ids
             .iter()
             .map(|&i| {
@@ -73,16 +97,17 @@ impl PageLayout {
             let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
                 |(members, table, (x0, y0, x1, y1))| {
                     let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
-                    (members, Elem { line: None, table: Some(Rc::new(table)), x0, x1, y0, y1 })
+                    (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
                 },
             );
             elements = replace_members(elements, tables);
         }
+        elements.extend(rendered);
         let mut blocks = Vec::new();
         for region in regions_within(&elements, &page.lines, body, p, 0, budget)? {
             // A narrow gutter can place the same line in two regions. Each region assigns
             // its own copy: a table in the left region cannot consume right-region prose.
-            let seq = assign_region(page, region, body, p);
+            let seq = assign_region(page, region, body, p, budget)?;
             let items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
             blocks.extend(finish_region(items, p));
         }
@@ -117,17 +142,23 @@ fn replace_members(
     elements
 }
 
-fn assign_region(page: &Page, mut region: Vec<Placement>, body: f64, p: &Params) -> Vec<SeqItem> {
+fn assign_region(
+    page: &Page,
+    mut region: Vec<Placement>,
+    body: f64,
+    p: &Params,
+    budget: &mut Budget,
+) -> Option<Vec<SeqItem>> {
     if p.tables {
         let ids: Vec<usize> = region.iter().filter_map(|e| e.line).collect();
-        let tables = find_tables(page, &ids, p, body).into_iter().map(|(members, grid)| {
+        let tables = find_tables_within(page, &ids, p, body, budget)?.into_iter().map(|(members, grid)| {
             let y0 = members.iter().map(|&i| page.lines[i].y0).fold(f64::INFINITY, pmin);
             let x0 = members.iter().map(|&i| page.lines[i].x0).fold(f64::INFINITY, pmin);
             let x1 = members.iter().map(|&i| page.lines[i].x1).fold(f64::NEG_INFINITY, pmax);
             let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, header: None };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.
-            (members, Elem { line: None, table: Some(Rc::new(table)), x0: 0.0, x1, y0, y1: y0 })
+            (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 })
         });
         region = replace_members(region, tables);
     }
@@ -138,14 +169,15 @@ fn assign_region(page: &Page, mut region: Vec<Placement>, body: f64, p: &Params)
         .chain(lines)
         .map(|e| {
             let item = match e.table {
-                Some(t) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1 },
+                Some(Placed::Table(t)) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1 },
+                Some(Placed::Rendered(r)) => Seq::Rendered(r),
                 None => Seq::Line(page.lines[e.line.expect("line placement")].clone()),
             };
             SeqItem { item, y0: e.y0, x0: e.x0 }
         })
         .collect();
     seq.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
-    seq
+    Some(seq)
 }
 
 /// Resolve title ownership before emitting any blocks. Presentation uses the original
@@ -161,13 +193,23 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                 out.push(Block::Table(table));
                 previous_table = true;
             }
+            FlowItem::Rendered(parts) => {
+                out.push(Block::Rendered(parts));
+                previous_table = false;
+            }
             FlowItem::Paragraph(it) => {
-                if p.table_titles
-                    && let Some(FlowItem::Table(tab)) = items.peek_mut()
-                    && table_title(&it, tab, p)
-                {
+                // a title the columns do not split stays out of a sparse table: one cell
+                // holding a whole line is not a header
+                let titled = match items.peek_mut() {
+                    Some(FlowItem::Table(tab)) if p.table_titles && table_title(&it, tab, p) => {
+                        let split = split_header(&it.lines[0].words, &tab.table.cols);
+                        (split.is_some() || !tab.table.sparse).then_some((tab, split))
+                    }
+                    _ => None,
+                };
+                if let Some((tab, split)) = titled {
                     let n = tab.table.rows[0].len();
-                    tab.header = Some(split_header(&it.lines[0].words, &tab.table.cols).unwrap_or_else(|| {
+                    tab.header = Some(split.unwrap_or_else(|| {
                         let mut header = vec![String::new(); n];
                         header[0] = it.text;
                         header
@@ -196,27 +238,31 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
 pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat, math: bool) -> Vec<String> {
     blocks
         .into_iter()
-        .map(|block| match block {
-            Block::Table(t) => match (tables, t.header) {
-                (TableFormat::Html, header) => {
-                    if header.is_none() {
-                        t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
-                    } else {
-                        grid_html(header.as_deref(), &t.table.rows)
+        .flat_map(|block| -> Vec<String> {
+            let one = match block {
+                Block::Rendered(parts) => return parts.to_vec(),
+                Block::Table(t) => match (tables, t.header) {
+                    (TableFormat::Html, header) => {
+                        if header.is_none() {
+                            t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
+                        } else {
+                            grid_html(header.as_deref(), &t.table.rows)
+                        }
                     }
-                }
-                (TableFormat::Gfm, None) => grid_markdown_with(&t.table.rows, math),
-                (TableFormat::Gfm, Some(header)) => {
-                    let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
-                    rows.push(header);
-                    rows.extend(t.table.rows.iter().cloned());
-                    grid_markdown_with(&rows, math)
-                }
-            },
-            Block::Text { text, caption: true, .. } => format!("*{text}*"),
-            Block::Text { text, heading, .. } if heading != 0 => format!("{} {text}", "#".repeat(heading as usize)),
-            Block::Text { text, list: true, .. } => format!("- {text}"),
-            Block::Text { text, .. } => text,
+                    (TableFormat::Gfm, None) => grid_markdown_with(&t.table.rows, math),
+                    (TableFormat::Gfm, Some(header)) => {
+                        let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
+                        rows.push(header);
+                        rows.extend(t.table.rows.iter().cloned());
+                        grid_markdown_with(&rows, math)
+                    }
+                },
+                Block::Text { text, caption: true, .. } => format!("*{text}*"),
+                Block::Text { text, heading, .. } if heading != 0 => format!("{} {text}", "#".repeat(heading as usize)),
+                Block::Text { text, list: true, .. } => format!("- {text}"),
+                Block::Text { text, .. } => text,
+            };
+            vec![one]
         })
         .collect()
 }

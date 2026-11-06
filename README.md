@@ -1,6 +1,11 @@
 Poppler, a PDF rendering library
 ================================
 
+> **DocSlurp fork:** to extract text, use `pdftomarkdown`
+> ([docslurp/doppler-md](docslurp/doppler-md/README.md)) instead of `pdftotext`. Direct
+> `pdftotext` use is deprecated here; `pdftomarkdown` runs it internally. See
+> [DOCSLURP.md](DOCSLURP.md#pdf-to-markdown).
+
 This is Poppler, a library for rendering PDF files, and examining or
 modifying their structure.  Poppler originally came from the XPDF
 sources; please see the file [README-XPDF](README-XPDF) for the

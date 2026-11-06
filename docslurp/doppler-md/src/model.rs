@@ -50,7 +50,9 @@ pub struct Word {
     pub base: f64,
     pub space: bool,
     pub color: Rc<str>,
-    /// invisible text (render mode 3, such as an OCR layer over a scan); read only with glyphs
+    /// Quarter turns of the glyphs; absent or invalid rotation reads as zero.
+    pub rot: u8,
+    /// Invisible text (render mode 3, such as an OCR layer over a scan); read only with glyphs.
     pub invisible: bool,
     /// This word's glyph records (`pdftotext -glyphs`) as a range of [`Page::glyphs`]; empty
     /// without glyph records.
@@ -316,7 +318,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 14] = [
+const KEYS: [&str; 15] = [
     "xMin",
     "yMin",
     "xMax",
@@ -331,6 +333,7 @@ const KEYS: [&str; 14] = [
     "rulesTruncated",
     "glyphsTruncated",
     "invisible",
+    "rotation",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -350,6 +353,7 @@ fn key_index(name: &str) -> Option<usize> {
         "rulesTruncated" => 11,
         "glyphsTruncated" => 12,
         "invisible" => 13,
+        "rotation" => 14,
         _ => return None,
     })
 }
@@ -657,6 +661,7 @@ const HEIGHT: usize = 10;
 const RULES_TRUNCATED: usize = 11;
 const GLYPHS_TRUNCATED: usize = 12;
 const INVISIBLE: usize = 13;
+const ROTATION: usize = 14;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -755,283 +760,463 @@ pub fn parse_report(xhtml: &str, report: &mut ParseReport) -> Vec<Page> {
 /// `glyphs` is set. Records that do not follow a kept word, or that have a malformed number,
 /// are dropped and counted.
 pub fn parse_with(xhtml: &str, report: &mut ParseReport, glyphs: bool) -> Vec<Page> {
+    let mut st = ParseState { report: std::mem::take(report), glyphs, ..ParseState::default() };
     let mut pages: Vec<Page> = Vec::new();
-    // words of the open <line> (`words` in Python is None until the first <line>)
-    let mut words: Vec<Word> = Vec::new();
-    let mut in_line = false;
-    let (mut flow, mut block) = (-1i64, -1i64);
-    let b = xhtml.as_bytes();
-    let mut a = Attrs([None; KEYS.len()]);
-    let mut scan = Scan::new();
-    let mut last_color: Option<Rc<str>> = None;
-    // font names repeat word after word: cache the last style
-    let mut last_font: Option<(&str, (bool, bool))> = None;
-    // glyph records go to the last word pushed, until the next element that is not a <g>
-    let mut glyph_target = false;
-    let mut ga: [Option<&str>; 9] = [None; 9];
-    let mut fa: [Option<&str>; 9] = [None; 9];
-    // glyphs of the open line, moved into the page with the line
-    let mut line_glyphs: Vec<Glyph> = Vec::new();
-    let mut doc_glyphs = 0usize;
-    let mut page_glyphs = 0usize;
-    let mut last_glyph_name: Option<Rc<str>> = None;
-    // the open page's font ids -> index in its table
-    let mut font_index: std::collections::HashMap<i64, u16> = std::collections::HashMap::new();
-    let mut pos = 0;
-    while let Some(off) = memchr(b'<', &b[pos..]) {
-        let lt = pos + off;
-        let Some((tag, end)) = tag_at(xhtml, lt, &mut scan, glyphs) else {
-            pos = lt + 1;
-            continue;
-        };
-        pos = end;
-        let have_page = !pages.is_empty();
-        if !matches!(tag, Tag::Glyph(_)) {
-            glyph_target = false;
-        }
-        match tag {
-            Tag::Extra(attrs) => {
-                let Some(pg) = pages.last_mut() else { continue };
-                if page_glyphs >= MAX_PAGE_GLYPHS || doc_glyphs >= MAX_DOC_GLYPHS {
-                    report.glyphs_skipped += 1;
-                    pg.glyphs_truncated = true;
-                    continue;
-                }
-                parse_attrs(attrs, &mut ga, glyph_key);
-                let (Some(x), Some(w), Some(base), Some(size)) = (
-                    ga[G_X].and_then(py_float),
-                    ga[G_W].and_then(py_float),
-                    ga[G_B].and_then(py_float),
-                    ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
-                ) else {
-                    report.glyphs_skipped += 1;
-                    continue;
-                };
-                let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
-                pg.extra_glyphs.push(Glyph {
-                    x,
-                    w,
-                    base: Some(base),
-                    size: Some(size),
-                    font,
-                    code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
-                    text: Rc::from(""),
-                    src: UniSource::Code,
-                    name: ga[G_N].map(|n| Rc::from(&*pyc::html_unescape(n))),
-                });
-                page_glyphs += 1;
-                doc_glyphs += 1;
-            }
-            Tag::Glyph(attrs) => {
-                let Some(word) = words.last_mut().filter(|_| glyph_target && in_line) else {
-                    report.glyphs_skipped += 1;
-                    continue;
-                };
-                if page_glyphs >= MAX_PAGE_GLYPHS || doc_glyphs >= MAX_DOC_GLYPHS {
-                    report.glyphs_skipped += 1;
-                    if let Some(pg) = pages.last_mut() {
-                        pg.glyphs_truncated = true;
-                    }
-                    continue;
-                }
-                parse_attrs(attrs, &mut ga, glyph_key);
-                let (Some(x), Some(w)) = (ga[G_X].and_then(py_float), ga[G_W].and_then(py_float)) else {
-                    report.glyphs_skipped += 1;
-                    continue;
-                };
-                let src = match ga[G_S] {
-                    Some("t") => UniSource::ToUnicode,
-                    Some("n") => UniSource::Name,
-                    Some("a") => UniSource::ActualText,
-                    _ => UniSource::Code,
-                };
-                let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
-                let name = ga[G_N].map(|n| match &last_glyph_name {
-                    Some(rc) if **rc == *n => rc.clone(),
-                    _ => {
-                        let rc: Rc<str> = Rc::from(&*pyc::html_unescape(n));
-                        last_glyph_name = Some(rc.clone());
-                        rc
-                    }
-                });
-                line_glyphs.push(Glyph {
-                    x,
-                    w,
-                    base: ga[G_B].and_then(py_float),
-                    size: ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
-                    font,
-                    code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
-                    text: Rc::from(glyph_text(ga[G_U].unwrap_or(""))),
-                    src,
-                    name,
-                });
-                word.glyphs.end += 1;
-                page_glyphs += 1;
-                doc_glyphs += 1;
-            }
-            Tag::Font(attrs) => {
-                let Some(pg) = pages.last_mut() else { continue };
-                if pg.fonts.len() >= MAX_PAGE_FONTS {
-                    report.fonts_skipped += 1;
-                    continue;
-                }
-                parse_attrs(attrs, &mut fa, font_key);
-                let Some(id) = fa[F_ID].and_then(|v| v.parse::<i64>().ok()).filter(|id| !font_index.contains_key(id))
-                else {
-                    report.fonts_skipped += 1;
-                    continue;
-                };
-                font_index.insert(id, pg.fonts.len() as u16);
-                let text = |k: usize| -> Rc<str> { Rc::from(&*pyc::html_unescape(fa[k].unwrap_or(""))) };
-                let flag = |k: usize| fa[k] == Some("1");
-                pg.fonts.push(FontInfo {
-                    id,
-                    name: text(F_NAME),
-                    kind: text(F_TYPE),
-                    encoding: text(F_ENC),
-                    embedded: flag(F_EMB),
-                    symbolic: flag(F_SYM),
-                    cid: flag(F_CID),
-                    has_to_unicode: flag(F_TU),
-                    to_unicode_misses: fa[F_TUMISS].and_then(|v| v.parse().ok()).unwrap_or(0),
-                });
-            }
-            Tag::Rule(boxed, attrs) => {
-                if !have_page {
-                    continue;
-                }
-                a.parse_into(attrs);
-                let (Some(x0), Some(y0), Some(x1), Some(y1)) =
-                    (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
-                else {
-                    report.rules_skipped += 1;
-                    continue;
-                };
-                let color = a.0[COLOR].unwrap_or("#000000").to_string();
-                if let Some(pg) = pages.last_mut() {
-                    pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
-                }
-            }
-            Tag::Open("page", attrs) => {
-                report.pages += 1;
-                a.parse_into(attrs);
-                let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
-                let rules_truncated = match a.0[RULES_TRUNCATED] {
-                    Some("1") => Some(true),
-                    Some("0") => Some(false),
-                    _ => None,
-                };
-                if rules_truncated == Some(true) {
-                    report.rules_truncated_pages.push(report.pages - 1);
-                }
-                if glyphs && a.0[GLYPHS_TRUNCATED] == Some("1") {
-                    report.glyphs_truncated_pages.push(report.pages - 1);
-                }
-                pages.push(Page {
-                    width: dim(WIDTH, 612.0),
-                    height: dim(HEIGHT, 792.0),
-                    lines: Vec::new(),
-                    rules: Vec::new(),
-                    rules_truncated,
-                    glyphs: Vec::new(),
-                    fonts: Vec::new(),
-                    extra_glyphs: Vec::new(),
-                    glyphs_truncated: glyphs && a.0[GLYPHS_TRUNCATED] == Some("1"),
-                });
-                page_glyphs = 0;
-                line_glyphs.clear();
-                font_index.clear();
-            }
-            Tag::Open("flow", _) => flow += 1,
-            Tag::Open("block", _) => block += 1,
-            Tag::Open(_, _) => {
-                report.words_unclosed_line += words.len();
-                words.clear();
-                line_glyphs.clear();
-                in_line = true;
-            }
-            Tag::Close(name) => {
-                report.page_closes += (name == "page") as usize;
-                if name == "line" && have_page && in_line && !words.is_empty() {
-                    report.lines += 1;
-                    report.words += words.len();
-                    // exact-size copy out of the reused buffer (mem::take would hand the line
-                    // the grown buffer and regrow a new one for every line)
-                    #[allow(clippy::drain_collect)]
-                    let mut ws: Vec<Word> = words.drain(..).collect();
-                    in_line = false;
-                    if let Some(pg) = pages.last_mut() {
-                        if glyphs {
-                            // word ranges were counted within the line: make them page ranges
-                            let base = pg.glyphs.len() as u32;
-                            let mut at = base;
-                            for w in &mut ws {
-                                let n = w.glyphs.len() as u32;
-                                w.glyphs = GlyphRange { start: at, end: at + n };
-                                at += n;
-                            }
-                            pg.glyphs.append(&mut line_glyphs);
-                        }
-                        pg.lines.push(Rc::new(Line::new(ws, block, flow)));
-                    }
-                }
-            }
-            Tag::Word(attrs, text) => {
-                if !in_line {
-                    report.words_outside_line += 1;
-                    continue;
-                }
-                // glyph records after a skipped word must not attach to the previous one
-                glyph_target = false;
-                a.parse_into(attrs);
-                if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
-                    report.words_missing_coord += 1;
-                    continue;
-                }
-                let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
-                    coord(&a, X_MIN),
-                    coord(&a, Y_MIN),
-                    coord(&a, X_MAX),
-                    coord(&a, Y_MAX),
-                    opt_num(&a, FONT_SIZE),
-                    opt_num(&a, BASELINE),
-                ) else {
-                    report.words_bad_number += 1;
-                    continue;
-                };
-                let font = a.0[FONT_NAME].unwrap_or("");
-                let (bold, italic) = match last_font {
-                    Some((f, style)) if f == font => style,
-                    _ => {
-                        let style = Word::font_style(font);
-                        last_font = Some((font, style));
-                        style
-                    }
-                };
-                words.push(Word {
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    text: word_text(text),
-                    bold,
-                    italic,
-                    size,
-                    base,
-                    space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
-                    color: interned(&mut last_color, a.0[COLOR].unwrap_or("")),
-                    glyphs: GlyphRange::default(),
-                    invisible: glyphs && a.0[INVISIBLE] == Some("1"),
-                });
-                glyph_target = glyphs;
-            }
-        }
-    }
-    if in_line && !words.is_empty() {
-        report.unclosed_line_at_eof = true;
-        report.words_unclosed_line += words.len();
-    }
+    st.run(xhtml, true, &mut |pg| pages.push(pg));
+    *report = st.finish(&mut |pg| pages.push(pg));
     pages
+}
+
+/// [`parse_report`] state between pieces of input: the open page and `<line>`, and the flow and
+/// block counters, which run across pages.
+struct ParseState {
+    glyphs: bool,
+    glyph_target: bool,
+    line_glyphs: Vec<Glyph>,
+    doc_glyphs: usize,
+    page_glyphs: usize,
+    last_glyph_name: Option<Rc<str>>,
+    font_index: std::collections::HashMap<i64, u16>,
+
+    /// the last `<page>`: complete once the next `<page>` opens or the input ends (lines and
+    /// rules after its `</page>` still belong to it)
+    page: Option<Page>,
+    // words of the open <line> (`words` in Python is None until the first <line>)
+    words: Vec<Word>,
+    in_line: bool,
+    flow: i64,
+    block: i64,
+    last_color: Option<Rc<str>>,
+    report: ParseReport,
+}
+
+impl Default for ParseState {
+    fn default() -> Self {
+        ParseState {
+            glyphs: false,
+            glyph_target: false,
+            line_glyphs: Vec::new(),
+            doc_glyphs: 0,
+            page_glyphs: 0,
+            last_glyph_name: None,
+            font_index: Default::default(),
+            page: None,
+            words: Vec::new(),
+            in_line: false,
+            flow: -1,
+            block: -1,
+            last_color: None,
+            report: ParseReport::default(),
+        }
+    }
+}
+
+/// Whether more input could change what [`tag_at`] decided (`None`) for the `<` at `lt`: a
+/// `Some` only ever comes from delimiters found in `s`, but a `None` may come from one not
+/// found yet. The longest fixed prefix tag_at reads is under 16 bytes. The searches go through
+/// the run's forward-only caches, so a long run of rejected `<` stays linear.
+fn undecided(s: &str, lt: usize, scan: &mut Scan) -> bool {
+    let b = s.as_bytes();
+    if b.len() < lt + 16 {
+        return true;
+    }
+    let Some(gt) = scan.gt(b, lt + 1) else { return true };
+    if !b[lt + 1..].starts_with(b"word ") {
+        return false;
+    }
+    // still open without a `</word>`, unless a newline after the tag has already ruled it out:
+    // a `</word>` can only start after it
+    let t = gt + 1;
+    let finder = &scan.finder;
+    scan.word_close.find(b, t, |h| finder.find(h)).is_none() && scan.newline.find(b, t, |h| memchr(b'\n', h)).is_none()
+}
+
+impl ParseState {
+    /// Parses `s` (the input after what earlier runs consumed) and passes each completed page
+    /// to `emit`. Unless `eof`, stops before a tag that more input could change and returns
+    /// where it stopped; the next run starts there.
+    fn run(&mut self, s: &str, eof: bool, emit: &mut dyn FnMut(Page)) -> usize {
+        let ParseState {
+            page,
+            words,
+            in_line,
+            flow,
+            block,
+            last_color,
+            report,
+            glyphs,
+            glyph_target,
+            line_glyphs,
+            doc_glyphs,
+            page_glyphs,
+            last_glyph_name,
+            font_index,
+        } = self;
+        let glyphs = *glyphs;
+        let mut ga = [None; 9];
+        let mut fa = [None; 9];
+        let b = s.as_bytes();
+        let mut a = Attrs([None; KEYS.len()]);
+        let mut scan = Scan::new();
+        // font names repeat word after word: cache the last style
+        let mut last_font: Option<(&str, (bool, bool))> = None;
+        let mut pos = 0;
+        while let Some(off) = memchr(b'<', &b[pos..]) {
+            let lt = pos + off;
+            let Some((tag, end)) = tag_at(s, lt, &mut scan, glyphs) else {
+                if !eof && undecided(s, lt, &mut scan) {
+                    return lt;
+                }
+                pos = lt + 1;
+                continue;
+            };
+            pos = end;
+            let have_page = page.is_some();
+            if !matches!(tag, Tag::Glyph(_)) {
+                *glyph_target = false;
+            }
+            match tag {
+                Tag::Extra(attrs) => {
+                    let Some(pg) = page.as_mut() else { continue };
+                    if *page_glyphs >= MAX_PAGE_GLYPHS || *doc_glyphs >= MAX_DOC_GLYPHS {
+                        report.glyphs_skipped += 1;
+                        pg.glyphs_truncated = true;
+                        continue;
+                    }
+                    parse_attrs(attrs, &mut ga, glyph_key);
+                    let (Some(x), Some(w), Some(base), Some(size)) = (
+                        ga[G_X].and_then(py_float),
+                        ga[G_W].and_then(py_float),
+                        ga[G_B].and_then(py_float),
+                        ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
+                    ) else {
+                        report.glyphs_skipped += 1;
+                        continue;
+                    };
+                    let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
+                    pg.extra_glyphs.push(Glyph {
+                        x,
+                        w,
+                        base: Some(base),
+                        size: Some(size),
+                        font,
+                        code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
+                        text: Rc::from(""),
+                        src: UniSource::Code,
+                        name: ga[G_N].map(|n| Rc::from(&*pyc::html_unescape(n))),
+                    });
+                    *page_glyphs += 1;
+                    *doc_glyphs += 1;
+                }
+                Tag::Glyph(attrs) => {
+                    let Some(word) = words.last_mut().filter(|_| *glyph_target && *in_line) else {
+                        report.glyphs_skipped += 1;
+                        continue;
+                    };
+                    if *page_glyphs >= MAX_PAGE_GLYPHS || *doc_glyphs >= MAX_DOC_GLYPHS {
+                        report.glyphs_skipped += 1;
+                        if let Some(pg) = page.as_mut() {
+                            pg.glyphs_truncated = true;
+                        }
+                        continue;
+                    }
+                    parse_attrs(attrs, &mut ga, glyph_key);
+                    let (Some(x), Some(w)) = (ga[G_X].and_then(py_float), ga[G_W].and_then(py_float)) else {
+                        report.glyphs_skipped += 1;
+                        continue;
+                    };
+                    let src = match ga[G_S] {
+                        Some("t") => UniSource::ToUnicode,
+                        Some("n") => UniSource::Name,
+                        Some("a") => UniSource::ActualText,
+                        _ => UniSource::Code,
+                    };
+                    let font = ga[G_F].and_then(|f| f.parse::<i64>().ok()).and_then(|id| font_index.get(&id).copied());
+                    let name = ga[G_N].map(|n| match &*last_glyph_name {
+                        Some(rc) if **rc == *n => rc.clone(),
+                        _ => {
+                            let rc: Rc<str> = Rc::from(&*pyc::html_unescape(n));
+                            *last_glyph_name = Some(rc.clone());
+                            rc
+                        }
+                    });
+                    line_glyphs.push(Glyph {
+                        x,
+                        w,
+                        base: ga[G_B].and_then(py_float),
+                        size: ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
+                        font,
+                        code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
+                        text: Rc::from(glyph_text(ga[G_U].unwrap_or(""))),
+                        src,
+                        name,
+                    });
+                    word.glyphs.end += 1;
+                    *page_glyphs += 1;
+                    *doc_glyphs += 1;
+                }
+                Tag::Font(attrs) => {
+                    let Some(pg) = page.as_mut() else { continue };
+                    if pg.fonts.len() >= MAX_PAGE_FONTS {
+                        report.fonts_skipped += 1;
+                        continue;
+                    }
+                    parse_attrs(attrs, &mut fa, font_key);
+                    let Some(id) =
+                        fa[F_ID].and_then(|v| v.parse::<i64>().ok()).filter(|id| !font_index.contains_key(id))
+                    else {
+                        report.fonts_skipped += 1;
+                        continue;
+                    };
+                    font_index.insert(id, pg.fonts.len() as u16);
+                    let text = |k: usize| -> Rc<str> { Rc::from(&*pyc::html_unescape(fa[k].unwrap_or(""))) };
+                    let flag = |k: usize| fa[k] == Some("1");
+                    pg.fonts.push(FontInfo {
+                        id,
+                        name: text(F_NAME),
+                        kind: text(F_TYPE),
+                        encoding: text(F_ENC),
+                        embedded: flag(F_EMB),
+                        symbolic: flag(F_SYM),
+                        cid: flag(F_CID),
+                        has_to_unicode: flag(F_TU),
+                        to_unicode_misses: fa[F_TUMISS].and_then(|v| v.parse().ok()).unwrap_or(0),
+                    });
+                }
+
+                Tag::Rule(boxed, attrs) => {
+                    if !have_page {
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+                        (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
+                    else {
+                        report.rules_skipped += 1;
+                        continue;
+                    };
+                    let color = a.0[COLOR].unwrap_or("#000000").to_string();
+                    if let Some(pg) = page.as_mut() {
+                        pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
+                    }
+                }
+                Tag::Open("page", attrs) => {
+                    report.pages += 1;
+                    a.parse_into(attrs);
+                    let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
+                    let rules_truncated = match a.0[RULES_TRUNCATED] {
+                        Some("1") => Some(true),
+                        Some("0") => Some(false),
+                        _ => None,
+                    };
+                    if rules_truncated == Some(true) {
+                        report.rules_truncated_pages.push(report.pages - 1);
+                    }
+                    if glyphs && a.0[GLYPHS_TRUNCATED] == Some("1") {
+                        report.glyphs_truncated_pages.push(report.pages - 1);
+                    }
+                    *page_glyphs = 0;
+                    line_glyphs.clear();
+                    font_index.clear();
+                    let next = Page {
+                        glyphs: Vec::new(),
+                        fonts: Vec::new(),
+                        extra_glyphs: Vec::new(),
+                        glyphs_truncated: glyphs && a.0[GLYPHS_TRUNCATED] == Some("1"),
+                        width: dim(WIDTH, 612.0),
+                        height: dim(HEIGHT, 792.0),
+                        lines: Vec::new(),
+                        rules: Vec::new(),
+                        rules_truncated,
+                    };
+                    if let Some(done) = page.replace(next) {
+                        emit(done);
+                    }
+                }
+                Tag::Open("flow", _) => *flow += 1,
+                Tag::Open("block", _) => *block += 1,
+                Tag::Open(_, _) => {
+                    report.words_unclosed_line += words.len();
+                    words.clear();
+                    line_glyphs.clear();
+                    *in_line = true;
+                }
+                Tag::Close(name) => {
+                    report.page_closes += (name == "page") as usize;
+                    if name == "line" && have_page && *in_line && !words.is_empty() {
+                        report.lines += 1;
+                        report.words += words.len();
+                        // exact-size copy out of the reused buffer (mem::take would hand the line
+                        // the grown buffer and regrow a new one for every line)
+                        #[allow(clippy::drain_collect)]
+                        let mut ws: Vec<Word> = words.drain(..).collect();
+                        *in_line = false;
+                        if let Some(pg) = page.as_mut() {
+                            if glyphs {
+                                let mut at = pg.glyphs.len() as u32;
+                                for w in &mut ws {
+                                    let n = w.glyphs.len() as u32;
+                                    w.glyphs = GlyphRange { start: at, end: at + n };
+                                    at += n;
+                                }
+                                pg.glyphs.append(line_glyphs);
+                            }
+                            pg.lines.push(Rc::new(Line::new(ws, *block, *flow)));
+                        }
+                    }
+                }
+                Tag::Word(attrs, text) => {
+                    if !*in_line {
+                        report.words_outside_line += 1;
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    if [X_MIN, Y_MIN, X_MAX, Y_MAX].iter().any(|&k| a.0[k].is_none()) {
+                        report.words_missing_coord += 1;
+                        continue;
+                    }
+                    let (Some(x0), Some(y0), Some(x1), Some(y1), Some(size), Some(base)) = (
+                        coord(&a, X_MIN),
+                        coord(&a, Y_MIN),
+                        coord(&a, X_MAX),
+                        coord(&a, Y_MAX),
+                        opt_num(&a, FONT_SIZE),
+                        opt_num(&a, BASELINE),
+                    ) else {
+                        report.words_bad_number += 1;
+                        continue;
+                    };
+                    let font = a.0[FONT_NAME].unwrap_or("");
+                    let (bold, italic) = match last_font {
+                        Some((f, style)) if f == font => style,
+                        _ => {
+                            let style = Word::font_style(font);
+                            last_font = Some((font, style));
+                            style
+                        }
+                    };
+                    words.push(Word {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        text: word_text(text),
+                        bold,
+                        italic,
+                        size,
+                        base,
+                        space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
+                        color: interned(last_color, a.0[COLOR].unwrap_or("")),
+                        glyphs: GlyphRange::default(),
+                        invisible: glyphs && a.0[INVISIBLE] == Some("1"),
+                        rot: match a.0[ROTATION] {
+                            Some("1") => 1,
+                            Some("2") => 2,
+                            Some("3") => 3,
+                            _ => 0,
+                        },
+                    });
+                    *glyph_target = glyphs;
+                }
+            }
+        }
+        s.len()
+    }
+
+    /// The end of the input: emits the last page and returns the report.
+    fn finish(mut self, emit: &mut dyn FnMut(Page)) -> ParseReport {
+        if self.in_line && !self.words.is_empty() {
+            self.report.unclosed_line_at_eof = true;
+            self.report.words_unclosed_line += self.words.len();
+        }
+        if let Some(pg) = self.page.take() {
+            emit(pg);
+        }
+        self.report
+    }
+}
+
+/// Appends `bytes` to `out` as `String::from_utf8_lossy` decodes the whole input (each invalid
+/// sequence becomes one U+FFFD; Python read the XHTML with errors='replace'). A sequence cut off
+/// at the end of `bytes` waits in `partial` (at most 3 bytes) for the next call, unless `eof`.
+pub fn decode_lossy(partial: &mut Vec<u8>, bytes: &[u8], eof: bool, out: &mut String) {
+    let joined;
+    let mut rest: &[u8] = if partial.is_empty() {
+        bytes
+    } else {
+        partial.extend_from_slice(bytes);
+        joined = std::mem::take(partial);
+        &joined
+    };
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(s) => {
+                out.push_str(s);
+                return;
+            }
+            Err(e) => {
+                let (valid, after) = rest.split_at(e.valid_up_to());
+                // valid_up_to is a char boundary, so this never falls back
+                out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                match e.error_len() {
+                    Some(n) => {
+                        out.push('\u{FFFD}');
+                        rest = &after[n..];
+                    }
+                    None if eof => {
+                        out.push('\u{FFFD}');
+                        return;
+                    }
+                    None => {
+                        *partial = after.to_vec();
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// [`parse_report`] over input that arrives in pieces: [`Parser::push`] text as it comes, and
+/// each page comes out as soon as the next `<page>` opens. Pages and report are the same as one
+/// `parse_report` over the whole input, however it is split. Only unconsumed input stays
+/// buffered: usually part of a tag.
+#[derive(Default)]
+pub struct Parser {
+    buf: String,
+    /// rescan once `buf` reaches this length: after a stop, the pending bytes must double
+    /// first, so an unclosed tag that keeps growing is rescanned O(log n) times, not per push
+    retry_at: usize,
+    state: ParseState,
+}
+
+impl Parser {
+    /// Incremental parser with optional font and glyph records.
+    pub fn with_glyphs(glyphs: bool) -> Self {
+        Self { state: ParseState { glyphs, ..Default::default() }, ..Default::default() }
+    }
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends `text` and passes each page it completes to `emit`.
+    pub fn push(&mut self, text: &str, emit: &mut dyn FnMut(Page)) {
+        self.buf.push_str(text);
+        if self.buf.len() < self.retry_at {
+            return;
+        }
+        let used = self.state.run(&self.buf, false, emit);
+        self.buf.drain(..used);
+        self.retry_at = 2 * self.buf.len();
+    }
+
+    /// Ends the input: passes the remaining pages to `emit` and returns the report.
+    pub fn finish(mut self, emit: &mut dyn FnMut(Page)) -> ParseReport {
+        let buf = std::mem::take(&mut self.buf);
+        self.state.run(&buf, true, emit);
+        self.state.finish(emit)
+    }
 }
 
 #[cfg(test)]
