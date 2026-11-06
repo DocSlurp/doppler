@@ -14,7 +14,7 @@ fn cells(row: &[&str]) -> Vec<String> {
     row.iter().map(|c| c.to_string()).collect()
 }
 
-const HTML: Options = Options { tables: TableFormat::Html };
+const HTML: Options = Options { tables: TableFormat::Html, math: false };
 
 /// A CommonMark type-6 HTML block that starts with `<table` ends at the first blank line.
 fn assert_one_html_block(table: &str) {
@@ -163,7 +163,7 @@ fn rule(x0: f64, x1: f64, y0: f64, y1: f64) -> String {
 /// GFM and HTML pages for one input, after checking GFM is the default output.
 fn both(xhtml: &str) -> (Vec<String>, Vec<String>) {
     let p = Params::default();
-    let (gfm, gr) = to_markdown_report_with(xhtml, &p, &Options { tables: TableFormat::Gfm });
+    let (gfm, gr) = to_markdown_report_with(xhtml, &p, &Options { tables: TableFormat::Gfm, ..Default::default() });
     let (default, dr) = to_markdown_report(xhtml, &p);
     assert_eq!(gfm, default);
     assert_eq!(gr.to_json(), dr.to_json());

@@ -156,6 +156,10 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
             lines: ls.iter().map(|l| Rc::new(frame.line(l))).collect(),
             rules,
             rules_truncated: page.rules_truncated,
+            glyphs: Vec::new(),
+            fonts: Vec::new(),
+            extra_glyphs: Vec::new(),
+            glyphs_truncated: page.glyphs_truncated,
         };
         for &k in &members {
             taken[k] = true;

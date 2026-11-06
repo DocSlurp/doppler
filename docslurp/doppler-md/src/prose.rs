@@ -210,7 +210,7 @@ pub fn paragraphs_within(
     budget: &mut Budget,
 ) -> Option<Vec<String>> {
     let items = group_within(seq, body, body_color, p, use_blocks, budget)?;
-    Some(render_blocks(finish_region(items, p), crate::TableFormat::Gfm))
+    Some(render_blocks(finish_region(items, p), crate::TableFormat::Gfm, false))
 }
 
 /// Group lines around table barriers. Assignment and presentation belong to page layout.
@@ -304,6 +304,8 @@ pub(crate) fn group_within(
                     base: line.base(),
                     space: true,
                     color: Rc::from(""),
+                    glyphs: Default::default(),
+                    invisible: false,
                     rot: 0,
                 };
                 Line::new(vec![w], line.block, line.flow)
@@ -327,7 +329,12 @@ pub(crate) fn group_within(
             let width = pmax(cur_right - cur_left, 1.0);
             let sent_end = || rstrip(pv.text()).ends_with(SENT_END);
             let cur0 = st.cur.first();
-            new = if prefix.is_some() || col_change || gap <= 0.0 {
+            let display = |l: &Line| {
+                p.display_math_paragraphs
+                    && l.words.len() <= 3
+                    && l.words.first().is_some_and(|w| w.text.starts_with("$$"))
+            };
+            new = if prefix.is_some() || col_change || gap <= 0.0 || display(&line) || display(pv) {
                 true
             } else if use_blocks && line.block != pv.block {
                 true

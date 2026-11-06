@@ -312,6 +312,12 @@ public:
 
     //----- grouping operators
 
+    // Does this device want the geometry of stencil image masks even though it does not
+    // draw non-text content (needNonText() is false)? If so, Gfx calls
+    // imageMaskGeometry() with the image's CTM in <state> instead of drawing the mask.
+    virtual bool needImageMaskGeometry() { return false; }
+    virtual void imageMaskGeometry(GfxState * /*state*/) { }
+
     virtual void endMarkedContent(GfxState *state);
     virtual void beginMarkedContent(const std::string &name, Dict *properties);
     virtual void markPoint(const std::string &name);

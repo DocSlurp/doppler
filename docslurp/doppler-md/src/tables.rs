@@ -842,9 +842,56 @@ fn rows_rtl<'a>(rows: impl Iterator<Item = &'a [String]>) -> bool {
 }
 
 pub fn grid_markdown(grid: &Grid) -> String {
+    grid_markdown_with(grid, false)
+}
+
+/// Escape a GFM cell whose `$...$` spans are LaTeX written by the math reader: outside them,
+/// `\` and `|` as usual; inside, backslashes stay (TeX needs them) and `|` becomes `\vert `,
+/// which cannot end the cell.
+fn escape_math_cell(x: &str) -> String {
+    let mut out = String::with_capacity(x.len() + 8);
+    let mut in_math = false;
+    let b: Vec<char> = x.chars().collect();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == '$' && (i == 0 || b[i - 1] != '\\') {
+            in_math = !in_math;
+            out.push(c);
+            if b.get(i + 1) == Some(&'$') {
+                // `$$` is one delimiter
+                out.push('$');
+                i += 1;
+            }
+        } else if in_math {
+            if c == '|' {
+                out.push_str("\\vert ");
+            } else {
+                out.push(c);
+            }
+        } else if c == '\\' {
+            out.push_str("\\\\");
+        } else if c == '|' {
+            out.push_str("\\|");
+        } else {
+            out.push(c);
+        }
+        i += 1;
+    }
+    if in_math {
+        // an unclosed span: escape it all the usual way
+        return x.replace('\\', "\\\\").replace('|', "\\|");
+    }
+    out
+}
+
+/// [`grid_markdown`]; with `math`, cells keep the LaTeX of `$...$` spans intact.
+pub fn grid_markdown_with(grid: &Grid, math: bool) -> String {
     let rtl = grid_rtl(grid); // right-to-left table: first column is the rightmost
     // backslash first, so a cell ending in `\` cannot turn the next `|` into a literal
-    let esc = |x: &String| x.replace('\\', "\\\\").replace('|', "\\|");
+    let esc = |x: &String| {
+        if math && x.contains('$') { escape_math_cell(x) } else { x.replace('\\', "\\\\").replace('|', "\\|") }
+    };
     let row = |r: &Vec<String>| {
         let cells: Vec<String> = if rtl { r.iter().rev().map(esc).collect() } else { r.iter().map(esc).collect() };
         format!("| {} |", cells.join(" | "))
@@ -1476,7 +1523,17 @@ mod span_tests {
     use crate::model::Rule;
     // Source topology: 3x3 grid, upper-left 2x2 rectangle merged; other cells empty.
     fn fixture() -> Page {
-        let mut page = Page { width: 300., height: 300., lines: vec![], rules: vec![], rules_truncated: Some(false) };
+        let mut page = Page {
+            width: 300.,
+            height: 300.,
+            lines: vec![],
+            rules: vec![],
+            rules_truncated: Some(false),
+            glyphs: vec![],
+            fonts: vec![],
+            extra_glyphs: vec![],
+            glyphs_truncated: false,
+        };
         for (x0, y0, x1, y1) in [
             (0., 0., 300., 0.),
             (0., 300., 300., 300.),

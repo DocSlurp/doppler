@@ -81,6 +81,8 @@ params! {
     furniture_min_share: num = 0.4,
     /// keep prominent top-band headings repeated only after digit normalization
     furniture_preserve_headings: flag = true,
+    /// a line that is a display formula ($$...$$, from Options::math) is its own paragraph
+    display_math_paragraphs: flag = false,
     /// size / body size for a heading
     heading_ratio: num = 1.15,
     h1_ratio: num = 1.6,

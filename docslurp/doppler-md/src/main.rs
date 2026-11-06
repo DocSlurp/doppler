@@ -15,7 +15,7 @@ use doppler_md::{Options, Params, TableFormat};
 
 mod cli;
 
-const USAGE: &str = "usage: doppler-md [--html] [--stream | --window N] [--params JSON] [--report] [FILE|-]\n";
+const USAGE: &str = "usage: doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]\n";
 
 /// `--stream`'s lookahead, in pages (as in pdftomarkdown).
 const STREAM_WINDOW: usize = 16;
@@ -35,6 +35,7 @@ fn main() -> ExitCode {
             }
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
+            "--math" => opts.math = true,
             "--stream" => window = Some(STREAM_WINDOW),
             "--window" => match cli::parse_window(args.next().as_deref()) {
                 Ok(w) => window = Some(w),

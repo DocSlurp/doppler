@@ -32,7 +32,7 @@ impl<'p> Run<'p> {
     /// `window`: pages of lookahead (see [`Converter`]); `None` reads the whole document first.
     pub fn new(p: &'p Params, o: &Options, window: Option<usize>) -> Self {
         Run {
-            parser: Parser::new(),
+            parser: Parser::with_glyphs(o.math),
             conv: Converter::new(p, *o, window),
             partial: Vec::new(),
             text: String::new(),

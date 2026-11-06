@@ -4,8 +4,8 @@ Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML. 
 byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-10-26/`, v24).
 
 ```sh
-doppler-md [--html] [--stream | --window N] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
+doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]
+pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -33,6 +33,39 @@ Passwords are visible in the process list, as with pdftotext. `--` ends the opti
 a layout threshold can change the output, so `--strict` drops it: `pdftomarkdown --strict
 FILE.pdf` writes the same bytes as `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - |
 doppler-md`, the form the golden set and `parity.sh` use.
+
+## Math (`--math`)
+
+`--math` (library: `Options::math`) reads typeset math and writes it as LaTeX: `$...$` inline,
+`$$...$$` for displays (with their equation numbers after them). `pdftomarkdown --math` runs
+pdftotext with `-glyphs`, which adds a per-page font table and per-glyph records (font, code,
+glyph name, where the Unicode came from, per-glyph baseline and size) after each word, named
+glyphs that extraction drops as whitespace (`<xg>`), and Ghostscript's image-mask rules; see
+`pdftotext(1)`. Without `--math` nothing changes: glyph records are skipped and the output is
+byte-identical.
+
+- ActualText that holds LaTeX (axessibility, accsupp) is used as is.
+- Otherwise glyphs are math evidence by font (CMMI/CMSY/CMEX, AMS, Euler, txfonts/newtx,
+  OpenType math fonts, Symbol) or code point; runs on lines and clusters of math lines become
+  formulas, read as a baseline layout tree (scripts, limits, fractions and radicals from
+  rules, accents, matrices/cases/aligned rows) from `src/math/`.
+- Equation numbers separated from the formula (including split words or a separate PDF line)
+  stay as text after it. Touching numeric parentheses remain formula content. Closely spaced
+  barless stacks are read within their equation; derivation rows retain relation alignment.
+- A formula with an unknown glyph (U+FFFD, private use, a raw-code guess or a Latin letter in a
+  math font), too much doubt, or over a work cap keeps its words. Its page is listed in the
+  report's `mathUncertainPages` (one-based), so a caller can send only those pages to a vision
+  model. A formula never gets a symbol that no glyph drew.
+- Incomplete glyph evidence (producer truncation, consumer caps, or rejected glyph records)
+  preserves the page’s original words and marks it uncertain. Partial words are never rewritten
+  from the surviving glyphs alone.
+- Caps: pages over 5,000 lines, 5,000 rules or 60,000 glyphs are not read for math (listed in
+  `math.skippedPages`); a formula has at most 1,500 glyphs, 200 bars and 200,000 work units.
+
+The report gains `math` (`inline`, `display`, `actualText`, `uncertain`, `mathGlyphs`,
+`glyphsLeft`, `skippedPages`, `glyphsSkipped`, `glyphsTruncatedPages`) and
+`mathUncertainPages`. `scripts/math_eval.py` and `scripts/math_compile.py` measure robustness
+and LaTeX validity on real PDFs; `DOPPLER_MATH_DEBUG=1` (or `2`, `3`) traces formulas to stderr.
 
 ## Streaming
 

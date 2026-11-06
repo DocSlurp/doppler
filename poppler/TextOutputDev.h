@@ -120,6 +120,9 @@ public:
     // Get the font name (which may be NULL).
     const GooString *getFontName() const { return fontName; }
 
+    // Get the font (which may be NULL).
+    const GfxFont *getGfxFont() const { return gfxFont.get(); }
+
     // Get font descriptor flags.
     bool isFixedWidth() const { return flags & fontFixedWidth; }
     bool isSerif() const { return flags & fontSerif; }
@@ -222,6 +225,16 @@ public:
     bool isInvisible() const { return invisible; }
     const AnnotLink *getLink() const { return link; }
     double getEdge(int i) const { return chars[i].edge; }
+    // Per-character facts for glyph-level output (pdftotext -glyphs): the font-local char
+    // code, the content-stream position (characters from one glyph share it), whether the
+    // character came from an /ActualText span, and the end edge of the last character.
+    CharCode getCharCode(int i) const { return chars[i].charcode; }
+    int getCharPosAt(int i) const { return chars[i].charPos; }
+    bool isActualTextChar(int i) const { return chars[i].actualText; }
+    double getEdgeEnd() const { return edgeEnd; }
+    double getAdvance(int i) const { return chars[i].advance; }
+    // The character's text matrix: font transform (m[0..3]) and origin in page space (m[4], m[5]).
+    const Matrix &getTextMat(int i) const { return chars[i].textMat; }
     double getBaseline() const { return base; }
     bool hasSpaceAfter() const { return spaceAfter; }
     const TextWord *nextWord() const { return next; };
@@ -247,6 +260,8 @@ private:
         double edge;
         TextFontInfo *font;
         Matrix textMat;
+        bool actualText = false; // replacement text from a marked-content /ActualText span
+        double advance = 0; // advance along the primary axis (0 for merged combining marks)
     };
     std::vector<CharInfo> chars;
     int charPosEnd = 0;
@@ -583,6 +598,7 @@ struct TextRule
     double xMin, yMin, xMax, yMax;
     double r, g, b; // stroke or fill colour, 0..1
     bool box; // a filled rectangle that is not thin enough to be a rule
+    bool imageMask = false; // a thin stencil image mask (TextOutputDev::setCollectImageMaskRules)
 };
 
 class POPPLER_PRIVATE_EXPORT TextPage
@@ -613,6 +629,22 @@ public:
 
     // Add <nChars> invisible characters.
     void incCharCount(int nChars);
+
+    // Mark the characters added until the next call as /ActualText replacement text.
+    void setActualTextChars(bool on) { actualTextChars = on; }
+
+    // Glyphs that text extraction drops because their Unicode is whitespace or NUL although
+    // the font names them as something else (a TeX extension glyph whose raw code is 0x0C,
+    // say). Recorded only with setCollectDroppedGlyphs, at most maxDroppedGlyphs per page.
+    struct DroppedGlyph
+    {
+        double x, y, advance, fontSize;
+        CharCode code;
+        const TextFontInfo *font;
+    };
+    void setCollectDroppedGlyphs(bool on) { collectDropped = on; }
+    const std::vector<DroppedGlyph> &getDroppedGlyphs() const { return dropped; }
+    static constexpr size_t maxDroppedGlyphs = 20000;
 
     // End the current word, sorting it into the list of words.
     void endWord();
@@ -754,6 +786,10 @@ private:
     std::vector<std::unique_ptr<TextUnderline>> underlines;
     std::vector<TextRule> rules;
     bool rulesTruncated = false;
+    bool actualTextChars = false;
+    bool collectDropped = false;
+    std::vector<DroppedGlyph> dropped;
+    void recordDropped(const GfxState *state, double x1, double y1, double w1, CharCode c);
     std::vector<std::unique_ptr<TextLink>> links;
 
     friend class TextLine;
@@ -925,6 +961,15 @@ public:
     // Record axis-aligned stroked segments, thin filled rectangles (rules) and filled
     // rectangles (boxes) of each page, for table borders and cell shading.
     void setCollectRules(bool collectRulesA) { collectRules = collectRulesA; }
+    // With setCollectRules: also record thin axis-aligned stencil image masks as rules
+    // (TextRule::imageMask). Ghostscript draws TeX rules (fraction bars) this way. Only the
+    // image geometry is used; the image data is never decoded.
+    void setCollectImageMaskRules(bool on) { collectImageMaskRules = on; }
+    // Record named glyphs that extraction drops as whitespace (TextPage::DroppedGlyph).
+    void setCollectDroppedGlyphs(bool on);
+    const std::vector<TextPage::DroppedGlyph> &getDroppedGlyphs() const;
+    bool needImageMaskGeometry() override { return collectRules && collectImageMaskRules; }
+    void imageMaskGeometry(GfxState *state) override;
     const std::vector<TextRule> &getRules() const;
     bool getRulesTruncated() const;
 
@@ -964,12 +1009,13 @@ private:
                       // to skip watermarks drawn on top of body text, etc.
     bool doHTML; // extra processing for HTML conversion
     bool collectRules = false;
+    bool collectImageMaskRules = false;
     static constexpr size_t maxDocRules = 200000;
     // Budget for visible rule candidates across pages, including candidates
     // rejected by a full page. TextPage consumes it but does not own its lifetime.
     size_t remainingDocRules = maxDocRules;
     void collectPathRules(const GfxState *state, bool filled);
-    void addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box);
+    void addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box, bool imageMask = false);
     bool inlineLinkURIs = false;
     Page *currentPage = nullptr;
     bool ok; // set up ok?

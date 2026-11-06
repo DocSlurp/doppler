@@ -13,7 +13,7 @@ use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
 use crate::pyc::{Counter, char_len, fcmp, median, pmax, pmin, rstrip, split_count, strip};
-use crate::tables::{Table, find_tables_within, grid_html, grid_markdown, ruled_tables};
+use crate::tables::{Table, find_tables_within, grid_html, grid_markdown_with, ruled_tables};
 
 #[derive(Clone, Debug)]
 pub(crate) struct PlacedTable {
@@ -79,8 +79,10 @@ impl PageLayout {
         for g in groups {
             let no_drop = vec![false; g.page.lines.len()];
             let sub = PageLayout::within(&g.page, &no_drop, body, body_color, p, format, budget)?;
-            let parts: Vec<String> =
-                render_blocks(sub.blocks, format).into_iter().filter(|s| !strip(s).is_empty()).collect();
+            let parts: Vec<String> = render_blocks(sub.blocks, format, p.display_math_paragraphs)
+                .into_iter()
+                .filter(|s| !strip(s).is_empty())
+                .collect();
             let item = Some(Placed::Rendered(Rc::new(parts)));
             rendered.push(Elem { line: None, table: item, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1 });
         }
@@ -112,8 +114,12 @@ impl PageLayout {
         Some(Self { blocks })
     }
 
-    pub(crate) fn markdown(self, tables: TableFormat) -> String {
-        render_blocks(self.blocks, tables).into_iter().filter(|s| !strip(s).is_empty()).collect::<Vec<_>>().join("\n\n")
+    pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
+        render_blocks(self.blocks, tables, math)
+            .into_iter()
+            .filter(|s| !strip(s).is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 }
 
@@ -229,7 +235,7 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
     out
 }
 
-pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<String> {
+pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat, math: bool) -> Vec<String> {
     blocks
         .into_iter()
         .flat_map(|block| -> Vec<String> {
@@ -243,12 +249,12 @@ pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat) -> Vec<Stri
                             grid_html(header.as_deref(), &t.table.rows)
                         }
                     }
-                    (TableFormat::Gfm, None) => grid_markdown(&t.table.rows),
+                    (TableFormat::Gfm, None) => grid_markdown_with(&t.table.rows, math),
                     (TableFormat::Gfm, Some(header)) => {
                         let mut rows = Vec::with_capacity(t.table.rows.len() + 1);
                         rows.push(header);
                         rows.extend(t.table.rows.iter().cloned());
-                        grid_markdown(&rows)
+                        grid_markdown_with(&rows, math)
                     }
                 },
                 Block::Text { text, caption: true, .. } => format!("*{text}*"),

@@ -167,6 +167,70 @@ is the y coordinate of the baseline for horizontal text (rotation 0 and 2) or
 the x coordinate for vertical text (rotation 1 and 3), in the same space as the
 bounding boxes.
 .TP
+.B \-glyphs
+Used together with \-bbox-layout and \-wordmeta: also output glyph-level records,
+for reading typeset math. Without this option the output is unchanged, and a reader
+that does not know the records can skip them (they are separate elements).
+Each <page> starts with a font table: one
+.B <font>
+element per font used on the page with
+.I id
+(stable within the document),
+.I name
+(without subset prefix),
+.IR type ,
+.IR enc ,
+.I emb
+(embedded),
+.I sym
+(symbolic),
+.I cid
+(CID-keyed),
+.I tu
+(has a ToUnicode CMap) and
+.I tuMiss
+(codes used on the page that the ToUnicode CMap does not map).
+Each <word> on a horizontal line is followed by one
+.B <g>
+element per glyph, in drawing order:
+.I x
+and
+.I w
+(left edge and advance),
+.I b
+and
+.I z
+(baseline and font size, only when they differ from the word's),
+.I f
+(font id),
+.I c
+(character code, the CID for CID fonts),
+.I g
+(glyph id of CID TrueType fonts),
+.I u
+(the glyph's text as hex code points),
+.I s
+(where the text came from: t ToUnicode, n glyph name, c code or built-in fallback,
+a ActualText; an ActualText record stands for the whole span) and
+.I n
+(the glyph name, when it says more than the text).
+Named glyphs that extraction drops as whitespace (such as TeX extension glyphs
+with raw codes below 0x20) follow the font table as
+.B <xg>
+elements with the same attributes.
+With \-rules, thin axis-aligned stencil image masks (Ghostscript draws TeX rules
+this way) are output as rules with
+.IR src="mask" .
+A page has at most 100000 glyph records and the document 4000000, a page table at
+most 1000 fonts. Glyph metadata is also limited to 64 document fonts, 256 KiB
+of decoded ToUnicode data per font and 8 MiB per document, 4096 mappings per
+font and 65536 per document, and a 128 MiB metadata reservation budget.
+External usecmap references are not followed for glyph metadata. Exceeding a
+metadata budget stops further metadata collection. Past a cap the page gets
+.I glyphsTruncated="1"
+or
+.IR fontsTruncated="1" .
+.TP
 .B \-cropbox
 Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.
 .TP

@@ -12,6 +12,7 @@
 
 mod entities;
 pub mod layout;
+pub mod math;
 pub mod model;
 mod page_layout;
 pub mod params;
@@ -224,6 +225,11 @@ pub enum Degraded {
     PageWork,
     /// the document's `max_doc_work` was used up
     DocWork,
+    /// (math mode) most of the page's text is an invisible OCR layer
+    OcrTextLayer,
+    /// (math mode) the page's text layer cannot be read (garbage characters, glyphs that decode
+    /// to nothing)
+    UnreadableText,
 }
 
 impl Degraded {
@@ -233,6 +239,8 @@ impl Degraded {
             Degraded::PageRules => "page_rules",
             Degraded::PageWork => "page_work",
             Degraded::DocWork => "doc_work",
+            Degraded::OcrTextLayer => "ocr_text_layer",
+            Degraded::UnreadableText => "unreadable_text",
         }
     }
 }
@@ -247,6 +255,8 @@ pub struct Report {
     pub doc_work: u64,
     /// the most layout work units one page used
     pub page_work_max: u64,
+    /// per page, what the math reader did (empty without [`Options::math`])
+    pub math: Vec<math::PageMath>,
 }
 
 impl Report {
@@ -264,12 +274,47 @@ impl Report {
             .iter()
             .map(|(i, why)| format!("{{\"page\":{},\"reason\":\"{}\"}}", i + 1, why.as_str()))
             .collect();
+        let math = if self.math.is_empty() {
+            String::new()
+        } else {
+            let sum = |f: fn(&math::PageMath) -> usize| self.math.iter().map(f).sum::<usize>();
+            let pages = |f: fn(&math::PageMath) -> bool| {
+                self.math
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| f(m))
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            format!(
+                concat!(
+                    ",\"math\":{{\"inline\":{},\"display\":{},\"actualText\":{},\"uncertain\":{},\"partial\":{},\"uncertainWhy\":{{\"unknownGlyph\":{},\"doubt\":{},\"limit\":{},\"mixedActualText\":{}}},\"glyphsLeft\":{},",
+                    "\"mathGlyphs\":{},\"skippedPages\":[{}],\"glyphsSkipped\":{},\"glyphsTruncatedPages\":[{}]}},\"mathUncertainPages\":[{}]"
+                ),
+                sum(|m| m.inline),
+                sum(|m| m.display),
+                sum(|m| m.actual_text),
+                sum(|m| m.uncertain),
+                sum(|m| m.partial),
+                sum(|m| m.uncertain_unknown),
+                sum(|m| m.uncertain_doubt),
+                sum(|m| m.uncertain_limit),
+                sum(|m| m.uncertain_mixed),
+                sum(|m| m.math_glyphs_left),
+                sum(|m| m.math_glyphs),
+                pages(|m| m.skipped),
+                r.glyphs_skipped,
+                r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
+                pages(|m| m.uncertain > 0 || m.partial > 0 || m.ocr_layer || m.unreadable)
+            )
+        };
         format!(
             concat!(
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]}}"
+                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -285,7 +330,8 @@ impl Report {
             rules_truncated_pages.join(","),
             self.doc_work,
             self.page_work_max,
-            degraded.join(",")
+            degraded.join(","),
+            math
         )
     }
 }
@@ -323,6 +369,9 @@ pub enum TableFormat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Options {
     pub tables: TableFormat,
+    /// Read typeset math from `pdftotext -glyphs` records and write it as LaTeX (`$...$`,
+    /// `$$...$$`). Off: glyph records are ignored and the output is unchanged.
+    pub math: bool,
 }
 
 /// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
@@ -333,7 +382,7 @@ pub fn to_markdown_report(xhtml: &str, p: &Params) -> (Vec<String>, Report) {
 /// [`to_markdown_report`] with output [`Options`].
 pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<String>, Report) {
     let mut parse = ParseReport::default();
-    let pages = model::parse_report(xhtml, &mut parse);
+    let pages = model::parse_with(xhtml, &mut parse, o.math);
     let mut out = Vec::with_capacity(pages.len());
     let mut c = Converter::new(p, *o, None);
     for page in pages {
@@ -387,7 +436,18 @@ impl<'p> Converter<'p> {
 
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
     /// is now complete.
-    pub fn push(&mut self, page: Page, out: &mut dyn FnMut(usize, String)) {
+    pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
+        if self.o.math {
+            let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
+            page.lines = lines;
+            let pi = self.next + self.ahead.len();
+            if stats.ocr_layer {
+                self.report.degraded.push((pi, Degraded::OcrTextLayer));
+            } else if stats.unreadable {
+                self.report.degraded.push((pi, Degraded::UnreadableText));
+            }
+            self.report.math.push(stats);
+        }
         let m = Margins::of(&page, self.p);
         self.counts.add(&m);
         self.counted += 1;
@@ -409,7 +469,8 @@ impl<'p> Converter<'p> {
     }
 
     fn write_next(&mut self, out: &mut dyn FnMut(usize, String)) {
-        let p = self.p;
+        let math_params = Params { display_math_paragraphs: true, ..self.p.clone() };
+        let p = if self.o.math { &math_params } else { self.p };
         let (body, body_color) =
             self.body.get_or_insert_with(|| body_size(self.ahead.iter().map(|(pg, _)| pg))).clone();
         let Some((page, m)) = self.ahead.pop_front() else { return };
@@ -446,7 +507,7 @@ impl<'p> Converter<'p> {
         self.spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget) {
-            Some(layout) => layout.markdown(self.o.tables),
+            Some(layout) => layout.markdown(self.o.tables, self.o.math),
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
                 self.report.degraded.push((pi, why));

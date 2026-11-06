@@ -49,6 +49,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstddef>
+#include <cmath>
 #include <cstring>
 #include "parseargs.h"
 #include "printencodings.h"
@@ -73,6 +74,14 @@
 #include <charconv>
 #include "Win32Console.h"
 #include "DateInfo.h"
+#include "GfxFont.h"
+#include "CharCodeToUnicode.h"
+#include "Stream.h"
+#include <map>
+#include <memory>
+#include <unordered_map>
+#include <set>
+#include <vector>
 
 static void printInfoString(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2, const UnicodeMap *uMap);
 static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2);
@@ -110,6 +119,7 @@ static bool tsvMode = false;
 static bool wordMeta = false;
 static bool collectRules = false;
 static bool compactLayout = false;
+static bool glyphRecords = false;
 static char hyphenModeStr[16] = "";
 
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
@@ -127,6 +137,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
                                    { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
                                    { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
+                                   { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
                                    { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
                                    { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
                                    { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
@@ -248,6 +259,7 @@ struct WordMetadata
 
 struct ProjectedWord
 {
+    const TextWord *word = nullptr;
     TextBounds bounds;
     std::unique_ptr<std::string> text;
     std::optional<WordMetadata> metadata;
@@ -259,6 +271,7 @@ struct ProjectedWord
 static ProjectedWord projectWord(const TextWord *word, const UnicodeMap *uMap, bool withMetadata)
 {
     ProjectedWord result;
+    result.word = word;
     word->getBBox(&result.bounds.xMin, &result.bounds.yMin, &result.bounds.xMax, &result.bounds.yMax);
     result.text = word->getLogicalText(uMap);
     if (withMetadata) {
@@ -322,6 +335,493 @@ static std::string wordMetaTsvColumns(const WordMetadata &meta)
     return "\t" + myTsvFieldReplace(meta.fontName.c_str()) + buf;
 }
 
+// -glyphs: a font table per page and glyph records after each word.
+//
+// Each <word> on a horizontal line (rotation 0) is followed by one <g> element per glyph, in
+// drawing order. Characters that one glyph produced (a ligature, a multi-character ToUnicode
+// entry) share a record. Attributes:
+//   x, w  left edge and advance width along the line
+//   b, z  the glyph's baseline and font size, only when they differ from the word's (poppler
+//         merges overlapping words, such as a stacked superscript and subscript)
+//   f     the font's id in this page's <font> table (absent when the glyph has no font)
+//   c     the font-local character code (the CID for CID fonts)
+//   g     the glyph id, for CID TrueType fonts with a CIDToGIDMap
+//   u     the glyph's Unicode text as hex code points (at most maxGlyphCodePoints)
+//   s     where u came from: t the font's ToUnicode CMap, n the glyph name, c a fallback from
+//         the character code, the font's built-in encoding or the CID collection, a the text
+//         of an /ActualText span (that record stands for every glyph of the span)
+//   n     the glyph name from the font's encoding, only when it says more than u does
+// Named glyphs that extraction drops because their Unicode is whitespace or NUL (TeX
+// extension glyphs with raw codes 0x00-0x20, say) follow the font table as <xg> records with
+// x, w, b, z, f, c, s="c" and n; they belong to no word.
+// A page has at most maxPageGlyphs records and the document maxDocGlyphs; past either the
+// page is marked glyphsTruncated="1" and its remaining words get no records. The font table
+// has at most maxPageFonts entries (fontsTruncated="1"; glyphs of later fonts have no f).
+namespace {
+
+constexpr size_t maxPageGlyphs = 100000;
+constexpr size_t maxDocGlyphs = 4000000;
+constexpr size_t maxPageFonts = 1000;
+constexpr size_t maxDocFonts = 64;
+constexpr size_t maxCMapBytes = 256 * 1024;
+constexpr size_t maxDocCMapBytes = 8 * 1024 * 1024;
+constexpr size_t maxDocMetadataBytes = 128 * 1024 * 1024;
+// Reserve before parsing: two 65536-entry maps, at most 4096 Unicode strings
+// (PSTokenizer tokens cap each at 256 bytes), their indices and vector slack.
+constexpr size_t fontMetadataReservation = 2 * 1024 * 1024;
+constexpr size_t maxDocSourceEntries = 262144;
+constexpr int maxGlyphCodePoints = 32;
+constexpr size_t maxGlyphNameBytes = 64;
+constexpr size_t maxFontNameBytes = 128;
+
+const char *fontTypeName(GfxFontType t)
+{
+    switch (t) {
+    case fontType1:
+        return "Type1";
+    case fontType1C:
+        return "Type1C";
+    case fontType1COT:
+        return "Type1COT";
+    case fontType3:
+        return "Type3";
+    case fontTrueType:
+        return "TrueType";
+    case fontTrueTypeOT:
+        return "TrueTypeOT";
+    case fontCIDType0:
+        return "CIDType0";
+    case fontCIDType0C:
+        return "CIDType0C";
+    case fontCIDType0COT:
+        return "CIDType0COT";
+    case fontCIDType2:
+        return "CIDType2";
+    case fontCIDType2OT:
+        return "CIDType2OT";
+    default:
+        return "unknown";
+    }
+}
+
+std::string capped(const std::string &s, size_t maxBytes)
+{
+    if (s.size() <= maxBytes) {
+        return s;
+    }
+    size_t n = maxBytes;
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xc0) == 0x80) {
+        --n; // do not split a UTF-8 sequence
+    }
+    return s.substr(0, n);
+}
+
+// "uniXXXX" or "uXXXX[XX]": names that carry their Unicode value
+bool unicodeGlyphName(const char *name)
+{
+    const size_t n = strlen(name);
+    const auto hex = [&](size_t from) {
+        for (size_t i = from; i < n; ++i) {
+            if (!isxdigit(static_cast<unsigned char>(name[i]))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    return (n >= 7 && !strncmp(name, "uni", 3) && (n - 3) % 4 == 0 && hex(3)) || (n >= 5 && n <= 7 && name[0] == 'u' && hex(1));
+}
+
+struct GlyphFont
+{
+    int id;
+    std::string name, type, encoding;
+    bool cid, embedded, symbolic, hasToUnicode;
+    double fontMatrixScale = 0; // Type 3: |FontMatrix[3]|, else 0
+    std::unique_ptr<CharCodeToUnicode> ownToUnicode; // the /ToUnicode CMap alone
+    std::unordered_map<CharCode, char> source; // u source per code
+    size_t pageMisses = 0; // codes used on this page without a ToUnicode entry
+    int pageSeen = -1;
+};
+
+class GlyphContext
+{
+public:
+    explicit GlyphContext(XRef *xrefA) : xref(xrefA) { }
+
+    // Before a page is printed: index its fonts and decide how many glyph records it gets.
+    void startPage(int page, const TextOutputDev *textOut)
+    {
+        pageNum = page;
+        pageFonts.clear();
+        pageFontIds.clear();
+        pageCodes.clear();
+        fontsTruncated = false;
+        truncated = false;
+        const size_t docLeft = maxDocGlyphs - std::min(maxDocGlyphs, docGlyphs);
+        const size_t limit = std::min(maxPageGlyphs, docLeft);
+        pageBudget = 0;
+        if (limit == 0 || metadataExhausted) {
+            truncated = true;
+            fontsTruncated = metadataExhausted;
+            return;
+        }
+        size_t glyphs = 0;
+        for (const TextFlow *flow = textOut->getFlows(); flow; flow = flow->getNext()) {
+            for (const TextBlock *blk = flow->getBlocks(); blk; blk = blk->getNext()) {
+                for (const TextLine *line = blk->getLines(); line; line = line->getNext()) {
+                    for (const TextWord *word = line->getWords(); word; word = word->getNext()) {
+                        if (word->getRotation() != 0) {
+                            continue;
+                        }
+                        const int n = word->getLength();
+                        int codePoints = 0;
+                        for (int i = 0; i < n; ++i) {
+                            if (i > 0 && word->getCharPosAt(i) == word->getCharPosAt(i - 1) && word->getCharCode(i) == word->getCharCode(i - 1)) {
+                                if (++codePoints > maxGlyphCodePoints) {
+                                    truncated = true;
+                                }
+                                continue;
+                            }
+                            codePoints = 1;
+                            if (glyphs == limit) {
+                                truncated = true;
+                                pageBudget = limit;
+                                docGlyphs += limit;
+                                return;
+                            }
+                            ++glyphs;
+                            GlyphFont *gf = fontOf(word->getFontInfo(i));
+                            if (gf && !word->isActualTextChar(i)) {
+                                sourceOf(*gf, word, i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (const TextPage::DroppedGlyph &d : textOut->getDroppedGlyphs()) {
+            if (glyphs == limit) {
+                truncated = true;
+                pageBudget = limit;
+                docGlyphs += limit;
+                return;
+            }
+            fontOf(d.font);
+            ++glyphs;
+        }
+        pageBudget = std::min({ glyphs, maxPageGlyphs, docLeft });
+        truncated = truncated || fontsTruncated || metadataExhausted || glyphs > pageBudget;
+        docGlyphs += pageBudget;
+    }
+
+    bool pageTruncated() const { return truncated; }
+    bool pageFontsTruncated() const { return fontsTruncated; }
+
+    void writeFontTable(FILE *f) const
+    {
+        for (const GlyphFont *gf : pageFonts) {
+            std::string tu = gf->hasToUnicode ? "1" : "0";
+            fprintf(f, "    <font id=\"%d\" name=\"%s\" type=\"%s\" enc=\"%s\" emb=\"%d\" sym=\"%d\" cid=\"%d\" tu=\"%s\" tuMiss=\"%zu\"", gf->id, myXmlTokenReplace(gf->name.c_str()).c_str(), gf->type.c_str(),
+                    myXmlTokenReplace(gf->encoding.c_str()).c_str(), gf->embedded ? 1 : 0, gf->symbolic ? 1 : 0, gf->cid ? 1 : 0, tu.c_str(), gf->pageMisses);
+            if (gf->fontMatrixScale > 0) {
+                fprintf(f, " t3scale=\"%g\"", gf->fontMatrixScale);
+            }
+            fputs("/>\n", f);
+        }
+    }
+
+    // Named glyphs that extraction dropped as whitespace, as <xg> records with a baseline
+    // and size (they belong to no word).
+    void writeDropped(FILE *f, const TextOutputDev *textOut)
+    {
+        std::string out;
+        for (const TextPage::DroppedGlyph &d : textOut->getDroppedGlyphs()) {
+            if (pageBudget == 0) {
+                truncated = true;
+                break;
+            }
+            --pageBudget;
+            GlyphFont *gf = fontOf(d.font);
+            out += "    <xg x=\"";
+            number(out, d.x);
+            out += "\" w=\"";
+            number(out, d.advance);
+            out += "\" b=\"";
+            number(out, d.y);
+            out += "\" z=\"";
+            number(out, d.fontSize);
+            out += '"';
+            if (gf) {
+                out += " f=\"" + std::to_string(gf->id) + "\"";
+            }
+            out += " c=\"" + std::to_string(d.code) + "\" s=\"c\"";
+            const char *name = glyphName(d.font, d.code);
+            if (name && *name) {
+                out += " n=\"" + myXmlTokenReplace(capped(name, maxGlyphNameBytes).c_str()) + "\"";
+            }
+            out += "/>\n";
+        }
+        fputs(out.c_str(), f);
+    }
+
+    // The glyph records of one word, or nothing once the page's budget is used.
+    void appendWordGlyphs(std::string &out, const TextWord *word)
+    {
+        if (word->getRotation() != 0) {
+            return;
+        }
+        const int n = word->getLength();
+        int i = 0;
+        while (i < n && pageBudget > 0) {
+            int j = i + 1;
+            while (j < n && word->getCharPosAt(j) == word->getCharPosAt(i) && word->getCharCode(j) == word->getCharCode(i)) {
+                ++j;
+            }
+            --pageBudget;
+            const double x0 = word->getEdge(i);
+            double advance = 0;
+            for (int k = i; k < j; ++k) {
+                advance += word->getAdvance(k);
+            }
+            out += "<g x=\"";
+            number(out, x0);
+            out += "\" w=\"";
+            number(out, advance);
+            out += '"';
+            // words that poppler merged (stacked scripts) keep each glyph's own baseline and size
+            const Matrix &m = word->getTextMat(i);
+            const Matrix &m0 = word->getTextMat(0);
+            if (std::fabs(m.m[5] - word->getBaseline()) > 0.01) {
+                out += " b=\"";
+                number(out, m.m[5]);
+                out += '"';
+            }
+            const double scale = std::sqrt(std::fabs(m.m[0] * m.m[3] - m.m[1] * m.m[2]));
+            const double scale0 = std::sqrt(std::fabs(m0.m[0] * m0.m[3] - m0.m[1] * m0.m[2]));
+            if (scale0 > 0 && std::isfinite(scale) && std::fabs(scale / scale0 - 1) > 0.01) {
+                out += " z=\"";
+                number(out, word->getFontSize() * scale / scale0);
+                out += '"';
+            }
+            const bool actual = word->isActualTextChar(i);
+            const TextFontInfo *info = word->getFontInfo(i);
+            GlyphFont *gf = fontOf(info);
+            const CharCode code = word->getCharCode(i);
+            if (gf) {
+                out += " f=\"" + std::to_string(gf->id) + "\"";
+            }
+            if (!actual) {
+                out += " c=\"" + std::to_string(code) + "\"";
+                const GfxFont *font = info ? info->getGfxFont() : nullptr;
+                if (font && font->isCIDFont()) {
+                    const auto *cidFont = static_cast<const GfxCIDFont *>(font);
+                    if (code < cidFont->getCIDToGIDLen()) {
+                        out += " g=\"" + std::to_string(cidFont->getCIDToGID()[code]) + "\"";
+                    }
+                }
+            }
+            out += " u=\"";
+            char hex[16];
+            for (int k = i; k < j && k - i < maxGlyphCodePoints; ++k) {
+                snprintf(hex, sizeof(hex), k > i ? " %x" : "%x", static_cast<unsigned int>(*word->getChar(k)));
+                out += hex;
+            }
+            out += "\" s=\"";
+            out += actual ? 'a' : (gf ? sourceOf(*gf, word, i) : 'c');
+            out += '"';
+            if (!actual) {
+                const char *name = glyphName(info, code);
+                if (name && *name) {
+                    const Unicode named = globalParams->mapNameToUnicodeAll(name);
+                    if (j - i != 1 || named == 0 || named != *word->getChar(i)) {
+                        out += " n=\"" + myXmlTokenReplace(capped(name, maxGlyphNameBytes).c_str()) + "\"";
+                    }
+                }
+            }
+            out += "/>";
+            i = j;
+        }
+    }
+
+private:
+    static void number(std::string &out, double v)
+    {
+        char buffer[384];
+        const auto result = std::to_chars(buffer, buffer + sizeof(buffer), v, std::chars_format::fixed, 3);
+        if (result.ec == std::errc()) {
+            out.append(buffer, result.ptr);
+        } else {
+            out += "0";
+        }
+    }
+
+    static const char *glyphName(const TextFontInfo *info, CharCode code)
+    {
+        const GfxFont *font = info ? info->getGfxFont() : nullptr;
+        if (!font || font->isCIDFont() || code > 255) {
+            return nullptr;
+        }
+        return static_cast<const Gfx8BitFont *>(font)->getCharName(static_cast<int>(code));
+    }
+
+    char sourceOf(GlyphFont &gf, const TextWord *word, int i)
+    {
+        const CharCode code = word->getCharCode(i);
+        const auto it = gf.source.find(code);
+        char src;
+        bool first = it == gf.source.end();
+        if (!first) {
+            src = it->second;
+        } else {
+            if (sourceEntries >= maxDocSourceEntries || metadataBytes > maxDocMetadataBytes - 128) {
+                metadataExhausted = true;
+                truncated = true;
+                fontsTruncated = true;
+                return 'c';
+            }
+            ++sourceEntries;
+            metadataBytes += 128; // source cache node plus page-code accounting
+            const Unicode *u = nullptr;
+            if (gf.ownToUnicode && gf.ownToUnicode->mapToUnicode(code, &u) > 0) {
+                src = 't';
+            } else {
+                const char *name = glyphName(word->getFontInfo(i), code);
+                src = (name && (globalParams->mapNameToUnicodeAll(name) != 0 || unicodeGlyphName(name))) ? 'n' : 'c';
+            }
+            gf.source.emplace(code, src);
+        }
+        // count each code once per page
+        if (src != 't' && gf.hasToUnicode && pageCodes.emplace(gf.id, code).second) {
+            ++gf.pageMisses;
+        }
+        return src;
+    }
+
+    GlyphFont *fontOf(const TextFontInfo *info)
+    {
+        if (metadataExhausted) {
+            fontsTruncated = true;
+            truncated = true;
+            return nullptr;
+        }
+        const GfxFont *font = info ? info->getGfxFont() : nullptr;
+        if (!font) {
+            return nullptr;
+        }
+        const Ref ref = *font->getID();
+        auto it = byRef.find({ ref.num, ref.gen });
+        GlyphFont *gf;
+        if (pageFonts.size() >= maxPageFonts && (it == byRef.end() || !pageFontIds.count(it->second->id))) {
+            fontsTruncated = true;
+            truncated = true;
+            return nullptr;
+        }
+        if (it == byRef.end()) {
+            if (fonts.size() >= maxDocFonts || metadataBytes > maxDocMetadataBytes - fontMetadataReservation) {
+                metadataExhausted = true;
+                fontsTruncated = true;
+                truncated = true;
+                return nullptr;
+            }
+            metadataBytes += fontMetadataReservation;
+            auto made = std::make_unique<GlyphFont>();
+            made->id = static_cast<int>(fonts.size());
+            const std::optional<std::string> &fullName = font->getName();
+            made->name = capped(fullName ? font->getNameWithoutSubsetTag() : std::string(), maxFontNameBytes);
+            made->type = fontTypeName(font->getType());
+            made->encoding = capped(font->getEncodingName(), maxFontNameBytes);
+            made->cid = font->isCIDFont();
+            Ref emb;
+            made->embedded = font->getEmbeddedFontID(&emb);
+            made->symbolic = font->isSymbolic();
+            made->hasToUnicode = font->hasToUnicodeCMap();
+            if (font->getType() == fontType3) {
+                made->fontMatrixScale = std::fabs(font->getFontMatrix()[3]);
+            }
+            if (made->hasToUnicode && ref.num >= 0) {
+                // parse the font's own /ToUnicode again, without the fallbacks GfxFont merged in
+                Object fontObj = xref->fetch(ref);
+                if (fontObj.isDict()) {
+                    Object tuObj = fontObj.dictLookup("ToUnicode");
+                    if (tuObj.isStream()) {
+                        std::string buf;
+                        const size_t remaining = maxDocCMapBytes - cmapBytes;
+                        const size_t cap = std::min(maxCMapBytes, remaining);
+                        if (cap == 0 || mappingsLeft == 0) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        Stream *stream = tuObj.getStream();
+                        if (!stream->rewind()) {
+                            stream->close();
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        int c = EOF;
+                        while (buf.size() < cap && (c = stream->getChar()) != EOF) {
+                            buf.push_back(static_cast<char>(c));
+                        }
+                        const bool overflow = buf.size() == cap && stream->getChar() != EOF;
+                        stream->close();
+                        cmapBytes += buf.size();
+                        if (overflow) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                        made->ownToUnicode = CharCodeToUnicode::parseCMapLimited(buf, made->cid ? 16 : 8, mappingsLeft);
+                        if (!made->ownToUnicode) {
+                            metadataExhausted = true;
+                            fontsTruncated = true;
+                            truncated = true;
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+            gf = made.get();
+            fonts.push_back(std::move(made));
+            byRef.emplace(std::make_pair(ref.num, ref.gen), gf);
+        } else {
+            gf = it->second;
+        }
+        if (gf->pageSeen != pageNum) {
+            gf->pageSeen = pageNum;
+            gf->pageMisses = 0;
+        }
+        if (pageFontIds.emplace(gf->id).second) {
+            if (pageFonts.size() >= maxPageFonts) {
+                fontsTruncated = true;
+                pageFontIds.erase(gf->id);
+                return nullptr;
+            }
+            pageFonts.push_back(gf);
+        }
+        return pageFontIds.count(gf->id) ? gf : nullptr;
+    }
+
+    XRef *xref;
+    int pageNum = 0;
+    std::vector<std::unique_ptr<GlyphFont>> fonts;
+    std::map<std::pair<int, int>, GlyphFont *> byRef;
+    std::vector<GlyphFont *> pageFonts;
+    std::set<int> pageFontIds;
+    std::set<std::pair<int, CharCode>> pageCodes;
+    bool fontsTruncated = false, truncated = false;
+    size_t pageBudget = 0, docGlyphs = 0;
+    bool metadataExhausted = false;
+    size_t metadataBytes = 0, cmapBytes = 0, mappingsLeft = 65536, sourceEntries = 0;
+};
+
+GlyphContext *glyphContext = nullptr;
+
+} // namespace
+
 static constexpr EndOfLineKind defaultEndOfLine()
 {
 #ifdef _WIN32
@@ -362,6 +862,10 @@ int main(int argc, char *argv[])
     }
     if (compactLayout && !bboxLayout) {
         error(errCommandLine, -1, "'-compact-layout' needs -bbox-layout");
+        return 99;
+    }
+    if (glyphRecords && !(bboxLayout && wordMeta)) {
+        error(errCommandLine, -1, "'-glyphs' needs -bbox-layout and -wordmeta");
         return 99;
     }
     if (wordMeta && !(bbox || tsvMode)) {
@@ -543,6 +1047,8 @@ int main(int argc, char *argv[])
             }
             if (bboxLayout) {
                 textOut.setCollectRules(collectRules);
+                textOut.setCollectImageMaskRules(glyphRecords);
+                textOut.setCollectDroppedGlyphs(glyphRecords);
                 printDocBBox(f, doc.get(), &textOut, firstPage, lastPage);
             } else {
                 printWordBBox(f, doc.get(), &textOut, firstPage, lastPage);
@@ -715,6 +1221,13 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
             words += ">";
             words += myXmlTokenReplace(word.text->c_str());
             words += "</word>\n";
+            if (glyphContext) {
+                const size_t before = words.size();
+                glyphContext->appendWordGlyphs(words, word.word);
+                if (words.size() != before) {
+                    words += '\n';
+                }
+            }
         });
         fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
         fwrite(words.data(), 1, words.size(), f);
@@ -728,6 +1241,13 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
         const TextBounds &b = word.bounds;
         wordXML << "          <word xMin=\"" << b.xMin << "\" yMin=\"" << b.yMin << "\" xMax=\"" << b.xMax << "\" yMax=\"" << b.yMax << "\"" << (word.metadata ? wordMetaXmlAttributes(*word.metadata) : std::string()) << ">"
                 << myXmlTokenReplace(word.text->c_str()) << "</word>\n";
+        if (glyphContext) {
+            std::string glyphs;
+            glyphContext->appendWordGlyphs(glyphs, word.word);
+            if (!glyphs.empty()) {
+                wordXML << glyphs << "\n";
+            }
+        }
     });
     fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
     fputs(wordXML.str().c_str(), f);
@@ -743,19 +1263,34 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     // look up the output encoding once, not for every word
     const UnicodeMap *uMap = globalParams->getTextEncoding();
 
+    std::optional<GlyphContext> glyphs;
+    if (glyphRecords) {
+        glyphs.emplace(doc->getXRef());
+    }
+    glyphContext = glyphs ? &*glyphs : nullptr;
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
+        std::string glyphAttrs;
+        if (glyphContext) {
+            glyphContext->startPage(page, textOut);
+            glyphAttrs = std::string(glyphContext->pageTruncated() ? " glyphsTruncated=\"1\"" : "") + (glyphContext->pageFontsTruncated() ? " fontsTruncated=\"1\"" : "");
+        }
         if (collectRules) {
-            fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "");
+            fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
-                fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str());
+                fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"%s/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str(),
+                        rule.imageMask ? " src=\"mask\"" : "");
             }
         } else {
-            fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
+            fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, glyphAttrs.c_str());
+        }
+        if (glyphContext) {
+            glyphContext->writeFontTable(f);
+            glyphContext->writeDropped(f, textOut);
         }
         for (flow = textOut->getFlows(); flow; flow = flow->getNext()) {
             fprintf(f, "    <flow>\n");
@@ -772,6 +1307,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         fprintf(f, "  </page>\n");
     }
     fprintf(f, "</doc>\n");
+    glyphContext = nullptr;
 }
 
 void printTSVBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int last)
