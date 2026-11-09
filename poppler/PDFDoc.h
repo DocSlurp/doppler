@@ -200,6 +200,10 @@ public:
     // Get page. First page is page 1.
     Page *getPage(int page);
 
+    // For one-way consumers of a late page range, avoid constructing and retaining the skipped
+    // prefix. Must be called before getPage(); pages before firstPage are unavailable afterward.
+    void skipPageCacheBefore(int firstPage) { catalog->skipPageCacheBefore(firstPage); }
+
     // Display a page.
     void displayPage(OutputDev *out, int page, double hDPI, double vDPI, int rotate, bool useMediaBox, bool crop, bool printing, bool (*abortCheckCbk)(void *data) = nullptr, void *abortCheckCbkData = nullptr,
                      bool (*annotDisplayDecideCbk)(Annot *annot, void *user_data) = nullptr, void *annotDisplayDecideCbkData = nullptr, bool copyXRef = false);

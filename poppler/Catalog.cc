@@ -193,13 +193,24 @@ Page *Catalog::getPage(int i)
     }
 
     catalogLocker();
-    if (static_cast<std::size_t>(i) > pages.size()) {
+    if (static_cast<std::size_t>(i) > pageTreePages) {
         bool cached = cachePageTree(i);
         if (!cached) {
             return nullptr;
         }
     }
-    return pages[i - 1].first.get();
+    if (i < pageCacheFirst) {
+        return nullptr;
+    }
+    return pages[i - pageCacheFirst].first.get();
+}
+
+void Catalog::skipPageCacheBefore(int firstPage)
+{
+    catalogLocker();
+    if (pageTreePages == 0 && firstPage > 1) {
+        pageCacheFirst = firstPage;
+    }
 }
 
 Ref *Catalog::getPageRef(int i)
@@ -209,13 +220,16 @@ Ref *Catalog::getPageRef(int i)
     }
 
     catalogLocker();
-    if (static_cast<std::size_t>(i) > pages.size()) {
+    if (static_cast<std::size_t>(i) > pageTreePages) {
         bool cached = cachePageTree(i);
         if (!cached) {
             return nullptr;
         }
     }
-    return &pages[i - 1].second;
+    if (i < pageCacheFirst) {
+        return nullptr;
+    }
+    return &pages[i - pageCacheFirst].second;
 }
 
 // Init page list. Return true on success, including if already inited.
@@ -277,6 +291,7 @@ bool Catalog::initPageList()
 
     pages.clear();
     refPageMap.clear();
+    pageTreePages = 0;
     attrsList.push_back(std::make_unique<PageAttrs>(nullptr, obj.getDict()));
     pagesList = new std::vector<Object>();
     pagesList->push_back(std::move(obj));
@@ -296,7 +311,7 @@ bool Catalog::cachePageTree(int page)
 
     while (true) {
 
-        if (static_cast<std::size_t>(page) <= pages.size()) {
+        if (static_cast<std::size_t>(page) <= pageTreePages) {
             return true;
         }
 
@@ -339,7 +354,7 @@ bool Catalog::cacheSubTree()
 
     Object kids = pagesList->back().dictLookup("Kids");
     if (!kids.isArray()) {
-        error(errSyntaxError, -1, "Kids object (page {0:uld}) is wrong type ({1:s})", pages.size() + 1, kids.getTypeName());
+        error(errSyntaxError, -1, "Kids object (page {0:uld}) is wrong type ({1:s})", pageTreePages + 1, kids.getTypeName());
         return false;
     }
     Array *kidsArray = kids.getArray();
@@ -358,7 +373,7 @@ bool Catalog::cacheSubTree()
 
     const Object &kidRef = kidsArray->getNF(kidsIdx);
     if (!kidRef.isRef()) {
-        error(errSyntaxError, -1, "Kid object (page {0:uld}) is not an indirect reference ({1:s})", pages.size() + 1, kidRef.getTypeName());
+        error(errSyntaxError, -1, "Kid object (page {0:uld}) is not an indirect reference ({1:s})", pageTreePages + 1, kidRef.getTypeName());
         return false;
     }
 
@@ -378,21 +393,25 @@ bool Catalog::cacheSubTree()
 
     Object kid = kidsArray->get(kidsIdx);
     if (kid.isDict("Page") || (kid.isDict() && !kid.getDict()->hasKey("Kids"))) {
-        auto attrs = std::make_unique<PageAttrs>(attrsList.back().get(), kid.getDict());
-        auto p = std::make_unique<Page>(doc, pages.size() + 1, std::move(kid), kidRef.getRef(), std::move(attrs));
-        if (!p->isOk()) {
-            error(errSyntaxError, -1, "Failed to create page (page {0:uld})", pages.size() + 1);
-            return false;
-        }
-
-        if (pages.size() >= static_cast<std::size_t>(numPages)) {
+        if (pageTreePages >= static_cast<std::size_t>(numPages)) {
             error(errSyntaxError, -1, "Page count in top-level pages object is incorrect");
             return false;
         }
 
-        auto ref = kidRef.getRef();
-        pages.emplace_back(std::move(p), ref);
-        refPageMap.emplace(ref, pages.size());
+        const std::size_t pageNumber = ++pageTreePages;
+        if (pageNumber >= static_cast<std::size_t>(pageCacheFirst)) {
+            auto attrs = std::make_unique<PageAttrs>(attrsList.back().get(), kid.getDict());
+            auto p = std::make_unique<Page>(doc, pageNumber, std::move(kid), kidRef.getRef(), std::move(attrs));
+            if (!p->isOk()) {
+                error(errSyntaxError, -1, "Failed to create page (page {0:uld})", pageNumber);
+                --pageTreePages;
+                return false;
+            }
+
+            auto ref = kidRef.getRef();
+            pages.emplace_back(std::move(p), ref);
+            refPageMap.emplace(ref, pageNumber);
+        }
 
         kidsIdxList->back()++;
 
@@ -404,7 +423,7 @@ bool Catalog::cacheSubTree()
         pagesList->push_back(std::move(kid));
         kidsIdxList->push_back(0);
     } else {
-        error(errSyntaxError, -1, "Kid object (page {0:uld}) is wrong type ({1:s})", pages.size() + 1, kid.getTypeName());
+        error(errSyntaxError, -1, "Kid object (page {0:uld}) is wrong type ({1:s})", pageTreePages + 1, kid.getTypeName());
         kidsIdxList->back()++;
     }
 
@@ -880,6 +899,7 @@ int Catalog::getNumPages()
                     if (p->isOk()) {
                         pages.emplace_back(std::move(p), pageRef);
                         refPageMap.emplace(pageRef, pages.size());
+                        pageTreePages = 1;
 
                         numPages = 1;
                     } else {

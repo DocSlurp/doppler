@@ -136,6 +136,8 @@ with t.TempDir() as d:
         t.check(poppler_rendered_pages(path) == n, "flat-%d: matches pages pdftotext renders" % n)
     path = expect(d, "nested-250.pdf", tree_pdf(250, fanout=10), OK, b"250\n")
     t.check(poppler_rendered_pages(path) == 250, "nested-250: matches pages pdftotext renders")
+    rc, stdout, stderr = run("pdftotext", "-f", 241, "-l", 250, path, "-")
+    t.check(rc == 0 and stdout.count(b"\f") == 10, "nested-250: pdftotext extracts a late 10-page range", repr((rc, stdout.count(b"\f"), stderr)))
     rc, stdout, _ = run("pdfinfo", path)
     t.check(b"Pages:           250" in stdout, "nested-250: pdfinfo agrees on an honest file")
 

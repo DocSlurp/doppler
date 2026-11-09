@@ -128,6 +128,11 @@ public:
     // Get a page.
     Page *getPage(int i);
 
+    // Do not retain Page objects before this page while the page tree is first cached. This is
+    // for one-way command-line conversions of a late range: getPage() returns nullptr for the
+    // skipped prefix afterward. Has no effect once any page has been cached.
+    void skipPageCacheBefore(int firstPage);
+
     // Get the reference for a page object.
     Ref *getPageRef(int i);
 
@@ -284,6 +289,7 @@ private:
     XRef *xref; // the xref table for this PDF file
     std::vector<std::pair<std::unique_ptr<Page>, Ref>> pages;
     std::unordered_map<Ref, std::size_t> refPageMap;
+    std::size_t pageTreePages = 0; // leaf pages traversed, including a skipped cache prefix
     std::vector<Object> *pagesList;
     std::vector<Ref> *pagesRefList;
     std::vector<std::unique_ptr<PageAttrs>> attrsList;
@@ -291,6 +297,7 @@ private:
     Form *form;
     ViewerPreferences *viewerPrefs;
     int numPages; // number of pages
+    int pageCacheFirst = 1; // first page for which cacheSubTree constructs a Page
     Object dests; // named destination dictionary
     Object names; // named names dictionary
     NameTree *destNameTree; // named destination name-tree

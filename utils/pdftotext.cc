@@ -994,6 +994,10 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "Wrong page range given: the first page ({0:d}) can not be after the last page ({1:d}).", firstPage, lastPage);
         return 99;
     }
+    // This process consumes the selected range once and never asks for an earlier page. Avoid
+    // constructing and retaining every Page before a late -f; the page-tree walk and its error
+    // checks remain unchanged.
+    doc->skipPageCacheBefore(firstPage);
 
     // write HTML header
     if (htmlMeta) {
