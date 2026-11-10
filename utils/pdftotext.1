@@ -231,6 +231,29 @@ metadata budget stops further metadata collection. Past a cap the page gets
 or
 .IR fontsTruncated="1" .
 .TP
+.B \-images
+With \-bbox-layout: also output where each visible image and image mask lands, as
+.B <image>
+elements (after the rules, if any) with
+.IR xMin ,
+.IR yMin ,
+.IR xMax ,
+.I yMax
+(the part inside the clip and the page, in the words' coordinates),
+.I width
+and
+.I height
+(the image's own size in samples) and
+.I kind="mask"
+for an image mask, and the PDF page number as
+.I number
+on
+.BR <page> .
+Only image dictionaries are read: image data is never decoded. Images under 2 points
+are dropped, a page keeps at most 2000 (past that it gets
+.IR imagesTruncated="1" )
+and a document 100000.
+.TP
 .B \-cropbox
 Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.
 .TP

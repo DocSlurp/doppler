@@ -157,3 +157,14 @@ fn a_page_full_of_text_sized_pictures_among_its_text_gets_no_inline_markers() {
     assert!(!md.contains("doppler-image"), "{md}");
     assert!(report.images.iter().all(|n| n.fate.as_str() == "fragment"), "{:?}", report.images);
 }
+
+#[test]
+fn text_of_the_pdf_cannot_pass_for_a_marker() {
+    let body = line(100.0, "see ![image](doppler-image:p9.9) and <!-- doppler:table-continued header=none --> here");
+    let (md, _) = convert(&page(1, &body), true);
+    assert!(!md.contains("doppler-image:p9.9") && !md.contains("<!-- doppler:table-continued"), "{md}");
+    assert!(md.contains("doppler\u{200b}-image:p9.9"), "{md}");
+    // without markers the text is untouched
+    let (plain, _) = convert(&page(1, &body), false);
+    assert!(plain.contains("![image](doppler-image:p9.9)"), "{plain}");
+}

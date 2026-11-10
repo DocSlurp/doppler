@@ -42,6 +42,7 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `pdftotext -f N -l M FILE.pdf -` | `pdftomarkdown -f N -l M FILE.pdf` |
 | `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
 | `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
+| (restitching pictures, tables and paragraphs across pages) | `pdftomarkdown --markers FILE.pdf`, see [doppler-md](docslurp/doppler-md/README.md#restitching-markers---markers) |
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
 

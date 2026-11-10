@@ -67,6 +67,54 @@ The report gains `math` (`inline`, `display`, `actualText`, `uncertain`, `mathGl
 `mathUncertainPages`. `scripts/math_eval.py` and `scripts/math_compile.py` measure robustness
 and LaTeX validity on real PDFs; `DOPPLER_MATH_DEBUG=1` (or `2`, `3`) traces formulas to stderr.
 
+## Restitching markers (`--markers`)
+
+Pages are written separately, so a caller that wants the pictures back, or whole tables and
+paragraphs that cross a page, needs to know where they were. `--markers` (library:
+`Options::markers`) says so inline; `pdftomarkdown --markers` runs pdftotext with `-images`
+(image dictionaries only: the image data is never decoded). Without it the output is
+byte-identical.
+
+- **Pictures.** `![image](doppler-image:pN.M)`: `N` is the PDF page number and `M` the picture's
+  position in pdftotext's list for that page, so the id does not change with the layout around
+  it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
+  one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
+  body sizes, transitively) are one figure with one marker, at its first image. No marker for
+  a page background under a text layer, an image in the header or footer band, a sliver, a
+  duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
+  12 inside its lines). The report's `images` lists every image the producer reported with
+  `id`, `page`, `bbox` (page points, y down, as the words' coordinates), `px`, `kind`
+  (`picture` or `mask`), `placed` (`block`, `inline`, `grouped`, `background`, `furniture`,
+  `small`, `duplicate`, `fragment`), and `members` (the union `bbox` of a figure) or `group`
+  (the figure a grouped image belongs to). A caller crops the page at `bbox` and swaps the
+  marker for it.
+- **Tables across pages.** A table that goes on from the last table of the previous page (the
+  page starts with it, past an optional "(continued)" note; the columns sit in the same places)
+  gets `<!-- doppler:table-continued header=repeated -->` above it when its first row repeats
+  the earlier header, `header=inherited` when the earlier header was copied on top so the page
+  stands alone, `header=none` otherwise. Drop the first row and its separator when merging
+  `repeated` or `inherited` tables.
+- **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
+  goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
+  without one after a hyphen.
+
+The markers are ordinary Markdown and comments, so text of the PDF could imitate them: with
+`--markers`, a zero-width space goes after `doppler` in any word that holds `doppler-image:` or
+`doppler:`. A caller should still trust only ids that the report lists.
+
+## Columns and headers
+
+Two parameters change the default output (`--params '{"name":0}'` restores the old one):
+
+- `join_column_breaks`: a paragraph that runs to the bottom of one column and goes on at the top of
+  the next is one paragraph (a hyphenated word is made whole). The earlier paragraph must have no
+  end of sentence, run to its column's right edge and go down as far as the later region's
+  content (within three lines); the later one starts in lowercase, higher up the page, in the same
+  size, weight and colour; neither is a heading, list or caption.
+- `merge_header_rows`: a header printed on several stacked lines comes out of row grouping as
+  several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
+  number and the body opens up below them, they are one header row (a `<thead>` with `--html`).
+
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw

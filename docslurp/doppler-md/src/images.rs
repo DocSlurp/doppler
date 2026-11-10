@@ -269,3 +269,31 @@ fn insert_marker(page: &mut Page, li: usize, b: (f64, f64, f64, f64), marker: &s
     let new = Line::new(words, line.block, line.flow);
     page.lines[li] = Rc::new(new);
 }
+
+/// With markers on, text of the PDF must not be able to pass for a marker (the markers are
+/// ordinary Markdown and comments): a zero-width space goes after `doppler` in every word that
+/// holds `doppler-image:` or `doppler:`, which the markers' own text never passes through.
+pub(crate) fn neutralize(page: &mut Page) {
+    let spoof = |w: &Word| w.text.contains("doppler-image:") || w.text.contains("doppler:");
+    for line in page.lines.iter_mut() {
+        if !line.words.iter().any(spoof) {
+            continue;
+        }
+        let words: Vec<Word> = line
+            .words
+            .iter()
+            .map(|w| {
+                if spoof(w) {
+                    let text = w
+                        .text
+                        .replace("doppler-image:", "doppler\u{200b}-image:")
+                        .replace("doppler:", "doppler\u{200b}:");
+                    Word { text: Rc::from(text), ..w.clone() }
+                } else {
+                    w.clone()
+                }
+            })
+            .collect();
+        *line = Rc::new(Line::new(words, line.block, line.flow));
+    }
+}

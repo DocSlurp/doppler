@@ -473,6 +473,8 @@ impl<'p> Converter<'p> {
     pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
         if !self.o.markers {
             page.images = Vec::new();
+        } else {
+            images::neutralize(&mut page);
         }
         if self.o.math {
             let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
