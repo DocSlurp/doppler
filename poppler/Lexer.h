@@ -100,8 +100,39 @@ public:
     bool hasXRef() const { return xref != nullptr; }
 
 private:
-    int getChar(bool comesFromLook = false);
-    int lookChar();
+    int getChar(bool comesFromLook = false)
+    {
+        if (lookCharLastValueCached != LOOK_VALUE_NOT_CACHED) {
+            const int c = lookCharLastValueCached;
+            lookCharLastValueCached = LOOK_VALUE_NOT_CACHED;
+            return c;
+        }
+        return getCharUncached(comesFromLook);
+    }
+    int getCharUncached(bool comesFromLook)
+    {
+        if (!curStr.isStream()) {
+            return EOF;
+        }
+        const int c = curStr.getStream()->getChar();
+        if (c != EOF || comesFromLook) {
+            return c;
+        }
+        return getCharFromNextStream();
+    }
+    int getCharFromNextStream();
+    int lookChar()
+    {
+        if (lookCharLastValueCached != LOOK_VALUE_NOT_CACHED) {
+            return lookCharLastValueCached;
+        }
+        lookCharLastValueCached = getCharUncached(true);
+        if (lookCharLastValueCached == EOF) {
+            lookCharLastValueCached = LOOK_VALUE_NOT_CACHED;
+            return EOF;
+        }
+        return lookCharLastValueCached;
+    }
 
     Array *streams; // array of input streams
     int strPtr; // index of current stream
