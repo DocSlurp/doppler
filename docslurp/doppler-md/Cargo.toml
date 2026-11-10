@@ -22,6 +22,13 @@ path = "src/bin/pdftomarkdown.rs"
 [dependencies]
 memchr = "2"
 serde_json = "1"
+# image extraction (`pdftomarkdown --images-dir`); all build statically (see README)
+# libwebp (bundled C source, compiled with cc) behind a safe API: lossy and lossless WebP
+webp = { version = "0.3", default-features = false }
+png = "0.18"
+roxmltree = "0.21"
+sha2 = "0.11"
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 # the original patterns, to check the hand-written matchers in src/patterns.rs

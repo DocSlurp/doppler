@@ -297,6 +297,9 @@ pub struct Image {
     pub px_h: u32,
     /// a stencil mask, not a picture
     pub mask: bool,
+    /// the image XObject's object and generation numbers (`ref="num gen"`), so repeats of one
+    /// object can be found; `None` for an inline image or a producer without it
+    pub obj: Option<(u32, u32)>,
 }
 
 /// The most images one page keeps; a page with more is `images_truncated`.
@@ -365,7 +368,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 22] = [
+const KEYS: [&str; 23] = [
     "xMin",
     "yMin",
     "xMax",
@@ -388,6 +391,7 @@ const KEYS: [&str; 22] = [
     "segments",
     "curves",
     "directions",
+    "ref",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -415,6 +419,7 @@ fn key_index(name: &str) -> Option<usize> {
         "segments" => 19,
         "curves" => 20,
         "directions" => 21,
+        "ref" => 22,
         _ => return None,
     })
 }
@@ -752,6 +757,17 @@ const PATHS: usize = 18;
 const SEGMENTS: usize = 19;
 const CURVES: usize = 20;
 const DIRECTIONS: usize = 21;
+const REF: usize = 22;
+
+/// `"num gen"`: two decimal numbers separated by one space, else `None`.
+fn object_ref(v: &str) -> Option<(u32, u32)> {
+    let (n, g) = v.split_once(' ')?;
+    let digits = |s: &str| !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(n) || !digits(g) {
+        return None;
+    }
+    Some((n.parse().ok()?, g.parse().ok()?))
+}
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -1141,8 +1157,16 @@ impl ParseState {
                         continue;
                     };
                     let px = |k: usize| a.0[k].and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-                    let image =
-                        Image { x0, y0, x1, y1, px_w: px(WIDTH), px_h: px(HEIGHT), mask: a.0[KIND] == Some("mask") };
+                    let image = Image {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        px_w: px(WIDTH),
+                        px_h: px(HEIGHT),
+                        mask: a.0[KIND] == Some("mask"),
+                        obj: a.0[REF].and_then(object_ref),
+                    };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {
                             pg.images.push(image);

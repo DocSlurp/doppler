@@ -93,6 +93,9 @@ pub fn place(
             fate: fate.unwrap_or(Fate::Block),
             members: unit.len(),
             group: None,
+            obj: None,
+            text: true,
+            file: None,
         });
     }
     // grow each drawing by the rules that touch it and the short lines around it (gridlines and

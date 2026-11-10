@@ -12,6 +12,7 @@
 
 mod box_cells;
 mod entities;
+pub mod extract;
 pub mod images;
 pub mod layout;
 pub mod math;
@@ -294,6 +295,9 @@ pub struct Report {
     pub watermark_words: usize,
     /// every image the producer reported and what became of it (only with [`Options::markers`])
     pub images: Vec<images::Note>,
+    /// files written by image extraction (`pdftomarkdown --images-dir`); `None` when it did not
+    /// run. With it, every image of the JSON gains `file` (its name in the folder, or null).
+    pub images_written: Option<usize>,
 }
 
 impl Report {
@@ -356,7 +360,7 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}}}",
                     n.id,
                     n.page,
                     n.bbox.0,
@@ -374,7 +378,12 @@ impl Report {
                     },
                     n.fate.as_str(),
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
-                    n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default()
+                    n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default(),
+                    match (&n.file, self.images_written) {
+                        (Some(f), Some(_)) => format!(",\"file\":\"{f}\""),
+                        (None, Some(_)) => ",\"file\":null".to_string(),
+                        _ => String::new(),
+                    }
                 )
             };
             format!(",\"images\":[{}]", self.images.iter().map(one).collect::<Vec<_>>().join(","))
@@ -384,7 +393,7 @@ impl Report {
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}{}}}"
+                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}{}{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -403,7 +412,8 @@ impl Report {
             degraded.join(","),
             math,
             images,
-            watermark
+            watermark,
+            self.images_written.map(|n| format!(",\"images_written\":{n}")).unwrap_or_default()
         )
     }
 }
