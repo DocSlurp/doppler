@@ -13,9 +13,13 @@
 //!   alone. Drop it when merging.
 //! - `<!-- doppler:table-continued header=none -->`: it goes on, with no header to copy (the
 //!   table is written with spans, or the previous table had none): every row is data.
+//!
 //! - `<!-- doppler:paragraph-continued -->`: the paragraph below goes on from the last
 //!   paragraph of the previous page (which has no end of sentence). Join them with a space,
 //!   or without one when the previous page's text ends in a hyphen.
+//!
+//! With `stitch_past_notes`, short notes (small print or a footnote) after a page's last table,
+//! and up to two one-line notes above the next page's first, do not hide a continuation.
 
 use std::rc::Rc;
 
@@ -76,13 +80,34 @@ fn is_continued_note(text: &str) -> bool {
     t.chars().count() <= 100 && (t.contains("continued") || t.contains("(cont") || t.contains("cont'd"))
 }
 
+/// At most this many notes may sit between a table and the page break, each at most
+/// `NOTE_CHARS` characters; above the next page's table, at most `NOTES_ABOVE` of one line each
+/// (more lines of small print above a table are its title block: a new table).
+const NOTES: usize = 4;
+const NOTES_ABOVE: usize = 2;
+const NOTE_CHARS: usize = 400;
+
+/// Small print or a footnote under a table (or above one at the top of a page): it does not end
+/// the table on its page. Smaller than body print, or starting with a footnote mark; not a
+/// heading; short.
+fn is_note(block: &Block) -> bool {
+    match block {
+        Block::Text { text, heading: 0, list, small, .. } => {
+            // a small-print footnote marked `*` reads as a list item
+            let t = strip(text);
+            t.chars().count() <= NOTE_CHARS && (*small || (!list && crate::page_layout::footnote_marked(t)))
+        }
+        _ => false,
+    }
+}
+
 fn header_of(t: &PlacedTable) -> Option<Vec<String>> {
     t.header.clone().or_else(|| t.table.rows.first().cloned())
 }
 
 fn open_paragraph(blocks: &[Block]) -> bool {
     match blocks.last() {
-        Some(Block::Text { text, heading: 0, list: false, caption: false }) => {
+        Some(Block::Text { text, heading: 0, list: false, caption: false, .. }) => {
             let t = rstrip(text);
             t.chars().count() >= 40 && !t.ends_with(['.', '!', '?', ':', ';', '"', '”', '’', '…', ')'])
         }
@@ -97,6 +122,14 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
     let mut first = 0;
     if matches!(blocks.first(), Some(Block::Text { text, .. }) if is_continued_note(text)) {
         first = 1;
+    }
+    // past notes above the table (`stitch_past_notes`), as long as a table follows them
+    if p.stitch_past_notes {
+        let one_line = |b: &Block| is_note(b) && matches!(b, Block::Text { lines: 1, .. });
+        let notes = blocks[first..].iter().take(NOTES_ABOVE + 1).take_while(|b| one_line(b)).count();
+        if (1..=NOTES_ABOVE).contains(&notes) && matches!(blocks.get(first + notes), Some(Block::Table(_))) {
+            first += notes;
+        }
     }
     let mut marker: Option<(usize, String)> = None;
     if let Some(edge) = &prev.table
@@ -120,7 +153,7 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
         };
         marker = Some((first, format!("{TABLE_CONTINUED} header={how} -->")));
     } else if prev.open_paragraph
-        && let Some(Block::Text { text, heading: 0, list: false, caption: false }) = blocks.get(first)
+        && let Some(Block::Text { text, heading: 0, list: false, caption: false, .. }) = blocks.get(first)
         && strip(text).chars().next().is_some_and(crate::pyc::is_lower)
     {
         marker = Some((first, PARAGRAPH_CONTINUED.to_string()));
@@ -128,8 +161,10 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
     if let Some((at, text)) = marker {
         blocks.insert(at, Block::Rendered(Rc::new(vec![text])));
     }
-    let _ = p;
-    let table = match blocks.last() {
+    // the last table, past notes under it (`stitch_past_notes`)
+    let notes =
+        if p.stitch_past_notes { blocks.iter().rev().take(NOTES).take_while(|b| is_note(b)).count() } else { 0 };
+    let table = match blocks.iter().rev().nth(notes) {
         Some(Block::Table(t)) => {
             header_of(t).map(|header| TableEdge { cols: t.table.cols.clone(), header, bottom: t.y1, page_height })
         }

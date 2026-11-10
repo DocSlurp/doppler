@@ -207,6 +207,23 @@ params! {
     header_stack_open: num = 1.3,
     /// a paragraph that runs out of one column and goes on at the top of the next is one paragraph
     join_column_breaks: flag = true,
+    /// a paragraph interrupted by a figure, its caption or a footnote goes on after it, in the
+    /// same column or (with `join_column_breaks`) the next: one paragraph, the figure after it
+    join_interrupted_paragraphs: flag = true,
+    /// a short label in the margin beside a paragraph, read as the start of one of its lines,
+    /// becomes a paragraph of its own before it
+    margin_labels: flag = true,
+    /// with markers, small print or footnotes under a page's last table (or above the next
+    /// page's first) do not hide that the table goes on
+    stitch_past_notes: flag = true,
+    /// the label ends at least this many sizes before the rest of its line
+    label_gap: num = 0.5,
+    /// and has at most this many characters
+    label_max_chars: num = 16.0,
+    /// print at most this many times a paragraph's size can interrupt it (captions, footnotes)
+    aside_size: num = 0.92,
+    /// and print at most this many times its size is figure labelling by itself
+    aside_tiny: num = 0.7,
     /// a page with more pictures than this inside its lines has text drawn as pictures: they
     /// get no markers
     image_inline_max: num = 12.0,

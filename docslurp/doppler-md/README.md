@@ -115,6 +115,12 @@ byte-identical.
   the earlier header, `header=inherited` when the earlier header was copied on top so the page
   stands alone, `header=none` otherwise. Drop the first row and its separator when merging
   `repeated` or `inherited` tables.
+  Notes do not hide a continuation (`stitch_past_notes`, on by default): the last table of a
+  page counts when only notes follow it (up to four: small print, smaller than the body by
+  `aside_size`, or a footnote mark; at most 400 characters each, no heading), such as a footnote
+  or a page footer that repeats with different text, and up to two one-line notes may sit
+  above the next page's table. More small print above a table is its title block, and the
+  table is new.
 - **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
   goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
   without one after a hyphen.
@@ -145,13 +151,41 @@ gains `watermark_words` when any were removed.
 
 ## Columns and headers
 
-Two parameters change the default output (`--params '{"name":0}'` restores the old one):
+Four parameters change the default output (`--params '{"name":0}'` restores the old one):
 
 - `join_column_breaks`: a paragraph that runs to the bottom of one column and goes on at the top of
   the next is one paragraph (a hyphenated word is made whole). The earlier paragraph must have no
   end of sentence, run to its column's right edge and go down as far as the later region's
   content (within three lines); the later one starts in lowercase, higher up the page, in the same
   size, weight and colour; neither is a heading, list or caption.
+- `join_interrupted_paragraphs`: a paragraph interrupted by a figure or a footnote and going on
+  after it is one paragraph, with the interrupting content after it (the text reads on; a
+  figure or footnote is a float that belongs after the paragraph that cites it). Interrupting
+  content (asides) is a picture marker (`--markers`) or print at most `aside_size` (0.92) times
+  the paragraph's size, never larger than body size print: figure labels, a caption, a
+  footnote. One aside must be strong evidence: a picture, print at most `aside_tiny` (0.7) times
+  the size (figure labelling), or a footnote (a mark: up to three digits and a space, `*`, `†`,
+  `‡`, `§`, `¶` or a superscript digit) at the bottom of the earlier column; smaller print alone
+  (a quotation or listing in small type) is not. The text evidence is that of
+  `join_column_breaks`. In one column the later half starts below, at the column's left edge (or
+  up to four sizes left of it, under a margin label), within its right edge. Across regions
+  (with `join_column_breaks`) asides may sit below the earlier half, in regions of their own, or
+  above the later half; the earlier column's bottom includes them, and past them the later half
+  may also go on below the earlier one in its column. A column that the layout cut into regions
+  (another column's text, or a figure's, beside it) goes on too: when the later half is the
+  column's very next line (within half a size below), regions beside the column that end in
+  nothing that could go on (no plain paragraph of two lines) may come between.
+- `margin_labels`: a short label in the margin beside a paragraph (the word of a note or warning
+  icon, a side label) that pdftotext read as the start of one of the paragraph's lines is a
+  paragraph of its own before the paragraph, and the sentence it sat in is whole again ("split
+  and di- TIP rectly deposited" was the output). The label is at most three words and
+  `label_max_chars` (16) characters, two letters or more and no digit (not a number, list marker
+  or bullet glyph), in another size, weight or colour than the line, followed by a gap of at
+  least `label_gap` (0.5) sizes and 1.8 times the line's word spacing. The rest of the line
+  starts at the paragraph's text edge (past icon marks on its earlier lines) with the label left
+  of it, and the label sits inside a sentence: the paragraph so far has no end of sentence and
+  goes on in lowercase or after a hyphen. A label that heads its paragraph (on the first line,
+  or a run-in "Note:" before a capital) is left alone.
 - `merge_header_rows`: a header printed on several stacked lines comes out of row grouping as
   several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
   number and the body opens up below them, they are one header row (a `<thead>` with `--html`).
