@@ -322,7 +322,7 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     cols.into_iter().map(|(a, b)| ((a + lo) as f64, (b + lo) as f64)).collect()
 }
 
-fn line_text(ws: Vec<Word>) -> String {
+pub(crate) fn line_text(ws: Vec<Word>) -> String {
     if ws.is_empty() {
         return String::new();
     }
@@ -348,7 +348,7 @@ pub struct Table {
 pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 
 /// Drop the columns no row fills, keeping the intervals of the others.
-fn keep_filled(grid: Grid, cols: &[(f64, f64)], header_row: bool) -> Table {
+pub(crate) fn keep_filled(grid: Grid, cols: &[(f64, f64)], header_row: bool) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
     Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect(), sparse: false, header_row }
@@ -887,7 +887,7 @@ fn grid_rtl(grid: &Grid) -> bool {
     rows_rtl(grid.iter().map(Vec::as_slice))
 }
 
-fn rows_rtl<'a>(rows: impl Iterator<Item = &'a [String]>) -> bool {
+pub(crate) fn rows_rtl<'a>(rows: impl Iterator<Item = &'a [String]>) -> bool {
     let (mut r, mut l) = (0usize, 0usize);
     for ch in rows.flatten().flat_map(|c| c.chars()) {
         r += is_rtl(ch) as usize;
@@ -1187,6 +1187,9 @@ pub fn ruled_tables(
     let finite_bases = order.iter().all(|&i| lines[i].base().is_finite());
     let mut used = vec![false; lines.len()];
     let mut in_members = vec![false; lines.len()];
+    if p.box_cell_tables {
+        out.extend(crate::box_cells::box_cell_tables(page, ids, body, p, format, &mut used, budget)?);
+    }
     for g in &split {
         let ys = &g.ys;
         if ys.len() < 2 {

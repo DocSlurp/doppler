@@ -171,6 +171,9 @@ params! {
     rule_max_lum: num = 0.97,
     /// max gap between consecutive rules of one table / body size
     rule_row_gap: num = 8.0,
+    /// read tables drawn as filled cell boxes (white or shaded cells between thin borders) from
+    /// the boxes: each cell's lines stay in one cell (see `box_cells`)
+    box_cell_tables: flag = true,
     /// rule bands are rows when there are this many per visual row
     band_rows: num = 0.6,
     /// a rule gap this many times the group's median splits two tables

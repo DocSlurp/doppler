@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod box_cells;
 mod entities;
 pub mod images;
 pub mod layout;
