@@ -200,3 +200,38 @@ fn a_capital_after_the_footnote_keeps_the_columns_apart() {
     let joined = convert(&two_columns("which", &footnote, "", "Continues"), true);
     assert!(joined.iter().any(|b| b.starts_with("Continues")), "{joined:?}");
 }
+
+/// Two lines of a 164 pt column at the top of the page, then its next lines beside another
+/// column's text, which cuts the column into regions; the column's third line starts with
+/// `next` after `gap` points.
+fn cut_column(last: &str, next: &str, gap: f64) -> String {
+    let column = |y: f64, first: &str, end: &str| {
+        line(42.0, y, 10.0, &format!("{first} alpha beta gamma delta epsilon {end}"), Some(164.0))
+    };
+    let mut body = column(44.0, "Form", "tail") + &column(56.0, "word", last);
+    for i in 0..6 {
+        let y = 68.0 + gap + 12.0 * i as f64;
+        let end = if i == 5 { "end." } else { "tail" };
+        body += &column(y, if i == 0 { next } else { "word" }, end);
+        body += &line(300.0, y, 10.0, &format!("right side text alpha beta gamma {end}"), Some(200.0));
+    }
+    page(&body)
+}
+
+#[test]
+fn the_next_line_of_a_column_cut_off_by_a_region_boundary_goes_on_the_paragraph() {
+    let xhtml = cut_column("ac-", "count", 0.0);
+    let split = convert(&xhtml, false);
+    let joined = convert(&xhtml, true);
+    assert!(split.iter().any(|b| b.starts_with("count")), "{split:?}");
+    assert!(joined[0].contains("epsilon account alpha") && joined[0].ends_with("end."), "{joined:?}");
+    assert!(joined[1].starts_with("right side text"), "{joined:?}");
+}
+
+#[test]
+fn a_column_cut_by_a_region_boundary_stays_apart_after_a_gap_or_a_capital() {
+    for (next, gap) in [("count", 8.0), ("Count", 0.0)] {
+        let joined = convert(&cut_column("which", next, gap), true);
+        assert!(joined.iter().any(|b| b.starts_with(next)), "{next:?} {gap}: {joined:?}");
+    }
+}

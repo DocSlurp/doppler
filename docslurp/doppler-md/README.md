@@ -124,7 +124,7 @@ gains `watermark_words` when any were removed.
 
 ## Columns and headers
 
-Three parameters change the default output (`--params '{"name":0}'` restores the old one):
+Four parameters change the default output (`--params '{"name":0}'` restores the old one):
 
 - `join_column_breaks`: a paragraph that runs to the bottom of one column and goes on at the top of
   the next is one paragraph (a hyphenated word is made whole). The earlier paragraph must have no
@@ -139,11 +139,26 @@ Three parameters change the default output (`--params '{"name":0}'` restores the
   footnote. One aside must be strong evidence: a picture, print at most `aside_tiny` (0.7) times
   the size (figure labelling), or a footnote (a mark: up to three digits and a space, `*`, `†`,
   `‡`, `§`, `¶` or a superscript digit) at the bottom of the earlier column; smaller print alone
-  (a quotation or listing in small type) is not. In one column, the evidence of
-  `join_column_breaks` holds and the later half starts below at the column's left edge and has
-  its left and right edges. Across a column break (with `join_column_breaks`) asides may sit
-  below the earlier half, in regions of their own, or above the later half; the earlier column's
-  bottom includes them.
+  (a quotation or listing in small type) is not. The text evidence is that of
+  `join_column_breaks`. In one column the later half starts below, at the column's left edge (or
+  up to four sizes left of it, under a margin label), within its right edge. Across regions
+  (with `join_column_breaks`) asides may sit below the earlier half, in regions of their own, or
+  above the later half; the earlier column's bottom includes them, and past them the later half
+  may also go on below the earlier one in its column. A column that the layout cut into regions
+  (another column's text, or a figure's, beside it) goes on too: when the later half is the
+  column's very next line (within half a size below), regions beside the column that end in
+  nothing that could go on (no plain paragraph of two lines) may come between.
+- `margin_labels`: a short label in the margin beside a paragraph (the word of a note or warning
+  icon, a side label) that pdftotext read as the start of one of the paragraph's lines is a
+  paragraph of its own before the paragraph, and the sentence it sat in is whole again ("split
+  and di- TIP rectly deposited" was the output). The label is at most three words and
+  `label_max_chars` (16) characters, two letters or more and no digit (not a number, list marker
+  or bullet glyph), in another size, weight or colour than the line, followed by a gap of at
+  least `label_gap` (0.5) sizes and 1.8 times the line's word spacing. The rest of the line
+  starts at the paragraph's text edge (past icon marks on its earlier lines) with the label left
+  of it, and the label sits inside a sentence: the paragraph so far has no end of sentence and
+  goes on in lowercase or after a hyphen. A label that heads its paragraph (on the first line,
+  or a run-in "Note:" before a capital) is left alone.
 - `merge_header_rows`: a header printed on several stacked lines comes out of row grouping as
   several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
   number and the body opens up below them, they are one header row (a `<thead>` with `--html`).

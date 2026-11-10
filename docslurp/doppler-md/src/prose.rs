@@ -175,22 +175,80 @@ struct Para<'a> {
 }
 
 impl Para<'_> {
+    fn paragraph(&self, lines: Vec<Rc<Line>>, kind: Option<Kind>) -> Paragraph {
+        let level =
+            if kind != Some(Kind::Bullet) { heading_level(&lines, self.body, self.body_color, self.p) } else { 0 };
+        let ratio = if self.body != 0.0 { median(lines.iter().map(|l| l.size()).collect()) / self.body } else { 1.0 };
+        let text = join_lines(&lines, self.p);
+        Paragraph { text, level, ratio, kind, lines }
+    }
+
     fn emit(&mut self) {
         if !self.cur.is_empty() {
-            let level = if self.kind != Some(Kind::Bullet) {
-                heading_level(&self.cur, self.body, self.body_color, self.p)
-            } else {
-                0
-            };
-            let ratio =
-                if self.body != 0.0 { median(self.cur.iter().map(|l| l.size()).collect()) / self.body } else { 1.0 };
-            let text = join_lines(&self.cur, self.p);
             let lines = std::mem::take(&mut self.cur);
-            self.items.push(FlowItem::Paragraph(Paragraph { text, level, ratio, kind: self.kind, lines }));
+            let para = self.paragraph(lines, self.kind);
+            self.items.push(FlowItem::Paragraph(para));
         }
         self.cur.clear();
         self.kind = None;
     }
+
+    /// A margin label of the paragraph being grouped: a paragraph of its own, before it.
+    fn label(&mut self, line: Line) {
+        let para = self.paragraph(vec![Rc::new(line)], None);
+        self.items.push(FlowItem::Paragraph(para));
+    }
+}
+
+/// Where a line's words split after a wide gap within its first three: at least `label_gap`
+/// sizes, and 1.8 times the rest of the line's word spacing (a loosely set line has no label).
+fn label_split(line: &Line, p: &Params) -> Option<usize> {
+    let ws = &line.words;
+    let size = pmax(line.size(), 1.0);
+    let k = (1..ws.len().min(4)).find(|&k| ws[k].x0 - ws[k - 1].x1 >= p.label_gap * size)?;
+    let spacing = median(ws[k..].windows(2).map(|w| w[1].x0 - w[0].x1).collect());
+    (ws[k].x0 - ws[k - 1].x1 >= 1.8 * spacing).then_some(k)
+}
+
+/// Where a line's text starts: past a mark or label set apart at its start (a callout icon's
+/// glyph).
+fn body_left(line: &Line, p: &Params) -> f64 {
+    label_split(line, p).map_or(line.x0, |k| line.words[k].x0)
+}
+
+/// A short label set in the margin beside a paragraph (a callout's word such as a note or
+/// warning icon's, a side heading) that the producer read as the start of one of the
+/// paragraph's lines: split it off as (label, rest of the line).
+///
+/// The line splits after word `k` (see [`label_split`]). The evidence is all of: the
+/// paragraph's earlier lines start at `left` (past their own marks) and the rest of this line
+/// starts there too (within a size), while the label ends left of it; the label has at most
+/// three words and `label_max_chars` characters, two letters or more and no digit (not a
+/// number, a list marker or a bullet glyph); and it is in another size, weight or colour than
+/// the rest. The caller also requires that it sits inside a sentence.
+fn margin_label(line: &Line, k: usize, left: f64, p: &Params) -> Option<(Line, Line)> {
+    let ws = &line.words;
+    let size = pmax(line.size(), 1.0);
+    if (ws[k].x0 - left).abs() > size || ws[k - 1].x1 >= left {
+        return None;
+    }
+    let label = Line::new(ws[..k].to_vec(), line.block, line.flow);
+    let rest = Line::new(ws[k..].to_vec(), line.block, line.flow);
+    let text = strip(label.text());
+    // a word or two, not a number, a list marker or a single letter (a bullet glyph)
+    let letters = text.chars().filter(|c| c.is_alphabetic()).count();
+    if rest.words.len() < 2
+        || char_len(text) as f64 > p.label_max_chars
+        || letters < 2
+        || text.chars().any(char::is_numeric)
+        || bullet(text)
+        || numbered(text)
+    {
+        return None;
+    }
+    let (a, b) = (style(&label), style(&rest));
+    let differs = (a.0 - b.0).abs() > p.style_size * pmax(a.0, 1.0) || a.1 != b.1 || a.2 != b.2;
+    differs.then_some((label, rest))
 }
 
 /// Ordered elements (lines and tables) to Markdown paragraphs.
@@ -293,6 +351,33 @@ pub(crate) fn group_within(
             prev_is_last = true;
             continue;
         }
+        // a label in the margin beside the paragraph, read as the start of its line, goes
+        // before the paragraph; the line goes on with the rest
+        let mut line = line;
+        // a label was split off this line, which goes on the paragraph's sentence
+        let mut labelled = false;
+        if p.margin_labels
+            && !st.cur.is_empty()
+            && let Some(k) = label_split(&line, p)
+        {
+            // the paragraph's text edge so far (charging its lines)
+            if !budget.spend(st.cur.len()) {
+                return None;
+            }
+            let left = st.cur.iter().map(|l| body_left(l, p)).fold(f64::INFINITY, pmin);
+            // the label sits inside a sentence: the paragraph so far has no end of sentence and
+            // goes on in lowercase or after a hyphen (else it heads what follows)
+            let inside = |rest: &Line| {
+                let before = st.cur.last().map_or("", |l| rstrip(l.text()));
+                !before.ends_with(SENT_END)
+                    && (before.ends_with('-') || strip(rest.text()).chars().next().is_some_and(pyc::is_lower))
+            };
+            if let Some((label, rest)) = margin_label(&line, k, left, p).filter(|(_, rest)| inside(rest)) {
+                st.label(label);
+                line = Rc::new(rest);
+                labelled = true;
+            }
+        }
         let stripped = strip(line.text());
         let is_bullet = bullet(stripped);
         if numbered(stripped) || is_bullet {
@@ -343,7 +428,7 @@ pub(crate) fn group_within(
             };
             new = if prefix.is_some() || col_change || gap <= 0.0 || display(&line) || display(pv) {
                 true
-            } else if use_blocks && line.block != pv.block {
+            } else if use_blocks && line.block != pv.block && !labelled {
                 true
             } else if gap > p.para_gap * pitch.filter(|&x| x != 0.0).unwrap_or(1.2 * pmax(pv.size(), 1.0)) {
                 true
@@ -359,6 +444,7 @@ pub(crate) fn group_within(
                 true
             } else if st.kind.is_none()
                 && !rtl
+                && !labelled
                 && line.x0 > cur_left + 1.2 * pmax(line.size(), 1.0)
                 && pv.x1 >= cur_right - 2.0 * pmax(pv.size(), 1.0)
             {

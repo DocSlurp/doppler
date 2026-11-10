@@ -140,21 +140,30 @@ impl PageLayout {
                 tail = folded;
                 continue;
             }
+            let carried = if interrupted && p.join_column_breaks { folded.or(open) } else { None };
             // a region of asides alone (figure labels, a picture, a caption) leaves the paragraph
             // before it open: its blocks go after that paragraph's
-            if interrupted
-                && p.join_column_breaks
-                && let Some(t) = folded.or(open)
+            if let Some(t) = &carried
                 && let Some(strong) = asides(&items, reference(t.last.size(), body), p)
             {
                 blocks.extend(finish_region(items, p));
-                tail = Some(Tail { interrupted: true, strong: t.strong || strong, ..t });
+                tail = carried.map(|t| Tail { interrupted: true, strong: t.strong || strong, ..t });
                 continue;
             }
             let last = if interrupted { region_tail(&items, body, p) } else { plain_tail(&items) };
             // the blocks of the asides after the paragraph
             let after = last.as_ref().map_or(0, |(k, _)| items.len() - 1 - k);
+            // a region beside the open paragraph's column (another column's text, a figure's)
+            // that ends in nothing that could go on leaves it open too
+            let beside = match &carried {
+                Some(t) if last.as_ref().is_none_or(|(_, own)| own.lines < 2) => beside(&items, t, budget)?,
+                _ => false,
+            };
             blocks.extend(finish_region(items, p));
+            if beside {
+                tail = carried.map(|t| Tail { beside: true, ..t });
+                continue;
+            }
             // the paragraph and the asides after it are the last blocks: a paragraph is only
             // absorbed into a table that follows it
             tail = last.and_then(|(_, t)| {
@@ -188,7 +197,8 @@ struct Tail {
     /// its last line, and how many lines it has
     last: Rc<Line>,
     lines: usize,
-    /// the right edge of its lines
+    /// the left and right edges of its lines
+    left: f64,
     right: f64,
     /// the lowest edge of its column: its last line, or the asides below it
     bottom: f64,
@@ -196,6 +206,30 @@ struct Tail {
     interrupted: bool,
     /// and one of them shows a figure or a footnote, not just smaller print
     strong: bool,
+    /// regions beside its column come between it and whatever continues it
+    beside: bool,
+}
+
+/// Whether all of a region's lines and tables lie left or right of the paragraph `t`'s column
+/// (charging the lines visited).
+fn beside(items: &[FlowItem], t: &Tail, budget: &mut Budget) -> Option<bool> {
+    let out = |x0: f64, x1: f64| x1 <= t.left || x0 >= t.right;
+    for item in items {
+        let all = match item {
+            FlowItem::Paragraph(para) => {
+                if !budget.spend(para.lines.len()) {
+                    return None;
+                }
+                para.lines.iter().all(|l| out(l.x0, l.x1))
+            }
+            FlowItem::Table(tab) => out(tab.x0, tab.x1),
+            FlowItem::Rendered(_) => false,
+        };
+        if !all {
+            return Some(false);
+        }
+    }
+    Some(true)
 }
 
 /// The lowest edge of the lines and tables of a region's items (pictures have no extent here).
@@ -227,7 +261,18 @@ impl Tail {
         let last = para.lines.last()?.clone();
         let right = para.lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
         let bottom = last.y1;
-        Some(Tail { block: 0, last, lines: para.lines.len(), right, bottom, interrupted: false, strong: false })
+        let left = left_of(&para.lines);
+        Some(Tail {
+            block: 0,
+            last,
+            lines: para.lines.len(),
+            left,
+            right,
+            bottom,
+            interrupted: false,
+            strong: false,
+            beside: false,
+        })
     }
 }
 
@@ -382,16 +427,28 @@ fn join_within_column(items: &mut Vec<FlowItem>, body: f64, p: &Params, budget: 
 }
 
 fn same_column_below(a: &Paragraph, b: &Paragraph, size: f64, p: &Params) -> bool {
-    let (Some(la), Some(fb)) = (a.lines.last(), b.lines.first()) else { return false };
-    let left = |ls: &[Rc<Line>]| ls.iter().map(|l| l.x0).fold(f64::INFINITY, pmin);
-    let right = |ls: &[Rc<Line>]| ls.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
-    let (la0, la1, lb0, lb1) = (left(&a.lines), right(&a.lines), left(&b.lines), right(&b.lines));
-    continues(&a.text, la, a.lines.len(), la1, b, p)
-        && fb.y0 > la.y1
-        && (la0 - lb0).abs() <= 2.0 * size
-        && fb.x0 <= la0 + size
-        && lb1 <= la1 + 2.0 * size
-        && (b.lines.len() == 1 || (la1 - lb1).abs() <= 2.0 * size)
+    let Some(la) = a.lines.last() else { return false };
+    let right = a.lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
+    continues(&a.text, la, a.lines.len(), right, b, p) && below_in_column(left_of(&a.lines), right, la, b, size)
+}
+
+fn left_of(lines: &[Rc<Line>]) -> f64 {
+    lines.iter().map(|l| l.x0).fold(f64::INFINITY, pmin)
+}
+
+/// `b` starts below `last`, the last line of a paragraph spanning `left..right`, at its left
+/// edge, and keeps within its edges: the same column.
+fn below_in_column(left: f64, right: f64, last: &Line, b: &Paragraph, size: f64) -> bool {
+    let Some(fb) = b.lines.first() else { return false };
+    let lb0 = left_of(&b.lines);
+    let lb1 = b.lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
+    // the column's later lines may start left of its earlier ones, under a margin label
+    fb.y0 > last.y1
+        && lb0 >= left - 4.0 * size
+        && lb0 <= left + 2.0 * size
+        && fb.x0 <= left + size
+        && lb1 <= right + 2.0 * size
+        && (b.lines.len() == 1 || (right - lb1).abs() <= 2.0 * size)
 }
 
 /// A paragraph that runs to the bottom of one column and goes on at the top of the next was
@@ -404,7 +461,8 @@ fn same_column_below(a: &Paragraph, b: &Paragraph, size: f64, p: &Params) -> boo
 /// as a column does that runs out of room, not one that something else cut short. Asides
 /// (see [`asides`]) may come between: below the earlier paragraph, in regions of their own,
 /// or above the later one; they stay where they are, after the joined paragraph, and then one
-/// of them must be strong evidence.
+/// of them must be strong evidence. Past asides the later paragraph may also go on below the
+/// earlier one in its column (asides that span the page cut the column into regions).
 fn join_column_break(
     blocks: &mut [Block],
     tail: Option<&Tail>,
@@ -422,10 +480,15 @@ fn join_column_break(
     let Some(FlowItem::Paragraph(next)) = items.get(k) else { return None };
     let Block::Text { text, .. } = &blocks[t.block] else { return None };
     let b = next.lines.first()?;
-    let continues = continues(text, a, t.lines, t.right, next, p)
-        && b.y0 < a.y0
-        && t.bottom >= bottom_of(items) - 3.0 * size
-        && (!(t.interrupted || k > 0) || t.strong || lead);
+    let interrupted = t.interrupted || k > 0;
+    let strong = !interrupted || t.strong || lead;
+    let below = p.join_interrupted_paragraphs && below_in_column(t.left, t.right, a, next, size);
+    // a column break; asides that cut the column into regions above and below them; or the
+    // next line of the column, which a region boundary (another column's text beside it) cut off
+    let geometry = (!t.beside && b.y0 < a.y0 && t.bottom >= bottom_of(items) - 3.0 * size && strong)
+        || (interrupted && below && strong)
+        || (below && b.y0 - a.y1 <= 0.5 * size);
+    let continues = continues(text, a, t.lines, t.right, next, p) && geometry;
     if !continues {
         return None;
     }
