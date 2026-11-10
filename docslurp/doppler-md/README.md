@@ -135,6 +135,42 @@ Two parameters change the default output (`--params '{"name":0}'` restores the o
   several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
   number and the body opens up below them, they are one header row (a `<thead>` with `--html`).
 
+## Tables drawn as cell boxes
+
+Word processors often draw a ruled table as one filled box per cell (white or a shade, sometimes
+on a dark background) between thin dark border rectangles drawn cell by cell, with a further
+same-colour box behind each line of text inside a cell. The ruled pass took every box edge as a
+row separator, so those line boxes cut each multi-line cell (a stacked header, a cell centred
+beside several rows) into one row per line. `box_cell_tables` (on by default; `0` restores the
+old output) reads such tables from the boxes instead:
+
+- Boxes at least half a body size wide and 0.8 tall count (not page backgrounds or full-width
+  bands); a box inside a box of the same colour is a line's background and is dropped, and a box
+  mostly covered by boxes of other colours is a background behind the cells and is dropped.
+- Boxes that touch across a border (3 points, or 0.6 body sizes when that is more) are joined.
+  Full-width boxes at the top or bottom of a group (a banner, a note) are left out.
+- A group is a table when its boxes tile a grid: 2 columns and rows or more (at most 40 and
+  200), cells starting at each column edge in two rows or more, at most a quarter of the boxes
+  spanning columns (a form whose rows split the width differently has many more), boxes
+  covering 60% of the grid without overlapping, every line inside lying within its width, and
+  two rows with two filled cells. A slot without a box is a cell of its own, spanning the rows
+  of the cell beside it, so an unfilled column lines up with its neighbours.
+- Every word goes to the cell box that holds it, at the cell's first row and column; a cell's
+  lines are joined as a paragraph's are. A cell spanning rows leaves the rows below it empty
+  in GFM; with `--html` the table keeps its `rowspan`/`colspan`.
+- An unfilled header row above the boxes, under a dark rule across their width (0.8 to 4 body
+  sizes above them), is the first row when its lines split into two columns or more without a
+  line running across a column edge (a title).
+
+The pass charges the page's work budget (each box, each comparison of the two sweeps down the
+page, each grid slot and word) and is skipped on pages with more than 2,048 candidate boxes or a
+pile of overlapping ones; other ruled tables are found as before. On the golden set it changes 2
+of 258 inputs (the Ghostscript manual's shaded tables and the Apple 10-K's striped contents
+list: multi-line cells whole, words no longer glued or split at line ends). On the real-PDF
+differential (40 PDFs, pages 1 to 150) it changes 10 of 1,452 pages (NASA handbook tables with
+stacked headers and row-spanning cells, an ERP table, two IRS instruction pages); the IRS forms'
+field boxes, charts, org-chart boxes and photo labels stay as they were.
+
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw

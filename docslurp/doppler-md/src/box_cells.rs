@@ -33,7 +33,7 @@ const MAX_COLS: usize = 40;
 /// whose rows each split the width differently has many more.
 const MAX_COLSPAN_SHARE: f64 = 0.25;
 /// Share of the grid's slots the boxes must cover (the rest are cells without a fill).
-const MIN_COVER: f64 = 0.75;
+const MIN_COVER: f64 = 0.6;
 
 #[derive(Clone, Copy)]
 struct B {
@@ -87,16 +87,15 @@ pub(crate) fn box_cell_tables(
     used: &mut [bool],
     budget: &mut Budget,
 ) -> Option<Vec<RuledTable>> {
+    // (the producer's rulesTruncated marker does not change the layout: see tests/completeness.rs)
     let mut out = Vec::new();
-    if page.rules_truncated == Some(true) {
-        return Some(out);
-    }
-    if !budget.spend(page.rules.len()) {
-        return None;
-    }
     let mut colors: Vec<&str> = Vec::new();
     let mut boxes: Vec<B> = Vec::new();
     for r in page.rules.iter().filter(|r| r.boxed) {
+        // the walk over a page's other rules is charged by the rest of the ruled pass
+        if !budget.spend(1) {
+            return None;
+        }
         let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
         // a cell holds a line of text; page backgrounds and full-width bands are not cells
         if !(w >= 0.5 * body && h >= 0.8 * body && w < 0.95 * page.width && h < 0.5 * page.height) {
