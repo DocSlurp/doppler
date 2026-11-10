@@ -65,6 +65,7 @@
 #include <cstddef>
 #include <cmath>
 #include <cfloat>
+#include <cstdint>
 #include <algorithm>
 #include <functional>
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -2566,6 +2567,9 @@ void TextPage::clear()
     underlines.clear();
     rules.clear();
     rulesTruncated = false;
+    images.clear();
+    imagesTruncated = false;
+    graphicCells.fill(TextGraphic {});
     dropped.clear();
     links.clear();
 
@@ -2982,6 +2986,82 @@ void TextPage::addRule(const TextRule &rule, size_t &remainingDocumentRules)
         return;
     }
     rules.push_back(rule);
+}
+
+void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
+{
+    const bool documentFull = remainingDocumentImages == 0;
+    if (!documentFull) {
+        --remainingDocumentImages;
+    }
+    if (documentFull || images.size() >= maxImages) {
+        imagesTruncated = true;
+        return;
+    }
+    images.push_back(image);
+}
+
+void TextPage::addGraphic(const TextGraphic &graphic)
+{
+    if (!(pageWidth > 0) || !(pageHeight > 0)) {
+        return;
+    }
+    const double cx = 0.5 * (graphic.xMin + graphic.xMax), cy = 0.5 * (graphic.yMin + graphic.yMax);
+    const int col = std::clamp(static_cast<int>(cx / pageWidth * graphicGrid), 0, graphicGrid - 1);
+    const int row = std::clamp(static_cast<int>(cy / pageHeight * graphicGrid), 0, graphicGrid - 1);
+    TextGraphic &cell = graphicCells[row * graphicGrid + col];
+    if (cell.paths == 0) {
+        cell = graphic;
+        return;
+    }
+    cell.xMin = std::min(cell.xMin, graphic.xMin);
+    cell.yMin = std::min(cell.yMin, graphic.yMin);
+    cell.xMax = std::max(cell.xMax, graphic.xMax);
+    cell.yMax = std::max(cell.yMax, graphic.yMax);
+    // counts are bounded by the content stream's size; saturate anyway
+    auto add = [](size_t &a, size_t b) { a = b > SIZE_MAX - a ? SIZE_MAX : a + b; };
+    add(cell.paths, graphic.paths);
+    add(cell.segments, graphic.segments);
+    add(cell.curves, graphic.curves);
+    cell.directions |= graphic.directions;
+}
+
+std::vector<TextGraphic> TextPage::getGraphics(double gap) const
+{
+    std::vector<TextGraphic> clusters;
+    for (const TextGraphic &cell : graphicCells) {
+        if (cell.paths > 0) {
+            clusters.push_back(cell);
+        }
+    }
+    // merge any two whose grown boxes touch until none do: at most graphicGrid^2 clusters, and
+    // every pass but the last removes one
+    auto touch = [gap](const TextGraphic &a, const TextGraphic &b) { return a.xMin - gap <= b.xMax && b.xMin - gap <= a.xMax && a.yMin - gap <= b.yMax && b.yMin - gap <= a.yMax; };
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        for (size_t i = 0; i < clusters.size() && !merged; ++i) {
+            for (size_t j = i + 1; j < clusters.size(); ++j) {
+                if (touch(clusters[i], clusters[j])) {
+                    TextGraphic &a = clusters[i];
+                    const TextGraphic &b = clusters[j];
+                    a.xMin = std::min(a.xMin, b.xMin);
+                    a.yMin = std::min(a.yMin, b.yMin);
+                    a.xMax = std::max(a.xMax, b.xMax);
+                    a.yMax = std::max(a.yMax, b.yMax);
+                    auto add = [](size_t &x, size_t y) { x = y > SIZE_MAX - x ? SIZE_MAX : x + y; };
+                    add(a.paths, b.paths);
+                    add(a.segments, b.segments);
+                    add(a.curves, b.curves);
+                    a.directions |= b.directions;
+                    clusters.erase(clusters.begin() + static_cast<std::ptrdiff_t>(j));
+                    merged = true;
+                    break;
+                }
+            }
+        }
+    }
+    return clusters;
 }
 
 void TextPage::addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link)
@@ -5962,6 +6042,142 @@ bool TextOutputDev::getRulesTruncated() const
     return text->getRulesTruncated();
 }
 
+const std::vector<TextImage> &TextOutputDev::getImages() const
+{
+    return text->getImages();
+}
+
+bool TextOutputDev::getImagesTruncated() const
+{
+    return text->getImagesTruncated();
+}
+
+void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil)
+{
+    // The image fills the unit square under the CTM. Keep its axis-aligned extent, cut to the
+    // clip and the page, as for rules; tiny images (bullets, rule slivers) are not figures.
+    double x[4], y[4];
+    state->transform(0, 0, &x[0], &y[0]);
+    state->transform(1, 0, &x[1], &y[1]);
+    state->transform(0, 1, &x[2], &y[2]);
+    state->transform(1, 1, &x[3], &y[3]);
+    for (int i = 0; i < 4; ++i) {
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i])) {
+            return;
+        }
+    }
+    double x0 = std::min({ x[0], x[1], x[2], x[3] }), x1 = std::max({ x[0], x[1], x[2], x[3] });
+    double y0 = std::min({ y[0], y[1], y[2], y[3] }), y1 = std::max({ y[0], y[1], y[2], y[3] });
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    x0 = std::max({ x0, cx0, 0.0 });
+    y0 = std::max({ y0, cy0, 0.0 });
+    x1 = std::min({ x1, cx1, text->getPageWidth() });
+    y1 = std::min({ y1, cy1, text->getPageHeight() });
+    constexpr double minExtent = 2.0;
+    if (x1 - x0 < minExtent || y1 - y0 < minExtent) {
+        return;
+    }
+    text->addImage({ x0, y0, x1, y1, width, height, stencil }, remainingDocImages);
+}
+
+std::vector<TextGraphic> TextOutputDev::takeGraphics()
+{
+    // paths up to 3 points apart are one drawing (a curve and its markers, a box and its arrow)
+    std::vector<TextGraphic> graphics = text->getGraphics(3.0);
+    if (graphics.size() > remainingDocGraphics) {
+        graphics.resize(remainingDocGraphics);
+        graphicsTruncated = true;
+    } else {
+        graphicsTruncated = false;
+    }
+    remainingDocGraphics -= graphics.size();
+    return graphics;
+}
+
+void TextOutputDev::collectPathGraphic(const GfxState *state, bool filled)
+{
+    // Summarise one painted path that is not axis-aligned: its visible extent, how many of its
+    // segments are diagonal or curved, and in which directions. A path of axis-aligned straight
+    // segments only (rules, boxes, grids, frames, underlines) is not reported here.
+    constexpr double eps = 0.05;
+    const GfxPath *path = state->getPath();
+    double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    size_t segments = 0, curves = 0;
+    unsigned directions = 0;
+    auto diagonal = [&](double ax, double ay, double bx, double by) {
+        const double dx = bx - ax, dy = by - ay;
+        if (std::fabs(dx) <= eps || std::fabs(dy) <= eps) {
+            return;
+        }
+        ++segments;
+        double angle = std::atan2(dy, dx); // -pi..pi; fold to 0..pi
+        constexpr double pi = 3.14159265358979323846;
+        if (angle < 0) {
+            angle += pi;
+        }
+        const int sector = std::clamp(static_cast<int>(angle / pi * 8.0), 0, 7);
+        directions |= 1u << sector;
+    };
+    for (int i = 0; i < path->getNumSubpaths(); ++i) {
+        const GfxSubpath *sub = path->getSubpath(i);
+        const int n = sub->getNumPoints();
+        double fx = 0, fy = 0, px = 0, py = 0;
+        for (int k = 0; k < n; ++k) {
+            double x, y;
+            state->transform(sub->getX(k), sub->getY(k), &x, &y);
+            if (!std::isfinite(x) || !std::isfinite(y)) {
+                return;
+            }
+            x0 = std::min(x0, x);
+            y0 = std::min(y0, y);
+            x1 = std::max(x1, x);
+            y1 = std::max(y1, y);
+            if (k == 0) {
+                fx = x;
+                fy = y;
+            } else if (sub->getCurve(k)) {
+                // a control point; the curve ends at the next point that is not one
+            } else if (sub->getCurve(k - 1)) {
+                ++curves;
+                ++segments;
+            } else {
+                diagonal(px, py, x, y);
+            }
+            if (!sub->getCurve(k)) {
+                px = x;
+                py = y;
+            }
+        }
+        // a filled subpath is closed by a straight edge back to its start
+        if (filled && n > 2) {
+            diagonal(px, py, fx, fy);
+        }
+    }
+    if (segments == 0) {
+        return;
+    }
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    x0 = std::max({ x0, cx0, 0.0 });
+    y0 = std::max({ y0, cy0, 0.0 });
+    x1 = std::min({ x1, cx1, text->getPageWidth() });
+    y1 = std::min({ y1, cy1, text->getPageHeight() });
+    if (!(x1 >= x0) || !(y1 >= y0)) {
+        return; // clipped away
+    }
+    TextGraphic g;
+    g.xMin = x0;
+    g.yMin = y0;
+    g.xMax = x1;
+    g.yMax = y1;
+    g.paths = 1;
+    g.segments = segments;
+    g.curves = curves;
+    g.directions = directions;
+    text->addGraphic(g);
+}
+
 void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box, bool imageMask)
 {
     if (!std::isfinite(x0) || !std::isfinite(y0) || !std::isfinite(x1) || !std::isfinite(y1)) {
@@ -6086,6 +6302,9 @@ void TextOutputDev::stroke(GfxState *state)
     if (collectRules) {
         collectPathRules(state, false);
     }
+    if (collectImages) {
+        collectPathGraphic(state, false);
+    }
     if (!doHTML) {
         return;
     }
@@ -6114,6 +6333,9 @@ void TextOutputDev::fill(GfxState *state)
 
     if (collectRules) {
         collectPathRules(state, true);
+    }
+    if (collectImages) {
+        collectPathGraphic(state, true);
     }
     if (!doHTML) {
         return;
@@ -6176,7 +6398,7 @@ void TextOutputDev::fill(GfxState *state)
 
 void TextOutputDev::eoFill(GfxState *state)
 {
-    if (!doHTML && !collectRules) {
+    if (!doHTML && !collectRules && !collectImages) {
         return;
     }
     fill(state);

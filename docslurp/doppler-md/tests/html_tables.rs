@@ -14,7 +14,7 @@ fn cells(row: &[&str]) -> Vec<String> {
     row.iter().map(|c| c.to_string()).collect()
 }
 
-const HTML: Options = Options { tables: TableFormat::Html, math: false };
+const HTML: Options = Options { tables: TableFormat::Html, math: false, markers: false };
 
 /// A CommonMark type-6 HTML block that starts with `<table` ends at the first blank line.
 fn assert_one_html_block(table: &str) {

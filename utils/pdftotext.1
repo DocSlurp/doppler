@@ -231,6 +231,53 @@ metadata budget stops further metadata collection. Past a cap the page gets
 or
 .IR fontsTruncated="1" .
 .TP
+.B \-images
+With \-bbox-layout: also output where each visible image and image mask lands, as
+.B <image>
+elements (after the rules, if any) with
+.IR xMin ,
+.IR yMin ,
+.IR xMax ,
+.I yMax
+(the part inside the clip and the page, in the words' coordinates),
+.I width
+and
+.I height
+(the image's own size in samples) and
+.I kind="mask"
+for an image mask, and the PDF page number as
+.I number
+on
+.BR <page> .
+Only image dictionaries are read: image data is never decoded. Images under 2 points
+are dropped, a page keeps at most 2000 (past that it gets
+.IR imagesTruncated="1" )
+and a document 100000.
+.IP
+It also summarises the page's painted vector drawing that is not axis-aligned (curves and
+diagonal segments: the strokes of charts and diagrams), as
+.B <graphic>
+elements after the images with
+.IR xMin ,
+.IR yMin ,
+.IR xMax ,
+.I yMax
+(the union of the paths' extents inside the clip and the page),
+.I paths
+(painted paths),
+.I segments
+(diagonal straight segments plus curve segments),
+.I curves
+(curve segments) and
+.I directions
+(in how many of 8 sectors of 180 degrees the diagonal segments point, 0 to 8). Paths made only
+of axis-aligned straight segments (rules, boxes, table grids, underlines, frames) are not
+counted; pattern fills, shadings and hidden optional content are not seen. Each path is
+added to one cell of a fixed 16 by 16 grid over the page, so memory and time per path are
+constant; the cells are merged where their boxes come within 3 points, giving at most 256
+clusters a page. A document writes at most 100000 (past that a page gets
+.IR graphicsTruncated="1" ).
+.TP
 .B \-cropbox
 Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.
 .TP

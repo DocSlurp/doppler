@@ -1,5 +1,6 @@
 //! Region-first reading order (bands and column gutters).
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::model::Line;
@@ -83,6 +84,11 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
     if words(&left) > p.table_cell_words && words(&right) > p.table_cell_words {
         return false;
     }
+    aligned_count(&left, &right, p) as f64 >= p.table_align * right.len() as f64
+}
+
+/// Right-side lines sharing a baseline (within `row_tol`) with a left-side line.
+fn aligned_count(left: &[&Line], right: &[&Line], p: &Params) -> usize {
     let mut bases: Vec<f64> = left.iter().map(|l| l.base()).collect();
     bases.sort_by(|a, b| fcmp(*a, *b));
     // right-side baselines in ascending order too, so the neighbour search is one merge pass
@@ -103,7 +109,49 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
         let hit = bases.get(k).is_some_and(|&b| (x - b).abs() <= tol) || (k > 0 && (x - bases[k - 1]).abs() <= tol);
         aligned += hit as usize;
     }
-    aligned as f64 >= p.table_align * right.len() as f64
+    aligned
+}
+
+/// A gutter inside a borderless table whose rows wrap (`wrapped_rows`): [`table_like`]'s test
+/// with the right side's wrapped lines left out, since only a row's first line shares a
+/// baseline across the gutter. The lines on both sides must fold into rows
+/// ([`crate::tables::fold_wraps`]), the rows that have wrapped lines a median of three cells or
+/// more (two columns of short labels beside paragraphs read as a page layout, not a table), and
+/// the sides must not both be prose (`table_cell_words`). `None` once the budget runs out.
+pub fn wrapped_table_like<T>(
+    left: &[Elem<T>],
+    right: &[Elem<T>],
+    lines: &[Rc<Line>],
+    p: &Params,
+    budget: &mut Budget,
+) -> Option<bool> {
+    let left_ids: Vec<usize> = left.iter().filter_map(|e| e.line).collect();
+    let right_ids: Vec<usize> = right.iter().filter_map(|e| e.line).collect();
+    if left_ids.is_empty() || right_ids.is_empty() {
+        return Some(false);
+    }
+    let words = |ids: &[usize]| median(ids.iter().map(|&i| lines[i].words.len() as f64).collect());
+    if words(&left_ids) > p.table_cell_words && words(&right_ids) > p.table_cell_words {
+        return Some(false);
+    }
+    let ids: Vec<usize> = left_ids.iter().chain(&right_ids).copied().collect();
+    let rows = crate::tables::fold_wraps(crate::tables::visual_rows_of(lines, &ids, p), p, budget)?;
+    let mut wrapped = HashSet::new();
+    let mut cells = Vec::new();
+    for r in rows.iter().filter(|r| !r.wraps.is_empty()) {
+        cells.push(r.cells.len() as f64);
+        // the row's lines below its first baseline
+        wrapped.extend(r.ids.iter().copied().filter(|&i| {
+            let l = &lines[i];
+            (l.base() - r.base).abs() > p.row_tol * pmax(l.size(), 1.0)
+        }));
+    }
+    if cells.is_empty() || median(cells) < 3.0 {
+        return Some(false);
+    }
+    let left: Vec<&Line> = left_ids.iter().map(|&i| &*lines[i]).collect();
+    let right: Vec<&Line> = right_ids.iter().filter(|i| !wrapped.contains(i)).map(|&i| &*lines[i]).collect();
+    Some(!right.is_empty() && aligned_count(&left, &right, p) as f64 >= p.table_align * right.len() as f64)
 }
 
 /// `any(abs(x - b) <= tol for b in sorted)` for `sorted` in ascending `fcmp` order, in
@@ -203,6 +251,8 @@ pub fn regions_within<T: Clone>(
     let band_gutters: Vec<Vec<(f64, f64)>> = bs.iter().map(|b| gutters_of(b, body, p)).collect();
     let mut out: Vec<Vec<Elem<T>>> = Vec::new();
     let mut pending: Vec<Elem<T>> = Vec::new();
+    // bands up to here belong to a table whose rows wrap (`wrapped_table_like`)
+    let mut held = 0usize;
     let mut i = 0;
     while i < bs.len() {
         let mut split = None;
@@ -249,8 +299,20 @@ pub fn regions_within<T: Clone>(
             let left: Vec<Elem<T>> = members.clone().cloned().filter(|e| e.x1 <= a + 1.0).collect();
             let right: Vec<Elem<T>> = members.cloned().filter(|e| e.x0 >= b - 1.0).collect();
             if left.len() >= 2 && right.len() >= 2 && !table_like(&left, &right, lines, p) {
-                split = Some((j, left, right));
-                break;
+                // bands already read as one wrapped table stay together: their last rows alone
+                // are too few to show the row padding again
+                let wrapped = p.wrapped_rows
+                    && (i < held || {
+                        let w = wrapped_table_like(&left, &right, lines, p, budget)?;
+                        if w {
+                            held = held.max(j);
+                        }
+                        w
+                    });
+                if !wrapped {
+                    split = Some((j, left, right));
+                    break;
+                }
             }
         }
         let Some((j, left, right)) = split else {

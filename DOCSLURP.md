@@ -42,8 +42,13 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `pdftotext -f N -l M FILE.pdf -` | `pdftomarkdown -f N -l M FILE.pdf` |
 | `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
 | `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
+| (restitching pictures, tables and paragraphs across pages) | `pdftomarkdown --markers FILE.pdf`, see [doppler-md](docslurp/doppler-md/README.md#restitching-markers---markers) |
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
+
+Streaming: use `pdftomarkdown --stream` (a 16-page window) or no window. Do not use
+`--window 0` (or a tiny window): running headers and footers and repeated watermarks are found
+by their repetition across the pages in the window, so with 0 none of them is removed.
 
 `docslurp/doppler-md` builds `pdftomarkdown` (`cargo build --release` there), which runs this
 fork's `pdftotext -bbox-layout -wordmeta -rules -compact-layout` and converts its XHTML to

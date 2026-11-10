@@ -284,8 +284,55 @@ pub struct Rule {
     pub boxed: bool,
 }
 
+/// A visible image or image mask (doppler `-images`): where it lands on the page, and its own
+/// size in samples. The image data is never read by the producer or the converter.
+#[derive(Clone, Debug)]
+pub struct Image {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    /// samples across and down, as the PDF declares them
+    pub px_w: u32,
+    pub px_h: u32,
+    /// a stencil mask, not a picture
+    pub mask: bool,
+}
+
+/// The most images one page keeps; a page with more is `images_truncated`.
+pub const MAX_PAGE_IMAGES: usize = 2000;
+
+/// A cluster of painted vector drawing that is not axis-aligned (doppler `-images`): curves and
+/// diagonal segments, the strokes of charts and diagrams. Rules, boxes and grids are not in it.
+#[derive(Clone, Debug)]
+pub struct Graphic {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    /// painted paths
+    pub paths: u64,
+    /// diagonal straight segments plus curve segments
+    pub segments: u64,
+    /// Bezier curve segments
+    pub curves: u64,
+    /// in how many of 8 sectors of 180 degrees its diagonal segments point (0..=8)
+    pub directions: u32,
+}
+
+/// The most vector drawing clusters one page keeps (the producer writes at most 256).
+pub const MAX_PAGE_GRAPHICS: usize = 1024;
+
 #[derive(Debug)]
 pub struct Page {
+    /// the PDF's own page number, from `number="N"` (doppler `-images` writes it)
+    pub number: Option<u32>,
+    /// doppler `-images`
+    pub images: Vec<Image>,
+    /// the producer or the parser dropped images of this page
+    pub images_truncated: bool,
+    /// doppler `-images`: clusters of drawing that is not axis-aligned
+    pub graphics: Vec<Graphic>,
     pub width: f64,
     pub height: f64,
     /// in poppler reading order
@@ -318,7 +365,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 15] = [
+const KEYS: [&str; 22] = [
     "xMin",
     "yMin",
     "xMax",
@@ -334,6 +381,13 @@ const KEYS: [&str; 15] = [
     "glyphsTruncated",
     "invisible",
     "rotation",
+    "number",
+    "imagesTruncated",
+    "kind",
+    "paths",
+    "segments",
+    "curves",
+    "directions",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -354,6 +408,13 @@ fn key_index(name: &str) -> Option<usize> {
         "glyphsTruncated" => 12,
         "invisible" => 13,
         "rotation" => 14,
+        "number" => 15,
+        "imagesTruncated" => 16,
+        "kind" => 17,
+        "paths" => 18,
+        "segments" => 19,
+        "curves" => 20,
+        "directions" => 21,
         _ => return None,
     })
 }
@@ -516,6 +577,10 @@ enum Tag<'a> {
     Close(&'a str),
     Word(&'a str, &'a str),
     Rule(bool, &'a str),
+    /// `<image .../>`
+    Image(&'a str),
+    /// `<graphic .../>`
+    Graphic(&'a str),
     /// `<g .../>` (only when parsing glyphs)
     Glyph(&'a str),
     /// `<font .../>` (only when parsing glyphs)
@@ -632,6 +697,24 @@ fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan, glyphs: bool) -> Option<(T
             return Some((Tag::Open(n, &s[after..gt]), gt + 1));
         }
     }
+    // <image ([^>]*)/>
+    if rest.starts_with("image ") {
+        let a = lt + 1 + "image ".len();
+        let gt = scan.gt(b, a)?;
+        if gt > a && b[gt - 1] == b'/' {
+            return Some((Tag::Image(&s[a..gt - 1]), gt + 1));
+        }
+        return None;
+    }
+    // <graphic ([^>]*)/>
+    if rest.starts_with("graphic ") {
+        let a = lt + 1 + "graphic ".len();
+        let gt = scan.gt(b, a)?;
+        if gt > a && b[gt - 1] == b'/' {
+            return Some((Tag::Graphic(&s[a..gt - 1]), gt + 1));
+        }
+        return None;
+    }
     // <(rule|box) ([^>]*)/>
     for (n, boxed) in [("rule ", false), ("box ", true)] {
         if rest.starts_with(n) {
@@ -662,6 +745,13 @@ const RULES_TRUNCATED: usize = 11;
 const GLYPHS_TRUNCATED: usize = 12;
 const INVISIBLE: usize = 13;
 const ROTATION: usize = 14;
+const NUMBER: usize = 15;
+const IMAGES_TRUNCATED: usize = 16;
+const KIND: usize = 17;
+const PATHS: usize = 18;
+const SEGMENTS: usize = 19;
+const CURVES: usize = 20;
+const DIRECTIONS: usize = 21;
 
 fn coord(a: &Attrs, k: usize) -> Option<f64> {
     py_float(a.0[k]?)
@@ -733,6 +823,10 @@ pub struct ParseReport {
     pub unclosed_line_at_eof: bool,
     /// rules or boxes without four finite coordinates
     pub rules_skipped: usize,
+    /// images without four finite coordinates, or past [`MAX_PAGE_IMAGES`] on their page
+    pub images_skipped: usize,
+    /// graphics without four finite, ordered coordinates, or past [`MAX_PAGE_GRAPHICS`]
+    pub graphics_skipped: usize,
     /// Zero-based page indices marked rulesTruncated="1" by the producer, including pages
     /// with no kept rules. This describes incomplete evidence, not layout degradation.
     pub rules_truncated_pages: Vec<usize>,
@@ -1035,6 +1129,63 @@ impl ParseState {
                         pg.rules.push(Rule { x0, y0, x1, y1, color, boxed });
                     }
                 }
+                Tag::Image(attrs) => {
+                    if !have_page {
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+                        (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
+                    else {
+                        report.images_skipped += 1;
+                        continue;
+                    };
+                    let px = |k: usize| a.0[k].and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+                    let image =
+                        Image { x0, y0, x1, y1, px_w: px(WIDTH), px_h: px(HEIGHT), mask: a.0[KIND] == Some("mask") };
+                    if let Some(pg) = page.as_mut() {
+                        if pg.images.len() < MAX_PAGE_IMAGES {
+                            pg.images.push(image);
+                        } else {
+                            pg.images_truncated = true;
+                            report.images_skipped += 1;
+                        }
+                    }
+                }
+                Tag::Graphic(attrs) => {
+                    if !have_page {
+                        continue;
+                    }
+                    a.parse_into(attrs);
+                    let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+                        (coord(&a, X_MIN), coord(&a, Y_MIN), coord(&a, X_MAX), coord(&a, Y_MAX))
+                    else {
+                        report.graphics_skipped += 1;
+                        continue;
+                    };
+                    if x0 > x1 || y0 > y1 {
+                        report.graphics_skipped += 1;
+                        continue;
+                    }
+                    let n = |k: usize| a.0[k].and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                    let graphic = Graphic {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        paths: n(PATHS),
+                        segments: n(SEGMENTS),
+                        curves: n(CURVES),
+                        directions: n(DIRECTIONS).min(8) as u32,
+                    };
+                    if let Some(pg) = page.as_mut() {
+                        if pg.graphics.len() < MAX_PAGE_GRAPHICS {
+                            pg.graphics.push(graphic);
+                        } else {
+                            report.graphics_skipped += 1;
+                        }
+                    }
+                }
                 Tag::Open("page", attrs) => {
                     report.pages += 1;
                     a.parse_into(attrs);
@@ -1051,6 +1202,10 @@ impl ParseState {
                     line_glyphs.clear();
                     font_index.clear();
                     let next = Page {
+                        number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
+                        images: Vec::new(),
+                        images_truncated: a.0[IMAGES_TRUNCATED] == Some("1"),
+                        graphics: Vec::new(),
                         glyphs: Vec::new(),
                         fonts: Vec::new(),
                         extra_glyphs: Vec::new(),

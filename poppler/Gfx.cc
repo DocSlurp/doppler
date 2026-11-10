@@ -4167,13 +4167,18 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
         if (out->needNonText()) {
             Object refObj = res->lookupXObjectNF(name);
             doImage(&refObj, obj1Stream, false);
-        } else if (out->needImageMaskGeometry()) {
-            // only stencil masks, and never a stream whose header doImage would decode
-            Object imObj = obj1StreamDict->lookup("ImageMask");
-            const StreamKind kind = obj1Stream->getKind();
-            if (imObj.isBool() && imObj.getBool() && kind != strDCT && kind != strJPX && kind != strJBIG2) {
-                Object refObj = res->lookupXObjectNF(name);
-                doImage(&refObj, obj1Stream, false);
+        } else {
+            if (ocState && out->needImageGeometry()) {
+                reportImageGeometry(obj1StreamDict, true);
+            }
+            if (out->needImageMaskGeometry()) {
+                // only stencil masks, and never a stream whose header doImage would decode
+                Object imObj = obj1StreamDict->lookup("ImageMask");
+                const StreamKind kind = obj1Stream->getKind();
+                if (imObj.isBool() && imObj.getBool() && kind != strDCT && kind != strJPX && kind != strJBIG2) {
+                    Object refObj = res->lookupXObjectNF(name);
+                    doImage(&refObj, obj1Stream, false);
+                }
             }
         }
     } else if (obj2.isName("Form")) {
@@ -4229,6 +4234,38 @@ static void skipStreamBytes(Stream *str, int64_t n)
         }
         n -= nRead;
     }
+}
+
+// Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
+// stream dictionary is read: never the image data, so a hostile image costs a few lookups.
+void Gfx::reportImageGeometry(Dict *dict, bool xobject)
+{
+    if (xobject) {
+        const Object &objOC = dict->lookupNF("OC");
+        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+            return;
+        }
+    }
+    const std::array<double, 6> &ctm = state->getCTM();
+    if (fabs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) < 0.000001) {
+        return;
+    }
+    auto size = [dict](const char *key, const char *abbrev) {
+        Object o = dict->lookup(key);
+        if (o.isNull()) {
+            o = dict->lookup(abbrev);
+        }
+        return o.isInt() ? o.getInt() : o.isReal() ? static_cast<int>(o.getReal()) : 0;
+    };
+    const int width = size("Width", "W"), height = size("Height", "H");
+    if (width < 1 || height < 1) {
+        return;
+    }
+    Object im = dict->lookup("ImageMask");
+    if (im.isNull()) {
+        im = dict->lookup("IM");
+    }
+    out->imageGeometry(state, width, height, im.isBool() && im.getBool());
 }
 
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
@@ -4304,6 +4341,15 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
     if (width < 1 || height < 1 || width >= (INT_MAX - 7) / height) {
         error(errSyntaxError, getPos(), "Bad image parameters");
         return;
+    }
+
+    // an inline image is read from the content stream either way; tell a geometry-only device
+    if (inlineImg && ocState && !out->needNonText() && out->needImageGeometry() && !singular_matrix) {
+        Object imObj = dict->lookup("ImageMask");
+        if (imObj.isNull()) {
+            imObj = dict->lookup("IM");
+        }
+        out->imageGeometry(state, width, height, imObj.isBool() && imObj.getBool());
     }
 
     // image interpolation

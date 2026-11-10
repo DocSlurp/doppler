@@ -26,18 +26,23 @@ mod cli;
 const STREAM_WINDOW: usize = 16;
 
 const USAGE: &str = "\
-usage: pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--report] [--params JSON]
+usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--report] [--params JSON]
                      [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
                  $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
+  --markers      mark where pictures sit in the text for restitching: ![image](doppler-image:pN.M)
+                 between paragraphs or inside a line, and charts and diagrams drawn with paths:
+                 ![image](doppler-image:pN.gK) (pdftotext -images); report: images
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --stream       write pages as they are converted (--window 16)
   --window N     body size and running headers/footers from N pages either side of each
                  page, not the whole document; each page is written once the next N are complete.
-                 A document of at most N + 1 pages converts exactly as without it
+                 A document of at most N + 1 pages converts exactly as without it.
+                 Repeated content (running headers/footers, repeated watermarks) is found only
+                 within the window: do not use --window 0, which removes none of it
   --report       print a one-line JSON report to stderr
   --params JSON  override layout tuning parameters
   -f N, -l N     first and last page to convert
@@ -78,6 +83,7 @@ fn main() -> ExitCode {
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
             "--math" => opts.math = true,
+            "--markers" => opts.markers = true,
             "--strict" => strict = true,
             "--stream" => window = Some(STREAM_WINDOW),
             "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
@@ -137,6 +143,7 @@ fn main() -> ExitCode {
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
         .args(if strict { None } else { Some("-compact-layout") })
         .args(if opts.math { Some("-glyphs") } else { None })
+        .args(if opts.markers { Some("-images") } else { None })
         .args(&pass)
         .arg(&file)
         .arg("-")

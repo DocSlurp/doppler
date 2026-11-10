@@ -67,6 +67,170 @@ The report gains `math` (`inline`, `display`, `actualText`, `uncertain`, `mathGl
 `mathUncertainPages`. `scripts/math_eval.py` and `scripts/math_compile.py` measure robustness
 and LaTeX validity on real PDFs; `DOPPLER_MATH_DEBUG=1` (or `2`, `3`) traces formulas to stderr.
 
+## Restitching markers (`--markers`)
+
+Pages are written separately, so a caller that wants the pictures back, or whole tables and
+paragraphs that cross a page, needs to know where they were. `--markers` (library:
+`Options::markers`) says so inline; `pdftomarkdown --markers` runs pdftotext with `-images`
+(image dictionaries only: the image data is never decoded). Without it the output is
+byte-identical.
+
+- **Pictures.** `![image](doppler-image:pN.M)`: `N` is the PDF page number and `M` the picture's
+  position in pdftotext's list for that page, so the id does not change with the layout around
+  it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
+  one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
+  body sizes, transitively) are one figure with one marker, at its first image. No marker for
+  a page background under a text layer, an image in the header or footer band, a sliver, a
+  duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
+  12 inside its lines). The report's `images` lists every image the producer reported with
+  `id`, `page`, `bbox` (page points, y down, as the words' coordinates), `px`, `kind`
+  (`picture` or `mask`), `placed` (`block`, `inline`, `grouped`, `background`, `furniture`,
+  `small`, `duplicate`, `fragment`), and `members` (the union `bbox` of a figure) or `group`
+  (the figure a grouped image belongs to). A caller crops the page at `bbox` and swaps the
+  marker for it.
+- **Vector figures.** `![image](doppler-image:pN.gK)`: a chart or diagram drawn with paths.
+  `pdftotext -images` also writes `<graphic>` clusters of the drawing that is not axis-aligned
+  (curves and diagonal segments; rules, boxes, grids, underlines and frames are left out).
+  Clusters within a body size are one drawing; a drawing is a figure when it has at least 20
+  diagonal or curved segments with 24 curves or diagonals in 3 of 8 directions (hatching and a
+  lone slash point one way), is at least 2.5 body sizes long and one thick (a thin one, such as
+  a row of arrows, counts when it has 6 paths and the rules it touches make it 2.5 thick:
+  dotted leaders and braces do not), and lies outside the header and footer band. Its region
+  then grows by the rules that touch it (not frames or panels around it, nor rules much longer
+  than it), by short lines (at most 4 words) within a body size (tick labels, axis titles,
+  legends) and by thin drawing it reaches, a step at a time; figures whose regions overlap are
+  one. `K` is the position of its first `<graphic>` in pdftotext's list for the page. The
+  marker is a paragraph of its own in reading order, and the text inside the region follows it
+  as one paragraph, top to bottom (it leaves the page's flow). No marker for a figure under
+  2.5 body sizes a side or 0.5% of the page, drawing among prose (its words cover more than 35%
+  of it, or it holds two lines of 8 words or more: forms, worksheets, panels), or drawing over
+  a larger picture (`grouped` with the picture); pictures inside a larger figure are `grouped`
+  with it. Report entries have `kind: "vector"`, `px: [0, 0]`, `placed` (`block`, `grouped`,
+  `small`, `furniture`, `text`) and `members` (the graphics marked together). Drawing made only
+  of axis-aligned shapes (bar charts, box-and-line diagrams without diagonals) is covered only
+  where it touches curved or diagonal drawing.
+- **Tables across pages.** A table that goes on from the last table of the previous page (the
+  page starts with it, past an optional "(continued)" note; the columns sit in the same places)
+  gets `<!-- doppler:table-continued header=repeated -->` above it when its first row repeats
+  the earlier header, `header=inherited` when the earlier header was copied on top so the page
+  stands alone, `header=none` otherwise. Drop the first row and its separator when merging
+  `repeated` or `inherited` tables.
+  Notes do not hide a continuation (`stitch_past_notes`, on by default): the last table of a
+  page counts when only notes follow it (up to four: small print, smaller than the body by
+  `aside_size`, or a footnote mark; at most 400 characters each, no heading), such as a footnote
+  or a page footer that repeats with different text, and up to two one-line notes may sit
+  above the next page's table. More small print above a table is its title block, and the
+  table is new.
+- **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
+  goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
+  without one after a hyphen.
+
+The markers are ordinary Markdown and comments, so text of the PDF could imitate them: with
+`--markers`, a zero-width space goes after `doppler` in any word that holds `doppler-image:` or
+`doppler:`. A caller should still trust only ids that the report lists.
+
+## Watermarks
+
+Large pale or diagonal text and repeated backdrops are not content (parameter `watermarks`, on by
+default; `0` restores the old output). Left in, a pale "CONFIDENTIAL" at 45 degrees became
+stray one-letter headings and tables of letters, and a horizontal "DRAFT" was glued to the first
+paragraph. A word goes when it is large (`watermark_size`, 1.5 body sizes) and any of:
+
+- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white) not on a
+  dark box; white text on banners and photos is kept;
+- **diagonal**: three or more words of one font size on a line at least 15 degrees from both axes
+  (a vertical label stays);
+- **repeated**: the same word at the same place on as many pages as a running header needs
+  (`furniture_min_share`, at least 2, over the same window; `--window 0` sees only the page
+  itself and removes none, see [Streaming](#streaming)).
+
+With `--markers`, a picture of at least 5% of the page at the same place and size on that many
+pages gets no marker (`placed: watermark`). Small watermarks of one page that are dark and
+horizontal, and one-page picture watermarks, cannot be told from content and stay. The report
+gains `watermark_words` when any were removed.
+
+## Columns and headers
+
+Four parameters change the default output (`--params '{"name":0}'` restores the old one):
+
+- `join_column_breaks`: a paragraph that runs to the bottom of one column and goes on at the top of
+  the next is one paragraph (a hyphenated word is made whole). The earlier paragraph must have no
+  end of sentence, run to its column's right edge and go down as far as the later region's
+  content (within three lines); the later one starts in lowercase, higher up the page, in the same
+  size, weight and colour; neither is a heading, list or caption.
+- `join_interrupted_paragraphs`: a paragraph interrupted by a figure or a footnote and going on
+  after it is one paragraph, with the interrupting content after it (the text reads on; a
+  figure or footnote is a float that belongs after the paragraph that cites it). Interrupting
+  content (asides) is a picture marker (`--markers`) or print at most `aside_size` (0.92) times
+  the paragraph's size, never larger than body size print: figure labels, a caption, a
+  footnote. One aside must be strong evidence: a picture, print at most `aside_tiny` (0.7) times
+  the size (figure labelling), or a footnote (a mark: up to three digits and a space, `*`, `†`,
+  `‡`, `§`, `¶` or a superscript digit) at the bottom of the earlier column; smaller print alone
+  (a quotation or listing in small type) is not. The text evidence is that of
+  `join_column_breaks`. In one column the later half starts below, at the column's left edge (or
+  up to four sizes left of it, under a margin label), within its right edge. Across regions
+  (with `join_column_breaks`) asides may sit below the earlier half, in regions of their own, or
+  above the later half; the earlier column's bottom includes them, and past them the later half
+  may also go on below the earlier one in its column. A column that the layout cut into regions
+  (another column's text, or a figure's, beside it) goes on too: when the later half is the
+  column's very next line (within half a size below), regions beside the column that end in
+  nothing that could go on (no plain paragraph of two lines) may come between.
+- `margin_labels`: a short label in the margin beside a paragraph (the word of a note or warning
+  icon, a side label) that pdftotext read as the start of one of the paragraph's lines is a
+  paragraph of its own before the paragraph, and the sentence it sat in is whole again ("split
+  and di- TIP rectly deposited" was the output). The label is at most three words and
+  `label_max_chars` (16) characters, two letters or more and no digit (not a number, list marker
+  or bullet glyph), in another size, weight or colour than the line, followed by a gap of at
+  least `label_gap` (0.5) sizes and 1.8 times the line's word spacing. The rest of the line
+  starts at the paragraph's text edge (past icon marks on its earlier lines) with the label left
+  of it, and the label sits inside a sentence: the paragraph so far has no end of sentence and
+  goes on in lowercase or after a hyphen. A label that heads its paragraph (on the first line,
+  or a run-in "Note:" before a capital) is left alone.
+- `merge_header_rows`: a header printed on several stacked lines comes out of row grouping as
+  several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
+  number and the body opens up below them, they are one header row (a `<thead>` with `--html`).
+
+## Tables drawn as cell boxes
+
+Word processors often draw a ruled table as one filled box per cell (white or a shade, sometimes
+on a dark background) between thin dark border rectangles drawn cell by cell, with a further
+same-colour box behind each line of text inside a cell. The ruled pass took every box edge as a
+row separator, so those line boxes cut each multi-line cell (a stacked header, a cell centred
+beside several rows) into one row per line. `box_cell_tables` (on by default; `0` restores the
+old output) reads such tables from the boxes instead:
+
+- Boxes at least half a body size wide and 0.8 tall count (not page backgrounds or full-width
+  bands); a box inside a box of the same colour is a line's background and is dropped, and a box
+  mostly covered by boxes of other colours is a background behind the cells and is dropped.
+- Boxes that touch across a border (3 points, or 0.6 body sizes when that is more) are joined.
+  Full-width boxes at the top or bottom of a group (a banner, a note) are left out.
+- A group is a table when its boxes tile a grid: 2 columns and rows or more (at most 40 and
+  200), cells starting at each column edge in two rows or more, at most a quarter of the boxes
+  spanning columns (a form whose rows split the width differently has many more), boxes
+  covering 60% of the grid without overlapping, every line inside lying within its width, and
+  two rows with two filled cells. A slot without a box is a cell of its own, spanning the rows
+  of the cell beside it, so an unfilled column lines up with its neighbours.
+- Every word goes to the cell box that holds it, at the cell's first row and column; a cell's
+  lines are joined as a paragraph's are. A cell spanning rows leaves the rows below it empty
+  in GFM; with `--html` the table keeps its `rowspan`/`colspan`.
+- An unfilled header row above the boxes, under a dark rule across their width (0.8 to 4 body
+  sizes above them), is the first row when its lines split into two columns or more without a
+  line running across a column edge (a title).
+
+The pass charges the page's work budget (each box, each comparison of the two sweeps down the
+page, each grid slot and word) and is skipped on pages with more than 2,048 candidate boxes or a
+pile of overlapping ones; other ruled tables are found as before. On the golden set it changes 2
+of 258 inputs (the Ghostscript manual's shaded tables and the Apple 10-K's striped contents
+list: multi-line cells whole, words no longer glued or split at line ends). On the real-PDF
+differential (40 PDFs, pages 1 to 150) it changes 10 of 1,452 pages (NASA handbook tables with
+stacked headers and row-spanning cells, an ERP table, two IRS instruction pages); the IRS forms'
+field boxes, charts, org-chart boxes and photo labels stay as they were.
+
+- `section_headings_after_tables`: a minor heading right after a table used to become the table's
+  `*caption*`. One that starts with a multi-level section number (`4.6.3.2`, `2.1.`) and opens
+  body text is the next section's heading (`### 4.6.3.2 ...`); a caption such as
+  `Table 4.6-2 ...` stays a caption.
+
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw
@@ -80,7 +244,20 @@ fixed after that, and headers and footers from the N pages either side of each p
 page is written (and flushed) once the next N are complete; the parser completes a page when
 the following `<page>` opens. So at most N + 2 pages are held at a time (N + 1 in the converter
 and the one being parsed), with the margin keys of N more. `--stream` is `--window 16`. A document of at
-most N + 1 pages converts exactly as without a window. The library API is
+most N + 1 pages converts exactly as without a window.
+
+**Do not use `--window 0`, and avoid very small windows.** Everything that finds content by
+its repetition across pages looks only inside the window: running headers and footers,
+repeated watermark words and backdrop pictures (`watermarks`), and, with `--markers`,
+repeated header and footer pictures. With `--window 0` the converter sees one page at a time,
+so none of these is removed: every running header, footer and repeated watermark lands in the
+body text (only page numbers and pale or diagonal watermarks, which a single page shows by
+itself, still go). The body size also comes from the first page alone, which shifts heading
+levels when that page is a cover. Use `--stream` (16 pages), or no window when latency does
+not matter. Cross-page continuation markers (`--markers`) are unaffected: they need only
+the previous page.
+
+The library API is
 `model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
 `Converter` without a window).
 
@@ -131,9 +308,9 @@ lines and uses 21,052 units (20,618 without the table charge), the largest docum
 (54,463). Every degraded page is listed in the
 report. See PERF-ALGO.md for the measurements.
 
-## Rotated text and wide-spaced borderless tables
+## Rotated text and wide-spaced or wrapped borderless tables
 
-Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
+Three passes go beyond `doppler_md.py` (golden-v24 does not have them):
 
 - **Rotated text** (`rotated_frames`, on by default). Words carry the producer's `rotation`
   (quarter turns; absent reads as 0). On a page, the kept lines of one rotation are read in their
@@ -174,6 +351,41 @@ Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
 
   A title above such a table becomes its header only when its words split into the table's
   columns. These guards apply only to this pass; the dense pass is unchanged.
+- **Borderless tables whose cells wrap** (`wrapped_rows`, on by default; `0` restores the old
+  output). A cell that wraps puts its next lines under the row's first line with nothing beside
+  them; read as rows of their own, they broke the column gutters, the even spacing the sparse
+  pass needs, and the page's reading columns (only a row's first line shares a baseline across
+  a gutter), so the columns came out as separate text blocks. Now a row with fewer cells than
+  the multi-cell row above it is folded into that row when each of its cells continues a
+  different cell: inside that cell's column (it starts after the cell starts, ends before the
+  next cell starts), lined up with the cell's last line (left or right edge or centre, or a
+  hanging indent of up to two font sizes under the first line), in the same font size, at most
+  `wrap_lead` (1.6) font sizes below it. Folding needs visible row padding: the rows on either
+  side of a folded row, and the multi-cell rows on the whole, are at least `wrap_padding`
+  (1.15) times the wrap step apart, and a step halfway to the row gap is a row of its own (a row
+  with empty cells). Tables without padding are left to the dense pass as before. A folded
+  row's wrapped text joins its cell as the lines of a paragraph do (dehyphenated); a wrapped
+  word between two columns stays with its cell. Its wrapped lines count against the gutters
+  they cross only where the gutter is narrow (a word space that the rows' first lines happen
+  to share, as when every row starts with the same words), and only when two rows or more cross
+  it, so a header spanning two columns keeps them apart. Row gaps are measured from a row's
+  last line, in the dense and the sparse pass. A column gutter whose right side has wrapped
+  lines no longer splits the page into reading columns when, with those lines left out, the
+  rows still share baselines across it, the rows that wrap have three cells or more (two
+  columns of short labels beside paragraphs stay a page layout), and the two sides are not
+  both prose; rows further down the same gutter stay with it.
+
+  Not tables, as before: two-column prose (two long cells a row), bulleted and numbered lists
+  with wrapped items (a list marker column), key/value text whose values wrap into prose, and
+  side headings beside paragraphs. On the golden set the pass changes 12 of 258 inputs (four
+  documents in their tagged, untagged and stripped forms, and two real documents): a bank
+  statement row and a manual's fault table whose wrapped cells were extra rows, a menu whose
+  dish descriptions sat between rows, a receipt's dish names, a 10-K exhibit index (now one
+  table with its exhibit numbers) and footnote, a consent letter's numbered list (no longer a
+  scrambled table), and a wrapped bullet in the Ghostscript manual. Known side effects: a bold
+  section heading right after a completed table can become its caption (the caption rule), and
+  prose spacing across a table no longer split from the text above can merge two lines that
+  were separate paragraphs.
 
 These are layout decisions only: a false positive or a missed table changes how text is
 grouped, never which text is kept. Layouts beyond the guarded ones can still come out as

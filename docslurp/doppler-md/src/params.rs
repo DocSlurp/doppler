@@ -156,6 +156,16 @@ params! {
     /// max ratio between neighbouring row gaps in a run; the first (header) gap may differ by
     /// twice this
     sparse_pitch_ratio: num = 1.35,
+    /// borderless table rows whose cells wrap onto several lines, with padding between rows: a
+    /// line stacked under a cell of a multi-cell row, at line pitch and aligned with it, is part
+    /// of that row (see `tables::fold_wraps`), and a column gutter whose right side is such
+    /// rows does not split the page into reading columns
+    wrapped_rows: flag = true,
+    /// max baseline step / font size from a cell's line to its wrapped next line
+    wrap_lead: num = 1.6,
+    /// the gaps between such rows must be at least this many times the wrap step (visible row
+    /// padding); otherwise the rows are left to the passes below as before
+    wrap_padding: num = 1.15,
     /// read the lines of one rotation (a table printed sideways) in their own reading frame
     rotated_frames: flag = true,
     /// fewer kept lines of a rotation than this stay in the upright layout
@@ -171,6 +181,9 @@ params! {
     rule_max_lum: num = 0.97,
     /// max gap between consecutive rules of one table / body size
     rule_row_gap: num = 8.0,
+    /// read tables drawn as filled cell boxes (white or shaded cells between thin borders) from
+    /// the boxes: each cell's lines stay in one cell (see `box_cells`)
+    box_cell_tables: flag = true,
     /// rule bands are rows when there are this many per visual row
     band_rows: num = 0.6,
     /// a rule gap this many times the group's median splits two tables
@@ -185,4 +198,83 @@ params! {
     /// lines plus layout work units over the whole document; once spent, the remaining pages
     /// fall back to plain lines
     max_doc_work: num = 5.0e7,
+    /// a header printed on several stacked lines becomes one header row
+    merge_header_rows: flag = true,
+    /// stacked header lines are at most this many font sizes apart
+    header_stack_gap: num = 1.9,
+    /// and the spacing below the header, and of the body's rows, is at least this many times
+    /// the largest gap inside it
+    header_stack_open: num = 1.3,
+    /// a paragraph that runs out of one column and goes on at the top of the next is one paragraph
+    join_column_breaks: flag = true,
+    /// a paragraph interrupted by a figure, its caption or a footnote goes on after it, in the
+    /// same column or (with `join_column_breaks`) the next: one paragraph, the figure after it
+    join_interrupted_paragraphs: flag = true,
+    /// a short label in the margin beside a paragraph, read as the start of one of its lines,
+    /// becomes a paragraph of its own before it
+    margin_labels: flag = true,
+    /// with markers, small print or footnotes under a page's last table (or above the next
+    /// page's first) do not hide that the table goes on
+    stitch_past_notes: flag = true,
+    /// the label ends at least this many sizes before the rest of its line
+    label_gap: num = 0.5,
+    /// and has at most this many characters
+    label_max_chars: num = 16.0,
+    /// print at most this many times a paragraph's size can interrupt it (captions, footnotes)
+    aside_size: num = 0.92,
+    /// and print at most this many times its size is figure labelling by itself
+    aside_tiny: num = 0.7,
+    /// a page with more pictures than this inside its lines has text drawn as pictures: they
+    /// get no markers
+    image_inline_max: num = 12.0,
+    /// remove watermarks: large pale or diagonal words, and large words and pictures that repeat
+    /// at the same place on enough pages
+    watermarks: flag = true,
+    /// a watermark word is at least this many times the page's body size
+    watermark_size: num = 1.5,
+    /// a pale word is at least this luminance (white, the text of banners, is not pale)
+    watermark_min_lum: num = 0.72,
+    /// a minor heading after a table that starts with a multi-level section number (4.6.3) and
+    /// opens body text is a heading, not the table's caption
+    section_headings_after_tables: flag = true,
+    /// images this many body sizes apart or less are one figure and get one marker
+    image_group_gap: num = 0.75,
+    /// an image needs both sides at least this many points to get a marker (pictures)
+    image_min_size: num = 6.0,
+    /// and a stencil mask both sides at least this many (bullets and glyph bitmaps are masks)
+    image_min_mask: num = 12.0,
+    /// an image no taller than this many body sizes that sits in a line of text is marked
+    /// inside that line instead of between paragraphs
+    image_inline_height: num = 2.5,
+    /// an image covering this share of the page, under text, is the page's background (a scan
+    /// with a text layer) and gets no marker
+    image_background_share: num = 0.85,
+    /// vector drawing clusters this many body sizes apart or less are one drawing
+    vector_group_gap: num = 1.0,
+    /// a drawing is a figure with at least this many diagonal or curved segments
+    vector_min_segments: num = 20.0,
+    /// and at least this many curves, or diagonal segments in this many of 8 directions
+    /// (hatching and a lone slash point one way)
+    vector_min_curves: num = 24.0,
+    vector_min_directions: num = 3.0,
+    /// and a drawing at least this many body sizes long, a figure this many on both sides
+    vector_min_extent: num = 2.5,
+    /// and a drawing at least this many body sizes thick, unless the rules it touches make it
+    /// `vector_min_extent` thick (dotted leaders and braces are thin; a row of arrows between
+    /// the boxes of a diagram is not, with the boxes); a thin one also joins a figure it touches
+    vector_min_thickness: num = 1.0,
+    /// a thin drawing needs at least this many painted paths to become a figure that way
+    vector_thin_min_paths: num = 6.0,
+    /// and a figure covers at least this share of the page
+    vector_min_share: num = 0.005,
+    /// short lines (at most this many words) within this many body sizes of a figure are its
+    /// labels
+    vector_label_words: num = 4.0,
+    vector_label_gap: num = 1.0,
+    /// a figure whose words cover more than this share of it, or with more lines than
+    /// `vector_max_prose_lines` of at least `vector_prose_words` words, is drawing among text
+    /// (a form, a worksheet): no marker
+    vector_max_text_share: num = 0.35,
+    vector_max_prose_lines: num = 1.0,
+    vector_prose_words: num = 8.0,
 }
