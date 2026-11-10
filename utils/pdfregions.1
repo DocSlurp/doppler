@@ -97,11 +97,11 @@ and width, height and bytes are 0). Codes:
 .PP
 A region overhanging the page is first cut to the page. A
 .B raster
-crop covers device pixels
+crop starts at device pixel
 .RB floor( x0 \(mu dpi/72)
-to
-.RB ceil( x1 \(mu dpi/72)
-(likewise for y), the same pixels as
+and is
+.RB max(1,\ round(( x1 \- x0 )\ \(mu dpi/72))
+pixels wide (likewise for y, both kept on the page), the same pixels as
 .B pdftoppm \-r
 .I dpi
 .B \-x \-y \-W \-H
@@ -122,7 +122,9 @@ and
 in pt and
 .I viewBox
 equal to the (cut) region, so the SVG's user space is the page's word space;
-content outside the region is clipped and dropped by cairo.
+content outside the region is clipped and dropped by cairo. Embedded images
+are always data:image/png (decoded pixels), never the document's own JPEG,
+JPX, JBIG2 or CCITT bytes.
 .PP
 The document and each page are opened once and fonts are cached across jobs;
 each job then draws the page clipped to its region (Splash for

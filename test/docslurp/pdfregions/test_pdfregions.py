@@ -98,7 +98,8 @@ def crop_size(box, dpi):
     import math
 
     s = dpi / 72.0
-    return (math.ceil(box[2] * s - 1e-6) - math.floor(box[0] * s + 1e-6), math.ceil(box[3] * s - 1e-6) - math.floor(box[1] * s + 1e-6))
+    # half away from zero, as C llround and Rust f64::round (Python's round is half-even)
+    return (max(1, math.floor((box[2] - box[0]) * s + 0.5)), max(1, math.floor((box[3] - box[1]) * s + 0.5)))
 
 
 def mostly(payload, rgb, share=0.9):
@@ -122,7 +123,7 @@ with t.TempDir() as d:
     # --- raster: framing, pixels, agreement with pdftoppm ---------------------
     for dpi in (72, 150, 300):
         w, h, payload = check_raster_matches_ppm(path, "upright %d dpi" % dpi, box, dpi)
-        t.check((w, h) == crop_size(box, dpi), "upright %d dpi: crop size is floor/ceil of the region" % dpi, repr((w, h)))
+        t.check((w, h) == crop_size(box, dpi), "upright %d dpi: crop size is round(region size at dpi)" % dpi, repr((w, h)))
         t.check(mostly(payload, (255, 0, 0), 0.99), "upright %d dpi: crop is the red figure" % dpi)
 
     # --- svg: root, viewBox, clipped content -----------------------------------
@@ -148,7 +149,7 @@ with t.TempDir() as d:
     t.check([(h[0], h[1]) for h, _ in recs] == want, "error codes in job order", repr([h for h, _ in recs]))
     t.check(all(h[2:] == ["-", "0", "0", "0"] and p == b"" for h, p in recs), "error records: kind -, zero sizes, no payload")
     area = crop_size(box, 300)[0] * crop_size(box, 300)[1]
-    t.check(area == 601 * 300, "300 dpi crop is 601 x 300 pixels", repr(area))
+    t.check(area == 600 * 300, "300 dpi crop is 600 x 300 pixels", repr(area))
     rc, out, _ = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 300)], "-max-pixels", area - 1)
     t.check(parse_records(out)[0][0][1] == "err:pixels", "-max-pixels: one pixel over is err:pixels")
     rc, out, _ = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 300)], "-max-pixels", area)

@@ -39,11 +39,13 @@ credential-free VM in production.
   `pixels` (crop over -max-pixels at that dpi), `render` (renderer error),
   `empty` (region outside the page), `page` (page number invalid).
 - `kind=rgb8`: `width*height*3` bytes, row-major, top row first, RGB 8-bit, composited on white.
-  The crop covers device pixels `floor(x0*dpi/72)` to `ceil(x1*dpi/72)` (likewise y), i.e. the
-  same pixels as `pdftoppm -r dpi -x -y -W -H` with those numbers.
+  The crop starts at device pixel `floor(x0*dpi/72)` and is `max(1, round((x1-x0)*dpi/72))` wide
+  (likewise y), kept on the page; the same pixels as `pdftoppm -r dpi -x -y -W -H` with those
+  numbers. pdftomarkdown accepts the size within 1 px.
 - `kind=svg`: UTF-8 SVG, width/height fields 0; the root `<svg>` has `width`/`height` in pt and
   `viewBox` equal to the (cut) region (`x0 y0 x1-x0 y1-y0`, at most 6 decimals), so the figure
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
+  Embedded images are `data:image/png` only (no source JPEG/JPX/JBIG2/CCITT mime data).
   Uncompacted; pdftomarkdown compacts and checks it.
 - The document and page are opened once for all jobs and fonts are cached; each job then draws
   the page clipped to its region (so raster crops match pdftoppm exactly).

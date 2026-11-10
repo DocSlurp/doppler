@@ -427,8 +427,9 @@ static std::optional<Region> clipToPage(const Job &job, double pageW, double pag
     return r;
 }
 
-// Device pixels covering a region at dpi: floor of the low edge, ceil of the
-// high edge (a hair of tolerance absorbs float noise), cut to the page bitmap.
+// Device pixels for a region at dpi: from floor(x0*dpi/72) (a hair of tolerance
+// absorbs float noise), round((x1-x0)*dpi/72) wide (at least 1), cut to the page
+// bitmap; likewise y. pdftomarkdown expects that size (within 1 px).
 struct PixelRect
 {
     long long x, y, w, h;
@@ -446,12 +447,13 @@ static PixelRect pixelRect(const Region &r, double dpi, double pageW, double pag
     const long long pageHpx = static_cast<long long>(std::ceil(std::min(pageH * s, 1e12) - eps));
     long long px0 = static_cast<long long>(std::floor(r.x0 * s + eps));
     long long py0 = static_cast<long long>(std::floor(r.y0 * s + eps));
-    long long px1 = std::min(static_cast<long long>(std::ceil(r.x1 * s - eps)), pageWpx);
-    long long py1 = std::min(static_cast<long long>(std::ceil(r.y1 * s - eps)), pageHpx);
     px0 = std::clamp(px0, 0LL, std::max(pageWpx - 1, 0LL));
     py0 = std::clamp(py0, 0LL, std::max(pageHpx - 1, 0LL));
-    px1 = std::max(px1, px0 + 1);
-    py1 = std::max(py1, py0 + 1);
+    // the size is the region's own size at dpi, rounded (at least 1), kept on the page
+    const long long wpx = std::max(1LL, std::llround((r.x1 - r.x0) * s));
+    const long long hpx = std::max(1LL, std::llround((r.y1 - r.y0) * s));
+    const long long px1 = std::max(std::min(px0 + wpx, pageWpx), px0 + 1);
+    const long long py1 = std::max(std::min(py0 + hpx, pageHpx), py0 + 1);
     return { px0, py0, px1 - px0, py1 - py0 };
 }
 
@@ -568,6 +570,8 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     }
     auto cairo = std::make_unique<CairoOutputDev>();
     cairo->startDoc(doc, cairoFonts.get());
+    // embedded images are PNG only (pdftomarkdown's SVG allowlist), never the source JPEG etc.
+    cairo->setEmbedMimeData(false);
     cairo_t *cr = cairo_create(surface);
     cairo->setCairo(cr);
     // printing: keep vectors and images at their own resolution
