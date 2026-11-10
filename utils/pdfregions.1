@@ -1,0 +1,184 @@
+.\" Copyright 2026 DocSlurp
+.TH pdfregions 1 "10 November 2026"
+.SH NAME
+pdfregions \- render regions of PDF pages as RGB pixels or SVG
+.SH SYNOPSIS
+.B pdfregions
+[options]
+.I PDF-file
+.SH DESCRIPTION
+.B pdfregions
+reads render jobs from standard input, one per line, and writes one record
+per job to standard output, in job order. It writes no files and makes no
+decisions about what to extract; it is the renderer behind
+.B pdftomarkdown \-\-images\-dir
+and implements docslurp/extraction/PROTOCOL.md.
+.PP
+Regions are given in the coordinate space of
+.B pdftotext \-bbox\-layout
+word coordinates: points, y pointing down, page rotation applied, media box
+(the crop box is never used). A box taken from
+.B pdftotext \-images
+output therefore frames exactly that figure.
+.SH JOBS
+Each line is ASCII, tab-separated and ends in a newline:
+.PP
+.RS
+.I id page x0 y0 x1 y1 mode dpi
+.RE
+.TP
+.I id
+.B p
+followed by 1 to 9 digits, a dot, an optional
+.BR g ,
+and 1 to 6 digits (for example
+.B p3.1
+or
+.BR p3.g2 );
+echoed back verbatim.
+.TP
+.I page
+1-based page number. Jobs must be sorted by page (non-decreasing).
+.TP
+.IR "x0 y0 x1 y1"
+Plain decimals (an optional minus sign, 1 to 9 integer digits and an optional
+fraction of 1 to 9 digits; no exponent) with
+.I x1
+>
+.I x0
+and
+.I y1
+>
+.IR y0 .
+.TP
+.I mode
+.B raster
+(Splash, RGB, composited on white) or
+.B svg
+(cairo SVG 1.2, unit pt).
+.TP
+.I dpi
+36 to 600 for
+.BR raster ;
+any plain decimal for
+.B svg
+(ignored).
+.PP
+At most 5000 jobs and 256 bytes per line. Every line is checked before
+anything is rendered: a malformed line, unsorted pages, too many jobs or a
+missing final newline exit with status 2 and nothing on standard output.
+.SH RECORDS
+.RS
+.I id status kind width height bytes
+.RE
+.PP
+tab-separated and ended by a newline, followed by exactly
+.I bytes
+bytes of payload.
+.I status
+is
+.B ok
+or
+.BI err: code
+(then
+.I kind
+is
+.BR \- ,
+and width, height and bytes are 0). Codes:
+.B pixels
+(the crop exceeds
+.BR \-max\-pixels ),
+.B render
+(the renderer failed),
+.B empty
+(the region lies outside the page),
+.B page
+(no such page).
+.PP
+A region overhanging the page is first cut to the page. A
+.B raster
+crop covers device pixels
+.RB floor( x0 \(mu dpi/72)
+to
+.RB ceil( x1 \(mu dpi/72)
+(likewise for y), the same pixels as
+.B pdftoppm \-r
+.I dpi
+.B \-x \-y \-W \-H
+with those numbers;
+.I kind
+is
+.B rgb8
+and the payload is width \(mu height \(mu 3 bytes, rows top first.
+An
+.B svg
+record has
+.I kind
+.BR svg ,
+width and height 0, and a UTF-8 SVG payload whose root has
+.I width
+and
+.I height
+in pt and
+.I viewBox
+equal to the (cut) region, so the SVG's user space is the page's word space;
+content outside the region is clipped and dropped by cairo.
+.PP
+The document and each page are opened once and fonts are cached across jobs;
+each job then draws the page clipped to its region (Splash for
+.BR raster ,
+so crops are pixel-identical to
+.BR pdftoppm ;
+cairo for
+.BR svg ).
+.SH OPTIONS
+.TP
+.BI \-opw " password"
+Owner password (for encrypted files).
+.TP
+.BI \-upw " password"
+User password (for encrypted files).
+.TP
+.BI \-max\-memory " MiB"
+Address-space limit for the process (POSIX), 0 for none (default 2048).
+Running out of memory exits with status 3.
+.TP
+.BI \-max\-pixels " number"
+Largest raster crop, in pixels, checked before rendering (default
+16777216, 4096 \(mu 4096). Larger crops answer
+.BR err:pixels .
+.TP
+.BI \-timeout " seconds"
+Wall-clock limit for the whole run, 0 for none (default 120). When it
+expires the tool exits with status 3; every record already written is
+complete.
+.TP
+.B \-v
+Print copyright and version information.
+.TP
+.B \-h
+Print usage information.
+.SH DIAGNOSTICS
+Diagnostics on standard error are fixed strings and never include document
+data. Poppler's and cairo's own messages are suppressed (on POSIX, file
+descriptor 2 points at /dev/null while documents are processed).
+.SH EXIT STATUS
+.TP
+0
+Every job answered (some may be errors).
+.TP
+1
+The document cannot be opened or decrypted, or standard output cannot be written.
+.TP
+2
+Bad usage or a malformed job line.
+.TP
+3
+A limit was hit (memory, timeout); records already written stay valid.
+.PP
+Any other status, or death by a signal (an allocation failure inside
+Poppler's C allocator aborts), is a failure.
+.SH SEE ALSO
+.BR pdftotext (1),
+.BR pdftoppm (1),
+.BR pdftocairo (1)
