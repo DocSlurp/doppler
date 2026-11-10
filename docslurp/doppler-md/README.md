@@ -124,13 +124,26 @@ gains `watermark_words` when any were removed.
 
 ## Columns and headers
 
-Two parameters change the default output (`--params '{"name":0}'` restores the old one):
+Three parameters change the default output (`--params '{"name":0}'` restores the old one):
 
 - `join_column_breaks`: a paragraph that runs to the bottom of one column and goes on at the top of
   the next is one paragraph (a hyphenated word is made whole). The earlier paragraph must have no
   end of sentence, run to its column's right edge and go down as far as the later region's
   content (within three lines); the later one starts in lowercase, higher up the page, in the same
   size, weight and colour; neither is a heading, list or caption.
+- `join_interrupted_paragraphs`: a paragraph interrupted by a figure or a footnote and going on
+  after it is one paragraph, with the interrupting content after it (the text reads on; a
+  figure or footnote is a float that belongs after the paragraph that cites it). Interrupting
+  content (asides) is a picture marker (`--markers`) or print at most `aside_size` (0.92) times
+  the paragraph's size, never larger than body size print: figure labels, a caption, a
+  footnote. One aside must be strong evidence: a picture, print at most `aside_tiny` (0.7) times
+  the size (figure labelling), or a footnote (a mark: up to three digits and a space, `*`, `†`,
+  `‡`, `§`, `¶` or a superscript digit) at the bottom of the earlier column; smaller print alone
+  (a quotation or listing in small type) is not. In one column, the evidence of
+  `join_column_breaks` holds and the later half starts below at the column's left edge and has
+  its left and right edges. Across a column break (with `join_column_breaks`) asides may sit
+  below the earlier half, in regions of their own, or above the later half; the earlier column's
+  bottom includes them.
 - `merge_header_rows`: a header printed on several stacked lines comes out of row grouping as
   several sparse rows. When the first rows are tighter than the body's rows (1.3 times), hold no
   number and the body opens up below them, they are one header row (a `<thead>` with `--html`).

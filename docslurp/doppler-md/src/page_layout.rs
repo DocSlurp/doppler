@@ -125,22 +125,40 @@ impl PageLayout {
             // its own copy: a table in the left region cannot consume right-region prose.
             let seq = assign_region(page, region, body, p, budget)?;
             let mut items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
-            let folded =
-                if p.join_column_breaks { join_column_break(&mut blocks, tail.take(), &mut items, p) } else { None };
+            let interrupted = p.join_interrupted_paragraphs;
+            if interrupted {
+                join_within_column(&mut items, body, p, budget)?;
+            }
+            let open = tail.take();
+            let folded = if p.join_column_breaks {
+                join_column_break(&mut blocks, open.as_ref(), &mut items, body, p)
+            } else {
+                None
+            };
             if items.is_empty() {
                 // the whole region continued the paragraph before it, which may run on
                 tail = folded;
                 continue;
             }
-            let last = match items.last() {
-                Some(FlowItem::Paragraph(para)) if plain(para) => Tail::of(para),
-                _ => None,
-            };
+            // a region of asides alone (figure labels, a picture, a caption) leaves the paragraph
+            // before it open: its blocks go after that paragraph's
+            if interrupted
+                && p.join_column_breaks
+                && let Some(t) = folded.or(open)
+                && let Some(strong) = asides(&items, reference(t.last.size(), body), p)
+            {
+                blocks.extend(finish_region(items, p));
+                tail = Some(Tail { interrupted: true, strong: t.strong || strong, ..t });
+                continue;
+            }
+            let last = if interrupted { region_tail(&items, body, p) } else { plain_tail(&items) };
+            // the blocks of the asides after the paragraph
+            let after = last.as_ref().map_or(0, |(k, _)| items.len() - 1 - k);
             blocks.extend(finish_region(items, p));
-            // the last item is the last block: a paragraph is only absorbed into a table that
-            // follows it
-            tail = last.and_then(|t| {
-                let block = blocks.len().checked_sub(1)?;
+            // the paragraph and the asides after it are the last blocks: a paragraph is only
+            // absorbed into a table that follows it
+            tail = last.and_then(|(_, t)| {
+                let block = blocks.len().checked_sub(1 + after)?;
                 matches!(blocks[block], Block::Text { heading: 0, list: false, caption: false, .. })
                     .then_some(Tail { block, ..t })
             });
@@ -172,6 +190,12 @@ struct Tail {
     lines: usize,
     /// the right edge of its lines
     right: f64,
+    /// the lowest edge of its column: its last line, or the asides below it
+    bottom: f64,
+    /// asides (pictures, smaller print) come between it and whatever continues it
+    interrupted: bool,
+    /// and one of them shows a figure or a footnote, not just smaller print
+    strong: bool,
 }
 
 /// The lowest edge of the lines and tables of a region's items (pictures have no extent here).
@@ -190,12 +214,184 @@ fn plain(para: &Paragraph) -> bool {
     para.level == 0 && para.kind.is_none() && !para.lines.is_empty()
 }
 
+/// The region's last item when it is a plain paragraph, with its index.
+fn plain_tail(items: &[FlowItem]) -> Option<(usize, Tail)> {
+    match items.last()? {
+        FlowItem::Paragraph(para) if plain(para) => Tail::of(para).map(|t| (items.len() - 1, t)),
+        _ => None,
+    }
+}
+
 impl Tail {
     fn of(para: &Paragraph) -> Option<Tail> {
         let last = para.lines.last()?.clone();
         let right = para.lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
-        Some(Tail { block: 0, last, lines: para.lines.len(), right })
+        let bottom = last.y1;
+        Some(Tail { block: 0, last, lines: para.lines.len(), right, bottom, interrupted: false, strong: false })
     }
+}
+
+/// An end of sentence: a paragraph ending in one is not cut short.
+const TERMINAL: [char; 9] = ['.', '!', '?', ':', ';', '"', '”', '’', '…'];
+
+/// The text evidence that `next` continues the paragraph `text` whose last line is `a` (of `lines`
+/// lines, running to `right`): the earlier one has no end of sentence and its last line runs to
+/// its right edge (the line was cut by the layout, not by the paragraph's end); the later one
+/// starts in lowercase in the same size, weight and colour; both are plain paragraphs (no
+/// heading, list or caption).
+fn continues(text: &str, a: &Line, lines: usize, right: f64, next: &Paragraph, p: &Params) -> bool {
+    let Some(b) = next.lines.first() else { return false };
+    let size = pmax(a.size(), 1.0);
+    plain(next)
+        && strip(&next.text).chars().next().is_some_and(crate::pyc::is_lower)
+        && !rstrip(text).ends_with(TERMINAL)
+        && lines >= 2
+        && a.x1 >= right - 2.0 * size
+        && !crate::prose::style_change(a, b, p)
+}
+
+/// Content that can sit inside a paragraph without ending it: a picture, or print smaller than
+/// the paragraph's `size` (figure labels, a caption, a footnote). `Some(true)` when the item by
+/// itself shows a figure: a picture, or print so small that only figure labels use it.
+fn aside(item: &FlowItem, size: f64, p: &Params) -> Option<bool> {
+    match item {
+        FlowItem::Rendered(parts) => {
+            (parts.len() == 1 && parts[0].starts_with("![image](") && parts[0][9..].starts_with(crate::images::SCHEME))
+                .then_some(true)
+        }
+        FlowItem::Paragraph(para) if !para.lines.is_empty() => {
+            let s = median(para.lines.iter().map(|l| l.size()).collect());
+            (s <= p.aside_size * size).then_some(s <= p.aside_tiny * size)
+        }
+        _ => None,
+    }
+}
+
+/// A footnote opens with its mark: a number of up to three digits and a space, a symbol, or a
+/// superscript digit.
+fn footnote_marked(text: &str) -> bool {
+    let t = strip(text);
+    let digits = t.chars().take_while(char::is_ascii_digit).count();
+    if (1..=3).contains(&digits) {
+        return t[digits..].starts_with(' ');
+    }
+    t.starts_with(['*', '†', '‡', '§', '¶', '⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'])
+}
+
+/// Whether `items` are all asides of a paragraph of `size`, and if so whether one is strong
+/// evidence of an interruption.
+fn asides(items: &[FlowItem], size: f64, p: &Params) -> Option<bool> {
+    let mut strong = false;
+    for item in items {
+        strong |= aside(item, size, p)?;
+    }
+    Some(strong)
+}
+
+/// The region's earliest plain paragraph that only asides follow (their blocks will follow its
+/// block), with its index in `items`. There, at the bottom of the column, a footnote is strong
+/// evidence too. One pass from the end, keeping the extremes of the sizes below.
+fn region_tail(items: &[FlowItem], body: f64, p: &Params) -> Option<(usize, Tail)> {
+    let mut best: Option<(usize, Tail)> = None;
+    let (mut largest, mut smallest, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    let (mut picture, mut footnote, mut rest) = (false, false, false);
+    for (k, item) in items.iter().enumerate().rev() {
+        match item {
+            FlowItem::Paragraph(para) if !para.lines.is_empty() => {
+                if plain(para)
+                    && let Some(t) = Tail::of(para)
+                {
+                    let size = reference(t.last.size(), body);
+                    if largest > p.aside_size * size {
+                        break;
+                    }
+                    let t = if rest {
+                        let strong = picture || footnote || smallest <= p.aside_tiny * size;
+                        Tail { bottom: pmax(t.bottom, bottom), interrupted: true, strong, ..t }
+                    } else {
+                        t
+                    };
+                    best = Some((k, t));
+                }
+                let s = median(para.lines.iter().map(|l| l.size()).collect());
+                largest = pmax(largest, s);
+                smallest = pmin(smallest, s);
+                bottom = para.lines.iter().map(|l| l.y1).fold(bottom, pmax);
+                footnote |= footnote_marked(&para.text);
+            }
+            FlowItem::Rendered(_) if aside(item, 1.0, p).is_some() => picture = true,
+            _ => break,
+        }
+        rest = true;
+    }
+    best
+}
+
+/// The size asides are measured against: the paragraph's, but never more than the body's (the
+/// body text after a large-print paragraph does not interrupt it).
+fn reference(size: f64, body: f64) -> f64 {
+    pmax(pmin(size, body), 1.0)
+}
+
+/// A paragraph that runs down a column, is interrupted by a figure (a picture, its labels, its
+/// caption) and goes on below it in the same column is one paragraph, followed by the figure.
+/// The evidence is that of [`continues`], strong asides between the two halves (see [`asides`]),
+/// and the two halves share the column: the same left and right edges, and the later one starts
+/// at the left edge, below the earlier one.
+fn join_within_column(items: &mut Vec<FlowItem>, body: f64, p: &Params, budget: &mut Budget) -> Option<()> {
+    let mut i = 0;
+    while i < items.len() {
+        let FlowItem::Paragraph(a) = &items[i] else {
+            i += 1;
+            continue;
+        };
+        let Some(la) = a.lines.last().filter(|_| plain(a)) else {
+            i += 1;
+            continue;
+        };
+        let size = pmax(la.size(), 1.0);
+        let small = reference(la.size(), body);
+        let mut j = i + 1;
+        let mut strong = false;
+        while let Some(s) = items.get(j).and_then(|it| aside(it, small, p)) {
+            strong |= s;
+            j += 1;
+        }
+        // each aside visited (none on pages without asides, so their work is unchanged)
+        if j > i + 1 && !budget.spend(j - i - 1) {
+            return None;
+        }
+        let joins = strong
+            && j > i + 1
+            && match items.get(j) {
+                Some(FlowItem::Paragraph(b)) => same_column_below(a, b, size, p),
+                _ => false,
+            };
+        if !joins {
+            i = j;
+            continue;
+        }
+        let FlowItem::Paragraph(b) = items.remove(j) else { return None };
+        if let FlowItem::Paragraph(a) = &mut items[i] {
+            crate::prose::append_line(&mut a.text, strip(&b.text), p);
+            a.lines.extend(b.lines);
+        }
+        // the joined paragraph may be interrupted again
+    }
+    Some(())
+}
+
+fn same_column_below(a: &Paragraph, b: &Paragraph, size: f64, p: &Params) -> bool {
+    let (Some(la), Some(fb)) = (a.lines.last(), b.lines.first()) else { return false };
+    let left = |ls: &[Rc<Line>]| ls.iter().map(|l| l.x0).fold(f64::INFINITY, pmin);
+    let right = |ls: &[Rc<Line>]| ls.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
+    let (la0, la1, lb0, lb1) = (left(&a.lines), right(&a.lines), left(&b.lines), right(&b.lines));
+    continues(&a.text, la, a.lines.len(), la1, b, p)
+        && fb.y0 > la.y1
+        && (la0 - lb0).abs() <= 2.0 * size
+        && fb.x0 <= la0 + size
+        && lb1 <= la1 + 2.0 * size
+        && (b.lines.len() == 1 || (la1 - lb1).abs() <= 2.0 * size)
 }
 
 /// A paragraph that runs to the bottom of one column and goes on at the top of the next was
@@ -203,32 +399,37 @@ impl Tail {
 /// the last one of the region before it, fold it into that block (dropping it from `items`),
 /// and return what the folded paragraph leaves as the tail.
 ///
-/// The evidence is all of: the earlier paragraph has no end of sentence and runs to its
-/// column's right edge; the later one starts in lowercase, higher up the page, in the same
-/// size, weight and colour; both are plain paragraphs (no heading, list or caption); and the
+/// The evidence is that of [`continues`]; the later one starts higher up the page; and the
 /// earlier column goes down as far as the later region's content does (within three lines),
-/// as a column does that runs out of room, not one that something else cut short.
-fn join_column_break(blocks: &mut [Block], tail: Option<Tail>, items: &mut Vec<FlowItem>, p: &Params) -> Option<Tail> {
+/// as a column does that runs out of room, not one that something else cut short. Asides
+/// (see [`asides`]) may come between: below the earlier paragraph, in regions of their own,
+/// or above the later one; they stay where they are, after the joined paragraph, and then one
+/// of them must be strong evidence.
+fn join_column_break(
+    blocks: &mut [Block],
+    tail: Option<&Tail>,
+    items: &mut Vec<FlowItem>,
+    body: f64,
+    p: &Params,
+) -> Option<Tail> {
     let t = tail?;
-    let Some(FlowItem::Paragraph(next)) = items.first() else { return None };
-    let Block::Text { text, .. } = &blocks[t.block] else { return None };
-    let (a, b) = (&t.last, next.lines.first()?);
+    let a = &t.last;
     let size = pmax(a.size(), 1.0);
-    let ends = rstrip(text);
-    let terminal = ends.ends_with(['.', '!', '?', ':', ';', '"', '”', '’', '…']);
-    let lower = strip(&next.text).chars().next().is_some_and(crate::pyc::is_lower);
-    let continues = plain(next)
-        && lower
-        && !terminal
-        && t.lines >= 2
-        && a.x1 >= t.right - 2.0 * size
+    let small = reference(a.size(), body);
+    // leading asides only when asides may interrupt
+    let k = if p.join_interrupted_paragraphs { items.iter().position(|it| aside(it, small, p).is_none())? } else { 0 };
+    let lead = asides(&items[..k], small, p)?;
+    let Some(FlowItem::Paragraph(next)) = items.get(k) else { return None };
+    let Block::Text { text, .. } = &blocks[t.block] else { return None };
+    let b = next.lines.first()?;
+    let continues = continues(text, a, t.lines, t.right, next, p)
         && b.y0 < a.y0
-        && a.y1 >= bottom_of(items) - 3.0 * size
-        && !crate::prose::style_change(a, b, p);
+        && t.bottom >= bottom_of(items) - 3.0 * size
+        && (!(t.interrupted || k > 0) || t.strong || lead);
     if !continues {
         return None;
     }
-    let FlowItem::Paragraph(next) = items.remove(0) else { return None };
+    let FlowItem::Paragraph(next) = items.remove(k) else { return None };
     if let Block::Text { text, .. } = &mut blocks[t.block] {
         crate::prose::append_line(text, strip(&next.text), p);
     }
