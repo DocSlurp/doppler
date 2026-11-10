@@ -114,3 +114,85 @@ fn nothing_is_marked_unless_asked() {
     let xhtml = page(&table(560.0, Some(HEADER), 1)) + &page(&table(60.0, Some(HEADER), 9));
     assert!(!convert(&xhtml, false)[1].contains("doppler:"));
 }
+
+/// A line of `t` in `size` point print.
+fn small_text(y: f64, t: &str, size: f64) -> String {
+    let mut x = 72.0;
+    let mut words = String::new();
+    for w in t.split(' ') {
+        let width = 0.5 * size * w.len() as f64;
+        words += &format!(
+            "<word xMin=\"{x}\" xMax=\"{}\" yMin=\"{y}\" yMax=\"{}\" fontSize=\"{size}\" fontName=\"Serif\" baseline=\"{}\">{w}</word>",
+            x + width,
+            y + size,
+            y + 0.8 * size
+        );
+        x += width + 0.3 * size;
+    }
+    format!("<block><line>{words}</line></block>")
+}
+
+fn convert_with(xhtml: &str, past_notes: bool) -> Vec<String> {
+    let o = Options { markers: true, ..Options::default() };
+    let p = Params { stitch_past_notes: past_notes, ..Params::default() };
+    to_markdown_report_with(xhtml, &p, &o).0
+}
+
+#[test]
+fn a_footnote_under_the_last_table_does_not_hide_the_continuation() {
+    for note in [
+        small_text(730.0, "Prices exclude shipping and handling charges.", 8.0),
+        text(730.0, "1 Prices exclude shipping and handling charges."),
+        small_text(730.0, "* Discontinued items are listed for reference.", 8.0),
+    ] {
+        let xhtml = page(&(table(560.0, Some(HEADER), 1) + &note)) + &page(&table(60.0, Some(HEADER), 9));
+        let pages = convert_with(&xhtml, true);
+        assert!(pages[0].contains("Prices exclude") || pages[0].contains("Discontinued"), "{}", pages[0]);
+        assert!(
+            pages[1].starts_with("<!-- doppler:table-continued header=repeated -->"),
+            "{}\n=== {}",
+            pages[0],
+            pages[1]
+        );
+        assert!(!convert_with(&xhtml, false)[1].contains("doppler:"), "off");
+    }
+}
+
+#[test]
+fn a_small_note_above_the_next_table_does_not_hide_the_continuation() {
+    let xhtml = page(&table(560.0, Some(HEADER), 1))
+        + &page(&(small_text(60.0, "Amounts in dollars.", 8.0) + &table(80.0, None, 9)));
+    let pages = convert_with(&xhtml, true);
+    assert!(pages[1].starts_with("Amounts in dollars."), "{}", pages[1]);
+    assert!(
+        pages[1].contains("Amounts in dollars.\n\n<!-- doppler:table-continued header=inherited -->\n\n| Name |"),
+        "{}",
+        pages[1]
+    );
+    assert!(!convert_with(&xhtml, false)[1].contains("doppler:"));
+}
+
+#[test]
+fn body_text_after_the_table_or_before_the_next_ends_it() {
+    let prose = "The totals above are reconciled every quarter against the ledger of the warehouse.";
+    let after = page(&(table(560.0, Some(HEADER), 1) + &text(730.0, prose))) + &page(&table(60.0, Some(HEADER), 9));
+    assert!(!convert_with(&after, true)[1].contains("table-continued"));
+    let before = page(&table(560.0, Some(HEADER), 1)) + &page(&(text(60.0, prose) + &table(80.0, Some(HEADER), 9)));
+    assert!(!convert_with(&before, true)[1].contains("table-continued"));
+    // a small note above body text, with no table after it, is no reason either
+    let note_then_text = page(&table(560.0, Some(HEADER), 1))
+        + &page(&(small_text(60.0, "Amounts in dollars.", 8.0) + &text(75.0, prose) + &table(100.0, None, 9)));
+    assert!(!convert_with(&note_then_text, true)[1].contains("table-continued"));
+}
+
+#[test]
+fn a_title_block_of_small_print_above_the_next_table_starts_a_new_table() {
+    let title = ["TABLE 5", "PRINTING OFFICE", "AMOUNTS DUE", "FISCAL YEARS 1974 AND 1973"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| small_text(40.0 + 18.0 * i as f64, t, 8.0))
+        .collect::<String>();
+    let xhtml = page(&table(560.0, Some(HEADER), 1)) + &page(&(title + &table(110.0, None, 9)));
+    let out = convert_with(&xhtml, true);
+    assert!(!out[1].contains("table-continued"), "{}", out[1]);
+}

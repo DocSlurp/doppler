@@ -36,7 +36,15 @@ pub(crate) enum FlowItem {
 }
 
 pub(crate) enum Block {
-    Text { text: String, heading: u8, list: bool, caption: bool },
+    /// `small`: set in print smaller than the body's (by `aside_size`); `lines`: how many
+    Text {
+        text: String,
+        heading: u8,
+        list: bool,
+        caption: bool,
+        small: bool,
+        lines: usize,
+    },
     Table(PlacedTable),
     Rendered(Rc<Vec<String>>),
 }
@@ -314,7 +322,7 @@ fn aside(item: &FlowItem, size: f64, p: &Params) -> Option<bool> {
 
 /// A footnote opens with its mark: a number of up to three digits and a space, a symbol, or a
 /// superscript digit.
-fn footnote_marked(text: &str) -> bool {
+pub(crate) fn footnote_marked(text: &str) -> bool {
     let t = strip(text);
     let digits = t.chars().take_while(char::is_ascii_digit).count();
     if (1..=3).contains(&digits) {
@@ -604,7 +612,9 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                             heading = 0;
                         }
                     }
-                    out.push(Block::Text { text: it.text, heading, list: it.kind.is_some(), caption });
+                    let small = it.ratio <= p.aside_size;
+                    let lines = it.lines.len();
+                    out.push(Block::Text { text: it.text, heading, list: it.kind.is_some(), caption, small, lines });
                 }
                 previous_table = false;
             }

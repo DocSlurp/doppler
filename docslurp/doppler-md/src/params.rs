@@ -200,6 +200,9 @@ params! {
     /// a short label in the margin beside a paragraph, read as the start of one of its lines,
     /// becomes a paragraph of its own before it
     margin_labels: flag = true,
+    /// with markers, small print or footnotes under a page's last table (or above the next
+    /// page's first) do not hide that the table goes on
+    stitch_past_notes: flag = true,
     /// the label ends at least this many sizes before the rest of its line
     label_gap: num = 0.5,
     /// and has at most this many characters

@@ -94,6 +94,12 @@ byte-identical.
   the earlier header, `header=inherited` when the earlier header was copied on top so the page
   stands alone, `header=none` otherwise. Drop the first row and its separator when merging
   `repeated` or `inherited` tables.
+  Notes do not hide a continuation (`stitch_past_notes`, on by default): the last table of a
+  page counts when only notes follow it (up to four: small print, smaller than the body by
+  `aside_size`, or a footnote mark; at most 400 characters each, no heading), such as a footnote
+  or a page footer that repeats with different text, and up to two one-line notes may sit
+  above the next page's table. More small print above a table is its title block, and the
+  table is new.
 - **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
   goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
   without one after a hyphen.
