@@ -51,6 +51,9 @@
 #include "SplashOutputDev.h"
 #include "splash/SplashBitmap.h"
 #include "CairoOutputDev.h"
+#include "CairoFontEngine.h"
+#include <ft2build.h>
+#include FT_FREETYPE_H
 #include "Win32Console.h"
 
 enum ExitCode
@@ -467,8 +470,17 @@ public:
         splash->setFontAntialias(true);
         splash->setVectorAntialias(true);
         splash->startDoc(doc);
-        cairo = std::make_unique<CairoOutputDev>();
-        cairo->startDoc(doc);
+        if (FT_Init_FreeType(&ftLib) == 0) {
+            cairoFonts = std::make_unique<CairoFontEngine>(ftLib);
+        }
+    }
+
+    ~Renderer()
+    {
+        cairoFonts.reset();
+        if (ftLib) {
+            FT_Done_FreeType(ftLib);
+        }
     }
 
     // Answers every job of one page, in order. jobs[first, last) share a page.
@@ -481,7 +493,11 @@ private:
     PDFDoc *doc;
     long long maxPixels;
     std::unique_ptr<SplashOutputDev> splash;
-    std::unique_ptr<CairoOutputDev> cairo;
+    // Fonts are shared across SVG jobs; each job gets a fresh CairoOutputDev,
+    // because a device reused across cairo surfaces keeps per-page cairo
+    // state alive and leaks it (~80 KB per job, seen with LeakSanitizer).
+    FT_Library ftLib = nullptr;
+    std::unique_ptr<CairoFontEngine> cairoFonts;
     std::vector<unsigned char> rowBuffer;
 };
 
@@ -545,6 +561,13 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     cairo_surface_t *surface = cairo_svg_surface_create_for_stream(appendToString, &out, w, h);
     cairo_svg_surface_restrict_to_version(surface, CAIRO_SVG_VERSION_1_2);
     cairo_svg_surface_set_document_unit(surface, CAIRO_SVG_UNIT_PT);
+    if (!cairoFonts) {
+        cairo_surface_destroy(surface);
+        emitError(job, "render");
+        return;
+    }
+    auto cairo = std::make_unique<CairoOutputDev>();
+    cairo->startDoc(doc, cairoFonts.get());
     cairo_t *cr = cairo_create(surface);
     cairo->setCairo(cr);
     // printing: keep vectors and images at their own resolution
@@ -556,6 +579,7 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     doc->displayPageSlice(cairo.get(), job.page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1);
     cairo_restore(cr);
     cairo->setCairo(nullptr);
+    cairo.reset();
     cairo_status_t status = cairo_status(cr);
     cairo_destroy(cr);
     cairo_surface_finish(surface);
