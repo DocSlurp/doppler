@@ -120,14 +120,16 @@ pub fn place(
         let (w, h) = (im.x1 - im.x0, im.y1 - im.y0);
         let floor = if im.mask { p.image_min_mask } else { p.image_min_size };
         let bbox = (im.x0, im.y0, im.x1, im.y1);
-        let fate = if watermarks.get(i).copied().unwrap_or(false) {
+        // a page background comes first: a scan repeats its page image on every page, which is
+        // not a watermark
+        let fate = if w * h >= p.image_background_share * area && kept_text {
+            Some(Fate::Background)
+        } else if watermarks.get(i).copied().unwrap_or(false) {
             Some(Fate::Watermark)
         } else if pmin(w, h) < floor {
             Some(Fate::Small)
         } else if seen.iter().any(|s| same_box(*s, bbox)) {
             Some(Fate::Duplicate)
-        } else if w * h >= p.image_background_share * area && kept_text {
-            Some(Fate::Background)
         } else if im.y1 <= band || im.y0 >= page.height - band {
             Some(Fate::Furniture)
         } else {
