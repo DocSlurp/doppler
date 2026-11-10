@@ -320,9 +320,10 @@ public:
 
     // Does this device want where every visible image lands (stencil masks included) even
     // though it does not draw non-text content? If so, Gfx calls imageGeometry() with the
-    // image's CTM in <state> and its pixel size, and never reads the image data.
+    // image's CTM in <state> and its pixel size, and never reads the image data. <ref> is the
+    // image XObject's indirect reference, or Ref::INVALID() for an inline image (or a direct one).
     virtual bool needImageGeometry() { return false; }
-    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/) { }
+    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/, Ref /*ref*/) { }
 
     virtual void endMarkedContent(GfxState *state);
     virtual void beginMarkedContent(const std::string &name, Dict *properties);

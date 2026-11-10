@@ -6052,7 +6052,7 @@ bool TextOutputDev::getImagesTruncated() const
     return text->getImagesTruncated();
 }
 
-void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil)
+void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref)
 {
     // The image fills the unit square under the CTM. Keep its axis-aligned extent, cut to the
     // clip and the page, as for rules; tiny images (bullets, rule slivers) are not figures.
@@ -6078,7 +6078,7 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     if (x1 - x0 < minExtent || y1 - y0 < minExtent) {
         return;
     }
-    text->addImage({ x0, y0, x1, y1, width, height, stencil }, remainingDocImages);
+    text->addImage({ x0, y0, x1, y1, width, height, stencil, ref }, remainingDocImages);
 }
 
 std::vector<TextGraphic> TextOutputDev::takeGraphics()

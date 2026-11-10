@@ -611,6 +611,7 @@ struct TextImage
     double xMin, yMin, xMax, yMax;
     int pixelWidth, pixelHeight; // the image's own size in samples
     bool stencil; // an image mask
+    Ref ref = Ref::INVALID(); // the image XObject, or INVALID for an inline image
 };
 
 // A cluster of painted vector drawing that is not axis-aligned (see
@@ -1020,7 +1021,7 @@ public:
     // image dictionary is read; the image data is never decoded.
     void setCollectImages(bool on) { collectImages = on; }
     bool needImageGeometry() override { return collectImages; }
-    void imageGeometry(GfxState *state, int width, int height, bool stencil) override;
+    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref) override;
     const std::vector<TextImage> &getImages() const;
     bool getImagesTruncated() const;
     // With setCollectImages: the clusters of painted drawing that is not axis-aligned on this

@@ -357,7 +357,7 @@ private:
     // XObject operators
     void opXObject(Object args[], int numArgs);
     void doImage(Object *ref, Stream *str, bool inlineImg);
-    void reportImageGeometry(Dict *dict, bool xobject);
+    void reportImageGeometry(Dict *dict, Ref ref);
     void doForm(Object *str);
 
     // in-line image operators
