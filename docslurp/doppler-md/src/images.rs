@@ -33,6 +33,8 @@ pub enum Fate {
     Background,
     /// wholly inside the header or footer band: no marker
     Furniture,
+    /// the same backdrop picture at the same place on enough pages: no marker
+    Watermark,
     /// below the size floors: no marker
     Small,
     /// drawn again at the same place: no marker
@@ -50,6 +52,7 @@ impl Fate {
             Fate::Inline => "inline",
             Fate::Background => "background",
             Fate::Furniture => "furniture",
+            Fate::Watermark => "watermark",
             Fate::Small => "small",
             Fate::Duplicate => "duplicate",
             Fate::Fragment => "fragment",
@@ -88,7 +91,14 @@ pub struct Figure {
 /// words drawn as pictures. A figure is marked once, at its representative: the first of its
 /// images. Inline pictures are put into their lines of `page` now; the figures that stand
 /// alone come back for the layout to order.
-pub fn place(page: &mut Page, drop: &[bool], body: f64, p: &Params, number: u32) -> (Vec<Figure>, Vec<Note>) {
+pub fn place(
+    page: &mut Page,
+    drop: &[bool],
+    body: f64,
+    p: &Params,
+    number: u32,
+    watermarks: &[bool],
+) -> (Vec<Figure>, Vec<Note>) {
     let images = std::mem::take(&mut page.images);
     let mut figures = Vec::new();
     let mut notes: Vec<Note> = Vec::with_capacity(images.len());
@@ -102,7 +112,9 @@ pub fn place(page: &mut Page, drop: &[bool], body: f64, p: &Params, number: u32)
         let (w, h) = (im.x1 - im.x0, im.y1 - im.y0);
         let floor = if im.mask { p.image_min_mask } else { p.image_min_size };
         let bbox = (im.x0, im.y0, im.x1, im.y1);
-        let fate = if pmin(w, h) < floor {
+        let fate = if watermarks.get(i).copied().unwrap_or(false) {
+            Some(Fate::Watermark)
+        } else if pmin(w, h) < floor {
             Some(Fate::Small)
         } else if seen.iter().any(|s| same_box(*s, bbox)) {
             Some(Fate::Duplicate)

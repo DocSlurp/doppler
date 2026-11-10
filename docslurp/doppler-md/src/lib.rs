@@ -24,6 +24,7 @@ mod rotation;
 mod stitch;
 pub mod tables;
 mod unicode_tables;
+mod watermark;
 
 pub use model::ParseReport;
 pub use params::{Params, UseBlocks};
@@ -110,12 +111,22 @@ struct Margins {
     /// distinct keys of each kind: a page counts once per key
     keys: HashSet<MarginKey>,
     literals: HashSet<MarginKey>,
+    /// the page's body size, and the keys of its large words and backdrop pictures
+    body: f64,
+    marks: HashSet<String>,
+    pictures: HashSet<String>,
 }
 
 impl Margins {
     fn of(page: &Page, p: &Params) -> Margins {
         let band = p.furniture_band;
-        let mut m = Margins { cand: Vec::new(), keys: HashSet::new(), literals: HashSet::new() };
+        let (body, marks) = if p.watermarks { watermark::word_keys(page, p) } else { (0.0, HashSet::new()) };
+        let pictures = if p.watermarks {
+            page.images.iter().filter_map(|im| watermark::image_key(page, im)).collect()
+        } else {
+            HashSet::new()
+        };
+        let mut m = Margins { cand: Vec::new(), keys: HashSet::new(), literals: HashSet::new(), body, marks, pictures };
         for (li, line) in page.lines.iter().enumerate() {
             let mid = (line.y0 + line.y1) / 2.0;
             let top = mid < page.height * band;
@@ -136,6 +147,8 @@ impl Margins {
 struct MarginCounts {
     keys: HashMap<MarginKey, usize>,
     literals: HashMap<MarginKey, usize>,
+    marks: HashMap<String, usize>,
+    pictures: HashMap<String, usize>,
 }
 
 impl MarginCounts {
@@ -146,10 +159,26 @@ impl MarginCounts {
         for k in &m.literals {
             *self.literals.entry(k.clone()).or_default() += 1;
         }
+        for k in &m.marks {
+            *self.marks.entry(k.clone()).or_default() += 1;
+        }
+        for k in &m.pictures {
+            *self.pictures.entry(k.clone()).or_default() += 1;
+        }
     }
 
     fn remove(&mut self, m: &Margins) {
         for (map, keys) in [(&mut self.keys, &m.keys), (&mut self.literals, &m.literals)] {
+            for k in keys {
+                if let Some(n) = map.get_mut(k) {
+                    *n -= 1;
+                    if *n == 0 {
+                        map.remove(k);
+                    }
+                }
+            }
+        }
+        for (map, keys) in [(&mut self.marks, &m.marks), (&mut self.pictures, &m.pictures)] {
             for k in keys {
                 if let Some(n) = map.get_mut(k) {
                     *n -= 1;
@@ -259,6 +288,8 @@ pub struct Report {
     pub page_work_max: u64,
     /// per page, what the math reader did (empty without [`Options::math`])
     pub math: Vec<math::PageMath>,
+    /// words taken out as watermarks (pale, diagonal or repeated large text)
+    pub watermark_words: usize,
     /// every image the producer reported and what became of it (only with [`Options::markers`])
     pub images: Vec<images::Note>,
 }
@@ -313,6 +344,11 @@ impl Report {
                 pages(|m| m.uncertain > 0 || m.partial > 0 || m.ocr_layer || m.unreadable)
             )
         };
+        let watermark = if self.watermark_words > 0 {
+            format!(",\"watermark_words\":{}", self.watermark_words)
+        } else {
+            String::new()
+        };
         let images = if self.images.is_empty() {
             String::new()
         } else {
@@ -340,7 +376,7 @@ impl Report {
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}}}"
+                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -358,7 +394,8 @@ impl Report {
             self.page_work_max,
             degraded.join(","),
             math,
-            images
+            images,
+            watermark
         )
     }
 }
@@ -476,6 +513,9 @@ impl<'p> Converter<'p> {
         } else {
             images::neutralize(&mut page);
         }
+        if self.p.watermarks {
+            self.report.watermark_words += watermark::strip_local(&mut page, self.p);
+        }
         if self.o.math {
             let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
             page.lines = lines;
@@ -523,7 +563,29 @@ impl<'p> Converter<'p> {
                 }
             }
         }
-        let drop = furniture(&page, &m, &self.counts, self.counted, p);
+        // large words that repeat on enough pages (computed over the window, like running
+        // headers); a page that loses words gets its margins read again
+        let need = pmax(2.0, p.furniture_min_share * self.counted as f64);
+        let mut repeated_pictures: Vec<bool> = Vec::new();
+        let mut fresh: Option<Margins> = None;
+        if p.watermarks && self.counted >= 2 {
+            if !page.images.is_empty() {
+                repeated_pictures = page
+                    .images
+                    .iter()
+                    .map(|im| {
+                        watermark::image_key(&page, im)
+                            .is_some_and(|k| self.counts.pictures.get(&k).is_some_and(|&n| n as f64 >= need))
+                    })
+                    .collect();
+            }
+            let removed = watermark::strip_repeated(&mut page, m.body, &self.counts.marks, need, p);
+            if removed > 0 {
+                self.report.watermark_words += removed;
+                fresh = Some(Margins::of(&page, p));
+            }
+        }
+        let drop = furniture(&page, fresh.as_ref().unwrap_or(&m), &self.counts, self.counted, p);
         if self.window.is_some() {
             self.behind.push_back(m);
         }
@@ -550,7 +612,7 @@ impl<'p> Converter<'p> {
             (Vec::new(), Vec::new())
         } else {
             let number = page.number.unwrap_or(pi as u32 + 1);
-            images::place(&mut page, &drop, body, p, number)
+            images::place(&mut page, &drop, body, p, number, &repeated_pictures)
         };
         self.report.images.extend(notes);
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {

@@ -102,6 +102,25 @@ The markers are ordinary Markdown and comments, so text of the PDF could imitate
 `--markers`, a zero-width space goes after `doppler` in any word that holds `doppler-image:` or
 `doppler:`. A caller should still trust only ids that the report lists.
 
+## Watermarks
+
+Large pale or diagonal text and repeated backdrops are not content (parameter `watermarks`, on by
+default; `0` restores the old output). Left in, a pale "CONFIDENTIAL" at 45 degrees became
+stray one-letter headings and tables of letters, and a horizontal "DRAFT" was glued to the first
+paragraph. A word goes when it is large (`watermark_size`, 1.5 body sizes) and any of:
+
+- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white) not on a
+  dark box; white text on banners and photos is kept;
+- **diagonal**: three or more words of one font size on a line at least 15 degrees from both axes
+  (a vertical label stays);
+- **repeated**: the same word at the same place on as many pages as a running header needs
+  (`furniture_min_share`, at least 2, over the same window, so `--window 0` sees only the page itself).
+
+With `--markers`, a picture of at least 5% of the page at the same place and size on that many
+pages gets no marker (`placed: watermark`). Small watermarks of one page that are dark and
+horizontal, and one-page picture watermarks, cannot be told from content and stay. The report
+gains `watermark_words` when any were removed.
+
 ## Columns and headers
 
 Two parameters change the default output (`--params '{"name":0}'` restores the old one):

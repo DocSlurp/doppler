@@ -197,6 +197,13 @@ params! {
     /// a page with more pictures than this inside its lines has text drawn as pictures: they
     /// get no markers
     image_inline_max: num = 12.0,
+    /// remove watermarks: large pale or diagonal words, and large words and pictures that repeat
+    /// at the same place on enough pages
+    watermarks: flag = true,
+    /// a watermark word is at least this many times the page's body size
+    watermark_size: num = 1.5,
+    /// a pale word is at least this luminance (white, the text of banners, is not pale)
+    watermark_min_lum: num = 0.72,
     /// images this many body sizes apart or less are one figure and get one marker
     image_group_gap: num = 0.75,
     /// an image needs both sides at least this many points to get a marker (pictures)
