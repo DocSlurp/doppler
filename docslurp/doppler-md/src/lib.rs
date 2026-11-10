@@ -298,6 +298,8 @@ pub struct Report {
     /// files written by image extraction (`pdftomarkdown --images-dir`); `None` when it did not
     /// run. With it, every image of the JSON gains `file` (its name in the folder, or null).
     pub images_written: Option<usize>,
+    /// why image extraction failed (the folder was removed); a fixed message, no document text
+    pub images_error: Option<String>,
 }
 
 impl Report {
@@ -414,6 +416,11 @@ impl Report {
             images,
             watermark,
             self.images_written.map(|n| format!(",\"images_written\":{n}")).unwrap_or_default()
+                + &self
+                    .images_error
+                    .as_ref()
+                    .map(|e| format!(",\"images_error\":{}", serde_json::Value::String(e.clone())))
+                    .unwrap_or_default()
         )
     }
 }

@@ -6,7 +6,7 @@ use std::io::{BufWriter, Read, StdoutLock, Write};
 use std::process::ExitCode;
 
 use doppler_md::model::{self, Parser};
-use doppler_md::{Converter, Options, Params};
+use doppler_md::{Converter, Options, Params, Report};
 
 /// Read size. Pages are written as soon as the converter's window allows, so this bounds the
 /// input buffered ahead of the parser, not the latency.
@@ -69,7 +69,14 @@ impl<'p> Run<'p> {
     /// Ends the input and writes the remaining pages (`want_report`: the JSON report line to
     /// stderr). Exit status 2 with `no_page` on stderr when the input had no `<page>`, 1 on a
     /// write error.
-    pub fn finish(mut self, prog: &str, want_report: bool, no_page: &str) -> ExitCode {
+    #[allow(dead_code)] // doppler-md only
+    pub fn finish(self, prog: &str, want_report: bool, no_page: &str) -> ExitCode {
+        let (report, written) = self.finish_report();
+        conclude(prog, &report, written, want_report, no_page)
+    }
+
+    /// Ends the input and writes the remaining pages; the report and how writing went.
+    pub fn finish_report(mut self) -> (Report, std::io::Result<()>) {
         if self.write_error.is_none() {
             self.decode(&[], true);
             self.feed();
@@ -84,18 +91,7 @@ impl<'p> Run<'p> {
         {
             write_error = Some(e);
         }
-        if want_report {
-            eprintln!("{}", report.to_json());
-        }
-        if !report.page_found() {
-            eprintln!("{prog}: {no_page}");
-            return ExitCode::from(2);
-        }
-        if let Some(e) = write_error {
-            eprintln!("{prog}: {e}");
-            return ExitCode::FAILURE;
-        }
-        ExitCode::SUCCESS
+        (report, write_error.map_or(Ok(()), Err))
     }
 
     fn decode(&mut self, bytes: &[u8], eof: bool) {
@@ -111,6 +107,29 @@ impl<'p> Run<'p> {
         });
         text.clear();
     }
+}
+
+/// Prints the report (`want_report`) and gives the exit status: 2 with `no_page` on stderr
+/// when the input had no `<page>`, 1 on a write error, else 0.
+pub fn conclude(
+    prog: &str,
+    report: &Report,
+    written: std::io::Result<()>,
+    want_report: bool,
+    no_page: &str,
+) -> ExitCode {
+    if want_report {
+        eprintln!("{}", report.to_json());
+    }
+    if !report.page_found() {
+        eprintln!("{prog}: {no_page}");
+        return ExitCode::from(2);
+    }
+    if let Err(e) = written {
+        eprintln!("{prog}: {e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 /// Writes one page (after a form feed, unless it is the first). After a write error, drops

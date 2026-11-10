@@ -272,8 +272,86 @@ memory drops from 69 MB to that of pdftotext (about 25 MB) with or without a win
 With a window, pages already written stay written when pdftotext later fails: the exit
 status, not the output, says whether the conversion finished.
 
+## Extracting images and figures (`--images-dir`)
+
+    pdftomarkdown --images-dir out/ --report paper.pdf > paper.md
+    pdftomarkdown --images-dir out/ --images-dpi 200 --images-repeats link --vector-format webp paper.pdf
+
+`--images-dir DIR` (implies `--markers`) writes a file for each marked picture (`pN.M`) and
+vector figure (`pN.gK`) to DIR, rendered by `pdfregions` (`$PDFREGIONS`, else beside the
+executable, else on `PATH`; protocol: `docslurp/extraction/PROTOCOL.md`). The Markdown is
+byte-identical to `--markers` without it and is written first; the folder is filled after.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--images-dir DIR` | off | DIR must not exist; created 0700 |
+| `--images-min-side N[px\|pt]` | `24px` | no file when the smaller side is under N (px: output pixels at the dpi; pt: page points) |
+| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file / manifest points to the first file (`repeat_of`) / a file of its own |
+| `--raster-format webp\|png` | `webp` | pictures: lossy WebP, lossless when the crop holds text lines |
+| `--raster-quality N` | `90` | lossy WebP quality |
+| `--raster-lossless` | off | lossless WebP for every picture |
+| `--vector-format svg\|webp\|png` | `svg` | vector figures; an SVG refused by the allowlist or over `--svg-max-bytes` becomes lossless WebP (`fallback`) |
+| `--svg-precision 1\|2` | `1` | decimals of a point in SVG coordinates |
+| `--svg-max-bytes N` | `512KiB` | largest compacted SVG kept |
+| `--images-dpi N` | `150` | raster resolution, 36..600 |
+| `--images-max N` | `500` | most files; more fails the extraction |
+| `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
+| `--images-timeout S` | `120` | renderer time for the whole document |
+
+Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
+link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
+
+**What gets a file.** Only marked images (`placed` `block` or `inline`) at least the minimum
+side. No file for `watermark`, `furniture`, `duplicate`, `background`, `fragment`, `small`,
+`text` and `grouped` (grouped images are inside their figure's file: the figure is rendered
+at its union box). A repeat is a marked figure with the same box size (to half a point), pixel
+size and kind as an earlier one and either the same image object (`ref`, not rendered again)
+or, without a `ref` (vector figures, inline images), byte-identical rendered output. Same-size
+charts with different content are therefore never treated as repeats.
+
+**Files.** `DIR/<id>.webp|png|svg`, named only from the ids (checked against
+`^p[0-9]{1,9}\.g?[0-9]{1,6}$`). SVG is parsed (roxmltree, no DTD), checked against an allowlist
+(`svg g defs path use clipPath mask rect image symbol linearGradient radialGradient stop pattern
+filter feColorMatrix`, their presentation attributes, references only `#id`, images only
+`data:image/png;base64,` with a PNG signature; no script, style, foreignObject, event
+attributes, external URLs or entities) and rewritten from the parsed tree: coordinates rounded
+to the precision in final page points (more decimals under an enlarging transform, one more on
+dashed strokes; image placement keeps 2 decimals and transform scale factors 6 significant
+digits), relative path commands where shorter, hex colours, defaults dropped where nothing
+inherits another value, identical glyph definitions merged, short ids, shared styles hoisted to
+groups, unreferenced definitions, empty groups and whitespace removed. WebP (libwebp) is a RIFF
+with one `VP8 `/`VP8L` chunk; PNG has only IHDR/IDAT/IEND. Files are written to an `O_EXCL`
+temporary name in a directory opened without following links, then renamed with
+`RENAME_NOREPLACE`.
+
+**manifest.json** (written last; the same input gives the same bytes): `version`, `dpi`,
+`min_side_pt`, `repeats`, then `images`, sorted by page, pictures before figures, by index, one
+per line: `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`,
+`file` (or null), `format`, `bytes`, `sha256`, `width`, `height` (pixels; for SVG the box in
+points, rounded up), and when they apply `repeat_of`, `fallback` (`svg_allowlist`, `svg_size`),
+`skipped` (`fate`, `min_side`, `repeat`), `error` (renderer `pixels`, `render`, `empty`, `page`;
+`mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
+byte count; `encode`, `utf8`, `svg_size`). Then `totals` (`images`, `marked`, `written`,
+`bytes`, `repeats`, `small`, `fallbacks`, `errors`). `--report` gains `file` per image and
+`images_written` (and `images_error` on failure).
+
+**Failures and exit status.** One image failing is recorded (`error`) and the rest go on. The
+renderer failing (cannot run, crash, non-zero exit, broken framing, timeout), a cap
+(`--images-max`, `--images-max-bytes`) or a write error removes DIR; the Markdown is still
+written and the exit status is **5**. pdftotext failing exits as before and removes DIR.
+
+**Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
+SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
+kept 35.6% of the bytes at `--svg-precision 1` (41.0% at 2). Rendered with `rsvg-convert` at
+300 dpi, 14.4% of inked pixels changed by more than 16 levels at precision 1 and 1.4% at
+precision 2 (antialiasing on edges shifted up to 0.05 pt; no visible change). 188 raster crops
+(47.8 Mpx): lossy WebP q90 21.9 ms per crop (11.6 Mpx/s) at 28.4% of PNG's size; lossless
+WebP 67.9 ms per crop (3.7 Mpx/s) at 62.8%; PNG 13.2 ms (19.3 Mpx/s). Measure with
+`cargo run --release --example image_bench`.
+
 ## Exit status and report
 
+- 5 (`pdftomarkdown --images-dir`): the Markdown was written but image extraction failed.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

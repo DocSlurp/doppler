@@ -1271,6 +1271,9 @@ fn units_len(v: i64, digits: u8) -> usize {
     s.len() + 1
 }
 
+/// A segment as absolute and relative values, its letter and its end point.
+type SegParts = (Vec<i64>, Vec<i64>, u8, Option<(i64, i64)>);
+
 fn write_path(segs: &[Seg], digits: u8) -> String {
     let mut out = String::with_capacity(segs.len() * 12);
     let mut w = NumWriter { out: &mut out, last: None, digits };
@@ -1279,7 +1282,7 @@ fn write_path(segs: &[Seg], digits: u8) -> String {
     let mut implicit: Option<u8> = None;
     let len = |vals: &[i64]| vals.iter().map(|&v| units_len(v, digits)).sum::<usize>();
     for (k, seg) in segs.iter().enumerate() {
-        let (abs_vals, rel_vals, letter, end): (Vec<i64>, Vec<i64>, u8, Option<(i64, i64)>) = match *seg {
+        let (abs_vals, rel_vals, letter, end): SegParts = match *seg {
             Seg::M(x, y) => (vec![x, y], vec![x - cx, y - cy], b'M', Some((x, y))),
             Seg::L(x, y) => {
                 // a horizontal or vertical line is shorter as H or V
