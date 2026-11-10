@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::TableFormat;
+use crate::images::Figure;
 use crate::layout::{Budget, Elem, regions_within};
 use crate::model::{Page, Word};
 use crate::params::{Params, UseBlocks};
@@ -61,6 +62,7 @@ impl PageLayout {
         p: &Params,
         format: TableFormat,
         budget: &mut Budget,
+        figures: &[Figure],
     ) -> Option<Self> {
         let ids: Vec<usize> = (0..page.lines.len()).filter(|&i| !drop[i]).collect();
         let mut per_block: Counter<i64> = Counter::new();
@@ -78,7 +80,7 @@ impl PageLayout {
         let mut rendered = Vec::with_capacity(groups.len());
         for g in groups {
             let no_drop = vec![false; g.page.lines.len()];
-            let sub = PageLayout::within(&g.page, &no_drop, body, body_color, p, format, budget)?;
+            let sub = PageLayout::within(&g.page, &no_drop, body, body_color, p, format, budget, &[])?;
             let parts: Vec<String> = render_blocks(sub.blocks, format, p.display_math_paragraphs)
                 .into_iter()
                 .filter(|s| !strip(s).is_empty())
@@ -103,6 +105,15 @@ impl PageLayout {
             elements = replace_members(elements, tables);
         }
         elements.extend(rendered);
+        // a picture between paragraphs: a barrier of its own, ordered by where it lies
+        elements.extend(figures.iter().map(|f| Elem {
+            line: None,
+            table: Some(Placed::Rendered(Rc::new(vec![f.marker.to_string()]))),
+            x0: f.x0,
+            x1: f.x1,
+            y0: f.y0,
+            y1: f.y1,
+        }));
         let mut blocks = Vec::new();
         for region in regions_within(&elements, &page.lines, body, p, 0, budget)? {
             // A narrow gutter can place the same line in two regions. Each region assigns

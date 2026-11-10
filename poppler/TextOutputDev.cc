@@ -2566,6 +2566,8 @@ void TextPage::clear()
     underlines.clear();
     rules.clear();
     rulesTruncated = false;
+    images.clear();
+    imagesTruncated = false;
     dropped.clear();
     links.clear();
 
@@ -2982,6 +2984,19 @@ void TextPage::addRule(const TextRule &rule, size_t &remainingDocumentRules)
         return;
     }
     rules.push_back(rule);
+}
+
+void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
+{
+    const bool documentFull = remainingDocumentImages == 0;
+    if (!documentFull) {
+        --remainingDocumentImages;
+    }
+    if (documentFull || images.size() >= maxImages) {
+        imagesTruncated = true;
+        return;
+    }
+    images.push_back(image);
 }
 
 void TextPage::addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link)
@@ -5960,6 +5975,45 @@ const std::vector<TextRule> &TextOutputDev::getRules() const
 bool TextOutputDev::getRulesTruncated() const
 {
     return text->getRulesTruncated();
+}
+
+const std::vector<TextImage> &TextOutputDev::getImages() const
+{
+    return text->getImages();
+}
+
+bool TextOutputDev::getImagesTruncated() const
+{
+    return text->getImagesTruncated();
+}
+
+void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil)
+{
+    // The image fills the unit square under the CTM. Keep its axis-aligned extent, cut to the
+    // clip and the page, as for rules; tiny images (bullets, rule slivers) are not figures.
+    double x[4], y[4];
+    state->transform(0, 0, &x[0], &y[0]);
+    state->transform(1, 0, &x[1], &y[1]);
+    state->transform(0, 1, &x[2], &y[2]);
+    state->transform(1, 1, &x[3], &y[3]);
+    for (int i = 0; i < 4; ++i) {
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i])) {
+            return;
+        }
+    }
+    double x0 = std::min({ x[0], x[1], x[2], x[3] }), x1 = std::max({ x[0], x[1], x[2], x[3] });
+    double y0 = std::min({ y[0], y[1], y[2], y[3] }), y1 = std::max({ y[0], y[1], y[2], y[3] });
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    x0 = std::max({ x0, cx0, 0.0 });
+    y0 = std::max({ y0, cy0, 0.0 });
+    x1 = std::min({ x1, cx1, text->getPageWidth() });
+    y1 = std::min({ y1, cy1, text->getPageHeight() });
+    constexpr double minExtent = 2.0;
+    if (x1 - x0 < minExtent || y1 - y0 < minExtent) {
+        return;
+    }
+    text->addImage({ x0, y0, x1, y1, width, height, stencil }, remainingDocImages);
 }
 
 void TextOutputDev::addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box, bool imageMask)

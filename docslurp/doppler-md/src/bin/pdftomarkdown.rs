@@ -26,12 +26,14 @@ mod cli;
 const STREAM_WINDOW: usize = 16;
 
 const USAGE: &str = "\
-usage: pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--report] [--params JSON]
+usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--report] [--params JSON]
                      [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
                  $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
+  --markers      mark where pictures sit in the text for restitching: ![image](doppler-image:pN.M)
+                 between paragraphs or inside a line (pdftotext -images); report: images
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --stream       write pages as they are converted (--window 16)
@@ -78,6 +80,7 @@ fn main() -> ExitCode {
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
             "--math" => opts.math = true,
+            "--markers" => opts.markers = true,
             "--strict" => strict = true,
             "--stream" => window = Some(STREAM_WINDOW),
             "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
@@ -137,6 +140,7 @@ fn main() -> ExitCode {
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
         .args(if strict { None } else { Some("-compact-layout") })
         .args(if opts.math { Some("-glyphs") } else { None })
+        .args(if opts.markers { Some("-images") } else { None })
         .args(&pass)
         .arg(&file)
         .arg("-")

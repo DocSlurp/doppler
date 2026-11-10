@@ -151,6 +151,9 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
         let (width, height) = frame.dims();
         let rules = nearby_rules(&page.rules, (x0, y0, x1, y1)).into_iter().map(|r| frame.rule(r)).collect();
         let sub = Page {
+            number: page.number,
+            images: Vec::new(),
+            images_truncated: false,
             width,
             height,
             lines: ls.iter().map(|l| Rc::new(frame.line(l))).collect(),

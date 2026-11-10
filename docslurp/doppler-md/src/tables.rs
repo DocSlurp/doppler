@@ -1524,6 +1524,9 @@ mod span_tests {
     // Source topology: 3x3 grid, upper-left 2x2 rectangle merged; other cells empty.
     fn fixture() -> Page {
         let mut page = Page {
+            number: None,
+            images: vec![],
+            images_truncated: false,
             width: 300.,
             height: 300.,
             lines: vec![],

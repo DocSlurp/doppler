@@ -601,6 +601,15 @@ struct TextRule
     bool imageMask = false; // a thin stencil image mask (TextOutputDev::setCollectImageMaskRules)
 };
 
+// A visible image (or stencil mask) in the same coordinate space as the page's words (see
+// TextOutputDev::setCollectImages): the part of its unit square inside the clip and the page.
+struct TextImage
+{
+    double xMin, yMin, xMax, yMax;
+    int pixelWidth, pixelHeight; // the image's own size in samples
+    bool stencil; // an image mask
+};
+
 class POPPLER_PRIVATE_EXPORT TextPage
 {
 public:
@@ -662,6 +671,12 @@ public:
     const std::vector<TextRule> &getRules() const { return rules; }
     bool getRulesTruncated() const { return rulesTruncated; }
     static constexpr size_t maxRules = 20000;
+
+    // Add a visible image (TextOutputDev::setCollectImages); at most maxImages per page.
+    void addImage(const TextImage &image, size_t &remainingDocumentImages);
+    const std::vector<TextImage> &getImages() const { return images; }
+    bool getImagesTruncated() const { return imagesTruncated; }
+    static constexpr size_t maxImages = 2000;
 
     // Add a hyperlink.
     void addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link);
@@ -786,6 +801,8 @@ private:
     std::vector<std::unique_ptr<TextUnderline>> underlines;
     std::vector<TextRule> rules;
     bool rulesTruncated = false;
+    std::vector<TextImage> images;
+    bool imagesTruncated = false;
     bool actualTextChars = false;
     bool collectDropped = false;
     std::vector<DroppedGlyph> dropped;
@@ -973,6 +990,14 @@ public:
     const std::vector<TextRule> &getRules() const;
     bool getRulesTruncated() const;
 
+    // Record where each visible image and image mask lands on the page (TextImage). Only the
+    // image dictionary is read; the image data is never decoded.
+    void setCollectImages(bool on) { collectImages = on; }
+    bool needImageGeometry() override { return collectImages; }
+    void imageGeometry(GfxState *state, int width, int height, bool stencil) override;
+    const std::vector<TextImage> &getImages() const;
+    bool getImagesTruncated() const;
+
     void setInlineLinkURIs(bool inlineLinkURIsA);
 
     // Get the head of the linked list of TextFlows for the
@@ -1010,6 +1035,9 @@ private:
     bool doHTML; // extra processing for HTML conversion
     bool collectRules = false;
     bool collectImageMaskRules = false;
+    bool collectImages = false;
+    static constexpr size_t maxDocImages = 100000;
+    size_t remainingDocImages = maxDocImages;
     static constexpr size_t maxDocRules = 200000;
     // Budget for visible rule candidates across pages, including candidates
     // rejected by a full page. TextPage consumes it but does not own its lifetime.

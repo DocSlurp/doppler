@@ -185,4 +185,14 @@ params! {
     /// lines plus layout work units over the whole document; once spent, the remaining pages
     /// fall back to plain lines
     max_doc_work: num = 5.0e7,
+    /// an image needs both sides at least this many points to get a marker (pictures)
+    image_min_size: num = 6.0,
+    /// and a stencil mask both sides at least this many (bullets and glyph bitmaps are masks)
+    image_min_mask: num = 12.0,
+    /// an image no taller than this many body sizes that sits in a line of text is marked
+    /// inside that line instead of between paragraphs
+    image_inline_height: num = 2.5,
+    /// an image covering this share of the page, under text, is the page's background (a scan
+    /// with a text layer) and gets no marker
+    image_background_share: num = 0.85,
 }

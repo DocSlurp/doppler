@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 mod entities;
+pub mod images;
 pub mod layout;
 pub mod math;
 pub mod model;
@@ -257,6 +258,8 @@ pub struct Report {
     pub page_work_max: u64,
     /// per page, what the math reader did (empty without [`Options::math`])
     pub math: Vec<math::PageMath>,
+    /// every image the producer reported and what became of it (only with [`Options::markers`])
+    pub images: Vec<images::Note>,
 }
 
 impl Report {
@@ -309,12 +312,32 @@ impl Report {
                 pages(|m| m.uncertain > 0 || m.partial > 0 || m.ocr_layer || m.unreadable)
             )
         };
+        let images = if self.images.is_empty() {
+            String::new()
+        } else {
+            let one = |n: &images::Note| {
+                format!(
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"}}",
+                    n.id,
+                    n.page,
+                    n.bbox.0,
+                    n.bbox.1,
+                    n.bbox.2,
+                    n.bbox.3,
+                    n.px.0,
+                    n.px.1,
+                    if n.mask { "mask" } else { "picture" },
+                    n.fate.as_str()
+                )
+            };
+            format!(",\"images\":[{}]", self.images.iter().map(one).collect::<Vec<_>>().join(","))
+        };
         format!(
             concat!(
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}}}"
+                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -331,7 +354,8 @@ impl Report {
             self.doc_work,
             self.page_work_max,
             degraded.join(","),
-            math
+            math,
+            images
         )
     }
 }
@@ -372,6 +396,10 @@ pub struct Options {
     /// Read typeset math from `pdftotext -glyphs` records and write it as LaTeX (`$...$`,
     /// `$$...$$`). Off: glyph records are ignored and the output is unchanged.
     pub math: bool,
+    /// Mark where pictures sit in the text, for a caller that restitches them (see
+    /// [`images`]). Needs `pdftotext -images`; off, image records are ignored and the output
+    /// is unchanged.
+    pub markers: bool,
 }
 
 /// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
@@ -437,6 +465,9 @@ impl<'p> Converter<'p> {
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
     /// is now complete.
     pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
+        if !self.o.markers {
+            page.images = Vec::new();
+        }
         if self.o.math {
             let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
             page.lines = lines;
@@ -473,7 +504,7 @@ impl<'p> Converter<'p> {
         let p = if self.o.math { &math_params } else { self.p };
         let (body, body_color) =
             self.body.get_or_insert_with(|| body_size(self.ahead.iter().map(|(pg, _)| pg))).clone();
-        let Some((page, m)) = self.ahead.pop_front() else { return };
+        let Some((mut page, m)) = self.ahead.pop_front() else { return };
         let pi = self.next;
         self.next += 1;
         if let Some(w) = self.window {
@@ -506,7 +537,14 @@ impl<'p> Converter<'p> {
         }
         self.spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
-        let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget) {
+        let (figures, notes) = if page.images.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let number = page.number.unwrap_or(pi as u32 + 1);
+            images::place(&mut page, &drop, body, p, number)
+        };
+        self.report.images.extend(notes);
+        let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(layout) => layout.markdown(self.o.tables, self.o.math),
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };

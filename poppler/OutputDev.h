@@ -318,6 +318,12 @@ public:
     virtual bool needImageMaskGeometry() { return false; }
     virtual void imageMaskGeometry(GfxState * /*state*/) { }
 
+    // Does this device want where every visible image lands (stencil masks included) even
+    // though it does not draw non-text content? If so, Gfx calls imageGeometry() with the
+    // image's CTM in <state> and its pixel size, and never reads the image data.
+    virtual bool needImageGeometry() { return false; }
+    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/) { }
+
     virtual void endMarkedContent(GfxState *state);
     virtual void beginMarkedContent(const std::string &name, Dict *properties);
     virtual void markPoint(const std::string &name);

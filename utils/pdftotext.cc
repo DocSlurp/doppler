@@ -118,6 +118,7 @@ static bool printEnc = false;
 static bool tsvMode = false;
 static bool wordMeta = false;
 static bool collectRules = false;
+static bool collectImages = false;
 static bool compactLayout = false;
 static bool glyphRecords = false;
 static char hyphenModeStr[16] = "";
@@ -146,6 +147,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
                                    { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
                                    { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
+                                   { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, and the page number (image data is never decoded)" },
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
                                    { .arg = "-colspacing",
@@ -860,6 +862,10 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "'-rules' needs -bbox-layout");
         return 99;
     }
+    if (collectImages && !bboxLayout) {
+        error(errCommandLine, -1, "'-images' needs -bbox-layout");
+        return 99;
+    }
     if (compactLayout && !bboxLayout) {
         error(errCommandLine, -1, "'-compact-layout' needs -bbox-layout");
         return 99;
@@ -1051,6 +1057,7 @@ int main(int argc, char *argv[])
             }
             if (bboxLayout) {
                 textOut.setCollectRules(collectRules);
+                textOut.setCollectImages(collectImages);
                 textOut.setCollectImageMaskRules(glyphRecords);
                 textOut.setCollectDroppedGlyphs(glyphRecords);
                 printDocBBox(f, doc.get(), &textOut, firstPage, lastPage);
@@ -1283,6 +1290,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             glyphContext->startPage(page, textOut);
             glyphAttrs = std::string(glyphContext->pageTruncated() ? " glyphsTruncated=\"1\"" : "") + (glyphContext->pageFontsTruncated() ? " fontsTruncated=\"1\"" : "");
         }
+        if (collectImages) {
+            // after the glyph attributes, so a reader that stops at the first unknown one still sees them
+            glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "");
+        }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
@@ -1291,6 +1302,12 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             }
         } else {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, glyphAttrs.c_str());
+        }
+        if (collectImages) {
+            for (const TextImage &image : textOut->getImages()) {
+                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
+                        image.stencil ? " kind=\"mask\"" : "");
+            }
         }
         if (glyphContext) {
             glyphContext->writeFontTable(f);
