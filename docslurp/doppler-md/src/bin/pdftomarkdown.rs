@@ -33,7 +33,8 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
                  $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
   --markers      mark where pictures sit in the text for restitching: ![image](doppler-image:pN.M)
-                 between paragraphs or inside a line (pdftotext -images); report: images
+                 between paragraphs or inside a line, and charts and diagrams drawn with paths:
+                 ![image](doppler-image:pN.gK) (pdftotext -images); report: images
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --stream       write pages as they are converted (--window 16)

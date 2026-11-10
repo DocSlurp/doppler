@@ -24,6 +24,7 @@ mod rotation;
 mod stitch;
 pub mod tables;
 mod unicode_tables;
+mod vector;
 mod watermark;
 
 pub use model::ParseReport;
@@ -363,7 +364,13 @@ impl Report {
                     n.bbox.3,
                     n.px.0,
                     n.px.1,
-                    if n.mask { "mask" } else { "picture" },
+                    if n.vector {
+                        "vector"
+                    } else if n.mask {
+                        "mask"
+                    } else {
+                        "picture"
+                    },
                     n.fate.as_str(),
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
                     n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default()
@@ -515,6 +522,7 @@ impl<'p> Converter<'p> {
     pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
         if !self.o.markers {
             page.images = Vec::new();
+            page.graphics = Vec::new();
         } else {
             images::neutralize(&mut page);
         }
@@ -613,13 +621,42 @@ impl<'p> Converter<'p> {
         }
         self.spent += n as u64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
-        let (figures, notes) = if page.images.is_empty() {
+        let number = page.number.unwrap_or(pi as u32 + 1);
+        let (mut figures, notes) = if page.images.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            let number = page.number.unwrap_or(pi as u32 + 1);
             images::place(&mut page, &drop, body, p, number, &repeated_pictures)
         };
         self.report.images.extend(notes);
+        if !page.graphics.is_empty() {
+            let raster: Vec<(images::Figure, String)> = figures
+                .iter()
+                .map(|f| {
+                    let id = f.marker.trim_start_matches("![image](").trim_start_matches(images::SCHEME);
+                    (f.clone(), id.trim_end_matches(')').to_string())
+                })
+                .collect();
+            let (vector, notes, absorbed) = vector::place(&page, &drop, body, p, number, &raster);
+            // pictures inside a vector figure are marked with it
+            let mut gone = vec![false; figures.len()];
+            for (k, id) in absorbed {
+                gone[k] = true;
+                let old = &raster[k].1;
+                for n in self.report.images.iter_mut().filter(|n| n.page == number) {
+                    if n.id == *old || n.group.as_deref() == Some(old.as_str()) {
+                        n.fate = images::Fate::Grouped;
+                        n.group = Some(id.clone());
+                    }
+                }
+            }
+            let mut k = 0;
+            figures.retain(|_| {
+                k += 1;
+                !gone[k - 1]
+            });
+            figures.extend(vector);
+            self.report.images.extend(notes);
+        }
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
                 if self.o.markers {

@@ -216,4 +216,32 @@ params! {
     /// an image covering this share of the page, under text, is the page's background (a scan
     /// with a text layer) and gets no marker
     image_background_share: num = 0.85,
+    /// vector drawing clusters this many body sizes apart or less are one drawing
+    vector_group_gap: num = 1.0,
+    /// a drawing is a figure with at least this many diagonal or curved segments
+    vector_min_segments: num = 20.0,
+    /// and at least this many curves, or diagonal segments in this many of 8 directions
+    /// (hatching and a lone slash point one way)
+    vector_min_curves: num = 24.0,
+    vector_min_directions: num = 3.0,
+    /// and a drawing at least this many body sizes long, a figure this many on both sides
+    vector_min_extent: num = 2.5,
+    /// and a drawing at least this many body sizes thick, unless the rules it touches make it
+    /// `vector_min_extent` thick (dotted leaders and braces are thin; a row of arrows between
+    /// the boxes of a diagram is not, with the boxes); a thin one also joins a figure it touches
+    vector_min_thickness: num = 1.0,
+    /// a thin drawing needs at least this many painted paths to become a figure that way
+    vector_thin_min_paths: num = 6.0,
+    /// and a figure covers at least this share of the page
+    vector_min_share: num = 0.005,
+    /// short lines (at most this many words) within this many body sizes of a figure are its
+    /// labels
+    vector_label_words: num = 4.0,
+    vector_label_gap: num = 1.0,
+    /// a figure whose words cover more than this share of it, or with more lines than
+    /// `vector_max_prose_lines` of at least `vector_prose_words` words, is drawing among text
+    /// (a form, a worksheet): no marker
+    vector_max_text_share: num = 0.35,
+    vector_max_prose_lines: num = 1.0,
+    vector_prose_words: num = 8.0,
 }

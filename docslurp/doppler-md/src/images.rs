@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use crate::model::{Image, Line, Page, Word};
+use crate::model::{Line, Page, Word};
 use crate::params::Params;
 use crate::pyc::{fcmp, pmax, pmin};
 
@@ -43,6 +43,8 @@ pub enum Fate {
     Fragment,
     /// one of several neighbouring images marked together, at the first of them (`group`)
     Grouped,
+    /// vector drawing among a mass of words (a form, a callout of prose): no marker
+    Text,
 }
 
 impl Fate {
@@ -57,6 +59,7 @@ impl Fate {
             Fate::Duplicate => "duplicate",
             Fate::Fragment => "fragment",
             Fate::Grouped => "grouped",
+            Fate::Text => "text",
         }
     }
 }
@@ -69,6 +72,8 @@ pub struct Note {
     pub bbox: (f64, f64, f64, f64),
     pub px: (u32, u32),
     pub mask: bool,
+    /// vector drawing (`<graphic>` clusters), not an image
+    pub vector: bool,
     pub fate: Fate,
     /// images marked together at this one (1 when alone); its box is then the union of theirs
     pub members: usize,
@@ -84,6 +89,9 @@ pub struct Figure {
     pub y0: f64,
     pub x1: f64,
     pub y1: f64,
+    /// lines of the page drawn inside the figure (labels of a vector figure), written after
+    /// the marker instead of in the page's flow
+    pub labels: Vec<usize>,
 }
 
 /// Decide each image of `page`. Neighbouring images (within about a line of each other, one
@@ -133,12 +141,14 @@ pub fn place(
             bbox,
             px: (im.px_w, im.px_h),
             mask: im.mask,
+            vector: false,
             fate: fate.unwrap_or(Fate::Block),
             members: 1,
             group: None,
         });
     }
-    let units: Vec<Vec<usize>> = clusters(&images, &candidates, pmax(p.image_group_gap * body, 2.0));
+    let boxes: Vec<(f64, f64, f64, f64)> = images.iter().map(|im| (im.x0, im.y0, im.x1, im.y1)).collect();
+    let units: Vec<Vec<usize>> = clusters(&boxes, &candidates, pmax(p.image_group_gap * body, 2.0));
     let bbox_of = |unit: &[usize]| {
         unit.iter().fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |b, &i| {
             let im = &images[i];
@@ -173,7 +183,14 @@ pub fn place(
                 Fate::Inline
             }
             None => {
-                figures.push(Figure { marker: Rc::from(marker), x0: b.0, y0: b.1, x1: b.2, y1: b.3 });
+                figures.push(Figure {
+                    marker: Rc::from(marker),
+                    x0: b.0,
+                    y0: b.1,
+                    x1: b.2,
+                    y1: b.3,
+                    labels: Vec::new(),
+                });
                 Fate::Block
             }
         };
@@ -186,9 +203,9 @@ pub fn place(
     (figures, notes)
 }
 
-/// Candidates that touch once each is grown by `gap` points, transitively, each group in
-/// ascending order of image index and the groups by their first image.
-fn clusters(images: &[Image], candidates: &[usize], gap: f64) -> Vec<Vec<usize>> {
+/// Candidate boxes (x0, y0, x1, y1) that touch once each is grown by `gap` points,
+/// transitively, each group in ascending order of index and the groups by their first box.
+pub(crate) fn clusters(boxes: &[(f64, f64, f64, f64)], candidates: &[usize], gap: f64) -> Vec<Vec<usize>> {
     let n = candidates.len();
     let mut parent: Vec<usize> = (0..n).collect();
     fn find(parent: &mut [usize], mut x: usize) -> usize {
@@ -200,14 +217,14 @@ fn clusters(images: &[Image], candidates: &[usize], gap: f64) -> Vec<Vec<usize>>
     }
     // sweep by left edge: only images whose grown left edge is within reach can touch
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| fcmp(images[candidates[a]].x0, images[candidates[b]].x0));
+    order.sort_by(|&a, &b| fcmp(boxes[candidates[a]].0, boxes[candidates[b]].0));
     let mut reach: Vec<usize> = Vec::new();
     for &b in &order {
-        let ib = &images[candidates[b]];
-        reach.retain(|&a| images[candidates[a]].x1 + gap >= ib.x0);
+        let ib = boxes[candidates[b]];
+        reach.retain(|&a| boxes[candidates[a]].2 + gap >= ib.0);
         for &a in &reach {
-            let ia = &images[candidates[a]];
-            if ia.y1 + gap >= ib.y0 && ib.y1 + gap >= ia.y0 {
+            let ia = boxes[candidates[a]];
+            if ia.3 + gap >= ib.1 && ib.3 + gap >= ia.1 {
                 let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
                 if ra != rb {
                     parent[ra.max(rb)] = ra.min(rb);
