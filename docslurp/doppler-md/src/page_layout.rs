@@ -68,7 +68,9 @@ impl PageLayout {
         budget: &mut Budget,
         figures: &[Figure],
     ) -> Option<Self> {
-        let ids: Vec<usize> = (0..page.lines.len()).filter(|&i| !drop[i]).collect();
+        // the labels of a vector figure are written after its marker, not in the flow
+        let labelled: HashSet<usize> = figures.iter().flat_map(|f| f.labels.iter().copied()).collect();
+        let ids: Vec<usize> = (0..page.lines.len()).filter(|&i| !drop[i] && !labelled.contains(&i)).collect();
         let mut per_block: Counter<i64> = Counter::new();
         for &i in &ids {
             per_block.add(page.lines[i].block, 1);
@@ -112,7 +114,7 @@ impl PageLayout {
         // a picture between paragraphs: a barrier of its own, ordered by where it lies
         elements.extend(figures.iter().map(|f| Elem {
             line: None,
-            table: Some(Placed::Rendered(Rc::new(vec![f.marker.to_string()]))),
+            table: Some(Placed::Rendered(Rc::new(figure_parts(page, f)))),
             x0: f.x0,
             x1: f.x1,
             y0: f.y0,
@@ -161,6 +163,19 @@ impl PageLayout {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+}
+
+/// A figure's marker, then the text of its labels (top to bottom, left to right) as one
+/// paragraph.
+fn figure_parts(page: &Page, f: &Figure) -> Vec<String> {
+    let mut parts = vec![f.marker.to_string()];
+    let mut labels: Vec<&Line> = f.labels.iter().filter_map(|&i| page.lines.get(i).map(|l| &**l)).collect();
+    labels.sort_by(|a, b| crate::pyc::fcmp(a.y0 + a.y1, b.y0 + b.y1).then(crate::pyc::fcmp(a.x0, b.x0)));
+    let text: Vec<&str> = labels.iter().map(|l| strip(l.text())).filter(|t| !t.is_empty()).collect();
+    if !text.is_empty() {
+        parts.push(text.join(" "));
+    }
+    parts
 }
 
 /// The last paragraph of a region, which the next region's first paragraph may continue.

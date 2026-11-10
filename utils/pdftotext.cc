@@ -46,6 +46,7 @@
 
 #include "config.h"
 #include <poppler-config.h>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstddef>
@@ -147,7 +148,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
                                    { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
                                    { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
-                                   { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, and the page number (image data is never decoded)" },
+                                   { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
                                    { .arg = "-colspacing",
@@ -1290,9 +1291,11 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             glyphContext->startPage(page, textOut);
             glyphAttrs = std::string(glyphContext->pageTruncated() ? " glyphsTruncated=\"1\"" : "") + (glyphContext->pageFontsTruncated() ? " fontsTruncated=\"1\"" : "");
         }
+        std::vector<TextGraphic> graphics;
         if (collectImages) {
+            graphics = textOut->takeGraphics();
             // after the glyph attributes, so a reader that stops at the first unknown one still sees them
-            glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "");
+            glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "") + (textOut->getGraphicsTruncated() ? " graphicsTruncated=\"1\"" : "");
         }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
@@ -1307,6 +1310,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             for (const TextImage &image : textOut->getImages()) {
                 fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
                         image.stencil ? " kind=\"mask\"" : "");
+            }
+            for (const TextGraphic &g : graphics) {
+                fprintf(f, "    <graphic xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" paths=\"%zu\" segments=\"%zu\" curves=\"%zu\" directions=\"%d\"/>\n", g.xMin, g.yMin, g.xMax, g.yMax, g.paths, g.segments, g.curves,
+                        std::popcount(g.directions));
             }
         }
         if (glyphContext) {

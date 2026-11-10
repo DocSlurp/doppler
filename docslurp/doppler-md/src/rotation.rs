@@ -154,6 +154,7 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
             number: page.number,
             images: Vec::new(),
             images_truncated: false,
+            graphics: Vec::new(),
             width,
             height,
             lines: ls.iter().map(|l| Rc::new(frame.line(l))).collect(),

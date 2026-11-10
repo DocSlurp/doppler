@@ -47,6 +47,9 @@
 #include "OutputDev.h"
 #include "PDFRectangle.h"
 
+#include <array>
+#include <vector>
+
 class GooString;
 class Gfx;
 class GfxFont;
@@ -610,6 +613,19 @@ struct TextImage
     bool stencil; // an image mask
 };
 
+// A cluster of painted vector drawing that is not axis-aligned (see
+// TextOutputDev::setCollectImages): curves and diagonal segments, the strokes of charts and
+// diagrams. Paths made only of axis-aligned segments (rules, boxes, table grids, underlines,
+// frames) are not counted. The box is the union of the paths' clipped extents.
+struct TextGraphic
+{
+    double xMin, yMin, xMax, yMax;
+    size_t paths = 0; // painted paths (a fill and a stroke of one path count twice)
+    size_t segments = 0; // diagonal straight segments plus curve segments
+    size_t curves = 0; // Bezier curve segments
+    unsigned directions = 0; // bit k: a diagonal segment at an angle in the k-th of 8 sectors of 180 degrees
+};
+
 class POPPLER_PRIVATE_EXPORT TextPage
 {
 public:
@@ -677,6 +693,15 @@ public:
     const std::vector<TextImage> &getImages() const { return images; }
     bool getImagesTruncated() const { return imagesTruncated; }
     static constexpr size_t maxImages = 2000;
+
+    // Add one painted path that is not axis-aligned (TextOutputDev::setCollectImages). The page
+    // keeps a fixed grid of cells, each the summary of the paths centred in it, so memory and
+    // time per path stay constant however many paths a page paints.
+    void addGraphic(const TextGraphic &graphic);
+    // The cells' summaries merged where their boxes touch (grown by gap): at most
+    // graphicGrid * graphicGrid clusters, in top-to-bottom, left-to-right order of their first cell.
+    std::vector<TextGraphic> getGraphics(double gap) const;
+    static constexpr int graphicGrid = 16;
 
     // Add a hyperlink.
     void addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link);
@@ -803,6 +828,7 @@ private:
     bool rulesTruncated = false;
     std::vector<TextImage> images;
     bool imagesTruncated = false;
+    std::array<TextGraphic, graphicGrid * graphicGrid> graphicCells {};
     bool actualTextChars = false;
     bool collectDropped = false;
     std::vector<DroppedGlyph> dropped;
@@ -997,6 +1023,10 @@ public:
     void imageGeometry(GfxState *state, int width, int height, bool stencil) override;
     const std::vector<TextImage> &getImages() const;
     bool getImagesTruncated() const;
+    // With setCollectImages: the clusters of painted drawing that is not axis-aligned on this
+    // page (TextGraphic), at most maxDocGraphics over the document; call once per page.
+    std::vector<TextGraphic> takeGraphics();
+    bool getGraphicsTruncated() const { return graphicsTruncated; }
 
     void setInlineLinkURIs(bool inlineLinkURIsA);
 
@@ -1038,6 +1068,10 @@ private:
     bool collectImages = false;
     static constexpr size_t maxDocImages = 100000;
     size_t remainingDocImages = maxDocImages;
+    static constexpr size_t maxDocGraphics = 100000;
+    size_t remainingDocGraphics = maxDocGraphics;
+    bool graphicsTruncated = false;
+    void collectPathGraphic(const GfxState *state, bool filled);
     static constexpr size_t maxDocRules = 200000;
     // Budget for visible rule candidates across pages, including candidates
     // rejected by a full page. TextPage consumes it but does not own its lifetime.

@@ -88,6 +88,27 @@ byte-identical.
   `small`, `duplicate`, `fragment`), and `members` (the union `bbox` of a figure) or `group`
   (the figure a grouped image belongs to). A caller crops the page at `bbox` and swaps the
   marker for it.
+- **Vector figures.** `![image](doppler-image:pN.gK)`: a chart or diagram drawn with paths.
+  `pdftotext -images` also writes `<graphic>` clusters of the drawing that is not axis-aligned
+  (curves and diagonal segments; rules, boxes, grids, underlines and frames are left out).
+  Clusters within a body size are one drawing; a drawing is a figure when it has at least 20
+  diagonal or curved segments with 24 curves or diagonals in 3 of 8 directions (hatching and a
+  lone slash point one way), is at least 2.5 body sizes long and one thick (a thin one, such as
+  a row of arrows, counts when it has 6 paths and the rules it touches make it 2.5 thick:
+  dotted leaders and braces do not), and lies outside the header and footer band. Its region
+  then grows by the rules that touch it (not frames or panels around it, nor rules much longer
+  than it), by short lines (at most 4 words) within a body size (tick labels, axis titles,
+  legends) and by thin drawing it reaches, a step at a time; figures whose regions overlap are
+  one. `K` is the position of its first `<graphic>` in pdftotext's list for the page. The
+  marker is a paragraph of its own in reading order, and the text inside the region follows it
+  as one paragraph, top to bottom (it leaves the page's flow). No marker for a figure under
+  2.5 body sizes a side or 0.5% of the page, drawing among prose (its words cover more than 35%
+  of it, or it holds two lines of 8 words or more: forms, worksheets, panels), or drawing over
+  a larger picture (`grouped` with the picture); pictures inside a larger figure are `grouped`
+  with it. Report entries have `kind: "vector"`, `px: [0, 0]`, `placed` (`block`, `grouped`,
+  `small`, `furniture`, `text`) and `members` (the graphics marked together). Drawing made only
+  of axis-aligned shapes (bar charts, box-and-line diagrams without diagonals) is covered only
+  where it touches curved or diagonal drawing.
 - **Tables across pages.** A table that goes on from the last table of the previous page (the
   page starts with it, past an optional "(continued)" note; the columns sit in the same places)
   gets `<!-- doppler:table-continued header=repeated -->` above it when its first row repeats

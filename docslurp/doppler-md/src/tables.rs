@@ -1843,6 +1843,7 @@ mod span_tests {
             number: None,
             images: vec![],
             images_truncated: false,
+            graphics: Vec::new(),
             width: 300.,
             height: 300.,
             lines: vec![],
