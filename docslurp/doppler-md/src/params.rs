@@ -234,6 +234,9 @@ params! {
     watermark_size: num = 1.5,
     /// a pale word is at least this luminance (white, the text of banners, is not pale)
     watermark_min_lum: num = 0.72,
+    /// a minor heading after a table that starts with a multi-level section number (4.6.3) and
+    /// opens body text is a heading, not the table's caption
+    section_headings_after_tables: flag = true,
     /// images this many body sizes apart or less are one figure and get one marker
     image_group_gap: num = 0.75,
     /// an image needs both sides at least this many points to get a marker (pictures)

@@ -226,6 +226,11 @@ differential (40 PDFs, pages 1 to 150) it changes 10 of 1,452 pages (NASA handbo
 stacked headers and row-spanning cells, an ERP table, two IRS instruction pages); the IRS forms'
 field boxes, charts, org-chart boxes and photo labels stay as they were.
 
+- `section_headings_after_tables`: a minor heading right after a table used to become the table's
+  `*caption*`. One that starts with a multi-level section number (`4.6.3.2`, `2.1.`) and opens
+  body text is the next section's heading (`### 4.6.3.2 ...`); a caption such as
+  `Table 4.6-2 ...` stays a caption.
+
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw

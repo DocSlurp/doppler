@@ -618,11 +618,18 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                 } else {
                     let near_table = previous_table || matches!(items.peek(), Some(FlowItem::Table(_)));
                     let minor = it.level != 0 && it.ratio < p.heading_ratio;
-                    let caption = minor && p.captions && near_table;
+                    let body_follows = matches!(items.peek(), Some(FlowItem::Paragraph(n))
+                        if n.level == 0 && (n.kind.is_some() || char_len(&n.text) as f64 >= p.minor_heading_body));
+                    // a numbered section heading that opens body text after a table ends it: it is
+                    // the next section's heading, not the table's caption
+                    let section_after_table = p.section_headings_after_tables
+                        && previous_table
+                        && !matches!(items.peek(), Some(FlowItem::Table(_)))
+                        && body_follows
+                        && section_number(&it.text);
+                    let caption = minor && p.captions && near_table && !section_after_table;
                     let mut heading = it.level;
                     if minor && !caption {
-                        let body_follows = matches!(items.peek(), Some(FlowItem::Paragraph(n))
-                            if n.level == 0 && (n.kind.is_some() || char_len(&n.text) as f64 >= p.minor_heading_body));
                         if !body_follows {
                             heading = 0;
                         }
@@ -694,6 +701,17 @@ fn split_header(words: &[Word], cols: &[(f64, f64)]) -> Option<Vec<String>> {
             })
             .collect(),
     )
+}
+
+/// Text that starts with a multi-level section number (`4.6.3`, `2.1.`): digits with at least one
+/// dot between digit groups, then a space.
+fn section_number(text: &str) -> bool {
+    let first = strip(text).split_whitespace().next().unwrap_or("");
+    let core = first.strip_suffix('.').unwrap_or(first);
+    let groups: Vec<&str> = core.split('.').collect();
+    groups.len() >= 2
+        && groups.iter().all(|g| !g.is_empty() && g.len() <= 3 && g.chars().all(|c| c.is_ascii_digit()))
+        && strip(text).split_whitespace().nth(1).is_some()
 }
 
 fn table_title(it: &Paragraph, tab: &PlacedTable, p: &Params) -> bool {
