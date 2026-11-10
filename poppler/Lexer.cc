@@ -113,21 +113,11 @@ Lexer::~Lexer()
     }
 }
 
-int Lexer::getChar(bool comesFromLook)
+int Lexer::getCharFromNextStream()
 {
-    int c;
-
-    if (LOOK_VALUE_NOT_CACHED != lookCharLastValueCached) {
-        c = lookCharLastValueCached;
-        lookCharLastValueCached = LOOK_VALUE_NOT_CACHED;
-        return c;
-    }
-
-    c = EOF;
-    while (curStr.isStream() && (c = curStr.getStream()->getChar()) == EOF) {
-        if (comesFromLook) {
-            return EOF;
-        }
+    // The current stream has already returned EOF. Keep transitions out of
+    // the per-character path, including any consecutive empty streams.
+    do {
         curStr.getStream()->close();
         curStr = Object();
         ++strPtr;
@@ -139,22 +129,14 @@ int Lexer::getChar(bool comesFromLook)
                 }
             }
         }
-    }
-    return c;
-}
-
-int Lexer::lookChar()
-{
-
-    if (LOOK_VALUE_NOT_CACHED != lookCharLastValueCached) {
-        return lookCharLastValueCached;
-    }
-    lookCharLastValueCached = getChar(true);
-    if (lookCharLastValueCached == EOF) {
-        lookCharLastValueCached = LOOK_VALUE_NOT_CACHED;
-        return EOF;
-    }
-    return lookCharLastValueCached;
+        if (!curStr.isStream()) {
+            return EOF;
+        }
+        const int c = curStr.getStream()->getChar();
+        if (c != EOF) {
+            return c;
+        }
+    } while (true);
 }
 
 Object Lexer::getObj(int objNum)
