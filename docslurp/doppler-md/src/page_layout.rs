@@ -174,6 +174,18 @@ struct Tail {
     right: f64,
 }
 
+/// The lowest edge of the lines and tables of a region's items (pictures have no extent here).
+fn bottom_of(items: &[FlowItem]) -> f64 {
+    items
+        .iter()
+        .map(|item| match item {
+            FlowItem::Paragraph(para) => para.lines.iter().map(|l| l.y1).fold(f64::NEG_INFINITY, pmax),
+            FlowItem::Table(t) => t.y1,
+            FlowItem::Rendered(_) => f64::NEG_INFINITY,
+        })
+        .fold(f64::NEG_INFINITY, pmax)
+}
+
 fn plain(para: &Paragraph) -> bool {
     para.level == 0 && para.kind.is_none() && !para.lines.is_empty()
 }
@@ -193,7 +205,9 @@ impl Tail {
 ///
 /// The evidence is all of: the earlier paragraph has no end of sentence and runs to its
 /// column's right edge; the later one starts in lowercase, higher up the page, in the same
-/// size, weight and colour; both are plain paragraphs (no heading, list or caption).
+/// size, weight and colour; both are plain paragraphs (no heading, list or caption); and the
+/// earlier column goes down as far as the later region's content does (within three lines),
+/// as a column does that runs out of room, not one that something else cut short.
 fn join_column_break(blocks: &mut [Block], tail: Option<Tail>, items: &mut Vec<FlowItem>, p: &Params) -> Option<Tail> {
     let t = tail?;
     let Some(FlowItem::Paragraph(next)) = items.first() else { return None };
@@ -209,6 +223,7 @@ fn join_column_break(blocks: &mut [Block], tail: Option<Tail>, items: &mut Vec<F
         && t.lines >= 2
         && a.x1 >= t.right - 2.0 * size
         && b.y0 < a.y0
+        && a.y1 >= bottom_of(items) - 3.0 * size
         && !crate::prose::style_change(a, b, p);
     if !continues {
         return None;

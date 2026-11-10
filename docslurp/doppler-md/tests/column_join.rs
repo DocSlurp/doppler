@@ -26,6 +26,11 @@ fn line(x0: f64, y: f64, first: &str, last: &str) -> String {
 /// Two columns of nine lines. The left column ends with an unfinished sentence (`left_end`);
 /// the right one starts with `right_start`.
 fn page(left_end: &str, right_start: &str) -> String {
+    page_with(left_end, right_start, 9)
+}
+
+/// As [`page`], with `right_lines` lines in the right column.
+fn page_with(left_end: &str, right_start: &str, right_lines: usize) -> String {
     let mut body = String::new();
     for i in 0..9 {
         let y = 100.0 + 12.0 * i as f64;
@@ -33,7 +38,7 @@ fn page(left_end: &str, right_start: &str) -> String {
         let last = if i == 8 { left_end } else { "tail" };
         body += &line(72.0, y, first, last);
     }
-    for i in 0..9 {
+    for i in 0..right_lines {
         let y = 100.0 + 12.0 * i as f64;
         let first = if i == 0 { right_start } else { "more" };
         let last = if i == 2 { "end." } else { "tail" };
@@ -71,4 +76,11 @@ fn a_finished_sentence_or_a_capital_keeps_the_columns_apart() {
         let joined = convert(&page(end, start), true);
         assert_eq!(joined.len(), 2, "{end:?} {start:?}: {joined:?}");
     }
+}
+
+#[test]
+fn a_column_that_stops_far_above_the_next_ones_content_was_cut_short_by_something_else() {
+    // the left column ends 100 pt higher than the right one: not a column that ran out of room
+    let joined = convert(&page_with("which", "continues", 18), true);
+    assert_eq!(joined.len(), 2, "{joined:?}");
 }

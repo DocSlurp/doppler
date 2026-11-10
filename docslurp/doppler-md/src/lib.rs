@@ -318,7 +318,7 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}}}",
                     n.id,
                     n.page,
                     n.bbox.0,
@@ -328,7 +328,9 @@ impl Report {
                     n.px.0,
                     n.px.1,
                     if n.mask { "mask" } else { "picture" },
-                    n.fate.as_str()
+                    n.fate.as_str(),
+                    if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
+                    n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default()
                 )
             };
             format!(",\"images\":[{}]", self.images.iter().map(one).collect::<Vec<_>>().join(","))

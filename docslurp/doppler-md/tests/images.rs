@@ -105,3 +105,55 @@ fn ids_use_the_page_index_without_a_page_number() {
     let (md, _) = convert(&xhtml, true);
     assert!(md.contains("doppler-image:p1.1"), "{md}");
 }
+
+#[test]
+fn neighbouring_images_are_one_figure_with_one_marker() {
+    // a diagram assembled from five pieces, and a separate picture far below
+    let mut body = line(100.0, "Text above the diagram goes right here.");
+    for i in 0..5 {
+        let x = 100.0 + 50.0 * i as f64;
+        body += &image(x, 150.0, x + 46.0, 200.0);
+    }
+    body += &image(100.0, 202.0, 300.0, 260.0);
+    body += &image(100.0, 500.0, 300.0, 560.0);
+    let (md, report) = convert(&page(3, &body), true);
+    assert_eq!(md.matches("doppler-image").count(), 2, "{md}");
+    assert!(md.contains("![image](doppler-image:p3.1)") && md.contains("![image](doppler-image:p3.7)"), "{md}");
+    let fates: Vec<&str> = report.images.iter().map(|n| n.fate.as_str()).collect();
+    assert_eq!(fates, ["block", "grouped", "grouped", "grouped", "grouped", "grouped", "block"]);
+    assert_eq!(report.images[0].members, 6);
+    assert_eq!(report.images[0].bbox, (100.0, 150.0, 346.0, 260.0));
+    assert_eq!(report.images[1].group.as_deref(), Some("p3.1"));
+    let json = report.to_json();
+    assert!(json.contains("\"members\":6") && json.contains("\"group\":\"p3.1\""), "{json}");
+}
+
+#[test]
+fn a_row_of_text_sized_icons_is_one_inline_marker() {
+    let words = |t: &str, x0: f64| word(x0, x0 + 6.0 * t.len() as f64, 100.0, t);
+    let body = format!("<block><line>{}{}</line></block>", words("Rated", 72.0), words("by users", 160.0))
+        + &(0..3).map(|i| image(110.0 + 12.0 * i as f64, 100.0, 120.0 + 12.0 * i as f64, 110.0)).collect::<String>();
+    let (md, report) = convert(&page(1, &body), true);
+    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
+    assert!(md.contains("Rated ![image](doppler-image:p1.1) by users"), "{md}");
+    assert_eq!(report.images[0].fate.as_str(), "inline");
+}
+
+#[test]
+fn a_page_full_of_text_sized_pictures_among_its_text_gets_no_inline_markers() {
+    // words drawn as pictures: fifteen lines, each with one picture inside
+    let mut body = String::new();
+    for i in 0..15 {
+        let y = 100.0 + 30.0 * i as f64;
+        body += &format!(
+            "<block><line>{}{}{}</line></block>",
+            word(72.0, 100.0, y, "alpha"),
+            word(103.0, 125.0, y, "beta"),
+            word(133.0, 160.0, y, "gamma")
+        );
+        body += &image(126.0, y, 132.0, y + 10.0);
+    }
+    let (md, report) = convert(&page(4, &body), true);
+    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(report.images.iter().all(|n| n.fate.as_str() == "fragment"), "{:?}", report.images);
+}

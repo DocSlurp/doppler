@@ -194,6 +194,11 @@ params! {
     header_stack_open: num = 1.3,
     /// a paragraph that runs out of one column and goes on at the top of the next is one paragraph
     join_column_breaks: flag = true,
+    /// a page with more pictures than this inside its lines has text drawn as pictures: they
+    /// get no markers
+    image_inline_max: num = 12.0,
+    /// images this many body sizes apart or less are one figure and get one marker
+    image_group_gap: num = 0.75,
     /// an image needs both sides at least this many points to get a marker (pictures)
     image_min_size: num = 6.0,
     /// and a stencil mask both sides at least this many (bullets and glyph bitmaps are masks)
