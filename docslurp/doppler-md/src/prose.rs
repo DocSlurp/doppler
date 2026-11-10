@@ -29,6 +29,7 @@ pub enum Seq {
         table: Rc<Table>,
         x0: f64,
         x1: f64,
+        y1: f64,
     },
     Line(Rc<Line>),
     /// a rotated region rendered in its own frame: a barrier like a table
@@ -247,9 +248,9 @@ pub(crate) fn group_within(
     let (mut cur_left, mut cur_right) = (0.0f64, 0.0f64);
     for e in seq {
         let line = match &e.item {
-            Seq::Table { table, x0, x1 } => {
+            Seq::Table { table, x0, x1, y1 } => {
                 st.emit();
-                let t = PlacedTable { table: table.clone(), x0: *x0, x1: *x1, y0: e.y0, header: None };
+                let t = PlacedTable { table: table.clone(), x0: *x0, x1: *x1, y0: e.y0, y1: *y1, header: None };
                 st.items.push(FlowItem::Table(t));
                 prev = None;
                 prev_is_last = false;

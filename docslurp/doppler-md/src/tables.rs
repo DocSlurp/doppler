@@ -340,16 +340,18 @@ pub struct Table {
     /// found by the wide-spaced (sparse) borderless pass: a title above it becomes its header
     /// only when the title's words split into its columns
     pub sparse: bool,
+    /// the first row is a header assembled from several stacked lines of header text
+    pub header_row: bool,
 }
 
 /// (member line ids, table, bbox x0 y0 x1 y1)
 pub type RuledTable = (Vec<usize>, Table, (f64, f64, f64, f64));
 
 /// Drop the columns no row fills, keeping the intervals of the others.
-fn keep_filled(grid: Grid, cols: &[(f64, f64)]) -> Table {
+fn keep_filled(grid: Grid, cols: &[(f64, f64)], header_row: bool) -> Table {
     let keep: Vec<usize> = (0..cols.len()).filter(|&i| grid.iter().any(|row| !row[i].is_empty())).collect();
     let rows = grid.into_iter().map(|row| keep.iter().map(|&i| row[i].clone()).collect()).collect();
-    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect(), sparse: false }
+    Table { rows, spans: None, cols: keep.iter().map(|&i| cols[i]).collect(), sparse: false, header_row }
 }
 
 /// The column of a word's midpoint, as `build_grid` has always chosen it: the first column
@@ -427,6 +429,8 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
     let pitches: Vec<f64> = multi.windows(2).map(|w| w[1].base - w[0].base).collect();
     let pitch = if pitches.is_empty() { None } else { Some(median(pitches)) };
     let mut grid: Grid = Vec::new();
+    // per grid row: the baselines of its first and last visual rows, and its size
+    let mut spans: Vec<(f64, f64, f64)> = Vec::new();
     let mut prev: Option<&Row> = None;
     for r in rows {
         let mut cells: Vec<Vec<Word>> = vec![Vec::new(); cols.len()];
@@ -446,14 +450,65 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
                         last[k] = strip(&format!("{} {}", last[k], t)).to_string(); // wrapped cell continuation
                     }
                 }
+                if let Some(s) = spans.last_mut() {
+                    s.1 = r.base;
+                }
                 prev = Some(r);
                 continue;
             }
         }
         grid.push(texts);
+        spans.push((r.base, r.base, r.size));
         prev = Some(r);
     }
-    keep_filled(grid, cols)
+    let header_row = p.merge_header_rows && merge_stacked_header(&mut grid, &spans, p);
+    keep_filled(grid, cols, header_row)
+}
+
+/// A header printed on several stacked lines (a cell's words centred in a tall header, or a
+/// label broken over lines) comes out of the row grouping as several sparse rows. When the
+/// first rows are tighter than the rows of the body, hold no number, and their words fall
+/// in different columns' cells, they are one header row: join each column's cells from the top.
+/// Returns whether it did.
+fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) -> bool {
+    const MAX_STACK: usize = 5;
+    if grid.len() < 4 {
+        return false;
+    }
+    let gap = |i: usize| spans[i].0 - spans[i - 1].1;
+    // the gaps inside the header are close to one line pitch; the body's are looser
+    let body_gaps: Vec<f64> = (MAX_STACK.min(grid.len() - 1)..grid.len()).map(gap).filter(|g| *g > 0.0).collect();
+    if body_gaps.len() < 2 {
+        return false;
+    }
+    let body = median(body_gaps);
+    let data = |row: &Vec<String>| row.iter().any(|c| numeric(strip(c)));
+    let mut stack = 1;
+    let mut tight: f64 = 0.0;
+    while stack < MAX_STACK.min(grid.len() - 2) {
+        let g = gap(stack);
+        if g <= 0.0 || g > p.header_stack_gap * pmax(spans[stack].2, 1.0) || data(&grid[stack]) || data(&grid[0]) {
+            break;
+        }
+        tight = tight.max(g);
+        stack += 1;
+    }
+    // the stack ends where the spacing opens up: that gap is the header's bottom edge
+    if stack < 2
+        || body < p.header_stack_open * tight
+        || stack >= grid.len() - 1
+        || gap(stack) < p.header_stack_open * tight
+    {
+        return false;
+    }
+    let merged: Vec<String> = (0..grid[0].len())
+        .map(|k| {
+            strip(&grid[..stack].iter().map(|r| r[k].as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" "))
+                .to_string()
+        })
+        .collect();
+    grid.splice(..stack, [merged]);
+    true
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -1266,7 +1321,7 @@ pub fn ruled_tables(
                 }
                 grid.push(cells.into_iter().map(line_text).collect());
             }
-            keep_filled(grid, &cols)
+            keep_filled(grid, &cols, false)
         } else {
             for r in rows.iter_mut() {
                 r.multi = r.cells.len() >= 2;

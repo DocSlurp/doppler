@@ -14,6 +14,7 @@ use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
 use crate::pyc::{Counter, char_len, fcmp, median, pmax, pmin, rstrip, split_count, strip};
+use crate::stitch::{Carry, stitch};
 use crate::tables::{Table, find_tables_within, grid_html, grid_markdown_with, ruled_tables};
 
 #[derive(Clone, Debug)]
@@ -22,6 +23,8 @@ pub(crate) struct PlacedTable {
     pub x0: f64,
     pub x1: f64,
     pub y0: f64,
+    /// the bottom edge (a gutter table's last line, a ruled table's last rule)
+    pub y1: f64,
     pub header: Option<Vec<String>>,
 }
 
@@ -54,6 +57,7 @@ pub(crate) struct PageLayout {
 
 impl PageLayout {
     /// Return no partial layout if the shared work budget is exhausted.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn within(
         page: &Page,
         drop: &[bool],
@@ -98,7 +102,7 @@ impl PageLayout {
         if p.rules && p.tables {
             let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
                 |(members, table, (x0, y0, x1, y1))| {
-                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, header: None };
+                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None };
                     (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
                 },
             );
@@ -121,7 +125,8 @@ impl PageLayout {
             // its own copy: a table in the left region cannot consume right-region prose.
             let seq = assign_region(page, region, body, p, budget)?;
             let mut items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
-            let folded = if p.join_column_breaks { join_column_break(&mut blocks, tail.take(), &mut items, p) } else { None };
+            let folded =
+                if p.join_column_breaks { join_column_break(&mut blocks, tail.take(), &mut items, p) } else { None };
             if items.is_empty() {
                 // the whole region continued the paragraph before it, which may run on
                 tail = folded;
@@ -136,10 +141,17 @@ impl PageLayout {
             // follows it
             tail = last.and_then(|t| {
                 let block = blocks.len().checked_sub(1)?;
-                matches!(blocks[block], Block::Text { heading: 0, list: false, caption: false, .. }).then_some(Tail { block, ..t })
+                matches!(blocks[block], Block::Text { heading: 0, list: false, caption: false, .. })
+                    .then_some(Tail { block, ..t })
             });
         }
         Some(Self { blocks })
+    }
+
+    /// Mark what this page continues from the previous one (see [`crate::stitch`]) and say what it
+    /// leaves open.
+    pub(crate) fn stitch(&mut self, prev: &Carry, page_height: f64, p: &Params) -> Carry {
+        stitch(&mut self.blocks, prev, page_height, p)
     }
 
     pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
@@ -241,7 +253,8 @@ fn assign_region(
             let y0 = members.iter().map(|&i| page.lines[i].y0).fold(f64::INFINITY, pmin);
             let x0 = members.iter().map(|&i| page.lines[i].x0).fold(f64::INFINITY, pmin);
             let x1 = members.iter().map(|&i| page.lines[i].x1).fold(f64::NEG_INFINITY, pmax);
-            let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, header: None };
+            let y1 = members.iter().map(|&i| page.lines[i].y1).fold(f64::NEG_INFINITY, pmax);
+            let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, y1, header: None };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.
             (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 })
@@ -255,7 +268,7 @@ fn assign_region(
         .chain(lines)
         .map(|e| {
             let item = match e.table {
-                Some(Placed::Table(t)) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1 },
+                Some(Placed::Table(t)) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1, y1: t.y1 },
                 Some(Placed::Rendered(r)) => Seq::Rendered(r),
                 None => Seq::Line(page.lines[e.line.expect("line placement")].clone()),
             };
@@ -329,7 +342,9 @@ pub(crate) fn render_blocks(blocks: Vec<Block>, tables: TableFormat, math: bool)
                 Block::Rendered(parts) => return parts.to_vec(),
                 Block::Table(t) => match (tables, t.header) {
                     (TableFormat::Html, header) => {
-                        if header.is_none() {
+                        if header.is_none() && t.table.header_row && t.table.rows.len() > 1 {
+                            grid_html(Some(&t.table.rows[0]), &t.table.rows[1..].to_vec())
+                        } else if header.is_none() {
                             t.table.spans.clone().unwrap_or_else(|| grid_html(None, &t.table.rows))
                         } else {
                             grid_html(header.as_deref(), &t.table.rows)

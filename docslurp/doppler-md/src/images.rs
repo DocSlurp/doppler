@@ -99,7 +99,13 @@ pub fn place(page: &mut Page, drop: &[bool], body: f64, p: &Params, number: u32)
         } else if h <= p.image_inline_height * body && put_inline(page, drop, im, &marker(number, i + 1)) {
             Fate::Inline
         } else {
-            figures.push(Figure { marker: Rc::from(marker(number, i + 1)), x0: im.x0, y0: im.y0, x1: im.x1, y1: im.y1 });
+            figures.push(Figure {
+                marker: Rc::from(marker(number, i + 1)),
+                x0: im.x0,
+                y0: im.y0,
+                x1: im.x1,
+                y1: im.y1,
+            });
             Fate::Block
         };
         if matches!(fate, Fate::Block | Fate::Inline) {

@@ -1093,7 +1093,8 @@ impl ParseState {
                         continue;
                     };
                     let px = |k: usize| a.0[k].and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-                    let image = Image { x0, y0, x1, y1, px_w: px(WIDTH), px_h: px(HEIGHT), mask: a.0[KIND] == Some("mask") };
+                    let image =
+                        Image { x0, y0, x1, y1, px_w: px(WIDTH), px_h: px(HEIGHT), mask: a.0[KIND] == Some("mask") };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {
                             pg.images.push(image);

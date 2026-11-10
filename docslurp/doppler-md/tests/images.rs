@@ -98,7 +98,10 @@ fn page_backgrounds_slivers_and_header_logos_get_no_marker() {
 
 #[test]
 fn ids_use_the_page_index_without_a_page_number() {
-    let xhtml = "<page width=\"612\" height=\"792\">".to_string() + &line(100.0, "Only text here.") + &image(72.0, 200.0, 300.0, 300.0) + "</page>";
+    let xhtml = "<page width=\"612\" height=\"792\">".to_string()
+        + &line(100.0, "Only text here.")
+        + &image(72.0, 200.0, 300.0, 300.0)
+        + "</page>";
     let (md, _) = convert(&xhtml, true);
     assert!(md.contains("doppler-image:p1.1"), "{md}");
 }

@@ -21,6 +21,7 @@ pub mod patterns;
 pub mod prose;
 pub mod pyc;
 mod rotation;
+mod stitch;
 pub mod tables;
 mod unicode_tables;
 
@@ -443,6 +444,8 @@ pub struct Converter<'p> {
     body: Option<(f64, String)>,
     spent: u64,
     report: Report,
+    /// what the page just written left open, for the next to continue (only with markers)
+    carry: stitch::Carry,
 }
 
 impl<'p> Converter<'p> {
@@ -459,6 +462,7 @@ impl<'p> Converter<'p> {
             body: None,
             spent: 0,
             report: Report::default(),
+            carry: stitch::Carry::default(),
         }
     }
 
@@ -532,6 +536,7 @@ impl<'p> Converter<'p> {
         };
         if let Some(why) = early {
             self.report.degraded.push((pi, why));
+            self.carry = stitch::Carry::default();
             out(pi, plain_lines(&page, &drop));
             return;
         }
@@ -545,10 +550,16 @@ impl<'p> Converter<'p> {
         };
         self.report.images.extend(notes);
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
-            Some(layout) => layout.markdown(self.o.tables, self.o.math),
+            Some(mut layout) => {
+                if self.o.markers {
+                    self.carry = layout.stitch(&self.carry, page.height, p);
+                }
+                layout.markdown(self.o.tables, self.o.math)
+            }
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
                 self.report.degraded.push((pi, why));
+                self.carry = stitch::Carry::default();
                 plain_lines(&page, &drop)
             }
         };

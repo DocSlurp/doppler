@@ -185,6 +185,13 @@ params! {
     /// lines plus layout work units over the whole document; once spent, the remaining pages
     /// fall back to plain lines
     max_doc_work: num = 5.0e7,
+    /// a header printed on several stacked lines becomes one header row
+    merge_header_rows: flag = true,
+    /// stacked header lines are at most this many font sizes apart
+    header_stack_gap: num = 1.9,
+    /// and the spacing below the header, and of the body's rows, is at least this many times
+    /// the largest gap inside it
+    header_stack_open: num = 1.3,
     /// a paragraph that runs out of one column and goes on at the top of the next is one paragraph
     join_column_breaks: flag = true,
     /// an image needs both sides at least this many points to get a marker (pictures)
