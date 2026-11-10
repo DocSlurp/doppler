@@ -212,9 +212,9 @@ lines and uses 21,052 units (20,618 without the table charge), the largest docum
 (54,463). Every degraded page is listed in the
 report. See PERF-ALGO.md for the measurements.
 
-## Rotated text and wide-spaced borderless tables
+## Rotated text and wide-spaced or wrapped borderless tables
 
-Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
+Three passes go beyond `doppler_md.py` (golden-v24 does not have them):
 
 - **Rotated text** (`rotated_frames`, on by default). Words carry the producer's `rotation`
   (quarter turns; absent reads as 0). On a page, the kept lines of one rotation are read in their
@@ -255,6 +255,41 @@ Two passes go beyond `doppler_md.py` (golden-v24 does not have them):
 
   A title above such a table becomes its header only when its words split into the table's
   columns. These guards apply only to this pass; the dense pass is unchanged.
+- **Borderless tables whose cells wrap** (`wrapped_rows`, on by default; `0` restores the old
+  output). A cell that wraps puts its next lines under the row's first line with nothing beside
+  them; read as rows of their own, they broke the column gutters, the even spacing the sparse
+  pass needs, and the page's reading columns (only a row's first line shares a baseline across
+  a gutter), so the columns came out as separate text blocks. Now a row with fewer cells than
+  the multi-cell row above it is folded into that row when each of its cells continues a
+  different cell: inside that cell's column (it starts after the cell starts, ends before the
+  next cell starts), lined up with the cell's last line (left or right edge or centre, or a
+  hanging indent of up to two font sizes under the first line), in the same font size, at most
+  `wrap_lead` (1.6) font sizes below it. Folding needs visible row padding: the rows on either
+  side of a folded row, and the multi-cell rows on the whole, are at least `wrap_padding`
+  (1.15) times the wrap step apart, and a step halfway to the row gap is a row of its own (a row
+  with empty cells). Tables without padding are left to the dense pass as before. A folded
+  row's wrapped text joins its cell as the lines of a paragraph do (dehyphenated); a wrapped
+  word between two columns stays with its cell. Its wrapped lines count against the gutters
+  they cross only where the gutter is narrow (a word space that the rows' first lines happen
+  to share, as when every row starts with the same words), and only when two rows or more cross
+  it, so a header spanning two columns keeps them apart. Row gaps are measured from a row's
+  last line, in the dense and the sparse pass. A column gutter whose right side has wrapped
+  lines no longer splits the page into reading columns when, with those lines left out, the
+  rows still share baselines across it, the rows that wrap have three cells or more (two
+  columns of short labels beside paragraphs stay a page layout), and the two sides are not
+  both prose; rows further down the same gutter stay with it.
+
+  Not tables, as before: two-column prose (two long cells a row), bulleted and numbered lists
+  with wrapped items (a list marker column), key/value text whose values wrap into prose, and
+  side headings beside paragraphs. On the golden set the pass changes 12 of 258 inputs (four
+  documents in their tagged, untagged and stripped forms, and two real documents): a bank
+  statement row and a manual's fault table whose wrapped cells were extra rows, a menu whose
+  dish descriptions sat between rows, a receipt's dish names, a 10-K exhibit index (now one
+  table with its exhibit numbers) and footnote, a consent letter's numbered list (no longer a
+  scrambled table), and a wrapped bullet in the Ghostscript manual. Known side effects: a bold
+  section heading right after a completed table can become its caption (the caption rule), and
+  prose spacing across a table no longer split from the text above can merge two lines that
+  were separate paragraphs.
 
 These are layout decisions only: a false positive or a missed table changes how text is
 grouped, never which text is kept. Layouts beyond the guarded ones can still come out as

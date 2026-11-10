@@ -215,7 +215,7 @@ fn row(base: f64, cells: &[(f64, f64, &str)]) -> Row {
     let cells: Vec<Rc<Line>> =
         cells.iter().map(|&(a, b, t)| Rc::new(Line::new(vec![word(a, b, base - 8.0, t)], 0, 0))).collect();
     let multi = cells.len() >= 2;
-    Row { base, ids: vec![], cells, size: 10.0, multi }
+    Row { base, ids: vec![], cells, size: 10.0, multi, last: base, wraps: vec![] }
 }
 
 #[test]

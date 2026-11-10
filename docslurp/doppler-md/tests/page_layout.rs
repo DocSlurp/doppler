@@ -1,6 +1,8 @@
 //! Assignment and reading order checked through the conversion interface. Expected output
 //! and work counts were verified against the baseline Rust converter (Python v24 parity); work
 //! counts now also include gutter-table runs (2 units per word), which Python does not charge.
+//! Folding wrapped rows (`wrapped_rows`) charges its own work, so the work counts below are
+//! pinned with it off; the output is the same either way.
 
 use doppler_md::{Degraded, Params, to_markdown_report};
 
@@ -61,8 +63,10 @@ fn wrapped_cells_keep_their_continuation_once() {
             body += &line(&word(160.0, 195.0, 112.0, "crates", "Serif"));
         }
     }
-    let (md, report) = to_markdown_report(&page(&body), &Params::default());
+    let (md, _) = to_markdown_report(&page(&body), &Params::default());
     assert_eq!(md, ["Stock\n\n| Apples | 1.0 crates |\n| --- | --- |\n| Pears | 2.0 |\n| Plums | 3.0 |"]);
+    let (unfolded, report) = to_markdown_report(&page(&body), &Params { wrapped_rows: false, ..Params::default() });
+    assert_eq!(unfolded, md);
     assert!(report.degraded.is_empty());
     // gutter-table runs also charge their words twice (columns, then grid): 5 + 2 x 7
     assert_eq!((report.doc_work, report.page_work_max), (24, 19));
@@ -85,7 +89,9 @@ fn overlapping_regions() -> String {
 fn narrow_gutter_membership_belongs_to_each_overlapping_region() {
     // The sub-two-point gutter intentionally puts the zero-width shared line in both
     // regions. It belongs to a table on the left and prose on the right (Python behavior).
-    let p = Params { column_gutter: 0.05, table_align: 2.0, ..Params::default() };
+    let p = Params { column_gutter: 0.05, table_align: 2.0, wrapped_rows: false, ..Params::default() };
+    let on = Params { wrapped_rows: true, ..p.clone() };
+    assert_eq!(to_markdown_report(&overlapping_regions(), &on).0, to_markdown_report(&overlapping_regions(), &p).0);
     let (md, report) = to_markdown_report(&overlapping_regions(), &p);
     assert_eq!(
         md,
@@ -101,7 +107,8 @@ fn narrow_gutter_membership_belongs_to_each_overlapping_region() {
 
 #[test]
 fn exhausted_layout_discards_all_partial_assignments() {
-    let p = Params { column_gutter: 0.05, table_align: 2.0, max_page_work: 38.0, ..Params::default() };
+    let p =
+        Params { column_gutter: 0.05, table_align: 2.0, max_page_work: 38.0, wrapped_rows: false, ..Params::default() };
     let (md, report) = to_markdown_report(&overlapping_regions(), &p);
     assert_eq!(
         md,

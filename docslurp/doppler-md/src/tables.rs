@@ -55,6 +55,18 @@ pub struct Row {
     pub cells: Vec<Rc<Line>>,
     pub size: f64,
     pub multi: bool,
+    /// the baseline of the row's last line: `base`, or that of its last wrapped line
+    pub last: f64,
+    /// wrapped lines folded into the row by [`fold_wraps`], top to bottom: (the index in
+    /// `cells` of the cell each continues, the continuation)
+    pub wraps: Vec<(usize, Rc<Line>)>,
+}
+
+impl Row {
+    /// The words of the row's cells, then of its wrapped lines.
+    fn all_words(&self) -> impl Iterator<Item = &Word> + Clone {
+        self.cells.iter().chain(self.wraps.iter().map(|(_, c)| c)).flat_map(|c| c.words.iter())
+    }
 }
 
 /// Whether the gap after word `a` (before `b`) splits a line into cells.
@@ -94,7 +106,11 @@ pub fn segments(line: &Line, p: &Params) -> Vec<Line> {
 
 /// Group lines (by id) into visual rows sharing a baseline, sorted top to bottom.
 pub fn visual_rows(page: &Page, ids: &[usize], p: &Params) -> Vec<Row> {
-    let lines = &page.lines;
+    visual_rows_of(&page.lines, ids, p)
+}
+
+/// [`visual_rows`] of page lines given as a slice.
+pub fn visual_rows_of(lines: &[Rc<Line>], ids: &[usize], p: &Params) -> Vec<Row> {
     let mut sorted: Vec<usize> = ids.to_vec();
     sorted.sort_by(|&a, &b| fcmp(lines[a].base(), lines[b].base()));
     let mut groups: Vec<(f64, Vec<usize>)> = Vec::new();
@@ -115,7 +131,7 @@ fn make_row(lines: &[Rc<Line>], base: f64, mut ids: Vec<usize>, p: &Params) -> R
     let size = median(cells.iter().map(|c| c.size()).collect());
     let long = cells.iter().filter(|c| c.words.len() as f64 >= p.long_cell_words).count();
     let multi = cells.len() >= 2 && long < 2;
-    Row { base, ids, cells, size, multi }
+    Row { base, ids, cells, size, multi, last: base, wraps: Vec::new() }
 }
 
 /// Positions a [`RowWindow`] walks over non-kept lines or along a baseline chain before it
@@ -319,7 +335,61 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     if let Some(s) = start {
         cols.push((s, gap_start.unwrap_or(len) - 1));
     }
-    cols.into_iter().map(|(a, b)| ((a + lo) as f64, (b + lo) as f64)).collect()
+    let cols: Vec<(f64, f64)> = cols.into_iter().map(|(a, b)| ((a + lo) as f64, (b + lo) as f64)).collect();
+    if multi.iter().any(|r| !r.wraps.is_empty()) {
+        join_wrapped(cols, &multi, allowed, p.min_gutter * size)
+    } else {
+        cols
+    }
+}
+
+/// Join two columns across a narrow gutter (under `narrow` slots, accepted because the rows'
+/// word edges line up on it) that the wrapped lines of more than `allowed` rows (and of two rows
+/// or more: one wrapped header line is not evidence) cross, or that
+/// the word spaces of their wrapping cells cover ([`word_spaces`]): there the rows' first lines
+/// happen to break at the same place inside one cell's text, as rows that start with the same
+/// words do. Wider gutters stay: a cell that spans columns (a header) may wrap across them.
+fn join_wrapped(cols: Vec<(f64, f64)>, multi: &[&Row], allowed: f64, narrow: f64) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(cols.len());
+    for c in cols {
+        if let Some(last) = out.last_mut() {
+            let (a, b) = (last.1, c.0);
+            if b - a - 1.0 < narrow {
+                let inside = |(x0, x1): (f64, f64)| trunc(x0) < trunc(b) && trunc(x1) > trunc(a);
+                let crossing = multi
+                    .iter()
+                    .filter(|r| {
+                        r.wraps.iter().flat_map(|(_, w)| w.words.iter()).any(|w| inside((w.x0, w.x1)))
+                            || word_spaces(r).any(inside)
+                    })
+                    .count();
+                if crossing >= 2 && crossing as f64 > allowed {
+                    last.1 = c.1;
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The word spaces of a row's cells that wrap: in such a cell of four words or more, the gaps
+/// between words no wider than 1.5 times the cell's median gap (and half a font size) are spaces
+/// of its text, never a column gutter, even where
+/// the rows' words happen to line up across them. Wider gaps (a price set off from its dish
+/// name in one line) stay open. Nothing for a row without wrapped lines.
+fn word_spaces(r: &Row) -> impl Iterator<Item = (f64, f64)> + '_ {
+    let mut cells: Vec<usize> = r.wraps.iter().map(|&(k, _)| k).collect();
+    cells.sort_unstable();
+    cells.dedup();
+    cells.into_iter().flat_map(move |k| {
+        let ws = &r.cells[k].words;
+        let gaps: Vec<f64> = ws.windows(2).map(|w| w[1].x0 - w[0].x1).collect();
+        // too few gaps to tell a word space from a narrow column gap
+        let space = if gaps.len() < 3 { f64::NEG_INFINITY } else { pmin(1.5 * median(gaps), 0.5 * r.size) };
+        ws.windows(2).filter(move |w| w[1].x0 - w[0].x1 <= space).map(|w| (w[0].x1, w[1].x0)).collect::<Vec<_>>()
+    })
 }
 
 fn line_text(ws: Vec<Word>) -> String {
@@ -426,7 +496,8 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
     let lookup = ColumnLookup::new(cols);
     let column = |w: &Word| lookup.column((w.x0 + w.x1) / 2.0);
     let multi: Vec<&Row> = rows.iter().filter(|r| r.multi).collect();
-    let pitches: Vec<f64> = multi.windows(2).map(|w| w[1].base - w[0].base).collect();
+    // from the last line of a row (its baseline unless lines were folded into it)
+    let pitches: Vec<f64> = multi.windows(2).map(|w| w[1].base - w[0].last).collect();
     let pitch = if pitches.is_empty() { None } else { Some(median(pitches)) };
     let mut grid: Grid = Vec::new();
     // per grid row: the baselines of its first and last visual rows, and its size
@@ -439,10 +510,28 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
                 cells[column(w)].push(w.clone());
             }
         }
-        let texts: Vec<String> = cells.into_iter().map(line_text).collect();
+        let mut texts: Vec<String> = cells.into_iter().map(line_text).collect();
+        // wrapped lines folded into the row: each line's words in a column go on after the
+        // column's text, as the lines of a paragraph do
+        for (slot, c) in &r.wraps {
+            let mut parts: Vec<Vec<Word>> = vec![Vec::new(); cols.len()];
+            // a word between columns stays in the column of the cell it continues
+            let home = r.cells[*slot].words.first().map_or(0, column);
+            for w in &c.words {
+                let mid = (w.x0 + w.x1) / 2.0;
+                let k = lookup.column(mid);
+                let k = if cols[k].0 - 1.0 <= mid && mid <= cols[k].1 + 1.0 { k } else { home };
+                parts[k].push(w.clone());
+            }
+            for (k, ws) in parts.into_iter().enumerate() {
+                if !ws.is_empty() {
+                    crate::prose::append_line(&mut texts[k], &line_text(ws), p);
+                }
+            }
+        }
         let filled = texts.iter().filter(|x| !x.is_empty()).count();
         if let (Some(last), Some(pr)) = (grid.last_mut(), prev) {
-            let close = pitch.is_some_and(|pt| pt != 0.0 && r.base - pr.base < p.wrap_pitch * pt);
+            let close = pitch.is_some_and(|pt| pt != 0.0 && r.base - pr.last < p.wrap_pitch * pt);
             let fewer = filled < last.iter().filter(|x| !x.is_empty()).count();
             if (close && fewer) || (filled == 1 && texts[0].is_empty() && !r.multi) {
                 for (k, t) in texts.iter().enumerate() {
@@ -451,14 +540,14 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
                     }
                 }
                 if let Some(s) = spans.last_mut() {
-                    s.1 = r.base;
+                    s.1 = r.last;
                 }
                 prev = Some(r);
                 continue;
             }
         }
         grid.push(texts);
-        spans.push((r.base, r.base, r.size));
+        spans.push((r.base, r.last, r.size));
         prev = Some(r);
     }
     let header_row = p.merge_header_rows && merge_stacked_header(&mut grid, &spans, p);
@@ -572,7 +661,7 @@ pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Ve
 
 /// Words in rows: the work units of building their columns and grid.
 fn row_words(rows: &[Row]) -> usize {
-    rows.iter().map(|r| r.cells.iter().map(|c| c.words.len()).sum::<usize>()).sum()
+    rows.iter().map(|r| r.all_words().count()).sum()
 }
 
 /// [`find_tables`] within a work budget: each run that reaches column detection charges its
@@ -585,7 +674,10 @@ pub fn find_tables_within(
     body: f64,
     budget: &mut Budget,
 ) -> Option<Vec<(Vec<usize>, Table)>> {
-    let rows = visual_rows(page, ids, p);
+    let mut rows = visual_rows(page, ids, p);
+    if p.wrapped_rows {
+        rows = fold_wraps(rows, p, budget)?;
+    }
     let mut found = Vec::new();
     let mut run: Vec<Row> = Vec::new();
     let mut flush = |run: &mut Vec<Row>, found: &mut Vec<(Vec<usize>, Table)>| -> bool {
@@ -610,7 +702,7 @@ pub fn find_tables_within(
     // the sparse pass reads the rows again; copy them only when it runs
     let again = p.sparse_tables.then(|| rows.clone());
     for r in rows {
-        let near = run.last().is_some_and(|l| r.base - l.base <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
+        let near = run.last().is_some_and(|l| r.base - l.last <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
         if r.multi {
             if !run.is_empty() && !near && !flush(&mut run, &mut found) {
                 return None;
@@ -629,6 +721,159 @@ pub fn find_tables_within(
         sparse_tables(&rows, &mut found, p, budget)?;
     }
     Some(found)
+}
+
+/// Fold the wrapped lines of borderless table rows into their rows.
+///
+/// A cell that wraps puts its next lines below the row's first line, at line pitch, with no
+/// other cell beside them. Read as visual rows, those lines are rows of fewer cells, which
+/// break the column gutters (a wrapped line is not counted where it crosses one) and the even
+/// spacing of the rows. A row with fewer cells than the multi-cell row above it is a wrapped
+/// line of that row when every one of its cells continues a different cell of that row: it
+/// starts after the cell starts (`cell_gap` slack), ends before the next cell starts (less
+/// `min_gutter`), lines up with the cell's last line (left edge, right edge or centre within
+/// 0.6 font sizes, or indented up to two font sizes under the row's first line), has its font
+/// size (within 10%), and sits at most `wrap_lead` font sizes below that line.
+///
+/// Folding needs visible row padding, around each row and on the whole: the rows next to a
+/// folded row (from their last line) are at least `wrap_padding` times its longest wrap step
+/// away, and the median gap between multi-cell rows is at least `wrap_padding` times the
+/// median wrap step; a step that reaches halfway from that step to that gap is a row of its
+/// own (a row with empty cells). Rows without the evidence are returned as they were. Linear in
+/// the rows' words; charges twice their count when a multi-cell row has a row below it.
+pub(crate) fn fold_wraps(rows: Vec<Row>, p: &Params, budget: &mut Budget) -> Option<Vec<Row>> {
+    // nothing to fold without a multi-cell row with a row after it
+    if !rows.iter().rev().skip(1).any(|r| r.multi) {
+        return Some(rows);
+    }
+    if !budget.spend(2 * row_words(&rows)) {
+        return None;
+    }
+    let (folded, steps) = fold_padded(&rows, p, f64::INFINITY);
+    if steps.is_empty() {
+        return Some(rows);
+    }
+    let gaps: Vec<f64> = folded
+        .windows(2)
+        .filter(|w| w[0].multi && w[1].multi)
+        .map(|w| (w[1].base - w[0].last, pmax(pmax(w[0].size, w[1].size), 1.0)))
+        .filter(|&(g, size)| g > 0.0 && g <= p.sparse_row_gap * size)
+        .map(|(g, _)| g)
+        .collect();
+    if gaps.len() < 2 {
+        return Some(rows);
+    }
+    let longest = steps.iter().copied().fold(f64::NEG_INFINITY, pmax);
+    let (step, gap) = (median(steps), median(gaps));
+    // (a NaN gap or step gives no evidence either)
+    if gap.partial_cmp(&(p.wrap_padding * step)).is_none_or(|o| o.is_lt()) {
+        return Some(rows);
+    }
+    let cut = (step + gap) / 2.0;
+    Some(if longest < cut { folded } else { fold_padded(&rows, p, cut).0 })
+}
+
+/// [`fold_pass`], then unfold each folded row whose neighbours are not clear of it by
+/// `wrap_padding` times its longest step: the rows, and the steps of the folds kept.
+fn fold_padded(rows: &[Row], p: &Params, cut: f64) -> (Vec<Row>, Vec<f64>) {
+    let folded = fold_pass(rows, p, cut);
+    let mut out = Vec::with_capacity(rows.len());
+    let mut steps = Vec::new();
+    for (i, (row, range, longest)) in folded.iter().enumerate() {
+        if range.len() > 1 {
+            let need = p.wrap_padding * longest;
+            let above = i.checked_sub(1).is_none_or(|k| row.base - folded[k].0.last >= need);
+            let below = folded.get(i + 1).is_none_or(|next| next.0.base - row.last >= need);
+            if !(above && below) {
+                out.extend(rows[range.clone()].iter().cloned());
+                continue;
+            }
+            let mut prev = rows[range.start].base;
+            for r in &rows[range.start + 1..range.end] {
+                steps.push(r.base - prev);
+                prev = r.base;
+            }
+        }
+        out.push(row.clone());
+    }
+    (out, steps)
+}
+
+/// A cell's last line in a row being folded: its x extent, baseline and font size.
+type Slot = (f64, f64, f64, f64);
+
+/// One folding pass with wrap steps under `cut` points: each row, the range of `rows` it was
+/// folded from, and its longest wrap step (0 when nothing was folded).
+fn fold_pass(rows: &[Row], p: &Params, cut: f64) -> Vec<(Row, std::ops::Range<usize>, f64)> {
+    let mut out = Vec::with_capacity(rows.len());
+    // the open row, where it started, its longest step, and for each of its cells the extent,
+    // baseline and size of its last line
+    let mut open: Option<(Row, usize, f64, Vec<Slot>)> = None;
+    for (i, r) in rows.iter().enumerate() {
+        if let Some((row, _, longest, slots)) = open.as_mut()
+            && let Some(assign) = wrap_slots(row, slots, r, p, cut)
+        {
+            *longest = pmax(*longest, r.base - row.last);
+            row.ids.extend_from_slice(&r.ids);
+            for (c, k) in r.cells.iter().zip(assign) {
+                row.wraps.push((k, c.clone()));
+                slots[k] = (c.x0, c.x1, r.base, c.size());
+            }
+            row.last = r.base;
+            continue;
+        }
+        if let Some((row, start, longest, _)) = open.take() {
+            out.push((row, start..i, longest));
+        }
+        if r.multi {
+            let slots = r.cells.iter().map(|c| (c.x0, c.x1, r.base, c.size())).collect();
+            open = Some((r.clone(), i, 0.0, slots));
+        } else {
+            out.push((r.clone(), i..i + 1, 0.0));
+        }
+    }
+    if let Some((row, start, longest, _)) = open {
+        out.push((row, start..rows.len(), longest));
+    }
+    out
+}
+
+/// The cell of `row` each cell of `r` continues, when `r` is a wrapped line of `row`.
+fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Option<Vec<usize>> {
+    let n = row.cells.len();
+    if r.cells.is_empty() || r.cells.len() >= n {
+        return None;
+    }
+    let size = pmax(pmax(r.size, row.size), 1.0);
+    let reach = pmin(p.wrap_lead * size, cut);
+    let step = r.base - row.last;
+    if !(step > 0.0 && step <= reach) {
+        return None;
+    }
+    let tol = 0.6 * size;
+    let mut used = vec![false; n];
+    let mut out = Vec::with_capacity(r.cells.len());
+    for c in &r.cells {
+        // the last cell starting at or before this one (cells are in x order)
+        let k = row.cells.iter().rposition(|a| a.x0 - p.cell_gap * size <= c.x0)?;
+        if used[k] || row.cells.get(k + 1).is_some_and(|b| c.x1 > b.x0 - p.min_gutter * size) {
+            return None;
+        }
+        let (ax0, ax1, abase, asize) = slots[k];
+        let below = r.base - abase;
+        // or a hanging indent under the row's first line
+        let first = row.cells[k].x0;
+        let aligned = (c.x0 - ax0).abs() <= tol
+            || (c.x1 - ax1).abs() <= tol
+            || ((c.x0 + c.x1) / 2.0 - (ax0 + ax1) / 2.0).abs() <= tol
+            || (c.x0 > first && c.x0 - first <= 2.0 * size && (ax0 - first).abs() <= tol);
+        if !(below > 0.0 && below <= reach) || !aligned || (c.size() - asize).abs() > 0.1 * pmax(asize, 1.0) {
+            return None;
+        }
+        used[k] = true;
+        out.push(k);
+    }
+    Some(out)
 }
 
 /// Borderless tables whose rows are too far apart for the dense pass (or that it left for any
@@ -654,7 +899,7 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
         let mut j = i + 1;
         while j < rows.len() {
             let (prev, r) = (&rows[j - 1], &rows[j]);
-            let gap = r.base - prev.base;
+            let gap = r.base - prev.last;
             if !free(r) || !(gap > 0.0 && gap <= p.sparse_row_gap * pmax(pmax(prev.size, r.size), 1.0)) {
                 break;
             }
@@ -694,8 +939,11 @@ fn sparse_tables(rows: &[Row], found: &mut Vec<(Vec<usize>, Table)>, p: &Params,
         // a gap too wide to chain, e.g. rows of varying height) that fits its columns: the
         // table goes on, and the run alone would be a fragment of it. Rows further away (a
         // page number at the foot) do not count.
-        let near =
-            |a: &Row, b: &Row| (b.base - a.base).abs() <= 2.0 * p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0);
+        let near = |a: &Row, b: &Row| {
+            // from the last line of the upper row (its baseline unless lines were folded into it)
+            let (upper, lower) = if a.base <= b.base { (a, b) } else { (b, a) };
+            (lower.base - upper.last).abs() <= 2.0 * p.sparse_row_gap * pmax(pmax(a.size, b.size), 1.0)
+        };
         let before = start.checked_sub(1).map(|k| (&rows[k], &rows[start]));
         let after = rows.get(end).map(|r| (r, &rows[end - 1]));
         if [before, after]
@@ -741,6 +989,16 @@ fn whole(run: &[Row], cols: &[(f64, f64)]) -> bool {
                     return false;
                 }
                 owners.push((k, ci));
+            }
+        }
+        // a wrapped line belongs to the cell it continues (a word between columns stays there)
+        for (slot, cell) in &r.wraps {
+            for w in &cell.words {
+                let mid = (w.x0 + w.x1) / 2.0;
+                let k = lookup.column(mid);
+                if cols[k].0 - 1.0 <= mid && mid <= cols[k].1 + 1.0 {
+                    owners.push((k, *slot));
+                }
             }
         }
         owners.sort_unstable();
