@@ -114,7 +114,8 @@ paragraph. A word goes when it is large (`watermark_size`, 1.5 body sizes) and a
 - **diagonal**: three or more words of one font size on a line at least 15 degrees from both axes
   (a vertical label stays);
 - **repeated**: the same word at the same place on as many pages as a running header needs
-  (`furniture_min_share`, at least 2, over the same window, so `--window 0` sees only the page itself).
+  (`furniture_min_share`, at least 2, over the same window; `--window 0` sees only the page
+  itself and removes none, see [Streaming](#streaming)).
 
 With `--markers`, a picture of at least 5% of the page at the same place and size on that many
 pages gets no marker (`placed: watermark`). Small watermarks of one page that are dark and
@@ -147,7 +148,20 @@ fixed after that, and headers and footers from the N pages either side of each p
 page is written (and flushed) once the next N are complete; the parser completes a page when
 the following `<page>` opens. So at most N + 2 pages are held at a time (N + 1 in the converter
 and the one being parsed), with the margin keys of N more. `--stream` is `--window 16`. A document of at
-most N + 1 pages converts exactly as without a window. The library API is
+most N + 1 pages converts exactly as without a window.
+
+**Do not use `--window 0`, and avoid very small windows.** Everything that finds content by
+its repetition across pages looks only inside the window: running headers and footers,
+repeated watermark words and backdrop pictures (`watermarks`), and, with `--markers`,
+repeated header and footer pictures. With `--window 0` the converter sees one page at a time,
+so none of these is removed: every running header, footer and repeated watermark lands in the
+body text (only page numbers and pale or diagonal watermarks, which a single page shows by
+itself, still go). The body size also comes from the first page alone, which shifts heading
+levels when that page is a cover. Use `--stream` (16 pages), or no window when latency does
+not matter. Cross-page continuation markers (`--markers`) are unaffected: they need only
+the previous page.
+
+The library API is
 `model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
 `Converter` without a window).
 

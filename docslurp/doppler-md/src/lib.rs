@@ -468,6 +468,11 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
 ///
 /// With `window: None`, or a window at least as long as the document, both decisions see the
 /// whole document and the output is [`to_markdown_report_with`]'s.
+///
+/// Every detection of content by its repetition across pages (running headers and footers,
+/// repeated watermark words and backdrop pictures) sees only the window. `Some(0)` sees one page
+/// at a time and so removes none of it; use `None` or a window of several pages (`--stream` is
+/// 16).
 pub struct Converter<'p> {
     p: &'p Params,
     o: Options,

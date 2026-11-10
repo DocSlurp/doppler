@@ -39,7 +39,9 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   --stream       write pages as they are converted (--window 16)
   --window N     body size and running headers/footers from N pages either side of each
                  page, not the whole document; each page is written once the next N are complete.
-                 A document of at most N + 1 pages converts exactly as without it
+                 A document of at most N + 1 pages converts exactly as without it.
+                 Repeated content (running headers/footers, repeated watermarks) is found only
+                 within the window: do not use --window 0, which removes none of it
   --report       print a one-line JSON report to stderr
   --params JSON  override layout tuning parameters
   -f N, -l N     first and last page to convert
