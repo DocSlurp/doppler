@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::TableFormat;
 use crate::images::Figure;
 use crate::layout::{Budget, Elem, regions_within};
-use crate::model::{Page, Word};
+use crate::model::{Line, Page, Word};
 use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
 use crate::prose::{Paragraph, SENT_END, Seq, SeqItem, group_within};
@@ -114,13 +114,30 @@ impl PageLayout {
             y0: f.y0,
             y1: f.y1,
         }));
-        let mut blocks = Vec::new();
+        let mut blocks: Vec<Block> = Vec::new();
+        let mut tail: Option<Tail> = None;
         for region in regions_within(&elements, &page.lines, body, p, 0, budget)? {
             // A narrow gutter can place the same line in two regions. Each region assigns
             // its own copy: a table in the left region cannot consume right-region prose.
             let seq = assign_region(page, region, body, p, budget)?;
-            let items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
+            let mut items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
+            let folded = if p.join_column_breaks { join_column_break(&mut blocks, tail.take(), &mut items, p) } else { None };
+            if items.is_empty() {
+                // the whole region continued the paragraph before it, which may run on
+                tail = folded;
+                continue;
+            }
+            let last = match items.last() {
+                Some(FlowItem::Paragraph(para)) if plain(para) => Tail::of(para),
+                _ => None,
+            };
             blocks.extend(finish_region(items, p));
+            // the last item is the last block: a paragraph is only absorbed into a table that
+            // follows it
+            tail = last.and_then(|t| {
+                let block = blocks.len().checked_sub(1)?;
+                matches!(blocks[block], Block::Text { heading: 0, list: false, caption: false, .. }).then_some(Tail { block, ..t })
+            });
         }
         Some(Self { blocks })
     }
@@ -132,6 +149,64 @@ impl PageLayout {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+}
+
+/// The last paragraph of a region, which the next region's first paragraph may continue.
+struct Tail {
+    /// index of its block in the page's blocks (set once the block exists)
+    block: usize,
+    /// its last line, and how many lines it has
+    last: Rc<Line>,
+    lines: usize,
+    /// the right edge of its lines
+    right: f64,
+}
+
+fn plain(para: &Paragraph) -> bool {
+    para.level == 0 && para.kind.is_none() && !para.lines.is_empty()
+}
+
+impl Tail {
+    fn of(para: &Paragraph) -> Option<Tail> {
+        let last = para.lines.last()?.clone();
+        let right = para.lines.iter().map(|l| l.x1).fold(f64::NEG_INFINITY, pmax);
+        Some(Tail { block: 0, last, lines: para.lines.len(), right })
+    }
+}
+
+/// A paragraph that runs to the bottom of one column and goes on at the top of the next was
+/// split by the column break. When the first paragraph of the region just grouped continues
+/// the last one of the region before it, fold it into that block (dropping it from `items`),
+/// and return what the folded paragraph leaves as the tail.
+///
+/// The evidence is all of: the earlier paragraph has no end of sentence and runs to its
+/// column's right edge; the later one starts in lowercase, higher up the page, in the same
+/// size, weight and colour; both are plain paragraphs (no heading, list or caption).
+fn join_column_break(blocks: &mut [Block], tail: Option<Tail>, items: &mut Vec<FlowItem>, p: &Params) -> Option<Tail> {
+    let t = tail?;
+    let Some(FlowItem::Paragraph(next)) = items.first() else { return None };
+    let Block::Text { text, .. } = &blocks[t.block] else { return None };
+    let (a, b) = (&t.last, next.lines.first()?);
+    let size = pmax(a.size(), 1.0);
+    let ends = rstrip(text);
+    let terminal = ends.ends_with(['.', '!', '?', ':', ';', '"', '”', '’', '…']);
+    let lower = strip(&next.text).chars().next().is_some_and(crate::pyc::is_lower);
+    let continues = plain(next)
+        && lower
+        && !terminal
+        && t.lines >= 2
+        && a.x1 >= t.right - 2.0 * size
+        && b.y0 < a.y0
+        && !crate::prose::style_change(a, b, p);
+    if !continues {
+        return None;
+    }
+    let FlowItem::Paragraph(next) = items.remove(0) else { return None };
+    if let Block::Text { text, .. } = &mut blocks[t.block] {
+        crate::prose::append_line(text, strip(&next.text), p);
+    }
+    // the paragraph may run on into a third column
+    Tail::of(&next).map(|folded| Tail { block: t.block, ..folded })
 }
 
 /// Replace detected members with their table, keeping the untouched elements in input order

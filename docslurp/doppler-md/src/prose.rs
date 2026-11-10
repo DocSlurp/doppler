@@ -51,12 +51,12 @@ fn style(line: &Line) -> (f64, bool, Rc<str>) {
     (line.size(), line.words.iter().all(|w| w.bold), color)
 }
 
-fn style_change(a: &Line, b: &Line, p: &Params) -> bool {
+pub(crate) fn style_change(a: &Line, b: &Line, p: &Params) -> bool {
     let (sa, sb) = (style(a), style(b));
     (sa.0 - sb.0).abs() > p.style_size * pmax(sa.0, 1.0) || sa.1 != sb.1 || (p.color_breaks && sa.2 != sb.2)
 }
 
-fn ends_hyphenated_letter(text: &str) -> bool {
+pub(crate) fn ends_hyphenated_letter(text: &str) -> bool {
     // re.search(r'[A-Za-zÀ-ɏ]-$', text)
     let t = text.strip_suffix('\n').unwrap_or(text);
     let check = |t: &str| {
@@ -70,24 +70,30 @@ fn ends_hyphenated_letter(text: &str) -> bool {
 pub fn join_lines(lines: &[Rc<Line>], p: &Params) -> String {
     let mut text = String::new();
     for line in lines {
-        let t = strip(line.text());
-        let first = t.chars().next();
-        if text.is_empty() {
-            text = t.to_string();
-        } else if text.chars().next_back().is_some_and(is_cjk) && first.is_some_and(is_cjk) {
-            text.push_str(t);
-        } else if p.dehyphenate && ends_hyphenated_letter(&text) && first.is_some_and(pyc::is_lower) {
-            text.pop();
-            text.push_str(t);
-        } else if text.ends_with('\u{ad}') {
-            text.pop();
-            text.push_str(t);
-        } else {
-            text.push(' ');
-            text.push_str(t);
-        }
+        append_line(&mut text, strip(line.text()), p);
     }
     text
+}
+
+/// Continue `text` with the next line `t` (stripped): joined without a space across CJK text,
+/// a hyphen before a lowercase letter (`dehyphenate`) or a soft hyphen, else with one space.
+#[allow(clippy::if_same_then_else)] // mirrors the Python elif chain
+pub(crate) fn append_line(text: &mut String, t: &str, p: &Params) {
+    let first = t.chars().next();
+    if text.is_empty() {
+        *text = t.to_string();
+    } else if text.chars().next_back().is_some_and(is_cjk) && first.is_some_and(is_cjk) {
+        text.push_str(t);
+    } else if p.dehyphenate && ends_hyphenated_letter(text) && first.is_some_and(pyc::is_lower) {
+        text.pop();
+        text.push_str(t);
+    } else if text.ends_with('\u{ad}') {
+        text.pop();
+        text.push_str(t);
+    } else {
+        text.push(' ');
+        text.push_str(t);
+    }
 }
 
 /// A list marker at the start of a line: (kind, the line without a bullet).

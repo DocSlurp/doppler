@@ -185,6 +185,8 @@ params! {
     /// lines plus layout work units over the whole document; once spent, the remaining pages
     /// fall back to plain lines
     max_doc_work: num = 5.0e7,
+    /// a paragraph that runs out of one column and goes on at the top of the next is one paragraph
+    join_column_breaks: flag = true,
     /// an image needs both sides at least this many points to get a marker (pictures)
     image_min_size: num = 6.0,
     /// and a stencil mask both sides at least this many (bullets and glyph bitmaps are masks)
