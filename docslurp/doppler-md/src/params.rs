@@ -156,6 +156,16 @@ params! {
     /// max ratio between neighbouring row gaps in a run; the first (header) gap may differ by
     /// twice this
     sparse_pitch_ratio: num = 1.35,
+    /// borderless table rows whose cells wrap onto several lines, with padding between rows: a
+    /// line stacked under a cell of a multi-cell row, at line pitch and aligned with it, is part
+    /// of that row (see `tables::fold_wraps`), and a column gutter whose right side is such
+    /// rows does not split the page into reading columns
+    wrapped_rows: flag = true,
+    /// max baseline step / font size from a cell's line to its wrapped next line
+    wrap_lead: num = 1.6,
+    /// the gaps between such rows must be at least this many times the wrap step (visible row
+    /// padding); otherwise the rows are left to the passes below as before
+    wrap_padding: num = 1.15,
     /// read the lines of one rotation (a table printed sideways) in their own reading frame
     rotated_frames: flag = true,
     /// fewer kept lines of a rotation than this stay in the upright layout
