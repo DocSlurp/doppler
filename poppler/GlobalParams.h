@@ -172,6 +172,9 @@ public:
 private:
     static std::string appendToPath(const std::string &path, const std::string &fileName);
     void parseNameToUnicode(const std::filesystem::path &name);
+    // builds macRomanReverseMap, nameToUnicodeZapfDingbats and nameToUnicodeText on first use (only text
+    // extraction and font setup read them; pdfpagecount, pdfinfo and friends never do)
+    void initNameTables();
 
     void scanEncodingDirs();
     void addCIDToUnicode(std::string &&collection, std::string &&fileName);
@@ -189,6 +192,9 @@ private:
             nameToUnicodeZapfDingbats;
     NameToCharCode * // mapping from char name to Unicode for text
             nameToUnicodeText; // extraction
+    std::once_flag nameTablesOnce;
+    // nameToUnicode files found under the data dir, parsed in this order by initNameTables
+    std::vector<std::filesystem::path> nameToUnicodeFiles;
     // files for mappings from char collections
     // to Unicode, indexed by collection name
     std::unordered_map<std::string, std::string> cidToUnicodes;
