@@ -319,13 +319,50 @@ static TextBounds projectLine(const TextLine *line, const UnicodeMap *uMap, bool
 
 } // namespace
 
+// Appends value as printf("%f") does in the C locale (std::to_chars with precision 6 is exactly
+// rounded too, so the text is identical), without printf's multi-precision formatting.
+static void appendFixed6(std::string &out, double value)
+{
+    char buffer[384]; // the fixed representation of the largest finite double fits
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 6);
+    if (result.ec == std::errc()) {
+        out.append(buffer, result.ptr);
+    } else {
+        char fallback[400];
+        snprintf(fallback, sizeof(fallback), "%f", value);
+        out += fallback;
+    }
+}
+
 // -wordmeta: extra attributes of a <word> element, each preceded by a space.
 static std::string wordMetaXmlAttributes(const WordMetadata &meta)
 {
-    char buf[256];
-    snprintf(buf, sizeof(buf), " fontSize=\"%f\" rotation=\"%d\" spaceAfter=\"%d\" invisible=\"%d\" color=\"%s\" baseline=\"%f\"", meta.fontSize, meta.rotation, meta.spaceAfter ? 1 : 0, meta.invisible ? 1 : 0,
-             hexColor(meta.r, meta.g, meta.b).c_str(), meta.baseline);
-    return " fontName=\"" + myXmlTokenReplace(meta.fontName.c_str()) + "\"" + buf;
+    std::string tail = " fontSize=\"";
+    appendFixed6(tail, meta.fontSize);
+    tail += "\" rotation=\"" + std::to_string(meta.rotation) + "\" spaceAfter=\"" + (meta.spaceAfter ? "1" : "0") + "\" invisible=\"" + (meta.invisible ? "1" : "0") + "\" color=\"" + hexColor(meta.r, meta.g, meta.b) + "\" baseline=\"";
+    appendFixed6(tail, meta.baseline);
+    tail += "\"";
+    // as the snprintf into a 256-byte buffer this replaces: huge values are cut at 255 bytes
+    if (tail.size() > 255) {
+        tail.resize(255);
+    }
+    return " fontName=\"" + myXmlTokenReplace(meta.fontName.c_str()) + "\"" + tail;
+}
+
+// <line> or <block> start tag with printf("%f") coordinates.
+static void putBoxTag(FILE *f, const char *open, double xMin, double yMin, double xMax, double yMax)
+{
+    std::string tag = open;
+    tag += " xMin=\"";
+    appendFixed6(tag, xMin);
+    tag += "\" yMin=\"";
+    appendFixed6(tag, yMin);
+    tag += "\" xMax=\"";
+    appendFixed6(tag, xMax);
+    tag += "\" yMax=\"";
+    appendFixed6(tag, yMax);
+    tag += "\">\n";
+    fwrite(tag.data(), 1, tag.size(), f);
 }
 
 // -wordmeta: extra TSV columns of a word row (starting with a tab), after the text column.
@@ -1245,7 +1282,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
                 }
             }
         });
-        fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
+        putBoxTag(f, "        <line", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
         fwrite(words.data(), 1, words.size(), f);
         fputs("        </line>\n", f);
         return;
@@ -1336,7 +1373,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             fprintf(f, "    <flow>\n");
             for (blk = flow->getBlocks(); blk; blk = blk->getNext()) {
                 blk->getBBox(&xMin, &yMin, &xMax, &yMax);
-                fprintf(f, "      <block xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", xMin, yMin, xMax, yMax);
+                putBoxTag(f, "      <block", xMin, yMin, xMax, yMax);
                 for (line = blk->getLines(); line; line = line->getNext()) {
                     printLine(f, line, uMap);
                 }
