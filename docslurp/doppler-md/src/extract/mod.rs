@@ -274,7 +274,7 @@ impl Run<'_> {
             Outcome::Error(_) => return Ok(()),
             Outcome::Rgb { width, height, data } => {
                 let fmt = self.raster_format(n, fallback.is_some());
-                match encode::encode(&data, width, height, fmt) {
+                match encode::encode_with(&data, width, height, fmt, s.effort()) {
                     Ok(bytes) => (bytes, fmt.extension(), width, height),
                     Err(_) => {
                         self.entries[e].error = Some("encode".into());

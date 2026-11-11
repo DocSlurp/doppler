@@ -68,6 +68,10 @@ and DIR/manifest.json listing every image):
   --raster-format webp|png    pictures (webp: lossy, lossless where the crop holds text)
   --raster-quality N          lossy WebP quality (90)
   --raster-lossless           lossless WebP for every picture
+  --raster-method N           lossy WebP encoder effort, 0 (fastest) to 6 (4)
+  --lossless-method N         lossless WebP encoder effort, 0 to 6 (4); with
+  --lossless-quality N        lossless effort 0 to 100 (50): lower is faster, a little larger,
+                              and decodes to the same pixels
   --vector-format svg|webp|png  vector figures (svg; a refused or too large SVG becomes
                               lossless WebP)
   --svg-precision 1|2         decimals of a point in SVG coordinates (1)

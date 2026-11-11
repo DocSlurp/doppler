@@ -304,6 +304,9 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 | `--raster-format webp\|png` | `webp` | pictures: lossy WebP, lossless when the crop holds text lines |
 | `--raster-quality N` | `90` | lossy WebP quality |
 | `--raster-lossless` | off | lossless WebP for every picture |
+| `--raster-method N` | `4` | lossy WebP encoder effort (libwebp `method`), 0 (fastest) to 6; lower is faster with slightly larger files |
+| `--lossless-method N` | `4` | lossless WebP encoder effort (libwebp `method`), 0 to 6 |
+| `--lossless-quality N` | `50` | lossless WebP effort (libwebp `quality`), 0 to 100; with `--lossless-method` it trades encode time for file size, never pixels |
 | `--vector-format svg\|webp\|png` | `svg` | vector figures; an SVG refused by the allowlist or over `--svg-max-bytes` becomes lossless WebP (`fallback`) |
 | `--svg-precision 1\|2` | `1` | decimals of a point in SVG coordinates |
 | `--svg-max-bytes N` | `512KiB` | largest compacted SVG kept |
@@ -376,7 +379,10 @@ kept 35.6% of the bytes at `--svg-precision 1` (41.0% at 2). Rendered with `rsvg
 precision 2 (antialiasing on edges shifted up to 0.05 pt; no visible change). 188 raster crops
 (47.8 Mpx): lossy WebP q90 21.9 ms per crop (11.6 Mpx/s) at 28.4% of PNG's size; lossless
 WebP 67.9 ms per crop (3.7 Mpx/s) at 62.8%; PNG 13.2 ms (19.3 Mpx/s). Measure with
-`cargo run --release --example image_bench`.
+`cargo run --release --example image_bench`. Encoder effort is configurable: on a mixed set of
+papers and reports, `--raster-method 2 --lossless-method 1 --lossless-quality 25` cut the
+image pass's CPU by about 15% for about 1% more WebP bytes (lossy SSIM about 0.996 against
+the defaults; lossless output decodes to the same pixels).
 
 ## Exit status and report
 
