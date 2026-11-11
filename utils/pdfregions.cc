@@ -681,6 +681,7 @@ bool fixedPrintingOff()
 } // namespace
 
 extern "C" int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
+extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...);
 
 extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...)
 {
