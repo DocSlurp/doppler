@@ -2712,6 +2712,10 @@ FlateStream::FlateStream(std::unique_ptr<Stream> strA, int predictor, int column
     litCodeTab.codes = nullptr;
     distCodeTab.codes = nullptr;
     memset(buf, 0, flateWindow);
+    // An inline image's data sits in the content stream, with only the EI scan after it to find
+    // its end: decoding ahead could consume EI and the operators after it when the deflate data
+    // has no final block. Over an EmbedStream decode exactly one symbol per call, like upstream.
+    readAhead = dynamic_cast<EmbedStream *>(getBaseStream()) == nullptr;
 }
 
 FlateStream::~FlateStream()
@@ -2879,7 +2883,7 @@ void FlateStream::readSome()
         // and back-references read written bytes up to 32768 back, which the window still holds.
         // The batch starts small and doubles, so a reader that only peeks (a font type sniff) does
         // not decode far ahead.
-        const int flateBatch = batchLimit;
+        const int flateBatch = readAhead ? batchLimit : 1;
         if (batchLimit < 4096) {
             batchLimit *= 2;
         }

@@ -1118,6 +1118,7 @@ private:
     int index; // current index into output buffer
     int remain; // number valid bytes in output buffer
     int batchLimit = 64; // bytes readSome decodes ahead: doubles per call up to 4096 (small reads stay small)
+    bool readAhead = true; // false over an EmbedStream (inline image): one symbol per call, as upstream
     int codeBuf; // input buffer
     int codeSize; // number of bits in input buffer
     int // literal and distance code lengths

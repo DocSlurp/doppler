@@ -312,6 +312,19 @@ with t.TempDir() as d:
         want = b"svg-together chunks=%d fallback=%d" % (chunks, 0 if chunks else 2)
         t.check(want in err1, "svg in one pass (%s): %s" % (label, want.decode()), repr(err1))
 
+    # --- an inline image's Flate data does not swallow EI and what follows ---------------
+    # The deflate data has no final block: after the image's one byte, the bits of " EI" and a
+    # comment line still decode as literals. The decoder must stop where upstream stops (one
+    # symbol per call) so the EI scan finds the marker and the text and square after it draw.
+    ei_data = b"x\x01jxfL EI\n%MoamgOKoGY27sAaHWm8pkLWq67maddQhUgvaa48MooSxVhScBWVh9ULgBJspeRUC0K2bAgklTR9g0CRhT4LwUUhogjr5o6x7JByK\n"
+    ei_content = b"q 100 0 0 100 50 150 cm BI /W 1 /H 1 /BPC 8 /CS /G /F /Fl ID " + ei_data + b"Q\nBT /F1 12 Tf 20 100 Td (" + MARKER.encode() + b") Tj ET\n0 0 1 rg 20 20 100 30 re f\n"
+    epath = d.write("inline-ei.pdf", t.simple_page_pdf(ei_content, resources="<< /Font << /F1 4 0 R >> >>"))
+    rc, out, err = regions(epath, [("p1.g1", 1, 0, 0, 612, 792, "svg", 72), ("p1.1", 1, 20, 742, 120, 772, "raster", 72)])
+    recs = parse_records(out)
+    t.check(rc == OK and [h[1] for h, _ in recs] == ["ok", "ok"], "inline image without a final deflate block: both jobs render", repr((rc, err)))
+    t.check(recs[0][1].count(b"<use") >= len(MARKER), "inline image without a final deflate block: the text after EI is drawn", repr(recs[0][1].count(b"<use")))
+    t.check(mostly(recs[1][1], (0, 0, 255), 0.9), "inline image without a final deflate block: the square after EI is drawn")
+
     # --- limits: timeout and memory --------------------------------------------------
     heavy = b"".join(b"%d %d m %d %d %d %d %d %d c S\n" % (i % 600, i % 780, i % 600 + 5, i % 780 + 9, i % 600 + 9, i % 780 + 2, i % 600 + 12, i % 780 + 6) for i in range(40000))
     hpath = d.write("heavy.pdf", t.simple_page_pdf(heavy))
