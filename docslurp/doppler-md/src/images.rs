@@ -224,10 +224,23 @@ pub fn place(
             (pmin(b.0, im.x0), pmin(b.1, im.y0), pmax(b.2, im.x1), pmax(b.3, im.y1))
         })
     };
+    // pieces that together cover the page under its text (a scan drawn as strips or tiles) are
+    // its background, like one page-sized picture
+    let backdrop: Vec<bool> = units
+        .iter()
+        .map(|u| {
+            let b = bbox_of(u);
+            u.len() > 1 && kept_text && (b.2 - b.0) * (b.3 - b.1) >= p.image_background_share * area
+        })
+        .collect();
     // the line each unit would sit in, when it is text-sized and in one
     let lines: Vec<Option<usize>> = units
         .iter()
-        .map(|u| {
+        .zip(&backdrop)
+        .map(|(u, &backdrop)| {
+            if backdrop {
+                return None;
+            }
             let b = bbox_of(u);
             let short = b.3 - b.1 <= p.image_inline_height * body;
             if short && budget.spend(page.lines.len()) { inline_line(page, drop, b) } else { None }
@@ -236,7 +249,13 @@ pub fn place(
     // a page with this many pictures inside its text has text drawn as pictures: word-sized
     // fragments are not figures to restitch
     let fragments = lines.iter().flatten().count() as f64 > p.image_inline_max;
-    for (unit, line) in units.iter().zip(lines) {
+    for ((unit, line), backdrop) in units.iter().zip(lines).zip(backdrop) {
+        if backdrop {
+            for &i in unit {
+                notes[i].fate = Fate::Background;
+            }
+            continue;
+        }
         let rep = unit[0];
         let b = bbox_of(unit);
         let id = notes[rep].id.clone();

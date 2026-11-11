@@ -282,3 +282,30 @@ fn the_councils_two_thousand_figures_keep_their_markers() {
     let degraded = !report.degraded.is_empty();
     assert!(report.images.iter().all(|n| n.degraded == degraded));
 }
+
+#[test]
+fn a_scan_drawn_as_tiles_is_a_background() {
+    // 8 x 10 tiles that together cover the page, under a page of text
+    let mut body = String::new();
+    for row in 0..10 {
+        for col in 0..8 {
+            let (x, y) = (col as f64 * 76.5, row as f64 * 79.2);
+            body += &image(x, y, x + 76.5, y + 79.2);
+        }
+    }
+    for i in 0..30 {
+        body += &line(100.0 + 20.0 * i as f64, "provide consistent, reliable service to every reader of this text");
+    }
+    let (md, report) = convert(&page(2, &body), true);
+    assert!(!md.contains("doppler-image"), "{md}");
+    assert_eq!(report.images.len(), 80);
+    assert!(report.images.iter().all(|n| n.fate.as_str() == "background"), "{:?}", report.images);
+    // a few tiles that cover only part of the page are a figure, with one marker
+    let mut body = String::new();
+    for col in 0..3 {
+        body += &image(72.0 + 100.0 * col as f64, 400.0, 172.0 + 100.0 * col as f64, 500.0);
+    }
+    body += &line(100.0, "A paragraph above the figure ends here.");
+    let (md, _) = convert(&page(2, &body), true);
+    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
+}
