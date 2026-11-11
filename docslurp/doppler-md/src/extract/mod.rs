@@ -13,6 +13,7 @@
 
 pub mod encode;
 pub mod outdir;
+pub mod plan;
 pub mod regions;
 pub mod settings;
 pub mod svg;
