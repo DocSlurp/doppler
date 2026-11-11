@@ -58,6 +58,7 @@
 #include <cstdlib>
 #include <cstddef>
 #include <climits>
+#include <algorithm>
 #include <cstring>
 #include <cctype>
 #include "goo/gmem.h"
