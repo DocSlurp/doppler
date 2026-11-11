@@ -368,7 +368,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 23] = [
+const KEYS: [&str; 24] = [
     "xMin",
     "yMin",
     "xMax",
@@ -392,6 +392,7 @@ const KEYS: [&str; 23] = [
     "curves",
     "directions",
     "ref",
+    "crop",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -420,6 +421,7 @@ fn key_index(name: &str) -> Option<usize> {
         "curves" => 20,
         "directions" => 21,
         "ref" => 22,
+        "crop" => 23,
         _ => return None,
     })
 }
@@ -758,6 +760,7 @@ const SEGMENTS: usize = 19;
 const CURVES: usize = 20;
 const DIRECTIONS: usize = 21;
 const REF: usize = 22;
+const CROP: usize = 23;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -852,6 +855,14 @@ pub struct ParseReport {
     pub fonts_skipped: usize,
     /// Zero-based page indices marked glyphsTruncated="1" by the producer
     pub glyphs_truncated_pages: Vec<usize>,
+    /// (zero-based page index, `"W H"`): the crop box size as `pdfinfo` prints it (`%g`), from
+    /// doppler `pdftotext -crop-sizes` (`crop="W H"`); values that are not short numbers are skipped
+    pub page_crop: Vec<(usize, Box<str>)>,
+}
+
+/// A `crop="W H"` value worth passing on: short, and only number characters.
+fn crop_value(v: &str) -> bool {
+    !v.is_empty() && v.len() <= 48 && v.bytes().all(|b| b.is_ascii_digit() || b".+-e infa".contains(&b))
 }
 
 /// Parse doppler XHTML into pages. A word or rule with a missing or malformed required number
@@ -1221,6 +1232,9 @@ impl ParseState {
                     };
                     if rules_truncated == Some(true) {
                         report.rules_truncated_pages.push(report.pages - 1);
+                    }
+                    if let Some(v) = a.0[CROP].filter(|v| crop_value(v)) {
+                        report.page_crop.push((report.pages - 1, v.into()));
                     }
                     *page_glyphs = 0;
                     line_glyphs.clear();

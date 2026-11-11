@@ -101,6 +101,7 @@ static bool bbox = false;
 static bool bboxLayout = false;
 static bool physLayout = false;
 static bool useCropBox = false;
+static bool cropSizes = false;
 static double colspacing = TextOutputDev::minColSpacing1_default;
 static double fixedPitch = 0;
 static bool rawOrder = false;
@@ -151,6 +152,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
+                                   { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
                                    { .arg = "-colspacing",
                                      .kind = argFP,
                                      .val = &colspacing,
@@ -1298,6 +1300,12 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             graphics = textOut->takeGraphics();
             // after the glyph attributes, so a reader that stops at the first unknown one still sees them
             glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "") + (textOut->getGraphicsTruncated() ? " graphicsTruncated=\"1\"" : "");
+        }
+        if (cropSizes) {
+            // last, so a reader that stops at the first unknown attribute still sees the others; %g as pdfinfo
+            char crop[64];
+            snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));
+            glyphAttrs += crop;
         }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
