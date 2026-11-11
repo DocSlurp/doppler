@@ -21,15 +21,15 @@ MARKER = "ZZDOCMARKER"
 utils = t.Utils.from_args()
 
 
-def run(util, *args, stdin=b"", timeout=120, stdout=subprocess.PIPE):
+def run(util, *args, stdin=b"", timeout=120, stdout=subprocess.PIPE, env=None):
     cmd = [os.path.join(utils.bindir, util)] + [str(a) for a in args]
-    proc = subprocess.run(cmd, input=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    proc = subprocess.run(cmd, input=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout, env=None if env is None else {**os.environ, **env})
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def regions(path, jobs, *args, timeout=120):
+def regions(path, jobs, *args, timeout=120, env=None):
     data = "".join("\t".join(str(f) for f in job) + "\n" for job in jobs).encode()
-    return run("pdfregions", *args, path, stdin=data, timeout=timeout)
+    return run("pdfregions", *args, path, stdin=data, timeout=timeout, env=env)
 
 
 def parse_records(out, strict=True):
@@ -281,6 +281,28 @@ with t.TempDir() as d:
         rc, out, err = regions(epath, job, *args)
         recs = parse_records(out)
         t.check(rc == OK and recs[0][0][1] == "ok" and mostly(recs[0][1], (0, 0, 0), 0.99), "encrypted with %s: decrypts and renders" % args[0], repr((rc, err)))
+
+    # --- svg jobs of a page drawn in one pass: the same bytes as one pass per job --------
+    # 20 svg jobs (two chunks of at most 16) around the image XObject, the vector square and
+    # the text, with raster jobs between them; the page with the inline image falls back to
+    # one pass per job (an inline image cannot be read twice)
+    no_inline = CONTENT.split(b"  q 20 0 0 20")[0] + b" BT /F1 12 Tf 72 72 Td (" + MARKER.encode() + b") Tj ET"
+    for label, content, chunks in (("no inline image", no_inline, 2), ("inline image", CONTENT, 0)):
+        tpath = d.write("together-%d.pdf" % chunks, t.simple_page_pdf(content, resources=RESOURCES, extra_objects=[image_xobject()]))
+        boxes = [(90 + 7 * k, 110 + 5 * k, 260 + 11 * k, 200 + 13 * k) for k in range(10)] + [(380, 600, 470, 710), (60, 700, 200, 730), (0, 0, 612, 792), (280, 470, 340, 520)]
+        jobs = []
+        for k in range(20):
+            x0, y0, x1, y1 = boxes[k % len(boxes)]
+            jobs.append(("p1.g%d" % (k + 1), 1, x0, y0, x1, y1, "svg", 0))
+            if k % 6 == 2:
+                jobs.append(("p1.%d" % (k + 1), 1, x0, y0, x1, y1, "raster", 96))
+        rc1, one_pass, err1 = regions(tpath, jobs, env={"PDFREGIONS_SVG_STATS": "1"})
+        rc2, per_job, _ = regions(tpath, jobs, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+        recs = parse_records(one_pass)
+        t.check(rc1 == rc2 == OK and len(recs) == len(jobs) and all(h[1] == "ok" for h, _ in recs), "svg in one pass (%s): every job answered" % label, repr((rc1, rc2, err1)))
+        t.check(one_pass == per_job, "svg in one pass (%s): the same bytes as one pass per job" % label)
+        want = b"svg-together chunks=%d fallback=%d" % (chunks, 0 if chunks else 2)
+        t.check(want in err1, "svg in one pass (%s): %s" % (label, want.decode()), repr(err1))
 
     # --- limits: timeout and memory --------------------------------------------------
     heavy = b"".join(b"%d %d m %d %d %d %d %d %d c S\n" % (i % 600, i % 780, i % 600 + 5, i % 780 + 9, i % 600 + 9, i % 780 + 2, i % 600 + 12, i % 780 + 6) for i in range(40000))

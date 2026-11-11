@@ -65,8 +65,12 @@ credential-free VM in production.
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
   Embedded images are `data:image/png` only (no source JPEG/JPX/JBIG2/CCITT mime data).
   Uncompacted; pdftomarkdown compacts and checks it.
-- The document and page are opened once for all jobs and fonts are cached; each job then draws
-  the page clipped to its region (so raster crops match pdftoppm exactly).
+- The document and page are opened once for all jobs and fonts are cached; each raster job then
+  draws the page clipped to its region (so raster crops match pdftoppm exactly). The SVG jobs of
+  a page (up to 16 at a time) share one pass over the page: every drawing call goes to each job's
+  own cairo surface and clip, so each SVG is the same bytes as a pass of its own. A page whose
+  pass could differ (an inline image, which cannot be read twice, or devices that disagree) is
+  drawn one job at a time instead. `PDFREGIONS_SVG_TOGETHER=0` always draws one job at a time.
 
 ## Ownership
 

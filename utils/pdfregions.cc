@@ -571,6 +571,9 @@ static bool writeAll(int fd, const char *data, size_t len)
 static bool outputFailed = false;
 // draw the SVG jobs of a page in one pass (PDFREGIONS_SVG_TOGETHER=0: one pass per job)
 static bool svgTogether = true;
+// at most this many SVG jobs share one pass: bounds the surfaces alive at once, and lets
+// records flow before a long page is done (a timeout keeps the records already written)
+static constexpr size_t svgChunk = 16;
 // PDFREGIONS_SVG_STATS=1: one diagnostic line with the pages drawn together and the fallbacks (tests)
 static bool svgStats = false;
 static long svgPagesTogether = 0, svgPagesFallback = 0;
@@ -1317,8 +1320,9 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
         return;
     }
 
-    // SVG jobs of the page drawn together (one parse of the page), answered in
-    // job order below; PDFREGIONS_SVG_TOGETHER=0 draws each on its own
+    // SVG jobs of the page are drawn together, up to svgChunk at a time (one pass over the
+    // page per chunk), when the first of a chunk is due; records stay in job order.
+    // PDFREGIONS_SVG_TOGETHER=0 draws each on its own
     std::vector<std::pair<size_t, Region>> svgJobs;
     for (size_t i = first; i < last; ++i) {
         if (jobs[i].mode == Mode::Svg) {
@@ -1328,11 +1332,8 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
         }
     }
     std::vector<std::pair<const char *, std::string>> svgResults;
-    bool together = svgJobs.size() > 1 && svgTogether && renderSvgTogether(jobs, svgJobs, &svgResults);
-    if (svgJobs.size() > 1 && svgTogether) {
-        ++(together ? svgPagesTogether : svgPagesFallback);
-    }
-    size_t nextSvg = 0;
+    size_t nextSvg = 0, chunkStart = 0, chunkEnd = 0;
+    bool together = false;
 
     for (size_t i = first; i < last; ++i) {
         const Job &job = jobs[i];
@@ -1340,13 +1341,24 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
         if (!region) {
             emitError(job, "empty");
         } else if (job.mode == Mode::Svg) {
+            if (nextSvg >= chunkEnd) {
+                chunkStart = nextSvg;
+                chunkEnd = std::min(svgJobs.size(), nextSvg + svgChunk);
+                together = false;
+                if (svgTogether && chunkEnd - chunkStart > 1) {
+                    const std::vector<std::pair<size_t, Region>> chunk(svgJobs.begin() + chunkStart, svgJobs.begin() + chunkEnd);
+                    together = renderSvgTogether(jobs, chunk, &svgResults);
+                    ++(together ? svgPagesTogether : svgPagesFallback);
+                }
+            }
             if (together) {
-                auto &[error, svg] = svgResults[nextSvg++];
+                auto &[error, svg] = svgResults[nextSvg - chunkStart];
                 emitSvg(job, error, svg);
                 std::string().swap(svg);
             } else {
                 renderSvg(job, *region);
             }
+            ++nextSvg;
         } else {
             const PixelRect rect = pixelRect(*region, job.dpi, w, h);
             if (rect.area() > maxPixels) {
@@ -1480,7 +1492,7 @@ int main(int argc, char *argv[])
     }
     if (svgStats) {
         char line[96];
-        snprintf(line, sizeof(line), "svg-together pages=%ld fallback=%ld", svgPagesTogether, svgPagesFallback);
+        snprintf(line, sizeof(line), "svg-together chunks=%ld fallback=%ld", svgPagesTogether, svgPagesFallback);
         writeDiagnostic(line);
     }
     if (outputFailed) {
