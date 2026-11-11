@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use crate::images::{Fate, Figure, Note, SCHEME, clusters};
+use crate::images::{Fate, Figure, Note, clusters};
 use crate::model::Page;
 use crate::params::Params;
 use crate::pyc::{pmax, pmin};
@@ -26,11 +26,6 @@ const MAX_FIGURES: usize = 256;
 /// Rounds of growing a figure by rules, labels and sparse drawing.
 const GROW_ROUNDS: usize = 5;
 
-/// The marker of the vector figure that starts at graphic `index` (one-based) of page `page`.
-pub fn marker(page: u32, index: usize) -> String {
-    format!("![image]({SCHEME}p{page}.g{index})")
-}
-
 /// Decide the vector drawing of `page`: figures to place (each with the lines inside it as
 /// labels), one report note per drawing, and the pictures a figure took in. `raster` are the
 /// picture figures already placed, with their ids: drawing over a larger picture (axes over a
@@ -43,6 +38,7 @@ pub fn place(
     p: &Params,
     number: u32,
     raster: &[(Figure, String)],
+    seal: &str,
 ) -> (Vec<Figure>, Vec<Note>, Vec<(usize, String)>) {
     let gs = &page.graphics;
     if gs.is_empty() {
@@ -215,7 +211,14 @@ pub fn place(
             absorbed.push((k, notes[ni].id.clone()));
         }
         notes[ni].bbox = b;
-        figures.push(Figure { marker: Rc::from(marker(number, rep + 1)), x0: b.0, y0: b.1, x1: b.2, y1: b.3, labels });
+        figures.push(Figure {
+            marker: Rc::from(crate::images::sealed(number, &format!("g{}", rep + 1), seal)),
+            x0: b.0,
+            y0: b.1,
+            x1: b.2,
+            y1: b.3,
+            labels,
+        });
     }
     (figures, notes, absorbed)
 }

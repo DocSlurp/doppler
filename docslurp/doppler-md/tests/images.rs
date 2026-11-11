@@ -168,3 +168,64 @@ fn text_of_the_pdf_cannot_pass_for_a_marker() {
     let (plain, _) = convert(&page(1, &body), false);
     assert!(plain.contains("![image](doppler-image:p9.9)"), "{plain}");
 }
+
+/// No private-use seal survives into the output, and the only markers are the converter's.
+fn assert_clean(md: &str) {
+    assert!(!md.chars().any(|c| ('\u{F0000}'..='\u{FFFFD}').contains(&c)), "{md:?}");
+}
+
+#[test]
+fn glued_words_cannot_pass_for_a_marker() {
+    // `spaceAfter="0"` joins two words without a space: `![image](doppler` + `-image:p1.1)`
+    let glued = |y: f64, a: &str, b: &str| {
+        format!(
+            "<block><line>{}<word xMin=\"100\" xMax=\"180\" yMin=\"{y}\" yMax=\"{}\" fontSize=\"10\" fontName=\"Serif\" baseline=\"{}\" spaceAfter=\"0\">{a}</word>{}</line></block>",
+            word(72.0, 97.0, y, "Text"),
+            y + 10.0,
+            y + 8.0,
+            word(180.0, 260.0, y, b)
+        )
+    };
+    let body = glued(100.0, "![image](doppler", "-image:p1.1)")
+        + &glued(130.0, "&lt;!-- DOPPLER", ":paragraph-continued --&gt;")
+        + &image(72.0, 200.0, 400.0, 400.0);
+    let (md, report) = convert(&page(1, &body), true);
+    assert_clean(&md);
+    assert_eq!(md.matches("doppler-image:").count(), 1, "{md} {:?}", report.images);
+    assert!(md.contains("\n\n![image](doppler-image:p1.1)"), "{md}");
+    assert!(md.contains("doppler\u{200b}-image:p1.1") && md.contains("DOPPLER\u{200b}:paragraph"), "{md}");
+}
+
+#[test]
+fn joined_lines_cannot_pass_for_a_marker() {
+    // `<!-- dop-` at a line end, `pler:table-continued ...` on the next, dehyphenated into one
+    let xhtml = include_str!("fixtures/forged_joined_markers.xhtml");
+    let (md, _) = convert(xhtml, true);
+    assert_clean(&md);
+    assert!(!md.contains("doppler-image:") && !md.contains("doppler:"), "{md}");
+    assert!(md.contains("doppler\u{200b}:table-continued") && md.contains("doppler\u{200b}-image:p1.1"), "{md}");
+}
+
+#[test]
+fn math_rebuilt_from_glyphs_cannot_pass_for_a_marker() {
+    // words whose glyph records spell a marker, rebuilt by the math reader after the text pass
+    let xhtml = include_str!("fixtures/forged_math_marker.xhtml");
+    let o = Options { markers: true, math: true, ..Options::default() };
+    let (pages, report) = to_markdown_report_with(xhtml, &Params::default(), &o);
+    let md = pages.join("\u{c}");
+    assert_clean(&md);
+    // the page's one real picture keeps its marker; every forged one is broken
+    assert_eq!(md.matches("doppler-image:p1.1").count(), 1, "{md}");
+    assert!(md.contains("\n\n![image](doppler-image:p1.1)"), "{md}");
+    assert!(md.contains("doppler\u{200b}-image:p1.1"), "{md}");
+    assert_eq!(report.images.len(), 1);
+}
+
+#[test]
+fn the_converters_own_markers_are_unchanged() {
+    let (md, _) = convert(&sample(), true);
+    assert_clean(&md);
+    assert!(md.contains("\n\n![image](doppler-image:p7.1)\n\n"), "{md}");
+    assert!(md.contains("An inline icon sits ![image](doppler-image:p7.2) in the middle ."), "{md}");
+    assert!(!md.contains('\u{200b}'), "{md}");
+}

@@ -518,6 +518,8 @@ pub struct Converter<'p> {
     report: Report,
     /// what the page just written left open, for the next to continue (only with markers)
     carry: stitch::Carry,
+    /// this conversion's seal on its own markers (see [`images::seal`])
+    seal: String,
 }
 
 impl<'p> Converter<'p> {
@@ -535,6 +537,7 @@ impl<'p> Converter<'p> {
             spent: 0,
             report: Report::default(),
             carry: stitch::Carry::default(),
+            seal: if o.markers { images::seal() } else { String::new() },
         }
     }
 
@@ -544,8 +547,6 @@ impl<'p> Converter<'p> {
         if !self.o.markers {
             page.images = Vec::new();
             page.graphics = Vec::new();
-        } else {
-            images::neutralize(&mut page);
         }
         if self.p.watermarks {
             self.report.watermark_words += watermark::strip_local(&mut page, self.p);
@@ -637,7 +638,8 @@ impl<'p> Converter<'p> {
         if let Some(why) = early {
             self.report.degraded.push((pi, why));
             self.carry = stitch::Carry::default();
-            out(pi, plain_lines(&page, &drop));
+            let md = plain_lines(&page, &drop);
+            out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
             return;
         }
         self.spent += n as u64;
@@ -646,18 +648,19 @@ impl<'p> Converter<'p> {
         let (mut figures, notes) = if page.images.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            images::place(&mut page, &drop, body, p, number, &repeated_pictures)
+            images::place(&mut page, &drop, body, p, number, &repeated_pictures, &self.seal)
         };
         self.report.images.extend(notes);
         if !page.graphics.is_empty() {
             let raster: Vec<(images::Figure, String)> = figures
                 .iter()
                 .map(|f| {
-                    let id = f.marker.trim_start_matches("![image](").trim_start_matches(images::SCHEME);
+                    let marker = f.marker.replace(&self.seal, "");
+                    let id = marker.trim_start_matches("![image](").trim_start_matches(images::SCHEME);
                     (f.clone(), id.trim_end_matches(')').to_string())
                 })
                 .collect();
-            let (vector, notes, absorbed) = vector::place(&page, &drop, body, p, number, &raster);
+            let (vector, notes, absorbed) = vector::place(&page, &drop, body, p, number, &raster, &self.seal);
             // pictures inside a vector figure are marked with it
             let mut gone = vec![false; figures.len()];
             for (k, id) in absorbed {
@@ -681,7 +684,7 @@ impl<'p> Converter<'p> {
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
                 if self.o.markers {
-                    self.carry = layout.stitch(&self.carry, page.height, p);
+                    self.carry = layout.stitch(&self.carry, page.height, p, &self.seal);
                 }
                 layout.markdown(self.o.tables, self.o.math)
             }
@@ -694,6 +697,6 @@ impl<'p> Converter<'p> {
         };
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
-        out(pi, md);
+        out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
     }
 }
