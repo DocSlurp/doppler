@@ -489,6 +489,11 @@ private:
     std::unordered_map<std::string, uint64_t> seen;
     std::deque<std::pair<std::string, uint64_t>> seenOrder;
     uint64_t seenNext = 0;
+    // lookups and cache hits; a document where under 1 in 64 lookups hits after 4096 of them
+    // (every page brings its own fonts) stops caching: the bookkeeping would only cost time
+    uint64_t lookups = 0;
+    uint64_t hits = 0;
+    bool bypass = false;
     unsigned int generation = 0;
     unsigned long long clock = 0;
     std::vector<Entry> entries;

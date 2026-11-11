@@ -48,6 +48,7 @@
 #include <unordered_map>
 #include <string>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -174,7 +175,13 @@ private:
     void parseNameToUnicode(const std::filesystem::path &name);
     // builds macRomanReverseMap, nameToUnicodeZapfDingbats and nameToUnicodeText on first use (only text
     // extraction and font setup read them; pdfpagecount, pdfinfo and friends never do)
-    void initNameTables();
+    void initNameTables()
+    {
+        if (!nameTablesReady.load(std::memory_order_acquire)) {
+            buildNameTables();
+        }
+    }
+    void buildNameTables();
 
     void scanEncodingDirs();
     void addCIDToUnicode(std::string &&collection, std::string &&fileName);
@@ -193,6 +200,9 @@ private:
     NameToCharCode * // mapping from char name to Unicode for text
             nameToUnicodeText; // extraction
     std::once_flag nameTablesOnce;
+    // set once the tables are built: lookups check it instead of call_once, which reads
+    // thread-local state on every call (a __tls_get_addr per glyph name in a shared library)
+    std::atomic<bool> nameTablesReady { false };
     // nameToUnicode files found under the data dir, parsed in this order by initNameTables
     std::vector<std::filesystem::path> nameToUnicodeFiles;
     // files for mappings from char collections

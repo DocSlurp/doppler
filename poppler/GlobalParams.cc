@@ -485,7 +485,7 @@ void GlobalParams::scanEncodingDirs()
     }
 }
 
-void GlobalParams::initNameTables()
+void GlobalParams::buildNameTables()
 {
     std::call_once(nameTablesOnce, [this] {
         // scan the encoding in reverse because we want the lowest-numbered
@@ -507,6 +507,7 @@ void GlobalParams::initNameTables()
         for (const auto &file : nameToUnicodeFiles) {
             parseNameToUnicode(file);
         }
+        nameTablesReady.store(true, std::memory_order_release);
     });
 }
 

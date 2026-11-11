@@ -2312,6 +2312,16 @@ bool GfxFont::isBase14Font(std::string_view family, std::string_view style)
 
 std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref id, const Dict &fontDict)
 {
+    if (bypass) {
+        return GfxFont::makeFont(xref, tag, id, fontDict);
+    }
+    if ((++lookups & 4095) == 0 && hits * 64 < lookups) {
+        bypass = true;
+        entries.clear();
+        seen.clear();
+        seenOrder.clear();
+        return GfxFont::makeFont(xref, tag, id, fontDict);
+    }
     if (xref->getGeneration() != generation) {
         entries.clear();
         seen.clear();
@@ -2328,6 +2338,7 @@ std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref
     }
     if (hit && hit->font.use_count() == 1) {
         hit->lastUse = clock;
+        ++hits;
         return hit->font;
     }
     std::shared_ptr<GfxFont> font = GfxFont::makeFont(xref, tag, id, fontDict);
