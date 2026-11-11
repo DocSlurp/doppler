@@ -2315,6 +2315,7 @@ std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref
     if (xref->getGeneration() != generation) {
         entries.clear();
         seen.clear();
+        seenOrder.clear();
         generation = xref->getGeneration();
     }
     ++clock;
@@ -2335,12 +2336,33 @@ std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref
         return font;
     }
     // keep it only the second time it is asked for
-    auto again = std::find_if(seen.begin(), seen.end(), [&](const std::pair<Ref, std::string> &s) { return s.first == id && s.second == tag; });
+    std::string key(sizeof(id.num) + sizeof(id.gen), '\0');
+    memcpy(key.data(), &id.num, sizeof(id.num));
+    memcpy(key.data() + sizeof(id.num), &id.gen, sizeof(id.gen));
+    key.append(tag);
+    const auto again = seen.find(key);
     if (again == seen.end()) {
         if (seen.size() >= maxSeen) {
-            seen.erase(seen.begin());
+            // forget the oldest live key
+            while (!seenOrder.empty()) {
+                const auto oldest = seen.find(seenOrder.front().first);
+                const bool live = oldest != seen.end() && oldest->second == seenOrder.front().second;
+                seenOrder.pop_front();
+                if (live) {
+                    seen.erase(oldest);
+                    break;
+                }
+            }
         }
-        seen.emplace_back(id, std::string(tag));
+        seen.emplace(key, seenNext);
+        seenOrder.emplace_back(std::move(key), seenNext++);
+        if (seenOrder.size() > 2 * maxSeen + 16) {
+            // drop stale keys, keeping the order
+            std::erase_if(seenOrder, [this](const std::pair<std::string, uint64_t> &k) {
+                const auto it = seen.find(k.first);
+                return it == seen.end() || it->second != k.second;
+            });
+        }
         return font;
     }
     seen.erase(again);

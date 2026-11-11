@@ -38,6 +38,10 @@
 
 #include <memory>
 #include <array>
+#include <cstdint>
+#include <deque>
+#include <string>
+#include <unordered_map>
 #include <optional>
 
 #include "goo/GooString.h"
@@ -479,8 +483,12 @@ private:
     };
     size_t maxEntries;
     size_t maxSeen;
-    // fonts asked for once and not kept (Ref, tag), oldest first; bounded by maxSeen
-    std::vector<std::pair<Ref, std::string>> seen;
+    // fonts asked for once and not kept, by key (Ref and tag) with the order they were first asked for;
+    // seenOrder lists keys oldest first, with stale ones (asked for again since) skipped and compacted
+    // away. At most maxSeen live keys: the oldest goes first, in constant time.
+    std::unordered_map<std::string, uint64_t> seen;
+    std::deque<std::pair<std::string, uint64_t>> seenOrder;
+    uint64_t seenNext = 0;
     unsigned int generation = 0;
     unsigned long long clock = 0;
     std::vector<Entry> entries;
