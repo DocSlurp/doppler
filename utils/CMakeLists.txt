@@ -49,6 +49,26 @@ if (HAVE_CAIRO)
   endif()
   install(TARGETS pdftocairo DESTINATION bin)
   install(FILES pdftocairo.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+
+  # pdfregions (DocSlurp): renders page regions as RGB (Splash) or SVG (cairo)
+  set(pdfregions_SOURCES
+    pdfregions.cc
+    ${CMAKE_SOURCE_DIR}/poppler/CairoFontEngine.cc
+    ${CMAKE_SOURCE_DIR}/poppler/CairoOutputDev.cc
+    ${CMAKE_SOURCE_DIR}/poppler/CairoRescaleBox.cc
+  )
+  add_executable(pdfregions ${pdfregions_SOURCES})
+  target_link_libraries(pdfregions ${CAIRO_LIBRARIES} Freetype::Freetype ${common_libs})
+  if(TARGET Fontconfig::Fontconfig)
+    target_link_libraries(pdfregions Fontconfig::Fontconfig)
+  endif()
+  target_include_directories(pdfregions SYSTEM PRIVATE ${CAIRO_INCLUDE_DIRS})
+  if(LCMS2_FOUND)
+    target_link_libraries(pdfregions ${LCMS2_LIBRARIES})
+    target_include_directories(pdfregions SYSTEM PRIVATE ${LCMS2_INCLUDE_DIR})
+  endif()
+  install(TARGETS pdfregions DESTINATION bin)
+  install(FILES pdfregions.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 endif ()
 
 # pdfdetach

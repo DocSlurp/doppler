@@ -1308,8 +1308,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if (collectImages) {
             for (const TextImage &image : textOut->getImages()) {
-                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
-                        image.stencil ? " kind=\"mask\"" : "");
+                // ref: the image XObject, so repeats of one object can be found (none for inline images)
+                const std::string ref = image.ref == Ref::INVALID() ? std::string() : " ref=\"" + std::to_string(image.ref.num) + " " + std::to_string(image.ref.gen) + "\"";
+                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
+                        image.stencil ? " kind=\"mask\"" : "", ref.c_str());
             }
             for (const TextGraphic &g : graphics) {
                 fprintf(f, "    <graphic xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" paths=\"%zu\" segments=\"%zu\" curves=\"%zu\" directions=\"%d\"/>\n", g.xMin, g.yMin, g.xMax, g.yMax, g.paths, g.segments, g.curves,

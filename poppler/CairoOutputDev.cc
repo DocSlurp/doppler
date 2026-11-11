@@ -3203,7 +3203,7 @@ void CairoOutputDev::setMimeData(GfxState *state, Stream *str, Object *ref, GfxI
     const char *mime_type;
     cairo_status_t status;
 
-    if (!printing) {
+    if (!printing || !embedMimeData) {
         return;
     }
 
