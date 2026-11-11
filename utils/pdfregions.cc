@@ -20,6 +20,8 @@
 #include <poppler-config.h>
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
+#include <cstdarg>
 #include <climits>
 #include <cmath>
 #include <csignal>
@@ -607,6 +609,123 @@ static void emitError(const Job &job, const char *code)
 {
     const std::string status = std::string("err:") + code;
     emitRecord(job, status.c_str(), "-", 0, 0, nullptr, 0);
+}
+
+//------------------------------------------------------------------------
+// fixed-point printing
+//------------------------------------------------------------------------
+
+// cairo's SVG surface prints every coordinate with snprintf "%f" (and numbers
+// under 0.1 with "%.18f", then "%.*f"); glibc formats those through its
+// multi-precision code, which was about a tenth of the image pass on figure-
+// heavy documents. This process (C locale, default rounding) answers a format
+// that is exactly "%f", "%.<N>f" or "%.*f" with a finite double through
+// std::to_chars(fixed, precision): correctly rounded like glibc, so the same
+// characters; anything else goes to glibc. Defining the functions here makes
+// libcairo and libpoppler call them (an executable's definitions come first).
+namespace {
+
+// The precision of a whole format "%f" (6), "%.<N>f" (N), "%.*f" (*star), else -1.
+int fixedFormat(const char *fmt, bool *star)
+{
+    *star = false;
+    if (fmt[0] != '%') {
+        return -1;
+    }
+    if (fmt[1] == 'f' && fmt[2] == '\0') {
+        return 6;
+    }
+    if (fmt[1] != '.') {
+        return -1;
+    }
+    if (fmt[2] == '*' && fmt[3] == 'f' && fmt[4] == '\0') {
+        *star = true;
+        return 0;
+    }
+    int prec = 0, i = 2;
+    for (; fmt[i] >= '0' && fmt[i] <= '9' && i < 5; ++i) {
+        prec = prec * 10 + (fmt[i] - '0');
+    }
+    return i > 2 && fmt[i] == 'f' && fmt[i + 1] == '\0' ? prec : -1;
+}
+
+// snprintf's answer for a fixed format, or -1 to leave it to glibc.
+int fixedPrint(char *s, size_t maxlen, int prec, double v)
+{
+    if (prec < 0 || prec > 60 || !std::isfinite(v)) {
+        return -1;
+    }
+    char buf[400];
+    const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::fixed, prec);
+    if (r.ec != std::errc()) {
+        return -1;
+    }
+    const size_t n = static_cast<size_t>(r.ptr - buf);
+    if (maxlen > 0) {
+        const size_t k = std::min(n, maxlen - 1);
+        memcpy(s, buf, k);
+        s[k] = '\0';
+    }
+    return static_cast<int>(n);
+}
+
+bool fixedPrintingOff()
+{
+    static const bool off = [] {
+        const char *e = getenv("PDFREGIONS_GLIBC_PRINTF");
+        return e && strcmp(e, "1") == 0;
+    }();
+    return off;
+}
+
+} // namespace
+
+extern "C" int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
+
+extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    bool star;
+    int prec = fixedPrintingOff() || slen < maxlen ? -1 : fixedFormat(fmt, &star);
+    int n = -1;
+    if (prec >= 0) {
+        va_list probe;
+        va_copy(probe, ap);
+        if (star) {
+            prec = va_arg(probe, int);
+        }
+        n = fixedPrint(s, maxlen, prec, va_arg(probe, double));
+        va_end(probe);
+    }
+    if (n < 0) {
+        n = __vsnprintf_chk(s, maxlen, flag, slen, fmt, ap);
+    }
+    va_end(ap);
+    return n;
+}
+
+extern "C" int snprintf(char *__restrict s, size_t maxlen, const char *__restrict fmt, ...) noexcept
+{
+    va_list ap;
+    va_start(ap, fmt);
+    bool star;
+    int prec = fixedPrintingOff() ? -1 : fixedFormat(fmt, &star);
+    int n = -1;
+    if (prec >= 0) {
+        va_list probe;
+        va_copy(probe, ap);
+        if (star) {
+            prec = va_arg(probe, int);
+        }
+        n = fixedPrint(s, maxlen, prec, va_arg(probe, double));
+        va_end(probe);
+    }
+    if (n < 0) {
+        n = vsnprintf(s, maxlen, fmt, ap);
+    }
+    va_end(ap);
+    return n;
 }
 
 //------------------------------------------------------------------------
