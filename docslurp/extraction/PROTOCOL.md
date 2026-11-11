@@ -7,15 +7,32 @@ credential-free VM in production.
 
 ## Invocation
 
-    pdfregions [-opw PW] [-upw PW] [-max-memory MiB] [-max-pixels N] [-timeout S] FILE.pdf
+    pdfregions [-opw PW] [-upw PW] [-max-memory MiB] [-max-pixels N] [-timeout S]
+               [-max-svg-bytes N] [-max-output-bytes N] [-no-images] [-confine require|auto|off] FILE.pdf
 
 - Defaults: `-max-memory 2048` (address-space cap, POSIX, as pdfpagecount), `-max-pixels 16777216`
-  (per crop, 4096 x 4096), `-timeout 120` (whole run, wall clock).
+  (per crop, 4096 x 4096), `-timeout 120` (whole run, wall clock), `-max-svg-bytes 33554432`
+  (per SVG record, else `err:svgsize`), `-max-output-bytes 536870912` (all of stdout; a record
+  that would pass it is not written and the run exits 3), `-confine auto`.
+- `-no-images`: images are not drawn (their data is never decoded), for vector-only renders.
+- Confinement (Linux): after opening the PDF and loading fontconfig, pdfregions sets
+  `PR_SET_NO_NEW_PRIVS`, a Landlock ruleset that denies every filesystem write, create, remove,
+  rename and truncate (reads stay allowed for fonts) plus TCP and scoped unix sockets/signals,
+  and a seccomp filter (execve, socket, ptrace, process_vm_*, open/openat with write or create
+  flags: EPERM). It prints `pdfregions: confined=0|1 landlock=<abi> seccomp=0|1` on stderr.
+  `auto` confines when the kernel allows, `require` exits 5 when it cannot, `off` skips it.
+  **DocSlurp's VM should pass `-confine require`** once the guest kernel is confirmed to have
+  Landlock (5.13+, `CONFIG_SECURITY_LANDLOCK`, `lsm=` including landlock) and seccomp.
+- pdfregions dies with its parent (`PR_SET_PDEATHSIG SIGKILL`); the parent still owns a wall-clock
+  deadline and should kill the process group.
 - Reads jobs from stdin until EOF; writes records to stdout; diagnostics are fixed strings on
   stderr, never document data.
 - Exit: 0 every job answered (some may be `err`); 1 cannot open/decrypt; 2 bad usage or a
-  malformed job line; 3 a limit hit (memory, timeout) — records already written stay valid;
-  any signal is a failure.
+  malformed job line; 3 a limit hit (memory, timeout, output bytes) — records already written
+  stay valid; 4 stdout write failure; 5 `-confine require` could not confine; any signal is a
+  failure. If the deadline passes while a record is being written, the record gets 2 more
+  seconds; a write still blocked then is cut short and the run exits 3, so a reader must drop a
+  truncated last record.
 
 ## Jobs (stdin): one per line, tab-separated, ASCII
 
@@ -37,7 +54,8 @@ credential-free VM in production.
 
 - `status`: `ok`, or `err:<code>` with `kind` `-`, width/height 0, bytes 0. Codes:
   `pixels` (crop over -max-pixels at that dpi), `render` (renderer error),
-  `empty` (region outside the page), `page` (page number invalid).
+  `empty` (region outside the page), `page` (page number invalid), `svgsize` (SVG over
+  -max-svg-bytes).
 - `kind=rgb8`: `width*height*3` bytes, row-major, top row first, RGB 8-bit, composited on white.
   The crop starts at device pixel `floor(x0*dpi/72)` and is `max(1, round((x1-x0)*dpi/72))` wide
   (likewise y), kept on the page; the same pixels as `pdftoppm -r dpi -x -y -W -H` with those

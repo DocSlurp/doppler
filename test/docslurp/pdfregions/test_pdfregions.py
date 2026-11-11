@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.environ.get("DOCSLURP_TESTLIB_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import docslurp_testlib as t  # noqa: E402
 
-OK, OPEN_ERROR, USAGE, LIMIT = 0, 1, 2, 3
+OK, OPEN_ERROR, USAGE, LIMIT, WRITE_ERROR, UNCONFINED = 0, 1, 2, 3, 4, 5
 MARKER = "ZZDOCMARKER"
 
 utils = t.Utils.from_args()
@@ -287,7 +287,7 @@ with t.TempDir() as d:
     hpath = d.write("heavy.pdf", t.simple_page_pdf(heavy))
     rc, out, err = regions(hpath, [("p1.%d" % i, 1, 0, 0, 100, 100, "svg", 0) for i in range(5000)], "-timeout", 1, timeout=60)
     recs = parse_records(out)
-    t.check(rc == LIMIT and err == b"pdfregions: timeout\n", "timeout: exit 3 with a fixed diagnostic", repr((rc, err)))
+    t.check(rc == LIMIT and err.endswith(b"pdfregions: timeout\n"), "timeout: exit 3 with a fixed diagnostic", repr((rc, err)))
     t.check(0 < len(recs) < 5000 and all(h[1] == "ok" and p.rstrip().endswith(b"</svg>") for h, p in recs), "timeout: records already written are complete", repr(len(recs)))
 
     # a full page at 600 dpi needs ~130 MB of bitmap: under a 64 MiB cap it fails cleanly
@@ -304,6 +304,37 @@ with t.TempDir() as d:
     # --- output failure ------------------------------------------------------------------
     with open("/dev/full", "wb") as full:
         rc = subprocess.run([os.path.join(utils.bindir, "pdfregions"), path], input=good.encode(), stdout=full, stderr=subprocess.PIPE, timeout=60).returncode
-    t.check(rc == OPEN_ERROR, "stdout write failure: exit 1", repr(rc))
+    t.check(rc == WRITE_ERROR, "stdout write failure: exit 4", repr(rc))
+
+    # --- output caps ----------------------------------------------------------------------
+    rc, out, _ = regions(path, [("p1.1", 1, 100, 120, 244, 192, "svg", 0), ("p1.2", 1, 100, 120, 244, 192, "raster", 72)], "-max-svg-bytes", 100)
+    recs = parse_records(out)
+    t.check(rc == OK and [h[1] for h, _ in recs] == ["err:svgsize", "ok"], "-max-svg-bytes: oversized svg is err:svgsize, the run goes on", repr([h for h, _ in recs]))
+    rc, out, err = regions(path, [("p1.%d" % i, 1, 100, 120, 244, 192, "raster", 72) for i in range(10)], "-max-output-bytes", 3 * (144 * 72 * 3 + 40))
+    recs = parse_records(out)
+    t.check(rc == LIMIT and len(recs) == 3 and err.endswith(b"pdfregions: output limit\n"), "-max-output-bytes: exit 3 after the last complete record", repr((rc, len(recs), err)))
+
+    # --- -no-images: images are not drawn (nor decoded) ---------------------------------
+    rc, out, _ = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 72), ("p1.2", 1, 100, 120, 244, 192, "svg", 0)], "-no-images")
+    recs = parse_records(out)
+    t.check(rc == OK and mostly(recs[0][1], (255, 255, 255), 0.99) and b"<image" not in recs[1][1], "-no-images: the image region renders blank", repr(recs[0][0]))
+
+    # --- confinement --------------------------------------------------------------------
+    target = os.path.join(d.path, "escape.txt")
+    rc, out, err = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 72)], "-confine-check", target)
+    confined = b"pdfregions: confined=1 " in err
+    t.check(rc == OK and re.search(rb"^pdfregions: confined=[01] landlock=[0-9]+ seccomp=[01]$", err, re.M), "-confine auto: reports confinement", repr(err))
+    if confined:
+        t.check(b"confine-check create=denied openat=denied socket=denied exec=denied" in err and not os.path.exists(target), "confined: cannot create a file, open a socket or run a program", repr(err))
+        rc, out, err = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 72)], "-confine", "require")
+        t.check(rc == OK and parse_records(out)[0][0][1] == "ok", "-confine require: renders when confinement is available", repr((rc, err)))
+    else:
+        print("SKIP: kernel without Landlock/seccomp; confinement checks not run")
+        rc, out, err = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 72)], "-confine", "require")
+        t.check(rc == UNCONFINED and out == b"", "-confine require: exit 5 when confinement is unavailable", repr((rc, err)))
+    rc, out, err = regions(path, [("p1.1", 1, 100, 120, 244, 192, "raster", 72)], "-confine", "off", "-confine-check", target)
+    t.check(rc == OK and b"confined=" not in err and os.path.exists(target) and b"exec=skipped" in err and parse_records(out)[0][0][1] == "ok", "-confine off: no sandbox, no report", repr(err))
+    rc, _, _ = regions(path, [], "-confine", "maybe")
+    t.check(rc == USAGE, "-confine maybe: exit 2")
 
 t.finish()

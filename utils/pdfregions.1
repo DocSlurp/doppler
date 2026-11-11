@@ -93,7 +93,10 @@ and width, height and bytes are 0). Codes:
 .B empty
 (the region lies outside the page),
 .B page
-(no such page).
+(no such page),
+.B svgsize
+(the SVG exceeds
+.BR \-max\-svg\-bytes ).
 .PP
 A region overhanging the page is first cut to the page. A
 .B raster
@@ -155,6 +158,39 @@ Wall-clock limit for the whole run, 0 for none (default 120). When it
 expires the tool exits with status 3; every record already written is
 complete.
 .TP
+.BI \-max\-svg\-bytes " number"
+Largest SVG record (default 33554432); larger answers
+.BR err:svgsize .
+.TP
+.BI \-max\-output\-bytes " number"
+Total bytes written to standard output (default 536870912). A record that would
+pass it is not written and the run exits with status 3.
+.TP
+.B \-no\-images
+Draw no images; image data is never decoded (vector-only renders).
+.TP
+.BI \-confine " require|auto|off"
+After opening the PDF and loading fontconfig, confine the process (Linux):
+PR_SET_NO_NEW_PRIVS, a Landlock ruleset denying every filesystem write, create,
+remove, rename and truncate (reads stay allowed, for fonts) and TCP, and a
+seccomp filter denying execve, socket, ptrace, process_vm_readv/writev and
+opening files for writing. One line
+.B "pdfregions: confined=0|1 landlock=ABI seccomp=0|1"
+goes to standard error.
+.B auto
+(default) confines when the kernel allows it,
+.B require
+exits with status 5 when it cannot, and
+.B off
+skips it. Production runs should use
+.BR require .
+.TP
+.BI \-confine\-check " path"
+Test aid: after confining, try to create
+.IR path ,
+open a socket and run /bin/true (only when confined), and report each as
+allowed or denied on standard error.
+.TP
 .B \-v
 Print copyright and version information.
 .TP
@@ -170,13 +206,23 @@ descriptor 2 points at /dev/null while documents are processed).
 Every job answered (some may be errors).
 .TP
 1
-The document cannot be opened or decrypted, or standard output cannot be written.
+The document cannot be opened or decrypted.
 .TP
 2
 Bad usage or a malformed job line.
 .TP
 3
-A limit was hit (memory, timeout); records already written stay valid.
+A limit was hit (memory, timeout, output bytes); records already written stay
+valid. If the timeout expires while a record is being written, that record gets
+2 more seconds; a write still blocked then is cut short, so a reader must drop a
+truncated last record.
+.TP
+4
+Standard output cannot be written.
+.TP
+5
+.B \-confine require
+could not confine the process.
 .PP
 Any other status, or death by a signal (an allocation failure inside
 Poppler's C allocator aborts), is a failure.

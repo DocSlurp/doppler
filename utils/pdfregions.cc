@@ -38,6 +38,20 @@
 #    include <sys/uio.h>
 #    include <unistd.h>
 #endif
+#ifdef __linux__
+#    include <cstddef>
+#    include <linux/audit.h>
+#    include <linux/filter.h>
+#    include <linux/landlock.h>
+#    include <linux/seccomp.h>
+#    include <sys/prctl.h>
+#    include <sys/syscall.h>
+#    include <sys/socket.h>
+#    include <netinet/in.h>
+#endif
+#if WITH_FONTCONFIGURATION_FONTCONFIG
+#    include <fontconfig/fontconfig.h>
+#endif
 #include <cairo.h>
 #include <cairo-svg.h>
 #include "parseargs.h"
@@ -62,6 +76,8 @@ enum ExitCode
     exitOpenError = 1,
     exitUsage = 2,
     exitLimit = 3,
+    exitWriteError = 4,
+    exitUnconfined = 5,
 };
 
 static constexpr size_t maxJobs = 5000;
@@ -74,12 +90,22 @@ static char maxPixelsArg[32] = "16777216";
 static char timeoutArg[32] = "120";
 static bool printVersion = false;
 static bool printHelp = false;
+static char confineArg[16] = "auto";
+static char maxSvgBytesArg[32] = "33554432";
+static char maxOutputBytesArg[32] = "536870912";
+static bool noImages = false;
+static char confineCheckPath[4096] = "";
 
 static const ArgDesc argDesc[] = { { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
                                    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
                                    { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 2048)" },
                                    { .arg = "-max-pixels", .kind = argString, .val = maxPixelsArg, .size = sizeof(maxPixelsArg), .usage = "largest raster crop in pixels (default 16777216)" },
                                    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 120)" },
+                                   { .arg = "-max-svg-bytes", .kind = argString, .val = maxSvgBytesArg, .size = sizeof(maxSvgBytesArg), .usage = "largest SVG record; larger is err:svgsize (default 33554432)" },
+                                   { .arg = "-max-output-bytes", .kind = argString, .val = maxOutputBytesArg, .size = sizeof(maxOutputBytesArg), .usage = "total stdout bytes; a record past it exits 3 (default 536870912)" },
+                                   { .arg = "-no-images", .kind = argFlag, .val = &noImages, .size = 0, .usage = "draw no images (vector-only renders; image data is never decoded)" },
+                                   { .arg = "-confine-check", .kind = argString, .val = confineCheckPath, .size = sizeof(confineCheckPath), .usage = "test aid: after confining, try to create this file, run a program and open a socket; report on stderr" },
+                                   { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write sandbox after opening the PDF: require, auto or off (default auto)" },
                                    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
                                    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
                                    { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
@@ -155,9 +181,15 @@ static void outOfMemory()
 }
 
 #ifndef _WIN32
-// Records are written with SIGALRM blocked, so when the timeout fires every
-// record on stdout is complete; the handler only reports and exits.
-static void onTimeout(int /*sig*/)
+// When the deadline passes between records, the run stops at once and every
+// record on stdout is complete. When it passes while a record is being
+// written, that record gets 2 more seconds to finish (then the run stops
+// after it); a write still blocked after that is cut short and the run exits,
+// leaving a truncated last record that readers must drop.
+static volatile sig_atomic_t writingRecord = 0;
+static volatile sig_atomic_t deadlinePassed = 0;
+
+static void timeoutExit()
 {
     static const char msg[] = "pdfregions: timeout\n";
     ssize_t ignored = write(diagnosticsFd, msg, sizeof(msg) - 1);
@@ -165,12 +197,14 @@ static void onTimeout(int /*sig*/)
     _exit(exitLimit);
 }
 
-static void blockAlarm(bool block)
+static void onTimeout(int /*sig*/)
 {
-    sigset_t set;
-    sigemptyset(&set);
-    sigaddset(&set, SIGALRM);
-    sigprocmask(block ? SIG_BLOCK : SIG_UNBLOCK, &set, nullptr);
+    if (writingRecord && !deadlinePassed) {
+        deadlinePassed = 1;
+        alarm(2);
+        return;
+    }
+    timeoutExit();
 }
 #endif
 
@@ -184,6 +218,155 @@ static bool parseLimit(const char *text, long long minValue, long long maxValue,
     }
     *value = parsed;
     return true;
+}
+
+//------------------------------------------------------------------------
+// confinement
+//------------------------------------------------------------------------
+
+// pdfregions never writes a file and never needs the network or another
+// program, but it decodes hostile images. Once the PDF is open (and
+// fontconfig has loaded its configuration and caches), the process drops
+// the ability to do any of that, so a decoder exploit cannot rewrite
+// pdftomarkdown's output folder or reach out:
+//  - PR_SET_NO_NEW_PRIVS;
+//  - Landlock: every filesystem write right is handled with no rule granting
+//    it (no writing, creating, removing, renaming or truncating files
+//    anywhere; reads stay allowed for fonts), TCP bind/connect denied, and
+//    abstract unix sockets and signals scoped to this process;
+//  - seccomp: execve/execveat, socket, ptrace, process_vm_readv/writev and
+//    open/openat with write or create flags fail with EPERM (openat2, whose
+//    flags a filter cannot read, with ENOSYS), as a second layer that also
+//    holds on kernels without Landlock.
+// Already open descriptors (stdout, the saved stderr) keep working.
+struct Confinement
+{
+    int landlockAbi = 0; // 0: not applied
+    bool seccomp = false;
+    bool confined() const { return landlockAbi > 0 && seccomp; }
+};
+
+#ifdef __linux__
+static int applyLandlock()
+{
+#    if defined(SYS_landlock_create_ruleset) && defined(SYS_landlock_restrict_self)
+    const long abi = syscall(SYS_landlock_create_ruleset, nullptr, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    if (abi < 1) {
+        return 0;
+    }
+    struct landlock_ruleset_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG
+            | LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM;
+    if (abi >= 2) {
+        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_REFER;
+    }
+    if (abi >= 3) {
+        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_TRUNCATE;
+    }
+#        ifdef LANDLOCK_ACCESS_FS_IOCTL_DEV
+    if (abi >= 5) {
+        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
+    }
+#        endif
+#        ifdef LANDLOCK_ACCESS_NET_BIND_TCP
+    if (abi >= 4) {
+        attr.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP;
+    }
+#        endif
+#        ifdef LANDLOCK_SCOPE_SIGNAL
+    if (abi >= 6) {
+        attr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL;
+    }
+#        endif
+    const int fd = static_cast<int>(syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0));
+    if (fd < 0) {
+        return 0;
+    }
+    const long rc = syscall(SYS_landlock_restrict_self, fd, 0);
+    close(fd);
+    return rc == 0 ? static_cast<int>(abi) : 0;
+#    else
+    return 0;
+#    endif
+}
+
+static bool applySeccomp()
+{
+#    if defined(__x86_64__)
+    constexpr uint32_t arch = AUDIT_ARCH_X86_64;
+#    elif defined(__aarch64__)
+    constexpr uint32_t arch = AUDIT_ARCH_AARCH64;
+#    else
+    return false;
+#    endif
+#    if defined(__x86_64__) || defined(__aarch64__)
+    constexpr uint32_t eperm = SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA);
+    constexpr uint32_t enosys = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
+    constexpr uint32_t writeFlags = O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND;
+    const uint32_t denied[] = {
+        SYS_execve, SYS_execveat, SYS_socket, SYS_socketpair, SYS_connect, SYS_ptrace, SYS_process_vm_readv, SYS_process_vm_writev,
+#        ifdef SYS_creat
+        SYS_creat,
+#        endif
+    };
+    std::vector<sock_filter> f;
+    auto stmt = [&f](uint16_t code, uint32_t k) { f.push_back(BPF_STMT(code, k)); };
+    auto jump = [&f](uint16_t code, uint32_t k, uint8_t jt, uint8_t jf) { f.push_back(BPF_JUMP(code, k, jt, jf)); };
+    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
+    jump(BPF_JMP | BPF_JEQ | BPF_K, arch, 1, 0);
+    stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+#        ifdef __x86_64__
+    // x32 syscalls on x86_64
+    jump(BPF_JMP | BPF_JGE | BPF_K, 0x40000000u, 0, 1);
+    stmt(BPF_RET | BPF_K, eperm);
+#        endif
+    for (uint32_t nr : denied) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1);
+        stmt(BPF_RET | BPF_K, eperm);
+    }
+#        ifdef SYS_openat2
+    jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat2, 0, 1);
+    stmt(BPF_RET | BPF_K, enosys);
+#        endif
+    // open(path, flags) / openat(dirfd, path, flags): deny write or create flags
+    auto openCheck = [&](uint32_t nr, int flagsArg) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 5);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args) + 8 * flagsArg); // low 32 bits (little endian)
+        stmt(BPF_ALU | BPF_AND | BPF_K, writeFlags);
+        jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
+        stmt(BPF_RET | BPF_K, eperm);
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    };
+#        ifdef SYS_open
+    openCheck(SYS_open, 1);
+    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+#        endif
+    openCheck(SYS_openat, 2);
+    stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    struct sock_fprog prog = { static_cast<unsigned short>(f.size()), f.data() };
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0) == 0;
+#    endif
+}
+#endif
+
+static Confinement confine()
+{
+    Confinement c;
+#ifdef __linux__
+#    if WITH_FONTCONFIGURATION_FONTCONFIG
+    // load fontconfig's configuration and caches now; it may want to write a
+    // cache, which is not possible afterwards
+    FcInit();
+#    endif
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        return c;
+    }
+    c.landlockAbi = applyLandlock();
+    c.seccomp = applySeccomp();
+#endif
+    return c;
 }
 
 //------------------------------------------------------------------------
@@ -385,6 +568,8 @@ static bool writeAll(int fd, const char *data, size_t len)
 }
 
 static bool outputFailed = false;
+static unsigned long long outputBytes = 0;
+static unsigned long long maxOutputBytes = 0;
 
 static void emitRecord(const Job &job, const char *status, const char *kind, int width, int height, const char *payload, size_t bytes)
 {
@@ -392,10 +577,18 @@ static void emitRecord(const Job &job, const char *status, const char *kind, int
         return;
     }
     const std::string header = job.id + "\t" + status + "\t" + kind + "\t" + std::to_string(width) + "\t" + std::to_string(height) + "\t" + std::to_string(bytes) + "\n";
+    if (outputBytes + header.size() + bytes > maxOutputBytes) {
+        writeDiagnostic("output limit");
+        _exit(exitLimit);
+    }
+    outputBytes += header.size() + bytes;
 #ifndef _WIN32
-    blockAlarm(true);
+    writingRecord = 1;
     outputFailed = !writeAll(1, header.data(), header.size()) || (bytes > 0 && !writeAll(1, payload, bytes));
-    blockAlarm(false);
+    writingRecord = 0;
+    if (deadlinePassed) {
+        timeoutExit();
+    }
 #else
     outputFailed = fwrite(header.data(), 1, header.size(), stdout) != header.size() || (bytes > 0 && fwrite(payload, 1, bytes, stdout) != bytes);
 #endif
@@ -461,14 +654,40 @@ static PixelRect pixelRect(const Region &r, double dpi, double pageW, double pag
 // rendering
 //------------------------------------------------------------------------
 
+// -no-images: every image call goes to OutputDev's default, which only skips
+// an inline image's bytes in the content stream; image data is never decoded.
+template<class Base>
+class NoImages : public Base
+{
+public:
+    using Base::Base;
+    void drawImageMask(GfxState *state, Object *ref, Stream *str, int width, int height, bool invert, bool interpolate, bool inlineImg) override { OutputDev::drawImageMask(state, ref, str, width, height, invert, interpolate, inlineImg); }
+    void drawImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, const int *maskColors, bool inlineImg) override
+    {
+        OutputDev::drawImage(state, ref, str, width, height, colorMap, interpolate, maskColors, inlineImg);
+    }
+    void drawMaskedImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, Stream *maskStr, int maskWidth, int maskHeight, bool maskInvert, bool maskInterpolate) override
+    {
+        OutputDev::drawMaskedImage(state, ref, str, width, height, colorMap, interpolate, maskStr, maskWidth, maskHeight, maskInvert, maskInterpolate);
+    }
+    void drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, Stream *maskStr, int maskWidth, int maskHeight, GfxImageColorMap *maskColorMap, bool maskInterpolate) override
+    {
+        OutputDev::drawSoftMaskedImage(state, ref, str, width, height, colorMap, interpolate, maskStr, maskWidth, maskHeight, maskColorMap, maskInterpolate);
+    }
+};
+
 class Renderer
 {
 public:
-    Renderer(PDFDoc *docA, long long maxPixelsA) : doc(docA), maxPixels(maxPixelsA)
+    Renderer(PDFDoc *docA, long long maxPixelsA, size_t maxSvgBytesA) : doc(docA), maxPixels(maxPixelsA), maxSvgBytes(maxSvgBytesA)
     {
         SplashColor white;
         white[0] = white[1] = white[2] = 255;
-        splash = std::make_unique<SplashOutputDev>(splashModeRGB8, 4, white, true);
+        if (noImages) {
+            splash = std::make_unique<NoImages<SplashOutputDev>>(splashModeRGB8, 4, white, true);
+        } else {
+            splash = std::make_unique<SplashOutputDev>(splashModeRGB8, 4, white, true);
+        }
         splash->setFontAntialias(true);
         splash->setVectorAntialias(true);
         splash->startDoc(doc);
@@ -494,6 +713,7 @@ private:
 
     PDFDoc *doc;
     long long maxPixels;
+    size_t maxSvgBytes;
     std::unique_ptr<SplashOutputDev> splash;
     // Fonts are shared across SVG jobs; each job gets a fresh CairoOutputDev,
     // because a device reused across cairo surfaces keeps per-page cairo
@@ -568,7 +788,7 @@ void Renderer::renderSvg(const Job &job, const Region &r)
         emitError(job, "render");
         return;
     }
-    auto cairo = std::make_unique<CairoOutputDev>();
+    std::unique_ptr<CairoOutputDev> cairo = noImages ? std::make_unique<NoImages<CairoOutputDev>>() : std::make_unique<CairoOutputDev>();
     cairo->startDoc(doc, cairoFonts.get());
     // embedded images are PNG only (pdftomarkdown's SVG allowlist), never the source JPEG etc.
     cairo->setEmbedMimeData(false);
@@ -624,6 +844,10 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     svg += "</g>\n";
     svg.append(out, close, std::string::npos);
     std::string().swap(out);
+    if (svg.size() > maxSvgBytes) {
+        emitError(job, "svgsize");
+        return;
+    }
     emitRecord(job, "ok", "svg", 0, 0, svg.data(), svg.size());
 }
 
@@ -669,16 +893,17 @@ int main(int argc, char *argv[])
 {
     Win32Console win32Console(&argc, &argv);
 
-    long long maxMemory = 0, maxPixels = 0, timeout = 0;
+    long long maxMemory = 0, maxPixels = 0, timeout = 0, maxSvgBytes = 0, maxOutput = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);
-    const bool limitsOk = parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout);
+    const bool confineOk = strcmp(confineArg, "require") == 0 || strcmp(confineArg, "auto") == 0 || strcmp(confineArg, "off") == 0;
+    const bool limitsOk = confineOk && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout) && parseLimit(maxSvgBytesArg, 1, 1LL << 40, &maxSvgBytes) && parseLimit(maxOutputBytesArg, 1, 1LL << 50, &maxOutput);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfregions version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
         fprintf(stderr, "%s\n", xpdfCopyright);
         if (!printVersion) {
             printUsage("pdfregions", "<PDF-file>", argDesc);
-            fprintf(stderr, "Jobs on stdin, records on stdout; see pdfregions(1). Exit codes: 0 ok, 1 cannot open or decrypt, 2 usage or malformed job, 3 limit (memory, timeout).\n");
+            fprintf(stderr, "Jobs on stdin, records on stdout; see pdfregions(1). Exit codes: 0 ok, 1 cannot open or decrypt, 2 usage or malformed job, 3 limit (memory, timeout), 4 stdout write failure, 5 -confine require could not confine.\n");
         }
         return (printVersion || printHelp) && ok && limitsOk ? exitOk : exitUsage;
     }
@@ -686,6 +911,15 @@ int main(int argc, char *argv[])
     silenceStderr();
 #ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#    ifdef __linux__
+    // die with the parent (pdftomarkdown) instead of lingering as an orphan;
+    // if the parent is already gone, stop now
+    const pid_t parent = getppid();
+    prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
+    if (getppid() != parent) {
+        return fail(exitLimit, "parent exited");
+    }
+#    endif
     if (timeout > 0) {
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
@@ -695,6 +929,7 @@ int main(int argc, char *argv[])
         alarm(static_cast<unsigned>(timeout));
     }
 #endif
+    maxOutputBytes = static_cast<unsigned long long>(maxOutput);
     limitMemory(maxMemory);
     std::set_new_handler(outOfMemory);
 
@@ -718,8 +953,46 @@ int main(int argc, char *argv[])
         return fail(exitOpenError, doc && doc->getErrorCode() == errEncrypted ? "cannot decrypt document" : "cannot open document");
     }
 
+    if (strcmp(confineArg, "off") != 0) {
+        const Confinement c = confine();
+        char line[64];
+        snprintf(line, sizeof(line), "confined=%d landlock=%d seccomp=%d", c.confined() ? 1 : 0, c.landlockAbi, c.seccomp ? 1 : 0);
+        writeDiagnostic(line);
+        if (!c.confined() && strcmp(confineArg, "require") == 0) {
+            return fail(exitUnconfined, "confinement required but not available");
+        }
+    }
+#ifdef __linux__
+    if (confineCheckPath[0]) {
+        // each probe reports allowed or denied; nothing else is printed
+        const int fd = open(confineCheckPath, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        const bool created = fd >= 0;
+        if (created) {
+            close(fd);
+        }
+        const long fd2 = syscall(SYS_openat, AT_FDCWD, confineCheckPath, O_WRONLY | O_CREAT, 0600);
+        if (fd2 >= 0) {
+            close(static_cast<int>(fd2));
+        }
+        const int sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock >= 0) {
+            close(sock);
+        }
+        // exec is probed only when confined (otherwise it would replace this process)
+        bool execProbed = false;
+        if (strcmp(confineArg, "off") != 0 && prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1) {
+            char *const argvTrue[] = { const_cast<char *>("/bin/true"), nullptr };
+            execv("/bin/true", argvTrue); // returns only when denied
+            execProbed = true;
+        }
+        char line[128];
+        snprintf(line, sizeof(line), "confine-check create=%s openat=%s socket=%s exec=%s", created ? "allowed" : "denied", fd2 >= 0 ? "allowed" : "denied", sock >= 0 ? "allowed" : "denied", execProbed ? "denied" : "skipped");
+        writeDiagnostic(line);
+    }
+#endif
+
     {
-        Renderer renderer(doc.get(), maxPixels);
+        Renderer renderer(doc.get(), maxPixels, static_cast<size_t>(maxSvgBytes));
         for (size_t first = 0; first < jobs.size() && !outputFailed;) {
             size_t last = first + 1;
             while (last < jobs.size() && jobs[last].page == jobs[first].page) {
@@ -730,7 +1003,7 @@ int main(int argc, char *argv[])
         }
     }
     if (outputFailed) {
-        return fail(exitOpenError, "cannot write output");
+        return fail(exitWriteError, "cannot write output");
     }
     return exitOk;
 }
