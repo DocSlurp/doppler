@@ -205,7 +205,9 @@ impl Settings {
     /// The flags given make sense together.
     pub fn check(&self) -> Result<(), String> {
         if self.other_flags && self.dir.is_none() {
-            return Err("the --images-* and --raster-*, --vector-*, --svg-* options need --images-dir".into());
+            return Err(
+                "the --images-*, --raster-*, --lossless-*, --vector-* and --svg-* options need --images-dir".into()
+            );
         }
         Ok(())
     }
