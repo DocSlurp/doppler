@@ -2728,6 +2728,7 @@ bool FlateStream::flateRewind(bool unfiltered)
 {
     index = 0;
     remain = 0;
+    batchLimit = 64;
     codeBuf = 0;
     codeSize = 0;
     compressedBlock = false;
@@ -2867,7 +2868,12 @@ void FlateStream::readSome()
         // per call: the bytes, their order and the end-of-data point are the same. Unread bytes sit
         // in buf[index, index + remain); the next symbol (at most 258 bytes) is written after them,
         // and back-references read written bytes up to 32768 back, which the window still holds.
-        const int flateBatch = 4096;
+        // The batch starts small and doubles, so a reader that only peeks (a font type sniff) does
+        // not decode far ahead.
+        const int flateBatch = batchLimit;
+        if (batchLimit < 4096) {
+            batchLimit *= 2;
+        }
         i = index;
         remain = 0;
         do {
