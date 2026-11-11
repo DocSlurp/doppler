@@ -2314,6 +2314,7 @@ std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref
 {
     if (xref->getGeneration() != generation) {
         entries.clear();
+        seen.clear();
         generation = xref->getGeneration();
     }
     ++clock;
@@ -2333,6 +2334,16 @@ std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref
         // in use elsewhere (keep the cached one for later pages), or nothing to cache
         return font;
     }
+    // keep it only the second time it is asked for
+    auto again = std::find_if(seen.begin(), seen.end(), [&](const std::pair<Ref, std::string> &s) { return s.first == id && s.second == tag; });
+    if (again == seen.end()) {
+        if (seen.size() >= maxSeen) {
+            seen.erase(seen.begin());
+        }
+        seen.emplace_back(id, std::string(tag));
+        return font;
+    }
+    seen.erase(again);
     if (entries.size() >= maxEntries) {
         // free the least recently used idle entry; if every entry is in use, do not cache
         Entry *victim = nullptr;
