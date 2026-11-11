@@ -1199,8 +1199,12 @@ private:
     // true (and the pass unsafe) once the resident size passed the pass's limit
     bool checkMemory()
     {
-        if (!memory && residentKiB() > limitKiB) {
-            memory = unsafe = true;
+        // an unreadable resident size counts as over the limit: the shared pass is dropped
+        if (!memory) {
+            const long long rss = residentKiB();
+            if (rss < 0 || rss > limitKiB) {
+                memory = unsafe = true;
+            }
         }
         return memory;
     }
@@ -1474,10 +1478,10 @@ bool Renderer::renderSvgTogether(const std::vector<Job> &jobs, const std::vector
         }
         devs.push_back(canvases[k].cairo.get());
     }
-    bool unsafe = !ok;
     const long long start = residentKiB();
+    bool unsafe = !ok || start < 0;
     auto fonts = cairoFonts ? cairoFonts->cacheSnapshot() : std::vector<std::shared_ptr<CairoFont>>();
-    if (ok) {
+    if (!unsafe) {
         const unsigned long errorsBefore = errorsSeen;
         TeeOutputDev tee(devs, start + svgSlackKiB);
         doc->displayPageSlice(&tee, jobs[svgJobs[0].first].page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1, TeeOutputDev::abortCheck, &tee);
@@ -1493,7 +1497,8 @@ bool Renderer::renderSvgTogether(const std::vector<Job> &jobs, const std::vector
         }
         // cairo decodes images when a surface finishes: past the memory limit the rest are
         // discarded and their jobs drawn alone
-        const bool over = !unsafe && residentKiB() > start + svgSlackKiB;
+        const long long rss = unsafe ? 0 : residentKiB();
+        const bool over = !unsafe && (rss < 0 || rss > start + svgSlackKiB);
         if (unsafe || over) {
             if (over) {
                 (*results)[k].first = retryAlone;
