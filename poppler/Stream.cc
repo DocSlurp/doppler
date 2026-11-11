@@ -2790,15 +2790,23 @@ int FlateStream::getChars(int nChars, unsigned char *buffer)
     if (pred) {
         return pred->getChars(nChars, buffer);
     }
-    for (int i = 0; i < nChars; ++i) {
-        const int c = doGetRawChar();
-        if (likely(c != EOF)) {
-            buffer[i] = c;
-        } else {
-            return i;
+    // the bytes doGetRawChar would return one at a time, copied in runs out of the window
+    int n = 0;
+    while (n < nChars) {
+        if (remain == 0) {
+            if (endOfBlock && eof) {
+                break;
+            }
+            readSome();
+            continue;
         }
+        const int chunk = std::min({ nChars - n, remain, flateWindow - index });
+        memcpy(buffer + n, buf + index, chunk);
+        index = (index + chunk) & flateMask;
+        remain -= chunk;
+        n += chunk;
     }
-    return nChars;
+    return n;
 }
 
 int FlateStream::lookChar()
