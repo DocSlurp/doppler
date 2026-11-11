@@ -43,6 +43,7 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
 | `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
 | (restitching pictures, tables and paragraphs across pages) | `pdftomarkdown --markers FILE.pdf`, see [doppler-md](docslurp/doppler-md/README.md#restitching-markers---markers) |
+| `pdfimages` / cropping figures yourself | `pdftomarkdown --images-dir DIR FILE.pdf` (WebP/SVG per marked picture and figure, `manifest.json`), see [doppler-md](docslurp/doppler-md/README.md#extracting-images-and-figures---images-dir) |
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
 

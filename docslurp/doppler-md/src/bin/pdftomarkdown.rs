@@ -7,6 +7,9 @@
 //! `-compact-layout` (full-precision coordinates): the same bytes as piping
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
+//! `--images-dir DIR` also writes the marked pictures and figures (rendered by `pdfregions`)
+//! to DIR; exit status 5 when the Markdown was written but image extraction failed.
+//!
 //! pdftotext is `$PDFTOTEXT` if set, else a `pdftotext` next to this executable, else
 //! `pdftotext` on `PATH`. Exit status 2 for bad arguments or output without a `<page>` (a
 //! pdftotext that is not the fork), 1 when pdftotext cannot be run or exits non-zero.
@@ -17,6 +20,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use doppler_md::extract::outdir::OutDir;
+use doppler_md::extract::regions::{self, Renderer};
+use doppler_md::extract::settings::Settings;
 use doppler_md::{Options, Params, TableFormat};
 
 #[path = "../cli.rs"]
@@ -27,7 +33,7 @@ const STREAM_WINDOW: usize = 16;
 
 const USAGE: &str = "\
 usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--report] [--params JSON]
-                     [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
+                     [-f N] [-l N] [--opw PW] [--upw PW] [--images-dir DIR [image options]] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
@@ -49,8 +55,32 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   --opw, --upw   owner and user password (also -opw, -upw); as with pdftotext they are
                  visible in the process list
 
+
+image extraction (implies --markers; files named from the ids: DIR/p3.1.webp, DIR/p3.g1.svg,
+and DIR/manifest.json listing every image):
+  --images-dir DIR            write the marked pictures and figures to DIR, which must not exist
+  --images-min-side N[px|pt]  no file under this smallest side (24px: pixels at the dpi)
+  --images-repeats MODE       skip (no file for a repeat of an earlier figure), link (manifest
+                              points to the first file) or keep (default skip)
+  --raster-format webp|png    pictures (webp: lossy, lossless where the crop holds text)
+  --raster-quality N          lossy WebP quality (90)
+  --raster-lossless           lossless WebP for every picture
+  --vector-format svg|webp|png  vector figures (svg; a refused or too large SVG becomes
+                              lossless WebP)
+  --svg-precision 1|2         decimals of a point in SVG coordinates (1)
+  --svg-max-bytes N           largest SVG kept (512KiB)
+  --images-dpi N              raster resolution, 36 to 600 (150)
+  --images-max N              most files (500); --images-max-bytes N (256MiB); both fail
+                              the extraction; --images-max-file-bytes N (8MiB): that file only
+  --images-timeout S          renderer time for the document (120)
+  --images-confine MODE       pdfregions -confine: require, auto or off (auto)
+  --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
+                              covers every converted page
+  Exit status 5: Markdown written, image extraction failed (DIR removed).
+
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
-It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout).
+It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pdfregions
+(image extraction) is found the same way ($PDFREGIONS).
 ";
 
 fn main() -> ExitCode {
@@ -61,6 +91,8 @@ fn main() -> ExitCode {
     let mut window: Option<usize> = None;
     // pdftotext options, in order
     let mut pass: Vec<OsString> = Vec::new();
+    let mut passwords: Vec<OsString> = Vec::new();
+    let mut images = Settings::default();
     let (mut first, mut last): (Option<i32>, Option<i32>) = (None, None);
     let mut input: Option<OsString> = None;
     let mut args = std::env::args_os().skip(1);
@@ -113,7 +145,20 @@ fn main() -> ExitCode {
                     return usage_error(&format!("{s} needs a password"));
                 };
                 pass.push(format!("-{}", s.trim_start_matches('-')).into());
-                pass.push(pw);
+                pass.push(pw.clone());
+                passwords.push(format!("-{}", s.trim_start_matches('-')).into());
+                passwords.push(pw);
+            }
+            _ if Settings::takes(s).is_some() => {
+                let value = if Settings::takes(s) == Some(true) { args.next() } else { None };
+                let value = match value.map(|v| v.into_string()) {
+                    Some(Ok(v)) => Some(v),
+                    Some(Err(_)) => return usage_error(&format!("{s}: not valid UTF-8")),
+                    None => None,
+                };
+                if let Err(e) = images.apply(s, value.as_deref()) {
+                    return usage_error(&e);
+                }
             }
             _ if s.starts_with('-') && s != "-" => return usage_error(&format!("unknown option {s}")),
             _ if input.is_none() => input = Some(a),
@@ -128,6 +173,16 @@ fn main() -> ExitCode {
     let Some(input) = input else {
         return usage_error("no input FILE");
     };
+    if let Err(e) = images.check() {
+        return usage_error(&e);
+    }
+    if images.dir.is_some() {
+        if input == "-" {
+            return usage_error("--images-dir needs a FILE, not standard input");
+        }
+        // pictures and figures are found through the markers
+        opts.markers = true;
+    }
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
     // it as an option ("-" is stdin to pdftotext)
     let file = if input.as_encoded_bytes().first() == Some(&b'-') && input != "-" {
@@ -138,14 +193,46 @@ fn main() -> ExitCode {
         input
     };
 
+    // the folder is created before anything runs: it must be new
+    let mut out_dir = match images.dir.as_deref().map(OutDir::create) {
+        Some(Ok(d)) => Some(d),
+        Some(Err(e)) => {
+            eprintln!("pdftomarkdown: --images-dir: {e}");
+            return ExitCode::from(2);
+        }
+        None => None,
+    };
+    let code = convert(&params, &opts, window, strict, &pass, &file, want_report, &images, &passwords, &mut out_dir);
+    // a folder left over is a failed or skipped extraction
+    if let Some(d) = out_dir {
+        let _ = d.remove();
+    }
+    code
+}
+
+/// Runs pdftotext, converts, and extracts the images when asked (`out_dir` is taken once
+/// extraction succeeds).
+#[allow(clippy::too_many_arguments)]
+fn convert(
+    params: &Params,
+    opts: &Options,
+    window: Option<usize>,
+    strict: bool,
+    pass: &[OsString],
+    file: &OsString,
+    want_report: bool,
+    images: &Settings,
+    passwords: &[OsString],
+    out_dir: &mut Option<OutDir>,
+) -> ExitCode {
     let exe = pdftotext();
     let child = Command::new(&exe)
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
         .args(if strict { None } else { Some("-compact-layout") })
         .args(if opts.math { Some("-glyphs") } else { None })
         .args(if opts.markers { Some("-images") } else { None })
-        .args(&pass)
-        .arg(&file)
+        .args(pass)
+        .arg(file)
         .arg("-")
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
@@ -163,7 +250,7 @@ fn main() -> ExitCode {
          -bbox-layout -wordmeta -rules)",
         exe.display()
     );
-    let mut run = cli::Run::new(&params, &opts, window);
+    let mut run = cli::Run::new(params, opts, window);
     let read = match child.stdout.take() {
         Some(mut out) => run.read_from(&mut out),
         None => Ok(()),
@@ -201,7 +288,7 @@ fn main() -> ExitCode {
             Some(1) => eprintln!(
                 "pdftomarkdown: {} could not open or decrypt {} (status 1)",
                 exe.display(),
-                Path::new(&file).display()
+                Path::new(file).display()
             ),
             Some(3) => eprintln!("pdftomarkdown: {} was refused by the PDF's permissions (status 3)", exe.display()),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
@@ -209,7 +296,39 @@ fn main() -> ExitCode {
         }
         return ExitCode::FAILURE;
     }
-    run.finish("pdftomarkdown", want_report, &no_page)
+    let (mut report, written) = run.finish_report();
+    let mut failed = false;
+    if let Some(dir) = out_dir.as_mut()
+        && written.is_ok()
+        && report.page_found()
+    {
+        let renderer = Renderer {
+            exe: regions::locate(),
+            passwords: passwords.to_vec(),
+            file: file.clone(),
+            confine: images.confine,
+            max_svg_bytes: doppler_md::extract::MAX_SVG_INPUT as u64,
+            // raw RGB is several times the encoded files: 8 times the file cap, 64 MiB..2 GiB
+            max_output_bytes: images.max_bytes.saturating_mul(8).clamp(64 << 20, 2 << 30),
+        };
+        match doppler_md::extract::extract(&mut report, images, &renderer, dir) {
+            Ok(_) => *out_dir = None,
+            Err(e) => {
+                eprintln!("pdftomarkdown: image extraction failed: {e}");
+                for n in report.images.iter_mut() {
+                    n.file = None;
+                }
+                report.images_written = Some(0);
+                report.images_error = Some(e);
+                failed = true;
+            }
+        }
+    }
+    let code = cli::conclude("pdftomarkdown", &report, written, want_report, &no_page);
+    if failed && code == ExitCode::SUCCESS {
+        return ExitCode::from(5);
+    }
+    code
 }
 
 /// `$PDFTOTEXT`, else `pdftotext` beside this executable, else `pdftotext` (looked up on `PATH`).

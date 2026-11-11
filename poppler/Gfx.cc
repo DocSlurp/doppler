@@ -4169,7 +4169,8 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
             doImage(&refObj, obj1Stream, false);
         } else {
             if (ocState && out->needImageGeometry()) {
-                reportImageGeometry(obj1StreamDict, true);
+                Object refObj = res->lookupXObjectNF(name);
+                reportImageGeometry(obj1StreamDict, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
             }
             if (out->needImageMaskGeometry()) {
                 // only stencil masks, and never a stream whose header doImage would decode
@@ -4238,13 +4239,11 @@ static void skipStreamBytes(Stream *str, int64_t n)
 
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
 // stream dictionary is read: never the image data, so a hostile image costs a few lookups.
-void Gfx::reportImageGeometry(Dict *dict, bool xobject)
+void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 {
-    if (xobject) {
-        const Object &objOC = dict->lookupNF("OC");
-        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
-            return;
-        }
+    const Object &objOC = dict->lookupNF("OC");
+    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+        return;
     }
     const std::array<double, 6> &ctm = state->getCTM();
     if (fabs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) < 0.000001) {
@@ -4265,7 +4264,7 @@ void Gfx::reportImageGeometry(Dict *dict, bool xobject)
     if (im.isNull()) {
         im = dict->lookup("IM");
     }
-    out->imageGeometry(state, width, height, im.isBool() && im.getBool());
+    out->imageGeometry(state, width, height, im.isBool() && im.getBool(), ref);
 }
 
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
@@ -4349,7 +4348,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
         if (imObj.isNull()) {
             imObj = dict->lookup("IM");
         }
-        out->imageGeometry(state, width, height, imObj.isBool() && imObj.getBool());
+        out->imageGeometry(state, width, height, imObj.isBool() && imObj.getBool(), Ref::INVALID());
     }
 
     // image interpolation

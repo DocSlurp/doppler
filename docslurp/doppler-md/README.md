@@ -272,8 +272,101 @@ memory drops from 69 MB to that of pdftotext (about 25 MB) with or without a win
 With a window, pages already written stay written when pdftotext later fails: the exit
 status, not the output, says whether the conversion finished.
 
+## Extracting images and figures (`--images-dir`)
+
+    pdftomarkdown --images-dir out/ --report paper.pdf > paper.md
+    pdftomarkdown --images-dir out/ --images-dpi 200 --images-repeats link --vector-format webp paper.pdf
+
+`--images-dir DIR` (implies `--markers`) writes a file for each marked picture (`pN.M`) and
+vector figure (`pN.gK`) to DIR, rendered by `pdfregions` (`$PDFREGIONS`, else beside the
+executable, else on `PATH`; protocol: `docslurp/extraction/PROTOCOL.md`). The Markdown is
+byte-identical to `--markers` without it and is written first; the folder is filled after.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--images-dir DIR` | off | DIR must not exist; created 0700 |
+| `--images-min-side N[px\|pt]` | `24px` | no file when the smaller side is under N (px: output pixels at the dpi; pt: page points) |
+| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file (`skipped: repeat`) / no file, and `repeat_of` names the first figure, which has the file / a file of its own |
+| `--raster-format webp\|png` | `webp` | pictures: lossy WebP, lossless when the crop holds text lines |
+| `--raster-quality N` | `90` | lossy WebP quality |
+| `--raster-lossless` | off | lossless WebP for every picture |
+| `--vector-format svg\|webp\|png` | `svg` | vector figures; an SVG refused by the allowlist or over `--svg-max-bytes` becomes lossless WebP (`fallback`) |
+| `--svg-precision 1\|2` | `1` | decimals of a point in SVG coordinates |
+| `--svg-max-bytes N` | `512KiB` | largest compacted SVG kept |
+| `--images-dpi N` | `150` | raster resolution, 36..600 |
+| `--images-max N` | `500` | most files; more fails the extraction |
+| `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
+| `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
+| `--images-timeout S` | `120` | time for everything after the Markdown is written (rendering, compaction, encoding, fallbacks); at the deadline pdfregions' process group is killed |
+| `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
+| `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
+
+Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
+link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
+
+**What gets a file.** Only marked images (`placed` `block` or `inline`) at least the minimum
+side. No file for `watermark`, `furniture`, `duplicate`, `background`, `fragment`, `small`,
+`text` and `grouped` (grouped images are inside their figure's file: the figure is rendered
+at its union box). A repeat is a marked figure with the same box size (to half a point), pixel
+size and kind as an earlier one and either the same image object (`ref`, not rendered again)
+or, without a `ref` (vector figures, inline images), byte-identical rendered output. Same-size
+charts with different content are therefore never treated as repeats.
+
+**Files.** `DIR/<id>.webp|png|svg`, named only from the ids (checked against
+`^p[0-9]{1,9}\.g?[0-9]{1,6}$`). SVG is parsed (roxmltree, no DTD), checked against an allowlist
+(`svg g defs path use clipPath mask rect image symbol linearGradient radialGradient stop pattern
+filter feColorMatrix`, their presentation attributes, references only `#id`, images only
+`data:image/png;base64,` holding a whole well-formed PNG (IHDR first, 1..16384 px a side,
+correct CRCs, only IHDR/PLTE/IDAT/IEND and tRNS/gAMA/cHRM/sRGB/bKGD/pHYs/sBIT, nothing after
+IEND); `url(...)` in any case only as a whole value `url(#id)`, and no backslash in any value; no script, style, foreignObject, event
+attributes, external URLs or entities) and rewritten from the parsed tree: coordinates rounded
+to the precision in final page points (more decimals under an enlarging transform, one more on
+dashed strokes; image placement keeps 2 decimals and transform scale factors 6 significant
+digits), relative path commands where shorter, hex colours, defaults dropped where nothing
+inherits another value, identical glyph definitions merged, short ids, shared styles hoisted to
+groups, unreferenced definitions, empty groups and whitespace removed. WebP (libwebp) is a RIFF
+with one `VP8 `/`VP8L` chunk; PNG has only IHDR/IDAT/IEND. Files are written to an `O_EXCL`
+temporary name in a directory opened without following links, then renamed with
+`RENAME_NOREPLACE`.
+
+**manifest.json** (written last; the same input gives the same bytes): `version`, `dpi`,
+`min_side_pt`, `repeats`, then `images`, sorted by page, pictures before figures, by index, one
+per line: `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`,
+`file` (or null), `format`, `bytes`, `sha256`, `width`, `height` (pixels; for SVG the box in
+points, rounded up; 0 without a file), and when they apply `repeat_of` (link mode),
+`fallback` (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB),
+`skipped` (`fate`, `min_side`, `repeat`, `pages`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
+`timeout` when the deadline passed before the image was encoded; `file_bytes`; `repeat_target`
+when a repeat's first placement got no file and no other placement of it has one — a
+`repeat_of` always names an entry with a file;
+`mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
+byte count; `encode`, `utf8`, `svg_size`). pdfregions also gets `-max-svg-bytes 8MiB` (larger:
+`err:svgsize`, raster fallback) and `-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`, `marked`, `written`,
+`bytes`, `repeats`, `small`, `fallbacks`, `errors`). `--report` gains `file` per image and
+`images_written` (and `images_error` on failure).
+
+**Work bounds.** An SVG with more than 200,000 elements or references is not compacted (raster
+fallback); compaction is linear in elements and references (100,000 `<use>` of one glyph:
+0.19 s; 1,000,000 refused in 0.67 s) and stops at the `--images-timeout` deadline.
+
+**Failures and exit status.** One image failing is recorded (`error`) and the rest go on. The
+renderer failing (cannot run, crash, any non-zero exit including 3 limit, 4 write failure and 5 cannot confine,
+broken framing, timeout), a cap
+(`--images-max`, `--images-max-bytes`) or a write error removes DIR; the Markdown is still
+written and the exit status is **5**. pdftotext failing exits as before and removes DIR.
+
+**Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
+SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
+kept 35.6% of the bytes at `--svg-precision 1` (41.0% at 2). Rendered with `rsvg-convert` at
+300 dpi, 14.4% of inked pixels changed by more than 16 levels at precision 1 and 1.4% at
+precision 2 (antialiasing on edges shifted up to 0.05 pt; no visible change). 188 raster crops
+(47.8 Mpx): lossy WebP q90 21.9 ms per crop (11.6 Mpx/s) at 28.4% of PNG's size; lossless
+WebP 67.9 ms per crop (3.7 Mpx/s) at 62.8%; PNG 13.2 ms (19.3 Mpx/s). Measure with
+`cargo run --release --example image_bench`.
+
 ## Exit status and report
 
+- 5 (`pdftomarkdown --images-dir`): the Markdown was written but image extraction failed.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

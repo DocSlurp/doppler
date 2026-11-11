@@ -148,6 +148,15 @@ static inline GfxColorComp byteToCol(unsigned char x)
 
 static inline unsigned char colToByte(GfxColorComp x)
 {
+    // A colour component is 0..gfxColorComp1; a malformed colour space or Decode array can
+    // produce values outside it, which overflowed the shift below. Clamp first (DocSlurp:
+    // pdfregions renders customer images, so this is reachable from hostile input).
+    if (x <= 0) {
+        return 0;
+    }
+    if (x >= gfxColorComp1) {
+        return 255;
+    }
     // 255 * x + 0.5  =  256 * x - x + 0x8000
     return static_cast<unsigned char>(((x << 8) - x + 0x8000) >> 16);
 }

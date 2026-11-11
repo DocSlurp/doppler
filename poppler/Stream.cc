@@ -605,10 +605,14 @@ ImageStream::ImageStream(Stream *strA, int widthA, int nCompsA, int nBitsA)
     nComps = nCompsA;
     nBits = nBitsA;
 
-    nVals = width * nComps;
-    inputLineSize = (nVals * nBits + 7) >> 3;
-    if (nComps <= 0 || nBits <= 0 || nVals > INT_MAX / nBits - 7 || width > INT_MAX / nComps) {
+    // Check before multiplying: width * nComps overflowed for a huge /Width (found by the
+    // DocSlurp VM fuzz lane through a soft-masked image).
+    if (nComps <= 0 || nBits <= 0 || width < 0 || width > INT_MAX / nComps || width * nComps > INT_MAX / nBits - 7) {
+        nVals = 0;
         inputLineSize = -1;
+    } else {
+        nVals = width * nComps;
+        inputLineSize = (nVals * nBits + 7) >> 3;
     }
     inputLine = static_cast<unsigned char *>(gmallocn_checkoverflow(inputLineSize, sizeof(char)));
     if (nBits == 8) {

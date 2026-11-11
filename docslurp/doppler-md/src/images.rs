@@ -79,6 +79,12 @@ pub struct Note {
     pub members: usize,
     /// for a grouped image, the id of the image that stands for the group
     pub group: Option<String>,
+    /// the image XObject (`ref="num gen"` from the producer), when known
+    pub obj: Option<(u32, u32)>,
+    /// lines of text lie inside the box (a crop of it holds labels: encode it losslessly)
+    pub text: bool,
+    /// the file written for it by image extraction (`pdftomarkdown --images-dir`)
+    pub file: Option<String>,
 }
 
 /// A picture that is its own paragraph: the marker and the box it fills.
@@ -147,6 +153,9 @@ pub fn place(
             fate: fate.unwrap_or(Fate::Block),
             members: 1,
             group: None,
+            obj: im.obj,
+            text: false,
+            file: None,
         });
     }
     let boxes: Vec<(f64, f64, f64, f64)> = images.iter().map(|im| (im.x0, im.y0, im.x1, im.y1)).collect();
@@ -178,6 +187,7 @@ pub fn place(
             notes[rep].bbox = b;
             notes[rep].mask = unit.iter().all(|&i| images[i].mask);
         }
+        notes[rep].text = holds_text(page, drop, b);
         notes[rep].fate = match line {
             Some(_) if fragments => Fate::Fragment,
             Some(li) => {
@@ -248,6 +258,19 @@ pub(crate) fn clusters(boxes: &[(f64, f64, f64, f64)], candidates: &[usize], gap
         }
     }
     groups
+}
+
+/// Whether a kept line of text lies mostly (half its area) inside the box `b`.
+pub(crate) fn holds_text(page: &Page, drop: &[bool], b: (f64, f64, f64, f64)) -> bool {
+    page.lines.iter().zip(drop).any(|(l, d)| {
+        if *d || l.words.is_empty() {
+            return false;
+        }
+        let w = pmin(l.x1, b.2) - pmax(l.x0, b.0);
+        let h = pmin(l.y1, b.3) - pmax(l.y0, b.1);
+        let area = (l.x1 - l.x0) * (l.y1 - l.y0);
+        w > 0.0 && h > 0.0 && area > 0.0 && w * h >= 0.5 * area
+    })
 }
 
 fn same_box(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {

@@ -253,6 +253,10 @@ public:
         printing = printingA;
         needFontUpdate = true;
     }
+    // When false, images never carry their source stream as cairo mime data, so a vector
+    // surface embeds the decoded pixels (an SVG surface: data:image/png only, never the
+    // document's JPEG/JPX/JBIG2/CCITT bytes). Default true.
+    void setEmbedMimeData(bool on) { embedMimeData = on; }
     static void copyAntialias(cairo_t *cr, cairo_t *source_cr);
     void setLogicalStructure(bool logStruct) { this->logicalStruct = logStruct; }
 
@@ -333,6 +337,7 @@ protected:
     cairo_matrix_t orig_matrix;
     bool needFontUpdate; // set when the font needs to be updated
     bool printing;
+    bool embedMimeData = true;
     bool use_show_text_glyphs;
     bool text_matrix_valid;
     cairo_glyph_t *glyphs;

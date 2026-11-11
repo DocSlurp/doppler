@@ -245,7 +245,10 @@ and
 .I height
 (the image's own size in samples) and
 .I kind="mask"
-for an image mask, and the PDF page number as
+for an image mask,
+.I ref="num gen"
+for an image XObject (its indirect object reference, so repeats of one image can be
+found; absent for inline images), and the PDF page number as
 .I number
 on
 .BR <page> .
