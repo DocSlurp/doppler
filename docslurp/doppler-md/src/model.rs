@@ -855,9 +855,31 @@ pub struct ParseReport {
     pub fonts_skipped: usize,
     /// Zero-based page indices marked glyphsTruncated="1" by the producer
     pub glyphs_truncated_pages: Vec<usize>,
-    /// (zero-based page index, `"W H"`): the crop box size as `pdfinfo` prints it (`%g`), from
-    /// doppler `pdftotext -crop-sizes` (`crop="W H"`); values that are not short numbers are skipped
-    pub page_crop: Vec<(usize, Box<str>)>,
+    /// one entry per `<page>`, in order: its text layer and size (see [`PageInfo`])
+    pub page_info: Vec<PageInfo>,
+}
+
+/// What one page holds: kept words, how many of them are invisible (render mode 3, usually an
+/// OCR layer over a scan), and its crop box size when the producer wrote it.
+#[derive(Clone, Debug, Default)]
+pub struct PageInfo {
+    /// `"W H"`: the crop box size as `pdfinfo` prints it (`%g`), from doppler
+    /// `pdftotext -crop-sizes` (`crop="W H"`); `None` when absent or not a short number
+    pub crop: Option<Box<str>>,
+    pub words: u32,
+    pub invisible: u32,
+}
+
+impl PageInfo {
+    /// `none` (no words), `invisible` (every word invisible), `visible` (none invisible) or `mixed`.
+    pub fn text_layer(&self) -> &'static str {
+        match (self.words, self.invisible) {
+            (0, _) => "none",
+            (w, i) if i >= w => "invisible",
+            (_, 0) => "visible",
+            _ => "mixed",
+        }
+    }
 }
 
 /// A `crop="W H"` value worth passing on: short, and only number characters.
@@ -1233,9 +1255,10 @@ impl ParseState {
                     if rules_truncated == Some(true) {
                         report.rules_truncated_pages.push(report.pages - 1);
                     }
-                    if let Some(v) = a.0[CROP].filter(|v| crop_value(v)) {
-                        report.page_crop.push((report.pages - 1, v.into()));
-                    }
+                    report.page_info.push(PageInfo {
+                        crop: a.0[CROP].filter(|v| crop_value(v)).map(Into::into),
+                        ..Default::default()
+                    });
                     *page_glyphs = 0;
                     line_glyphs.clear();
                     font_index.clear();
@@ -1323,6 +1346,10 @@ impl ParseState {
                             style
                         }
                     };
+                    if let Some(info) = report.page_info.last_mut() {
+                        info.words = info.words.saturating_add(1);
+                        info.invisible = info.invisible.saturating_add((a.0[INVISIBLE] == Some("1")) as u32);
+                    }
                     words.push(Word {
                         x0,
                         y0,

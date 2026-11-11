@@ -442,11 +442,26 @@ impl Report {
                     .as_ref()
                     .map(|e| format!(",\"images_error\":{}", serde_json::Value::String(e.clone())))
                     .unwrap_or_default()
-                + &if r.page_crop.is_empty() {
+                + &if r.page_info.iter().all(|p| p.crop.is_none()) {
+                    // only with the producer's crop sizes (pdftomarkdown --page-info)
                     String::new()
                 } else {
-                    let v: Vec<String> = r.page_crop.iter().map(|(i, s)| format!("[{},\"{}\"]", i + 1, s)).collect();
-                    format!(",\"page_crop\":[{}]", v.join(","))
+                    let v: Vec<String> = r
+                        .page_info
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            format!(
+                                "{{\"page\":{},\"size\":{},\"words\":{},\"invisible\":{},\"text\":\"{}\"}}",
+                                i + 1,
+                                p.crop.as_deref().map_or("null".to_string(), |s| format!("\"{s}\"")),
+                                p.words,
+                                p.invisible,
+                                p.text_layer()
+                            )
+                        })
+                        .collect();
+                    format!(",\"page_info\":[{}]", v.join(","))
                 }
         )
     }
