@@ -20,7 +20,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-use doppler_md::extract::outdir::OutDir;
+use doppler_md::extract::outdir::{NewFile, OutDir};
 use doppler_md::extract::plan;
 use doppler_md::extract::regions::{self, Renderer};
 use doppler_md::extract::settings::Settings;
@@ -83,13 +83,18 @@ and DIR/manifest.json listing every image):
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
-  --images-plan-out FILE      also write the images plan (what extraction needs from this
-                              conversion, exactly) to FILE, which must not exist; the Markdown
-                              and report are unchanged
-  --images-plan FILE          with --images-dir: extract from a plan written by an earlier run
-                              on the same FILE.pdf with the same -f/-l/--params, without running
-                              pdftotext or converting again (no Markdown, no --report); the same
-                              files and manifest as extracting after a conversion
+  --images-plan-out FILE      with --markers (or --images-dir): also write the images plan (what
+                              extraction needs from this conversion, exactly) to FILE, which must
+                              not exist; its folder is reached without following symbolic links.
+                              The Markdown and report are unchanged; exit status 5 when the plan
+                              could not be written
+  --images-plan FILE          with --images-dir: extract from a plan written by an earlier run,
+                              without running pdftotext or converting again (no Markdown, no
+                              --report); the same files and manifest as extracting after a
+                              conversion. The plan is bound to that run: give the same FILE.pdf
+                              (same bytes), -f/-l, --params, --strict, --stream/--window, --math
+                              and --html, and the same pdftomarkdown version, or it is refused
+                              (exit status 2)
   Exit status 5: Markdown written, image extraction failed (DIR removed).
 
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
@@ -209,6 +214,19 @@ fn main() -> ExitCode {
     if plan_in.is_some() && (images.dir.is_none() || want_report || plan_out.is_some()) {
         return usage_error("--images-plan needs --images-dir, and takes no --report or --images-plan-out");
     }
+    if plan_out.is_some() && !opts.markers {
+        // without markers the report has no images: the plan would be empty
+        return usage_error("--images-plan-out needs --markers (or --images-dir)");
+    }
+    if (plan_out.is_some() || plan_in.is_some()) && input == "-" {
+        return usage_error("an images plan needs a FILE, not standard input");
+    }
+    // what an images plan is bound to, besides the PDF's bytes and the page range
+    let settings = plan::settings_digest(&format!(
+        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n",
+        opts.math, opts.tables, opts.markers
+    ));
+    let pages = (first.map(|n| n as u32), last.map(|n| n as u32));
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
     // it as an option ("-" is stdin to pdftotext)
     let file = if input.as_encoded_bytes().first() == Some(&b'-') && input != "-" {
@@ -219,6 +237,16 @@ fn main() -> ExitCode {
         input
     };
 
+    // the plan's file is checked before anything runs: it must be new, in a folder reached
+    // without symbolic links
+    let plan_file = match plan_out.as_deref().map(|p| NewFile::reserve(Path::new(p))) {
+        Some(Ok(f)) => Some(f),
+        Some(Err(e)) => {
+            eprintln!("pdftomarkdown: --images-plan-out: {e}");
+            return ExitCode::from(2);
+        }
+        None => None,
+    };
     // the folder is created before anything runs: it must be new
     let mut out_dir = match images.dir.as_deref().map(OutDir::create) {
         Some(Ok(d)) => Some(d),
@@ -229,7 +257,7 @@ fn main() -> ExitCode {
         None => None,
     };
     let code = match &plan_in {
-        Some(plan) => extract_from_plan(plan, &file, &images, &passwords, &mut out_dir),
+        Some(plan) => extract_from_plan(plan, &file, pages, &settings, &images, &passwords, &mut out_dir),
         None => convert(
             &params,
             &opts,
@@ -242,7 +270,7 @@ fn main() -> ExitCode {
             &images,
             &passwords,
             &mut out_dir,
-            plan_out.as_deref(),
+            plan_file.map(|f| (f, pages, settings)),
         ),
     };
     // a folder left over is a failed or skipped extraction
@@ -267,8 +295,17 @@ fn convert(
     images: &Settings,
     passwords: &[OsString],
     out_dir: &mut Option<OutDir>,
-    plan_out: Option<&std::ffi::OsStr>,
+    plan_out: Option<(NewFile, (Option<u32>, Option<u32>), String)>,
 ) -> ExitCode {
+    // the plan names the bytes converted: hash them first
+    let plan_out = match plan_out.map(|(f, pages, settings)| binding(file, pages, settings).map(|b| (f, b))) {
+        Some(Ok(p)) => Some(p),
+        Some(Err(e)) => {
+            eprintln!("pdftomarkdown: --images-plan-out: {e}");
+            return ExitCode::FAILURE;
+        }
+        None => None,
+    };
     let exe = pdftotext();
     let child = Command::new(&exe)
         .args(["-q", "-bbox-layout", "-wordmeta", "-rules"])
@@ -342,15 +379,16 @@ fn convert(
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
-    if let Some(path) = plan_out
+    let mut failed = false;
+    if let Some((f, b)) = plan_out
         && written.is_ok()
         && report.page_found()
-        && let Err(e) = write_plan(path, &report)
+        && let Err(e) = f.write(plan::write(&b, &report.images).as_bytes())
     {
-        // the Markdown and report stand; a later run extracts without the plan
+        // the Markdown and report stand; the plan asked for is missing: exit status 5
         eprintln!("pdftomarkdown: --images-plan-out: {e}");
+        failed = true;
     }
-    let mut failed = false;
     if let Some(dir) = out_dir.as_mut()
         && written.is_ok()
         && report.page_found()
@@ -388,20 +426,27 @@ fn renderer(file: &OsString, images: &Settings, passwords: &[OsString]) -> Rende
     }
 }
 
-/// `--images-plan-out`: the plan of the report's images, in a new file.
-fn write_plan(path: &std::ffi::OsStr, report: &doppler_md::Report) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let text = plan::write(&report.images);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
-    f.write_all(text.as_bytes())?;
-    f.flush()
+/// What a plan written or read by this run is bound to: `file`'s SHA-256 and size, the page
+/// range, the conversion settings' digest and this version.
+fn binding(
+    file: &OsString,
+    (first, last): (Option<u32>, Option<u32>),
+    settings: String,
+) -> Result<plan::Binding, String> {
+    let (source_sha256, source_len) = std::fs::File::open(file)
+        .and_then(|mut f| plan::source_digest(&mut f))
+        .map_err(|e| format!("reading {}: {e}", Path::new(file).display()))?;
+    Ok(plan::Binding { source_sha256, source_len, first, last, settings, version: env!("CARGO_PKG_VERSION").into() })
 }
 
 /// `--images-plan`: extraction from a plan, without pdftotext or a conversion. Exit status as
-/// after a conversion: 0, or 5 when extraction failed (DIR removed); 2 for an unreadable plan.
+/// after a conversion: 0, or 5 when extraction failed (DIR removed); 2 for an unreadable plan
+/// or one bound to another PDF, page range, settings or version.
 fn extract_from_plan(
     plan_path: &OsString,
     file: &OsString,
+    pages: (Option<u32>, Option<u32>),
+    settings: &str,
     images: &Settings,
     passwords: &[OsString],
     out_dir: &mut Option<OutDir>,
@@ -412,7 +457,14 @@ fn extract_from_plan(
         .and_then(|f| f.take(plan::MAX_PLAN_BYTES + 1).read_to_string(&mut text))
         .map_err(|e| e.to_string())
         .and_then(|n| if n as u64 > plan::MAX_PLAN_BYTES { Err("too large".into()) } else { Ok(()) })
-        .and_then(|()| plan::read(&text));
+        .and_then(|()| plan::read(&text))
+        .and_then(|(bound, notes)| {
+            let this = binding(file, pages, settings.to_string())?;
+            match this.mismatch(&bound) {
+                Some(m) => Err(format!("refused: the plan was {m}")),
+                None => Ok(notes),
+            }
+        });
     let notes = match read {
         Ok(n) => n,
         Err(e) => {
