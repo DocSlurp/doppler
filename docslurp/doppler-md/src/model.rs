@@ -866,6 +866,8 @@ pub struct PageInfo {
     /// `"W H"`: the crop box size as `pdfinfo` prints it (`%g`), from doppler
     /// `pdftotext -crop-sizes` (`crop="W H"`); `None` when absent or not a short number
     pub crop: Option<Box<str>>,
+    /// the PDF's page number (`number="N"`), when the producer wrote it
+    pub number: Option<u32>,
     pub words: u32,
     pub invisible: u32,
 }
@@ -1257,6 +1259,7 @@ impl ParseState {
                     }
                     report.page_info.push(PageInfo {
                         crop: a.0[CROP].filter(|v| crop_value(v)).map(Into::into),
+                        number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
                         ..Default::default()
                     });
                     *page_glyphs = 0;

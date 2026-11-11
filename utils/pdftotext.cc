@@ -1339,6 +1339,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "") + (textOut->getGraphicsTruncated() ? " graphicsTruncated=\"1\"" : "");
         }
         if (cropSizes) {
+            if (!collectImages) {
+                // the PDF's page number, so page sizes of a -f/-l range name their pages
+                glyphAttrs += " number=\"" + std::to_string(page) + "\"";
+            }
             // last, so a reader that stops at the first unknown attribute still sees the others; %g as pdfinfo
             char crop[64];
             snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));

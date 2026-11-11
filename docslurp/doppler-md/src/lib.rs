@@ -453,7 +453,9 @@ impl Report {
                         .map(|(i, p)| {
                             format!(
                                 "{{\"page\":{},\"size\":{},\"words\":{},\"invisible\":{},\"text\":\"{}\"}}",
-                                i + 1,
+                                // the PDF's page number (pdftotext writes it with -crop-sizes), so a
+                                // -f/-l range reports its own pages; else the position
+                                p.number.unwrap_or(i as u32 + 1),
                                 p.crop.as_deref().map_or("null".to_string(), |s| format!("\"{s}\"")),
                                 p.words,
                                 p.invisible,
