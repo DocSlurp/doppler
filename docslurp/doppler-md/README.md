@@ -80,14 +80,19 @@ byte-identical.
   it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
   one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
   body sizes, transitively) are one figure with one marker, at its first image. No marker for
-  a page background under a text layer, an image in the header or footer band, a sliver, a
+  a page background under a text layer (one picture, or a figure of pieces such as the strips
+  or tiles of a scan, covering 85% of the page), an image in the header or footer band, a sliver, a
   duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
   12 inside its lines). The report's `images` lists every image the producer reported with
   `id`, `page`, `bbox` (page points, y down, as the words' coordinates), `px`, `kind`
   (`picture` or `mask`), `placed` (`block`, `inline`, `grouped`, `background`, `furniture`,
   `small`, `duplicate`, `fragment`), and `members` (the union `bbox` of a figure) or `group`
   (the figure a grouped image belongs to). A caller crops the page at `bbox` and swaps the
-  marker for it.
+  marker for it. A page that runs out of layout work is written as plain lines with its block
+  markers after the text, top to bottom, and those images' entries gain `"degraded": true`.
+  Placing pictures and drawings has a page budget of its own (`max_page_work`, charged to
+  `max_doc_work`); a page that used it up is listed in `images_budget_pages`, and its remaining
+  pictures are marked between paragraphs and its remaining drawings left `small`.
 - **Vector figures.** `![image](doppler-image:pN.gK)`: a chart or diagram drawn with paths.
   `pdftotext -images` also writes `<graphic>` clusters of the drawing that is not axis-aligned
   (curves and diagonal segments; rules, boxes, grids, underlines and frames are left out).
@@ -125,9 +130,13 @@ byte-identical.
   goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
   without one after a hyphen.
 
-The markers are ordinary Markdown and comments, so text of the PDF could imitate them: with
-`--markers`, a zero-width space goes after `doppler` in any word that holds `doppler-image:` or
-`doppler:`. A caller should still trust only ids that the report lists.
+The markers are ordinary Markdown and comments, so text of the PDF could imitate them, however
+its words are joined (glued words, a hyphen across lines, table cells, math rebuilt from glyph
+records). With `--markers`, the converter's own markers carry a random per-run seal while a page
+is laid out; in the written page, every `doppler:` and `doppler-image:` (in any case) without the
+seal gets a zero-width space after `doppler`, and then the seal is removed. A caller should
+parse markers only from runs made with `--markers`, match them case-sensitively, and still
+trust only ids that the report lists.
 
 ## Watermarks
 
@@ -136,13 +145,18 @@ default; `0` restores the old output). Left in, a pale "CONFIDENTIAL" at 45 degr
 stray one-letter headings and tables of letters, and a horizontal "DRAFT" was glued to the first
 paragraph. A word goes when it is large (`watermark_size`, 1.5 body sizes) and any of:
 
-- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white) not on a
-  dark box; white text on banners and photos is kept;
+- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white;
+  channels within `watermark_max_chroma` 0.12 of each other) not on a dark box, and rotated or
+  drawn across other text of the page. White text on banners and photos, light colours (a gold
+  or light-blue heading) and a light grey heading on its own are kept;
 - **diagonal**: three or more words of one font size on a line at least 15 degrees from both axes
   (a vertical label stays);
 - **repeated**: the same word at the same place on as many pages as a running header needs
   (`furniture_min_share`, at least 2, over the same window; `--window 0` sees only the page
-  itself and removes none, see [Streaming](#streaming)).
+  itself and removes none, see [Streaming](#streaming)), when it also looks like a watermark on
+  the page (a grey tint, rotated, or drawn across other text) and every word of its line does.
+  A heading repeated at the same place (a short report's, a slide deck's, "(continued)") stays,
+  and a line is never left in pieces.
 
 With `--markers`, a picture of at least 5% of the page at the same place and size on that many
 pages gets no marker (`placed: watermark`). Small watermarks of one page that are dark and

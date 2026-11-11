@@ -12,7 +12,8 @@
 
 use std::rc::Rc;
 
-use crate::images::{Fate, Figure, Note, SCHEME, clusters};
+use crate::images::{Fate, Figure, Note, clusters};
+use crate::layout::Budget;
 use crate::model::Page;
 use crate::params::Params;
 use crate::pyc::{pmax, pmin};
@@ -26,16 +27,15 @@ const MAX_FIGURES: usize = 256;
 /// Rounds of growing a figure by rules, labels and sparse drawing.
 const GROW_ROUNDS: usize = 5;
 
-/// The marker of the vector figure that starts at graphic `index` (one-based) of page `page`.
-pub fn marker(page: u32, index: usize) -> String {
-    format!("![image]({SCHEME}p{page}.g{index})")
-}
-
 /// Decide the vector drawing of `page`: figures to place (each with the lines inside it as
 /// labels), one report note per drawing, and the pictures a figure took in. `raster` are the
 /// picture figures already placed, with their ids: drawing over a larger picture (axes over a
 /// bitmap plot) is part of that picture, and pictures inside a larger drawing (bitmaps in a
 /// diagram) are part of the drawing: `(index into raster, figure id)`.
+///
+/// Each pass over the page's rules or lines is charged to `budget`. Once it runs out, drawings
+/// not yet checked are `Small`, and figures stop growing and merging where they are.
+#[allow(clippy::too_many_arguments)]
 pub fn place(
     page: &Page,
     drop: &[bool],
@@ -43,6 +43,8 @@ pub fn place(
     p: &Params,
     number: u32,
     raster: &[(Figure, String)],
+    seal: &str,
+    budget: &mut Budget,
 ) -> (Vec<Figure>, Vec<Note>, Vec<(usize, String)>) {
     let gs = &page.graphics;
     if gs.is_empty() {
@@ -67,11 +69,12 @@ pub fn place(
             && (curves as f64 >= p.vector_min_curves || directions as f64 >= p.vector_min_directions);
         // a thin drawing is a figure only when it has many pieces (a row of arrows, not a
         // brace) and the rules it touches make it one of some size (the boxes they join)
-        let thin = || {
-            pmin(w, h) < p.vector_min_thickness * body && {
-                let g = grow_by_rules(page, b);
-                (paths as f64) < p.vector_thin_min_paths || pmin(g.2 - g.0, g.3 - g.1) < p.vector_min_extent * body
-            }
+        let mut thin = || {
+            pmin(w, h) < p.vector_min_thickness * body
+                && (!budget.spend(2 * page.rules.len()) || {
+                    let g = grow_by_rules(page, b);
+                    (paths as f64) < p.vector_thin_min_paths || pmin(g.2 - g.0, g.3 - g.1) < p.vector_min_extent * body
+                })
         };
         let fate = if b.3 <= band || b.1 >= page.height - band {
             Some(Fate::Furniture)
@@ -96,6 +99,7 @@ pub fn place(
             obj: None,
             text: true,
             file: None,
+            degraded: false,
         });
     }
     // grow each drawing by the rules that touch it and the short lines around it (gridlines and
@@ -103,9 +107,15 @@ pub fn place(
     // arrows between the boxes of a diagram), until nothing changes or GROW_ROUNDS
     let gap = pmax(p.vector_group_gap * body, 2.0);
     let mut sparse: Vec<usize> = (0..notes.len()).filter(|&k| notes[k].fate == Fate::Small).collect();
-    for round in 0..GROW_ROUNDS {
+    // one round of one region: two passes over the rules and three over the lines, and the
+    // sparse drawing
+    let round_cost = 2 * page.rules.len() + 3 * page.lines.len();
+    'grow: for round in 0..GROW_ROUNDS {
         let mut took = false;
         for r in regions.iter_mut() {
+            if !budget.spend(round_cost + sparse.len()) {
+                break 'grow;
+            }
             let before = r.2;
             let grown = grow_by_rules(page, r.2);
             (r.2, r.3) = grow_by_labels(page, drop, grown, body, p);
@@ -136,6 +146,9 @@ pub fn place(
     // can make a region reach another, so repeat until none overlap (each round removes one)
     let mut merged = regions;
     'outer: loop {
+        if !budget.spend(merged.len() * merged.len() / 2 + notes.len()) {
+            break;
+        }
         for i in 0..merged.len() {
             for j in i + 1..merged.len() {
                 if overlap(merged[i].2, merged[j].2) > 0.0 {
@@ -162,6 +175,7 @@ pub fn place(
     let mut figures = Vec::new();
     let mut absorbed: Vec<(usize, String)> = Vec::new();
     for (ni, rep, b, mut labels) in merged {
+        budget.spend(page.lines.len() + raster.len());
         // a merged region can now hold more lines than its parts' labels
         labels.extend(page.lines.iter().enumerate().filter_map(|(li, l)| {
             let (cx, cy) = ((l.x0 + l.x1) / 2.0, (l.y0 + l.y1) / 2.0);
@@ -215,7 +229,14 @@ pub fn place(
             absorbed.push((k, notes[ni].id.clone()));
         }
         notes[ni].bbox = b;
-        figures.push(Figure { marker: Rc::from(marker(number, rep + 1)), x0: b.0, y0: b.1, x1: b.2, y1: b.3, labels });
+        figures.push(Figure {
+            marker: Rc::from(crate::images::sealed(number, &format!("g{}", rep + 1), seal)),
+            x0: b.0,
+            y0: b.1,
+            x1: b.2,
+            y1: b.3,
+            labels,
+        });
     }
     (figures, notes, absorbed)
 }

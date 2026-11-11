@@ -10,6 +10,7 @@
 
 use std::rc::Rc;
 
+use crate::layout::Budget;
 use crate::model::{Line, Page, Word};
 use crate::params::Params;
 use crate::pyc::{fcmp, pmax, pmin};
@@ -19,7 +20,55 @@ pub const SCHEME: &str = "doppler-image:";
 
 /// The marker of picture `index` (one-based) on page `page`.
 pub fn marker(page: u32, index: usize) -> String {
-    format!("![image]({SCHEME}p{page}.{index})")
+    sealed(page, &index.to_string(), "")
+}
+
+/// A marker for picture id `p{page}.{id}` with `seal` after its `doppler` (see [`seal`]).
+pub(crate) fn sealed(page: u32, id: &str, seal: &str) -> String {
+    format!("![image](doppler{seal}-image:p{page}.{id})")
+}
+
+/// Whether a rendered part is a picture marker (sealed or not).
+pub(crate) fn is_marker(part: &str) -> bool {
+    part.starts_with("![image](doppler") && part.ends_with(')') && part.contains("-image:p")
+}
+
+/// A seal for one conversion: four private-use characters (plane 15) drawn from 64 bits of the
+/// process's random hash keys. The converter's own markers carry it between `doppler` and the
+/// `:` or `-image:` that follows, so no text of the PDF (which cannot know it) can pass for one;
+/// [`unseal`] removes it from each page's Markdown, so the markers come out as documented.
+pub(crate) fn seal() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(0x0064_6f70_706c_6572);
+    let bits = h.finish();
+    (0..4)
+        .map(|k| char::from_u32(0xF0000 + ((bits >> (16 * k)) & 0xFFFF) as u32 % 0xFFFE).unwrap_or('\u{F0000}'))
+        .collect()
+}
+
+/// A page's Markdown as written: every `doppler:` and `doppler-image:` that does not carry
+/// `seal` (text of the PDF, however it was joined: glued words, a hyphen across lines, cells,
+/// math rebuilt from glyphs; any case) gets a zero-width space after its `doppler`, then the
+/// seal goes, leaving the converter's own markers exactly as documented.
+pub(crate) fn unseal(md: &str, seal: &str) -> String {
+    let bytes = md.as_bytes();
+    let mut out = String::with_capacity(md.len());
+    let mut from = 0;
+    let at = |i: usize, s: &str| bytes.len() >= i + s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s.as_bytes());
+    let mut i = 0;
+    while i + 7 <= bytes.len() {
+        if at(i, "doppler") && (at(i + 7, ":") || at(i + 7, "-image:")) {
+            out.push_str(&md[from..i + 7]);
+            out.push('\u{200b}');
+            from = i + 7;
+            i += 7;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&md[from..]);
+    if seal.is_empty() { out } else { out.replace(seal, "") }
 }
 
 /// What became of an image.
@@ -85,6 +134,9 @@ pub struct Note {
     pub text: bool,
     /// the file written for it by image extraction (`pdftomarkdown --images-dir`)
     pub file: Option<String>,
+    /// its page ran out of layout work and was written as plain lines: a block marker then
+    /// follows the page's text instead of sitting in reading order
+    pub degraded: bool,
 }
 
 /// A picture that is its own paragraph: the marker and the box it fills.
@@ -104,7 +156,10 @@ pub struct Figure {
 /// after another) are one figure: a diagram or a chart assembled from pieces, or a line of
 /// words drawn as pictures. A figure is marked once, at its representative: the first of its
 /// images. Inline pictures are put into their lines of `page` now; the figures that stand
-/// alone come back for the layout to order.
+/// alone come back for the layout to order. The search for each figure's line and its text is
+/// charged to `budget`; once that runs out, figures are marked between paragraphs and not
+/// checked for text.
+#[allow(clippy::too_many_arguments)]
 pub fn place(
     page: &mut Page,
     drop: &[bool],
@@ -112,6 +167,8 @@ pub fn place(
     p: &Params,
     number: u32,
     watermarks: &[bool],
+    seal: &str,
+    budget: &mut Budget,
 ) -> (Vec<Figure>, Vec<Note>) {
     let images = std::mem::take(&mut page.images);
     let mut figures = Vec::new();
@@ -156,6 +213,7 @@ pub fn place(
             obj: im.obj,
             text: false,
             file: None,
+            degraded: false,
         });
     }
     let boxes: Vec<(f64, f64, f64, f64)> = images.iter().map(|im| (im.x0, im.y0, im.x1, im.y1)).collect();
@@ -166,30 +224,54 @@ pub fn place(
             (pmin(b.0, im.x0), pmin(b.1, im.y0), pmax(b.2, im.x1), pmax(b.3, im.y1))
         })
     };
-    // the line each unit would sit in, when it is text-sized and in one
-    let lines: Vec<Option<usize>> = units
+    // pieces that together cover the page under its text (a scan drawn as strips or tiles) are
+    // its background, like one page-sized picture
+    let backdrop: Vec<bool> = units
         .iter()
         .map(|u| {
             let b = bbox_of(u);
-            if b.3 - b.1 <= p.image_inline_height * body { inline_line(page, drop, b) } else { None }
+            u.len() > 1 && kept_text && (b.2 - b.0) * (b.3 - b.1) >= p.image_background_share * area
+        })
+        .collect();
+    // the line each unit would sit in, when it is text-sized and in one
+    let lines: Vec<Option<usize>> = units
+        .iter()
+        .zip(&backdrop)
+        .map(|(u, &backdrop)| {
+            if backdrop {
+                return None;
+            }
+            let b = bbox_of(u);
+            let short = b.3 - b.1 <= p.image_inline_height * body;
+            if short && budget.spend(page.lines.len()) { inline_line(page, drop, b) } else { None }
         })
         .collect();
     // a page with this many pictures inside its text has text drawn as pictures: word-sized
     // fragments are not figures to restitch
     let fragments = lines.iter().flatten().count() as f64 > p.image_inline_max;
-    for (unit, line) in units.iter().zip(lines) {
+    for ((unit, line), backdrop) in units.iter().zip(lines).zip(backdrop) {
+        if backdrop {
+            for &i in unit {
+                notes[i].fate = Fate::Background;
+            }
+            continue;
+        }
         let rep = unit[0];
         let b = bbox_of(unit);
         let id = notes[rep].id.clone();
-        let marker = marker(number, rep + 1);
+        let marker = sealed(number, &(rep + 1).to_string(), seal);
         notes[rep].members = unit.len();
         if unit.len() > 1 {
             notes[rep].bbox = b;
             notes[rep].mask = unit.iter().all(|&i| images[i].mask);
         }
-        notes[rep].text = holds_text(page, drop, b);
+        notes[rep].text = budget.spend(page.lines.len()) && holds_text(page, drop, b);
+        // on such a page, a figure made only of text-sized pieces is words too (lines of them
+        // run together, which a marker would cut in two)
+        let word_sized = || unit.iter().all(|&i| images[i].y1 - images[i].y0 <= p.image_inline_height * body);
         notes[rep].fate = match line {
             Some(_) if fragments => Fate::Fragment,
+            None if fragments && word_sized() => Fate::Fragment,
             Some(li) => {
                 insert_marker(page, li, b, &marker);
                 Fate::Inline
@@ -322,32 +404,4 @@ fn insert_marker(page: &mut Page, li: usize, b: (f64, f64, f64, f64), marker: &s
     words.insert(at, word);
     let new = Line::new(words, line.block, line.flow);
     page.lines[li] = Rc::new(new);
-}
-
-/// With markers on, text of the PDF must not be able to pass for a marker (the markers are
-/// ordinary Markdown and comments): a zero-width space goes after `doppler` in every word that
-/// holds `doppler-image:` or `doppler:`, which the markers' own text never passes through.
-pub(crate) fn neutralize(page: &mut Page) {
-    let spoof = |w: &Word| w.text.contains("doppler-image:") || w.text.contains("doppler:");
-    for line in page.lines.iter_mut() {
-        if !line.words.iter().any(spoof) {
-            continue;
-        }
-        let words: Vec<Word> = line
-            .words
-            .iter()
-            .map(|w| {
-                if spoof(w) {
-                    let text = w
-                        .text
-                        .replace("doppler-image:", "doppler\u{200b}-image:")
-                        .replace("doppler:", "doppler\u{200b}:");
-                    Word { text: Rc::from(text), ..w.clone() }
-                } else {
-                    w.clone()
-                }
-            })
-            .collect();
-        *line = Rc::new(Line::new(words, line.block, line.flow));
-    }
 }

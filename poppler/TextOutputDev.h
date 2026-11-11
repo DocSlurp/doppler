@@ -702,6 +702,8 @@ public:
     // The cells' summaries merged where their boxes touch (grown by gap): at most
     // graphicGrid * graphicGrid clusters, in top-to-bottom, left-to-right order of their first cell.
     std::vector<TextGraphic> getGraphics(double gap) const;
+    // whether any drawing was summarised on the page (getGraphics would return some)
+    bool hasGraphics() const;
     static constexpr int graphicGrid = 16;
 
     // Add a hyperlink.

@@ -4254,7 +4254,12 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         if (o.isNull()) {
             o = dict->lookup(abbrev);
         }
-        return o.isInt() ? o.getInt() : o.isReal() ? static_cast<int>(o.getReal()) : 0;
+        if (o.isInt()) {
+            return o.getInt();
+        }
+        // a real outside int's range (or NaN) is undefined behaviour to cast: no size
+        const double r = o.isReal() ? o.getReal() : 0.0;
+        return std::isfinite(r) && r >= 1.0 && r <= static_cast<double>(INT_MAX) ? static_cast<int>(r) : 0;
     };
     const int width = size("Width", "W"), height = size("Height", "H");
     if (width < 1 || height < 1) {

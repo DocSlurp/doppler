@@ -44,9 +44,6 @@ pub(crate) struct Carry {
     open_paragraph: bool,
 }
 
-const TABLE_CONTINUED: &str = "<!-- doppler:table-continued";
-const PARAGRAPH_CONTINUED: &str = "<!-- doppler:paragraph-continued -->";
-
 /// Cells compared as text: case, spacing and trailing punctuation do not tell headers apart.
 fn norm(cell: &str) -> String {
     cell.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
@@ -116,8 +113,8 @@ fn open_paragraph(blocks: &[Block]) -> bool {
 }
 
 /// Mark what `blocks` (a page's, in reading order) continues from `prev`, and return what this
-/// page leaves open for the next one.
-pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p: &Params) -> Carry {
+/// page leaves open for the next one. `seal` goes into the comments (see [`crate::images::seal`]).
+pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p: &Params, seal: &str) -> Carry {
     // the first block, past a leading "(continued)" note on its own
     let mut first = 0;
     if matches!(blocks.first(), Some(Block::Text { text, .. }) if is_continued_note(text)) {
@@ -151,12 +148,12 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
         } else {
             "none"
         };
-        marker = Some((first, format!("{TABLE_CONTINUED} header={how} -->")));
+        marker = Some((first, format!("<!-- doppler{seal}:table-continued header={how} -->")));
     } else if prev.open_paragraph
         && let Some(Block::Text { text, heading: 0, list: false, caption: false, .. }) = blocks.get(first)
         && strip(text).chars().next().is_some_and(crate::pyc::is_lower)
     {
-        marker = Some((first, PARAGRAPH_CONTINUED.to_string()));
+        marker = Some((first, format!("<!-- doppler{seal}:paragraph-continued -->")));
     }
     if let Some((at, text)) = marker {
         blocks.insert(at, Block::Rendered(Rc::new(vec![text])));

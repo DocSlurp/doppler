@@ -302,7 +302,15 @@ pub struct Report {
     pub images_error: Option<String>,
     /// whether pdfregions reported itself confined (its `confined=` status line)
     pub images_confined: Option<bool>,
+    /// (0-based) pages whose pictures and drawings used up their placing budget: the rest were
+    /// marked between paragraphs, unchecked for text, or left unmarked as small drawings
+    pub images_budget_pages: Vec<usize>,
+    /// images past [`MAX_DOC_IMAGES`] that have no entry in `images` (their markers stand)
+    pub images_notes_dropped: usize,
 }
+
+/// The most image entries a report keeps for a document (the producer's own document cap).
+pub const MAX_DOC_IMAGES: usize = 100_000;
 
 impl Report {
     /// Whether the input had any `<page>` (input that is not doppler XHTML has none).
@@ -364,13 +372,13 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}}}",
                     n.id,
                     n.page,
-                    n.bbox.0,
-                    n.bbox.1,
-                    n.bbox.2,
-                    n.bbox.3,
+                    coord(n.bbox.0),
+                    coord(n.bbox.1),
+                    coord(n.bbox.2),
+                    coord(n.bbox.3),
                     n.px.0,
                     n.px.1,
                     if n.vector {
@@ -383,6 +391,7 @@ impl Report {
                     n.fate.as_str(),
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
                     n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default(),
+                    if n.degraded { ",\"degraded\":true" } else { "" },
                     match (&n.file, self.images_written) {
                         (Some(f), Some(_)) => format!(",\"file\":\"{f}\""),
                         (None, Some(_)) => ",\"file\":null".to_string(),
@@ -390,7 +399,16 @@ impl Report {
                     }
                 )
             };
-            format!(",\"images\":[{}]", self.images.iter().map(one).collect::<Vec<_>>().join(","))
+            let mut budget = if self.images_budget_pages.is_empty() {
+                String::new()
+            } else {
+                let pages: Vec<String> = self.images_budget_pages.iter().map(|i| (i + 1).to_string()).collect();
+                format!(",\"images_budget_pages\":[{}]", pages.join(","))
+            };
+            if self.images_notes_dropped > 0 {
+                budget += &format!(",\"images_notes_dropped\":{}", self.images_notes_dropped);
+            }
+            format!(",\"images\":[{}]{budget}", self.images.iter().map(one).collect::<Vec<_>>().join(","))
         };
         format!(
             concat!(
@@ -426,6 +444,12 @@ impl Report {
                     .unwrap_or_default()
         )
     }
+}
+
+/// A report coordinate, within a billion points of the origin (direct XHTML can say 1e308, which
+/// would print as hundreds of digits).
+fn coord(v: f64) -> f64 {
+    v.clamp(-1e9, 1e9)
 }
 
 /// One Markdown string per page.
@@ -518,6 +542,8 @@ pub struct Converter<'p> {
     report: Report,
     /// what the page just written left open, for the next to continue (only with markers)
     carry: stitch::Carry,
+    /// this conversion's seal on its own markers (see [`images::seal`])
+    seal: String,
 }
 
 impl<'p> Converter<'p> {
@@ -535,6 +561,7 @@ impl<'p> Converter<'p> {
             spent: 0,
             report: Report::default(),
             carry: stitch::Carry::default(),
+            seal: if o.markers { images::seal() } else { String::new() },
         }
     }
 
@@ -544,8 +571,6 @@ impl<'p> Converter<'p> {
         if !self.o.markers {
             page.images = Vec::new();
             page.graphics = Vec::new();
-        } else {
-            images::neutralize(&mut page);
         }
         if self.p.watermarks {
             self.report.watermark_words += watermark::strip_local(&mut page, self.p);
@@ -637,33 +662,39 @@ impl<'p> Converter<'p> {
         if let Some(why) = early {
             self.report.degraded.push((pi, why));
             self.carry = stitch::Carry::default();
-            out(pi, plain_lines(&page, &drop));
+            let md = plain_lines(&page, &drop);
+            out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
             return;
         }
         self.spent += n as u64;
-        let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let number = page.number.unwrap_or(pi as u32 + 1);
+        // placing pictures and drawings has a page budget of its own (so that markers do not
+        // take the layout's), charged to the document's
+        let mut placing = Budget::new(pyc::pmin(p.max_page_work, doc_left));
+        let first_note = self.report.images.len();
         let (mut figures, notes) = if page.images.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            images::place(&mut page, &drop, body, p, number, &repeated_pictures)
+            images::place(&mut page, &drop, body, p, number, &repeated_pictures, &self.seal, &mut placing)
         };
         self.report.images.extend(notes);
         if !page.graphics.is_empty() {
             let raster: Vec<(images::Figure, String)> = figures
                 .iter()
                 .map(|f| {
-                    let id = f.marker.trim_start_matches("![image](").trim_start_matches(images::SCHEME);
+                    let marker = f.marker.replace(&self.seal, "");
+                    let id = marker.trim_start_matches("![image](").trim_start_matches(images::SCHEME);
                     (f.clone(), id.trim_end_matches(')').to_string())
                 })
                 .collect();
-            let (vector, notes, absorbed) = vector::place(&page, &drop, body, p, number, &raster);
+            let (vector, notes, absorbed) =
+                vector::place(&page, &drop, body, p, number, &raster, &self.seal, &mut placing);
             // pictures inside a vector figure are marked with it
             let mut gone = vec![false; figures.len()];
             for (k, id) in absorbed {
                 gone[k] = true;
                 let old = &raster[k].1;
-                for n in self.report.images.iter_mut().filter(|n| n.page == number) {
+                for n in &mut self.report.images[first_note..] {
                     if n.id == *old || n.group.as_deref() == Some(old.as_str()) {
                         n.fate = images::Fate::Grouped;
                         n.group = Some(id.clone());
@@ -678,10 +709,16 @@ impl<'p> Converter<'p> {
             figures.extend(vector);
             self.report.images.extend(notes);
         }
+        if placing.used as f64 > placing.limit {
+            self.report.images_budget_pages.push(pi);
+        }
+        self.spent += placing.used;
+        let doc_left = doc_left - placing.used as f64;
+        let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
                 if self.o.markers {
-                    self.carry = layout.stitch(&self.carry, page.height, p);
+                    self.carry = layout.stitch(&self.carry, page.height, p, &self.seal);
                 }
                 layout.markdown(self.o.tables, self.o.math)
             }
@@ -689,11 +726,30 @@ impl<'p> Converter<'p> {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
                 self.report.degraded.push((pi, why));
                 self.carry = stitch::Carry::default();
-                plain_lines(&page, &drop)
+                let mut md = plain_lines(&page, &drop);
+                // the pictures between paragraphs follow the text, top to bottom, so that no
+                // marker is lost; their notes say so
+                figures.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
+                for f in &figures {
+                    if !md.is_empty() {
+                        md.push_str("\n\n");
+                    }
+                    md.push_str(&f.marker);
+                }
+                for n in &mut self.report.images[first_note..] {
+                    if matches!(n.fate, images::Fate::Block | images::Fate::Inline) {
+                        n.degraded = true;
+                    }
+                }
+                md
             }
         };
+        if self.report.images.len() > MAX_DOC_IMAGES {
+            self.report.images_notes_dropped += self.report.images.len() - MAX_DOC_IMAGES;
+            self.report.images.truncate(MAX_DOC_IMAGES);
+        }
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
-        out(pi, md);
+        out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
     }
 }

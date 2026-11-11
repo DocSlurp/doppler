@@ -3026,6 +3026,11 @@ void TextPage::addGraphic(const TextGraphic &graphic)
     cell.directions |= graphic.directions;
 }
 
+bool TextPage::hasGraphics() const
+{
+    return std::ranges::any_of(graphicCells, [](const TextGraphic &cell) { return cell.paths > 0; });
+}
+
 std::vector<TextGraphic> TextPage::getGraphics(double gap) const
 {
     std::vector<TextGraphic> clusters;
@@ -6083,6 +6088,12 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
 
 std::vector<TextGraphic> TextOutputDev::takeGraphics()
 {
+    // past the document cap, skip the merge (cubic in the page's cells): only whether there
+    // was any drawing matters
+    if (remainingDocGraphics == 0) {
+        graphicsTruncated = text->hasGraphics();
+        return {};
+    }
     // paths up to 3 points apart are one drawing (a curve and its markers, a box and its arrow)
     std::vector<TextGraphic> graphics = text->getGraphics(3.0);
     if (graphics.size() > remainingDocGraphics) {

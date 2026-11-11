@@ -167,3 +167,26 @@ fn many_fragments_on_one_baseline_are_bounded() {
     let (_, r) = to_markdown_report(&page(&body), &Params::default());
     assert_eq!(r.degraded, vec![(0, Degraded::PageWork)]);
 }
+
+#[test]
+fn image_notes_are_capped_per_document() {
+    // 60 pages of 2,000 images: 120,000 notes, of which the report keeps 100,000
+    let mut page = String::from(
+        "<page width=\"612\" height=\"792\"><block><line><word xMin=\"72\" xMax=\"100\" yMin=\"100\" yMax=\"110\" fontSize=\"10\" fontName=\"F\" baseline=\"108\">Text</word></line></block>",
+    );
+    for i in 0..2000 {
+        let (x, y) = ((i % 40) as f64 * 15.0, 100.0 + (i / 40) as f64 * 12.0);
+        page += &format!(
+            "<image xMin=\"{x}\" yMin=\"{y}\" xMax=\"{}\" yMax=\"{}\" width=\"1\" height=\"1\"/>",
+            x + 0.5,
+            y + 0.5
+        );
+    }
+    page += "</page>";
+    let xhtml = page.repeat(60);
+    let o = doppler_md::Options { markers: true, ..Default::default() };
+    let (_, report) = doppler_md::to_markdown_report_with(&xhtml, &doppler_md::Params::default(), &o);
+    assert_eq!(report.images.len(), doppler_md::MAX_DOC_IMAGES);
+    assert_eq!(report.images_notes_dropped, 20_000);
+    assert!(report.to_json().contains("\"images_notes_dropped\":20000"));
+}

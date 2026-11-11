@@ -187,8 +187,8 @@ impl PageLayout {
 
     /// Mark what this page continues from the previous one (see [`crate::stitch`]) and say what it
     /// leaves open.
-    pub(crate) fn stitch(&mut self, prev: &Carry, page_height: f64, p: &Params) -> Carry {
-        stitch(&mut self.blocks, prev, page_height, p)
+    pub(crate) fn stitch(&mut self, prev: &Carry, page_height: f64, p: &Params, seal: &str) -> Carry {
+        stitch(&mut self.blocks, prev, page_height, p, seal)
     }
 
     pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
@@ -323,10 +323,7 @@ fn continues(text: &str, a: &Line, lines: usize, right: f64, next: &Paragraph, p
 /// itself shows a figure: a picture, or print so small that only figure labels use it.
 fn aside(item: &FlowItem, size: f64, p: &Params) -> Option<bool> {
     match item {
-        FlowItem::Rendered(parts) => {
-            (parts.len() == 1 && parts[0].starts_with("![image](") && parts[0][9..].starts_with(crate::images::SCHEME))
-                .then_some(true)
-        }
+        FlowItem::Rendered(parts) => (parts.len() == 1 && crate::images::is_marker(&parts[0])).then_some(true),
         FlowItem::Paragraph(para) if !para.lines.is_empty() => {
             let s = median(para.lines.iter().map(|l| l.size()).collect());
             (s <= p.aside_size * size).then_some(s <= p.aside_tiny * size)
