@@ -302,6 +302,9 @@ pub struct Report {
     pub images_error: Option<String>,
     /// whether pdfregions reported itself confined (its `confined=` status line)
     pub images_confined: Option<bool>,
+    /// (0-based) pages whose pictures and drawings used up their placing budget: the rest were
+    /// marked between paragraphs, unchecked for text, or left unmarked as small drawings
+    pub images_budget_pages: Vec<usize>,
 }
 
 impl Report {
@@ -364,7 +367,7 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}}}",
                     n.id,
                     n.page,
                     n.bbox.0,
@@ -383,6 +386,7 @@ impl Report {
                     n.fate.as_str(),
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
                     n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default(),
+                    if n.degraded { ",\"degraded\":true" } else { "" },
                     match (&n.file, self.images_written) {
                         (Some(f), Some(_)) => format!(",\"file\":\"{f}\""),
                         (None, Some(_)) => ",\"file\":null".to_string(),
@@ -390,7 +394,13 @@ impl Report {
                     }
                 )
             };
-            format!(",\"images\":[{}]", self.images.iter().map(one).collect::<Vec<_>>().join(","))
+            let budget = if self.images_budget_pages.is_empty() {
+                String::new()
+            } else {
+                let pages: Vec<String> = self.images_budget_pages.iter().map(|i| (i + 1).to_string()).collect();
+                format!(",\"images_budget_pages\":[{}]", pages.join(","))
+            };
+            format!(",\"images\":[{}]{budget}", self.images.iter().map(one).collect::<Vec<_>>().join(","))
         };
         format!(
             concat!(
@@ -643,12 +653,15 @@ impl<'p> Converter<'p> {
             return;
         }
         self.spent += n as u64;
-        let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let number = page.number.unwrap_or(pi as u32 + 1);
+        // placing pictures and drawings has a page budget of its own (so that markers do not
+        // take the layout's), charged to the document's
+        let mut placing = Budget::new(pyc::pmin(p.max_page_work, doc_left));
+        let first_note = self.report.images.len();
         let (mut figures, notes) = if page.images.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            images::place(&mut page, &drop, body, p, number, &repeated_pictures, &self.seal)
+            images::place(&mut page, &drop, body, p, number, &repeated_pictures, &self.seal, &mut placing)
         };
         self.report.images.extend(notes);
         if !page.graphics.is_empty() {
@@ -660,7 +673,8 @@ impl<'p> Converter<'p> {
                     (f.clone(), id.trim_end_matches(')').to_string())
                 })
                 .collect();
-            let (vector, notes, absorbed) = vector::place(&page, &drop, body, p, number, &raster, &self.seal);
+            let (vector, notes, absorbed) =
+                vector::place(&page, &drop, body, p, number, &raster, &self.seal, &mut placing);
             // pictures inside a vector figure are marked with it
             let mut gone = vec![false; figures.len()];
             for (k, id) in absorbed {
@@ -681,6 +695,12 @@ impl<'p> Converter<'p> {
             figures.extend(vector);
             self.report.images.extend(notes);
         }
+        if placing.used as f64 > placing.limit {
+            self.report.images_budget_pages.push(pi);
+        }
+        self.spent += placing.used;
+        let doc_left = doc_left - placing.used as f64;
+        let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
                 if self.o.markers {
@@ -692,7 +712,22 @@ impl<'p> Converter<'p> {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
                 self.report.degraded.push((pi, why));
                 self.carry = stitch::Carry::default();
-                plain_lines(&page, &drop)
+                let mut md = plain_lines(&page, &drop);
+                // the pictures between paragraphs follow the text, top to bottom, so that no
+                // marker is lost; their notes say so
+                figures.sort_by(|a, b| fcmp(a.y0, b.y0).then(fcmp(a.x0, b.x0)));
+                for f in &figures {
+                    if !md.is_empty() {
+                        md.push_str("\n\n");
+                    }
+                    md.push_str(&f.marker);
+                }
+                for n in &mut self.report.images[first_note..] {
+                    if matches!(n.fate, images::Fate::Block | images::Fate::Inline) {
+                        n.degraded = true;
+                    }
+                }
+                md
             }
         };
         self.spent += budget.used;

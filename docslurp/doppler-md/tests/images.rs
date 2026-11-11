@@ -229,3 +229,56 @@ fn the_converters_own_markers_are_unchanged() {
     assert!(md.contains("An inline icon sits ![image](doppler-image:p7.2) in the middle ."), "{md}");
     assert!(!md.contains('\u{200b}'), "{md}");
 }
+
+/// A grid of pictures, each with a short line of text under it.
+fn figure_grid(n: usize) -> String {
+    let mut body = String::new();
+    for i in 0..n {
+        let (x, y) = (20.0 + (i % 40) as f64 * 140.0, 800.0 + (i / 40) as f64 * 100.0);
+        body += &image(x, y, x + 100.0, y + 60.0);
+        body += &format!(
+            "<block><line>{}{}</line></block>",
+            word(x, x + 20.0, y + 70.0, "word"),
+            word(x + 25.0, x + 45.0, y + 70.0, "word")
+        );
+    }
+    format!("<page width=\"6000\" height=\"8000\" number=\"1\">{body}</page>")
+}
+
+#[test]
+fn a_page_that_runs_out_of_work_keeps_its_markers() {
+    let xhtml = figure_grid(200);
+    let o = Options { markers: true, ..Options::default() };
+    // laid out, every picture has its marker
+    let (laid, report) = to_markdown_report_with(&xhtml, &Params::default(), &o);
+    assert!(report.degraded.is_empty(), "{:?}", report.degraded);
+    assert_eq!(laid[0].matches("doppler-image:").count(), 200);
+    // read as plain lines, the markers follow the text, top to bottom, and the report says so
+    let p = Params { max_page_work: 2000.0, ..Params::default() };
+    let (pages, report) = to_markdown_report_with(&xhtml, &p, &o);
+    let md = &pages[0];
+    assert_eq!(report.degraded.len(), 1, "{:?}", report.degraded);
+    let placed: Vec<&doppler_md::images::Note> =
+        report.images.iter().filter(|n| matches!(n.fate.as_str(), "block" | "inline")).collect();
+    assert_eq!(placed.len(), 200);
+    for n in &placed {
+        assert!(n.degraded, "{n:?}");
+        assert_eq!(md.matches(&format!("(doppler-image:{})", n.id)).count(), 1, "{}", n.id);
+    }
+    let at = |id: &str| md.find(&format!("(doppler-image:{id})")).unwrap();
+    assert!(at("p1.1") < at("p1.2") && at("p1.40") < at("p1.41"), "{md}");
+    assert!(md.find("word word").unwrap() < at("p1.1"), "{md}");
+    assert!(report.to_json().contains("\"placed\":\"block\",\"degraded\":true"), "{}", report.to_json());
+}
+
+#[test]
+fn the_councils_two_thousand_figures_keep_their_markers() {
+    let xhtml = figure_grid(2000);
+    let (md, report) = convert(&xhtml, true);
+    let placed = report.images.iter().filter(|n| n.fate.as_str() == "block").count();
+    assert_eq!(placed, 2000);
+    assert_eq!(md.matches("doppler-image:").count(), 2000, "{:?}", report.degraded);
+    // laid out or not, the report says which
+    let degraded = !report.degraded.is_empty();
+    assert!(report.images.iter().all(|n| n.degraded == degraded));
+}

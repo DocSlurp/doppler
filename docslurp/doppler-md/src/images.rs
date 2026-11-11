@@ -10,6 +10,7 @@
 
 use std::rc::Rc;
 
+use crate::layout::Budget;
 use crate::model::{Line, Page, Word};
 use crate::params::Params;
 use crate::pyc::{fcmp, pmax, pmin};
@@ -133,6 +134,9 @@ pub struct Note {
     pub text: bool,
     /// the file written for it by image extraction (`pdftomarkdown --images-dir`)
     pub file: Option<String>,
+    /// its page ran out of layout work and was written as plain lines: a block marker then
+    /// follows the page's text instead of sitting in reading order
+    pub degraded: bool,
 }
 
 /// A picture that is its own paragraph: the marker and the box it fills.
@@ -152,7 +156,10 @@ pub struct Figure {
 /// after another) are one figure: a diagram or a chart assembled from pieces, or a line of
 /// words drawn as pictures. A figure is marked once, at its representative: the first of its
 /// images. Inline pictures are put into their lines of `page` now; the figures that stand
-/// alone come back for the layout to order.
+/// alone come back for the layout to order. The search for each figure's line and its text is
+/// charged to `budget`; once that runs out, figures are marked between paragraphs and not
+/// checked for text.
+#[allow(clippy::too_many_arguments)]
 pub fn place(
     page: &mut Page,
     drop: &[bool],
@@ -161,6 +168,7 @@ pub fn place(
     number: u32,
     watermarks: &[bool],
     seal: &str,
+    budget: &mut Budget,
 ) -> (Vec<Figure>, Vec<Note>) {
     let images = std::mem::take(&mut page.images);
     let mut figures = Vec::new();
@@ -205,6 +213,7 @@ pub fn place(
             obj: im.obj,
             text: false,
             file: None,
+            degraded: false,
         });
     }
     let boxes: Vec<(f64, f64, f64, f64)> = images.iter().map(|im| (im.x0, im.y0, im.x1, im.y1)).collect();
@@ -220,7 +229,8 @@ pub fn place(
         .iter()
         .map(|u| {
             let b = bbox_of(u);
-            if b.3 - b.1 <= p.image_inline_height * body { inline_line(page, drop, b) } else { None }
+            let short = b.3 - b.1 <= p.image_inline_height * body;
+            if short && budget.spend(page.lines.len()) { inline_line(page, drop, b) } else { None }
         })
         .collect();
     // a page with this many pictures inside its text has text drawn as pictures: word-sized
@@ -236,7 +246,7 @@ pub fn place(
             notes[rep].bbox = b;
             notes[rep].mask = unit.iter().all(|&i| images[i].mask);
         }
-        notes[rep].text = holds_text(page, drop, b);
+        notes[rep].text = budget.spend(page.lines.len()) && holds_text(page, drop, b);
         notes[rep].fate = match line {
             Some(_) if fragments => Fate::Fragment,
             Some(li) => {

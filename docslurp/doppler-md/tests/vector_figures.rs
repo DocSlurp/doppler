@@ -225,3 +225,56 @@ fn text_cannot_forge_a_vector_marker() {
     assert_eq!(md.matches("![image](doppler-image:p8.g1)").count(), 1, "{md}");
     assert_eq!(vector_fates(&report), [("p8.g1".to_string(), "block")]);
 }
+
+/// The council's page: 1024 rich drawings among 19,200 short rules and 19,200 tiny lines.
+fn crowded_page() -> String {
+    let mut out = String::from("<page width=\"612\" height=\"792\" number=\"1\">");
+    for i in 0..19_200 {
+        let (x, y) = (80.0 + (i % 400) as f64 * 1.2, 100.0 + ((i / 400) % 500) as f64 * 1.2);
+        out += &format!(
+            "<rule xMin=\"{x:.2}\" yMin=\"{y:.2}\" xMax=\"{:.2}\" yMax=\"{:.2}\" color=\"#000000\"/>",
+            x + 1.0,
+            y + 0.3
+        );
+    }
+    for li in 0..19_200 {
+        let y = 80.0 + (li % 600) as f64;
+        out += &format!(
+            "<block><line><word xMin=\"600\" xMax=\"604\" yMin=\"{y}\" yMax=\"{}\" fontSize=\"2\" fontName=\"F\" baseline=\"{}\">ab</word></line></block>",
+            y + 2.0,
+            y + 1.6
+        );
+    }
+    for i in 0..1024 {
+        let (x, y) = (10.0 + (i % 32) as f64 * 18.5, 80.0 + (i / 32) as f64 * 20.0);
+        out += &format!(
+            "<graphic xMin=\"{x:.2}\" yMin=\"{y:.2}\" xMax=\"{:.2}\" yMax=\"{:.2}\" paths=\"50\" segments=\"100\" curves=\"50\" directions=\"8\"/>",
+            x + 8.0,
+            y + 8.0
+        );
+    }
+    out + "</page>"
+}
+
+#[test]
+fn placing_drawings_is_charged_and_bounded() {
+    let xhtml = crowded_page();
+    let p = Params::default();
+    let run = |markers: bool| {
+        let start = std::time::Instant::now();
+        let (_, report) = to_markdown_report_with(&xhtml, &p, &Options { markers, ..Options::default() });
+        (start.elapsed().as_secs_f64(), report)
+    };
+    let (off_time, off) = run(false);
+    let (on_time, on) = run(true);
+    // placing has a page budget of its own, charged to the document, and the layout of the
+    // figures another: at most two pages' more
+    let extra = on.doc_work as f64 - off.doc_work as f64;
+    assert!(extra > p.max_page_work && extra <= 2.0 * p.max_page_work, "{extra}");
+    assert_eq!(on.images_budget_pages, vec![0]);
+    assert!(on.to_json().contains("\"images_budget_pages\":[1]"));
+    // it used to take 15-25 times the page without markers
+    if !cfg!(debug_assertions) {
+        assert!(on_time <= 6.0 * off_time + 0.3, "{on_time} vs {off_time}");
+    }
+}
