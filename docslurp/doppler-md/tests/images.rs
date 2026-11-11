@@ -309,3 +309,22 @@ fn a_scan_drawn_as_tiles_is_a_background() {
     let (md, _) = convert(&page(2, &body), true);
     assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
 }
+
+#[test]
+fn on_a_page_of_words_drawn_as_pictures_stacked_word_pictures_get_no_marker() {
+    // twenty lines, each with a word drawn as a picture in it, and a stack of word pictures
+    // over three lines (a scan whose text layer has holes)
+    let mut body = String::new();
+    for i in 0..20 {
+        let y = 100.0 + 12.0 * i as f64;
+        body += &line(y, "some words of the scanned page then");
+        let x = if i % 2 == 0 { 150.0 } else { 220.0 };
+        body += &image(x, y + 1.0, x + 40.0, y + 9.0);
+    }
+    for k in 0..3 {
+        body += &image(270.0, 101.0 + 12.0 * k as f64, 300.0, 109.0 + 12.0 * k as f64);
+    }
+    let (md, report) = convert(&page(3, &body), true);
+    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(report.images.iter().all(|n| matches!(n.fate.as_str(), "fragment" | "grouped")), "{:?}", report.images);
+}

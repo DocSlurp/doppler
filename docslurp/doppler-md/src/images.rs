@@ -266,8 +266,12 @@ pub fn place(
             notes[rep].mask = unit.iter().all(|&i| images[i].mask);
         }
         notes[rep].text = budget.spend(page.lines.len()) && holds_text(page, drop, b);
+        // on such a page, a figure made only of text-sized pieces is words too (lines of them
+        // run together, which a marker would cut in two)
+        let word_sized = || unit.iter().all(|&i| images[i].y1 - images[i].y0 <= p.image_inline_height * body);
         notes[rep].fate = match line {
             Some(_) if fragments => Fate::Fragment,
+            None if fragments && word_sized() => Fate::Fragment,
             Some(li) => {
                 insert_marker(page, li, b, &marker);
                 Fate::Inline
