@@ -136,7 +136,7 @@ fn extracts_files_and_a_deterministic_manifest_without_changing_the_markdown() {
     let manifest = std::fs::read_to_string(d1.join("manifest.json")).unwrap();
     // the 10 pt icon is under 24 px at 150 dpi; page 2's picture repeats page 1's
     assert!(manifest.contains("\"skipped\":\"min_side\""), "{manifest}");
-    assert!(manifest.contains("\"repeat_of\":\"p1.1\""), "{manifest}");
+    assert!(manifest.contains("\"skipped\":\"repeat\"") && !manifest.contains("repeat_of"), "{manifest}");
     let m: serde_json::Value = serde_json::from_str(&manifest).unwrap();
     assert_eq!(m["totals"]["written"], 2);
     assert!(err.contains("\"images_written\":2") && err.contains("\"file\":\"p1.1.webp\""), "{err}");
@@ -159,7 +159,8 @@ fn extracts_files_and_a_deterministic_manifest_without_changing_the_markdown() {
     let m3: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(d3.join("manifest.json")).unwrap()).unwrap();
     let p2 = m3["images"].as_array().unwrap().iter().find(|e| e["id"] == "p2.1").unwrap().clone();
-    assert_eq!((p2["file"].as_str(), p2["repeat_of"].as_str()), (Some("p1.1.webp"), Some("p1.1")));
+    assert_eq!((p2["file"].is_null(), p2["repeat_of"].as_str(), p2["bytes"].as_u64()), (true, Some("p1.1"), Some(0)));
+    assert!(!files(&d3).contains(&"p2.1.webp".to_string()));
     let d4 = s.0.join("out4");
     assert_eq!(
         run(&p, &["--images-dir", d4.to_str().unwrap(), "--images-repeats", "keep", &pdf], "ok").status.code(),
@@ -237,4 +238,10 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
     assert!(m.contains("\"fallback\":\"svg_allowlist\"") && files(&d).contains(&"p1.g1.webp".to_string()), "{m}");
+    // a file over --images-max-file-bytes is not written; the rest go on
+    let d = s.0.join("filecap");
+    let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-max-file-bytes", "100", &pdf], "ok");
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    assert!(m.contains("\"error\":\"file_bytes\""), "{m}");
 }

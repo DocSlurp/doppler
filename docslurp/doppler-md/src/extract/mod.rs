@@ -33,6 +33,8 @@ use settings::{RasterFormat, Repeats, Settings, VectorFormat};
 /// Extra time past `--images-timeout` before the renderer is killed (it stops itself at the
 /// timeout, exit status 3).
 const GRACE: Duration = Duration::from_secs(2);
+/// Raw SVG larger than this is not compacted: the figure is rendered as a raster.
+const MAX_SVG_INPUT: usize = 8 << 20;
 
 /// One image of the manifest.
 #[derive(Clone, Debug, Default)]
@@ -86,6 +88,8 @@ struct Run<'a> {
     seen_payload: HashMap<(RepeatKey, [u8; 32]), usize>,
     /// figures whose SVG failed: rendered again as rasters
     fallbacks: Vec<(usize, String)>,
+    /// past it, records are not encoded or compacted any more (`error: timeout`)
+    deadline: Instant,
 }
 
 /// Extracts the images of `report` into `dir`, sets each note's `file` and the report's
@@ -134,8 +138,17 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
     }
     // the renderer takes the jobs by page; the report lists them by page already
     jobs.sort_by_key(|(j, _)| j.page);
-    let mut run =
-        Run { s, notes, entries, dir, written: 0, total_bytes: 0, seen_payload: HashMap::new(), fallbacks: Vec::new() };
+    let mut run = Run {
+        s,
+        notes,
+        entries,
+        dir,
+        written: 0,
+        total_bytes: 0,
+        seen_payload: HashMap::new(),
+        fallbacks: Vec::new(),
+        deadline,
+    };
     let (job_list, owners): (Vec<Job>, Vec<usize>) = jobs.into_iter().unzip();
     let timeout_arg = s.timeout.as_secs().max(1);
     renderer.run(&job_list, deadline, timeout_arg, &mut |k, outcome| run.record(owners[k], outcome))?;
@@ -152,22 +165,6 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
         let (job_list, owners): (Vec<Job>, Vec<usize>) = fb.into_iter().unzip();
         let left = deadline.saturating_duration_since(Instant::now()).saturating_sub(GRACE).as_secs().max(1);
         renderer.run(&job_list, deadline, left, &mut |k, outcome| run.record(owners[k], outcome))?;
-    }
-    // links point to the first figure's file
-    for i in 0..run.entries.len() {
-        if s.repeats != Repeats::Link {
-            break;
-        }
-        let Some(first_id) = run.entries[i].repeat_of.clone() else { continue };
-        let Some(first) = notes.iter().position(|n| n.id == first_id) else { continue };
-        let f = run.entries[first].clone();
-        let e = &mut run.entries[i];
-        e.file = f.file;
-        e.format = f.format;
-        e.bytes = f.bytes;
-        e.sha256 = f.sha256;
-        e.width = f.width;
-        e.height = f.height;
     }
     let manifest = manifest(&run);
     run.dir.write("manifest.json", manifest.as_bytes())?;
@@ -190,10 +187,23 @@ impl Run<'_> {
         if fallback.is_some() {
             self.entries[e].fallback = fallback.clone();
         }
+        if Instant::now() >= self.deadline {
+            self.entries[e].error = Some("timeout".into());
+            return Ok(());
+        }
         // a marked figure whose rendering is the same as an earlier one's is a repeat
         let payload: &[u8] = match &outcome {
+            // the renderer refused an SVG as too large: a raster instead
+            Outcome::Error(code) if code == "svgsize" && fallback.is_none() && n.vector => {
+                self.fallbacks.push((e, "svg_size".into()));
+                return Ok(());
+            }
             Outcome::Error(code) => {
                 self.entries[e].error = Some(code.clone());
+                return Ok(());
+            }
+            Outcome::Svg(text) if text.len() > MAX_SVG_INPUT => {
+                self.fallbacks.push((e, "svg_input".into()));
                 return Ok(());
             }
             Outcome::Rgb { data, .. } => data,
@@ -219,8 +229,8 @@ impl Run<'_> {
                     }
                 }
             }
-            Outcome::Svg(text) => match svg::compact(&text, s.svg_precision) {
-                Ok(small) if small.len() as u64 <= s.svg_max_bytes => {
+            Outcome::Svg(text) => match svg::compact_until(&text, s.svg_precision, Some(self.deadline)) {
+                Ok(small) if small.len() as u64 <= s.svg_max_bytes.min(s.max_file_bytes) => {
                     let (x0, y0, x1, y1) = n.bbox;
                     let (w, h) = ((x1 - x0).ceil() as u32, (y1 - y0).ceil() as u32);
                     (small.into_bytes(), "svg", w, h)
@@ -235,6 +245,10 @@ impl Run<'_> {
                 }
             },
         };
+        if data.len() as u64 > s.max_file_bytes {
+            self.entries[e].error = Some("file_bytes".into());
+            return Ok(());
+        }
         if self.written + 1 > s.max_images {
             return Err(format!("more than {} images to write (--images-max)", s.max_images));
         }
@@ -325,7 +339,7 @@ fn manifest(run: &Run) -> String {
     for (k, &i) in order.iter().enumerate() {
         let n = &notes[i];
         let e = &run.entries[i];
-        repeats += usize::from(e.repeat_of.is_some());
+        repeats += usize::from(e.skipped == Some("repeat"));
         errors += usize::from(e.error.is_some());
         fallbacks += usize::from(e.fallback.is_some());
         marked += usize::from(matches!(n.fate, Fate::Block | Fate::Inline));
@@ -349,7 +363,7 @@ fn manifest(run: &Run) -> String {
             e.width,
             e.height
         );
-        if let Some(r) = &e.repeat_of {
+        if let Some(r) = e.repeat_of.as_ref().filter(|_| run.s.repeats == Repeats::Link) {
             let _ = write!(out, ",\"repeat_of\":{}", js(r));
         }
         if let Some(f) = &e.fallback {

@@ -70,7 +70,8 @@ and DIR/manifest.json listing every image):
   --svg-precision 1|2         decimals of a point in SVG coordinates (1)
   --svg-max-bytes N           largest SVG kept (512KiB)
   --images-dpi N              raster resolution, 36 to 600 (150)
-  --images-max N              most files (500); --images-max-bytes N (256MiB);
+  --images-max N              most files (500); --images-max-bytes N (256MiB); both fail
+                              the extraction; --images-max-file-bytes N (8MiB): that file only
   --images-timeout S          renderer time for the document (120)
   Exit status 5: Markdown written, image extraction failed (DIR removed).
 

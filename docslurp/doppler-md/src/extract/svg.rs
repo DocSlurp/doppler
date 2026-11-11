@@ -105,7 +105,11 @@ const REFERENCED_ONLY: &[&str] =
     &["clipPath", "mask", "symbol", "linearGradient", "radialGradient", "pattern", "filter"];
 
 /// Element and nesting limits: past them the SVG is rejected (rendered as a raster instead).
-const MAX_NODES: u32 = 2_000_000;
+const MAX_NODES: u32 = 1_000_000;
+/// Elements, and references between them, past which the SVG is rejected (the figure is
+/// rendered as a raster instead): keeps the work per figure bounded.
+pub const MAX_ELEMENTS: usize = 200_000;
+const MAX_REFERENCES: usize = 200_000;
 const MAX_DEPTH: usize = 256;
 
 /// Why an SVG was rejected.
@@ -149,14 +153,28 @@ impl Node {
 /// Check `svg` against the allowlist and write it compactly with `precision` decimals (1 or 2)
 /// of a point.
 pub fn compact(svg: &str, precision: u8) -> Result<String, Rejected> {
+    compact_until(svg, precision, None)
+}
+
+/// [`compact`], given up (rejected) once `deadline` passes.
+pub fn compact_until(svg: &str, precision: u8, deadline: Option<std::time::Instant>) -> Result<String, Rejected> {
+    let late = || -> Result<(), Rejected> {
+        match deadline {
+            Some(d) if std::time::Instant::now() >= d => reject("deadline"),
+            _ => Ok(()),
+        }
+    };
     let opt = roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: MAX_NODES, ..Default::default() };
     let doc = match roxmltree::Document::parse_with_options(svg, opt) {
         Ok(d) => d,
         Err(e) => return reject(format!("xml: {e}")),
     };
+    late()?;
     let mut nodes = build(&doc)?;
+    late()?;
     let referencers = check_references(&nodes)?;
     let order = topo_order(&nodes, &referencers)?;
+    late()?;
     let scale = scales(&nodes, &referencers, &order)?;
     let above = set_above(&nodes, &referencers, &order);
     let dash_bit = 1 << DEFAULTS.iter().position(|(k, _)| *k == "stroke-dasharray").unwrap_or(0);
@@ -173,11 +191,14 @@ pub fn compact(svg: &str, precision: u8) -> Result<String, Rejected> {
         })
         .collect();
     rewrite_numbers(&mut nodes, &digits)?;
+    late()?;
     drop_defaults(&mut nodes, &above);
     merge_duplicates(&mut nodes);
+    late()?;
     rename_ids(&mut nodes);
     hoist_styles(&mut nodes);
     prune(&mut nodes);
+    late()?;
     let mut out = String::with_capacity(svg.len() / 2);
     write_node(&nodes, 0, &mut out);
     Ok(out)
@@ -223,6 +244,9 @@ fn build(doc: &roxmltree::Document) -> Result<Vec<Node>, Rejected> {
             attrs.push((key, a.value().to_string()));
         }
         let me = nodes.len();
+        if me >= MAX_ELEMENTS {
+            return reject("too many elements");
+        }
         nodes.push(Node { name, attrs, children: Vec::new(), parent, removed: false });
         if let Some(p) = parent {
             nodes[p].children.push(me);
@@ -273,17 +297,19 @@ fn check_value(element: &str, key: &str, v: &str) -> Result<(), Rejected> {
         }
         "id" => local_ref(v)?,
         _ => {
-            // every url(...) is a local reference, nothing else
-            let mut rest = v;
-            while let Some(at) = rest.find("url(") {
-                let after = &rest[at + 4..];
-                let Some(end) = after.find(')') else { return reject("url") };
-                let inner = after[..end].trim();
-                let Some(id) = inner.strip_prefix('#') else { return reject("non-local url") };
-                local_ref(id)?;
-                rest = &after[end + 1..];
+            // CSS escapes could spell anything: no backslash at all
+            if v.contains('\\') {
+                return reject("backslash in a value");
             }
+            // a value with a url(...) in any case is exactly one local reference
             let lower = v.to_ascii_lowercase();
+            if lower.contains("url(") {
+                let id = v
+                    .strip_prefix("url(#")
+                    .and_then(|r| r.strip_suffix(')'))
+                    .ok_or(Rejected("non-local url".into()))?;
+                local_ref(id)?;
+            }
             if lower.contains("javascript:") || lower.contains("data:") || lower.contains("expression(") {
                 return reject("script in a value");
             }
@@ -299,36 +325,95 @@ fn local_ref(id: &str) -> Result<(), Rejected> {
     if ok { Ok(()) } else { reject("reference is not a local id") }
 }
 
-/// `data:image/png;base64,...` with valid base64 that decodes to a PNG signature.
+/// `data:image/png;base64,...`: valid base64 of a whole, well-formed PNG (signature, IHDR first
+/// with sane dimensions, correct CRCs, only known chunks, IEND last, nothing after it).
 fn check_png_data_uri(v: &str) -> Result<(), Rejected> {
     let Some(b64) = v.strip_prefix("data:image/png;base64,") else {
         return reject("image href is not a PNG data URI");
     };
-    let body = b64.trim_end_matches('=');
-    if b64.len() - body.len() > 2 || !body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/') {
-        return reject("image data is not base64");
+    let png = base64_decode(b64).ok_or(Rejected("image data is not base64".into()))?;
+    check_png(&png)
+}
+
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let body = s.trim_end_matches('=');
+    if !s.len().is_multiple_of(4) || s.len() - body.len() > 2 {
+        return None;
     }
-    if body.len() < 12 {
-        return reject("image data too short");
-    }
-    let val = |b: u8| -> u32 {
-        match b {
+    let val = |b: u8| -> Option<u32> {
+        Some(match b {
             b'A'..=b'Z' => u32::from(b - b'A'),
             b'a'..=b'z' => u32::from(b - b'a') + 26,
             b'0'..=b'9' => u32::from(b - b'0') + 52,
             b'+' => 62,
-            _ => 63,
-        }
+            b'/' => 63,
+            _ => return None,
+        })
     };
-    let mut head = Vec::with_capacity(9);
-    for quad in body.as_bytes()[..12].chunks(4) {
-        let n = quad.iter().fold(0u32, |acc, &b| (acc << 6) | val(b));
-        head.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    for chunk in body.as_bytes().chunks(4) {
+        let mut n = 0u32;
+        for &b in chunk {
+            n = (n << 6) | val(b)?;
+        }
+        n <<= 6 * (4 - chunk.len() as u32);
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len() - 1]);
+        if chunk.len() == 1 {
+            return None;
+        }
     }
-    if !head.starts_with(b"\x89PNG\r\n\x1a\n") {
+    Some(out)
+}
+
+/// Chunks a PNG may hold: the critical ones and harmless ancillary ones (no text or metadata).
+const PNG_CHUNKS: &[&[u8; 4]] =
+    &[b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"bKGD", b"pHYs", b"sBIT"];
+
+pub(crate) fn check_png(png: &[u8]) -> Result<(), Rejected> {
+    let Some(mut rest) = png.strip_prefix(b"\x89PNG\r\n\x1a\n") else {
         return reject("image data is not a PNG");
+    };
+    let mut first = true;
+    loop {
+        if rest.len() < 12 {
+            return reject("PNG truncated");
+        }
+        let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+        if len > rest.len() - 12 {
+            return reject("PNG truncated");
+        }
+        let tag: [u8; 4] = [rest[4], rest[5], rest[6], rest[7]];
+        let data = &rest[8..8 + len];
+        let crc = u32::from_be_bytes([rest[8 + len], rest[9 + len], rest[10 + len], rest[11 + len]]);
+        let mut h = crc32fast::Hasher::new();
+        h.update(&tag);
+        h.update(data);
+        if h.finalize() != crc {
+            return reject("PNG chunk CRC");
+        }
+        if !PNG_CHUNKS.contains(&&tag) {
+            return reject("PNG chunk not allowed");
+        }
+        if first != (&tag == b"IHDR") {
+            return reject("PNG does not start with IHDR");
+        }
+        if first {
+            if len != 13 {
+                return reject("PNG IHDR");
+            }
+            let w = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+            let hgt = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+            if w == 0 || hgt == 0 || w > 16384 || hgt > 16384 {
+                return reject("PNG dimensions");
+            }
+        }
+        first = false;
+        rest = &rest[12 + len..];
+        if &tag == b"IEND" {
+            return if rest.is_empty() { Ok(()) } else { reject("bytes after PNG IEND") };
+        }
     }
-    Ok(())
 }
 
 /// The ids that each element references, and for each element the elements that reference it.
@@ -342,10 +427,15 @@ fn check_references(nodes: &[Node]) -> Result<Vec<Vec<usize>>, Rejected> {
         }
     }
     let mut referencers = vec![Vec::new(); nodes.len()];
+    let mut count = 0usize;
     for (i, n) in nodes.iter().enumerate() {
         for (_, v) in &n.attrs {
             for id in refs_in(v, n.name) {
                 if let Some(&t) = by_id.get(id) {
+                    count += 1;
+                    if count > MAX_REFERENCES {
+                        return reject("too many references");
+                    }
                     referencers[t].push(i);
                 }
             }
@@ -409,33 +499,37 @@ fn linear(t: &str) -> Option<[f64; 4]> {
 /// The elements in an order where each comes after its parent and after every element that
 /// references it; `Err` on a cycle of references.
 fn topo_order(nodes: &[Node], referencers: &[Vec<usize>]) -> Result<Vec<usize>, Rejected> {
-    // 0: not visited, 1: on the stack, 2: done
+    // 0: not visited, 1: on the stack, 2: done; each node's dependencies (its parent, then its
+    // referencers) are walked once, from a cursor kept on the stack: linear in nodes + edges
     let mut state = vec![0u8; nodes.len()];
     let mut order = Vec::with_capacity(nodes.len());
+    let dep = |n: usize, k: usize| -> Option<usize> {
+        match nodes[n].parent {
+            Some(p) if k == 0 => Some(p),
+            Some(_) => referencers[n].get(k - 1).copied(),
+            None => referencers[n].get(k).copied(),
+        }
+    };
     for start in 0..nodes.len() {
-        if state[start] == 2 {
+        if state[start] != 0 {
             continue;
         }
-        let mut stack = vec![start];
-        while let Some(&n) = stack.last() {
-            if state[n] == 2 {
-                stack.pop();
-                continue;
-            }
-            state[n] = 1;
-            let mut pending = None;
-            for d in nodes[n].parent.into_iter().chain(referencers[n].iter().copied()) {
-                match state[d] {
-                    0 => {
-                        pending = Some(d);
-                        break;
+        state[start] = 1;
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        while let Some(top) = stack.last_mut() {
+            let (n, k) = *top;
+            match dep(n, k) {
+                Some(d) => {
+                    top.1 += 1;
+                    match state[d] {
+                        0 => {
+                            state[d] = 1;
+                            stack.push((d, 0));
+                        }
+                        1 => return reject("reference cycle"),
+                        _ => {}
                     }
-                    1 => return reject("reference cycle"),
-                    _ => {}
                 }
-            }
-            match pending {
-                Some(d) => stack.push(d),
                 None => {
                     state[n] = 2;
                     order.push(n);
@@ -1485,6 +1579,65 @@ mod tests {
         assert!(compact(doctype, 1).unwrap_err().0.contains("xml"));
         let other_ns = "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:h=\"http://www.w3.org/1999/xhtml\" viewBox=\"0 0 1 1\"><h:p/></svg>";
         assert!(compact(other_ns, 1).unwrap_err().0.contains("namespace"));
+    }
+
+    #[test]
+    fn embedded_pngs_are_checked_whole() {
+        let chunk = |t: &[u8], d: &[u8]| {
+            let mut c = (d.len() as u32).to_be_bytes().to_vec();
+            c.extend(t);
+            c.extend(d);
+            let mut h = crc32fast::Hasher::new();
+            h.update(t);
+            h.update(d);
+            c.extend(h.finalize().to_be_bytes());
+            c
+        };
+        let ihdr = chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0]);
+        let idat = chunk(b"IDAT", &[0x78, 0x9c, 0x63, 0x60, 0, 0, 0, 2, 0, 1]);
+        let iend = chunk(b"IEND", b"");
+        let png = |parts: &[&[u8]]| {
+            [&b"\x89PNG\r\n\x1a\n"[..]].iter().chain(parts).flat_map(|p| p.iter().copied()).collect::<Vec<u8>>()
+        };
+        assert!(check_png(&png(&[&ihdr, &idat, &iend])).is_ok());
+        assert!(check_png(&png(&[&ihdr, &chunk(b"tEXt", b"a\0b"), &idat, &iend])).is_err());
+        assert!(check_png(&png(&[&ihdr, &idat, &iend, b"<script>"])).is_err());
+        assert!(check_png(&png(&[&idat, &ihdr, &iend])).is_err());
+        assert!(check_png(&png(&[&ihdr, &idat])).is_err());
+        let mut bad = png(&[&ihdr, &idat, &iend]);
+        let at = bad.len() - 20;
+        bad[at] ^= 1;
+        assert!(check_png(&bad).is_err());
+        assert!(check_png(&png(&[&chunk(b"IHDR", &[0, 1, 0, 0, 0, 0, 0, 1, 8, 0, 0, 0, 0]), &idat, &iend])).is_err());
+    }
+
+    #[test]
+    fn url_bypasses_are_rejected() {
+        assert!(rejected(r#"<path fill="URL(https://evil/x#a)" d="M0 0"/>"#).contains("url"));
+        assert!(rejected(r#"<path fill="Url(#a" d="M0 0"/>"#).contains("url"));
+        assert!(rejected(r#"<path fill="u\72l(https://evil/x#a)" d="M0 0"/>"#).contains("backslash"));
+        assert!(compact(&svg(r##"<path fill="url(#a) url(http://x/#b)" d="M0 0"/>"##), 1).is_err());
+        assert!(compact(&svg(r##"<defs><clipPath id="c"><rect width="1" height="1"/></clipPath></defs><g clip-path="url(#c)"><path d="M0 0"/></g>"##), 1).is_ok());
+    }
+
+    #[test]
+    fn many_references_take_linear_time() {
+        let body = |n: usize| {
+            let mut b = String::from(r##"<defs><path id="s" d="M0 0L1 1"/></defs>"##);
+            for k in 0..n {
+                b.push_str(&format!(r##"<use xlink:href="#s" x="{k}" y="1"/>"##));
+            }
+            b
+        };
+        let t = std::time::Instant::now();
+        assert!(compact(&svg(&body(100_000)), 1).is_ok());
+        let ok = t.elapsed();
+        // over the element cap: refused quickly, the figure becomes a raster
+        let t = std::time::Instant::now();
+        assert!(compact(&svg(&body(1_000_000)), 1).is_err());
+        let refused = t.elapsed();
+        eprintln!("100k uses: {ok:?}; 1M uses refused in {refused:?}");
+        assert!(ok.as_secs_f64() < 5.0 && refused.as_secs_f64() < 5.0, "{ok:?} {refused:?}");
     }
 
     #[test]

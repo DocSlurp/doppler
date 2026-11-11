@@ -274,7 +274,7 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
             Some("mismatch".into())
         } else {
             Some(match code {
-                "pixels" | "render" | "empty" | "page" => code.to_string(),
+                "pixels" | "render" | "empty" | "page" | "svgsize" => code.to_string(),
                 _ => "renderer".to_string(),
             })
         }
@@ -289,7 +289,7 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
                 (!size_ok || width.checked_mul(height).and_then(|n| n.checked_mul(3)) != Some(bytes))
                     .then(|| "mismatch".to_string())
             }
-            ("svg", Mode::Svg) => (bytes > MAX_SVG_INPUT).then(|| "svg_size".to_string()),
+            ("svg", Mode::Svg) => (bytes > MAX_SVG_INPUT).then(|| "svgsize".to_string()),
             _ => Some("mismatch".into()),
         }
     };

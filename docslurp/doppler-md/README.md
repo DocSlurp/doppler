@@ -286,7 +286,7 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 |---|---|---|
 | `--images-dir DIR` | off | DIR must not exist; created 0700 |
 | `--images-min-side N[px\|pt]` | `24px` | no file when the smaller side is under N (px: output pixels at the dpi; pt: page points) |
-| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file / manifest points to the first file (`repeat_of`) / a file of its own |
+| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file (`skipped: repeat`) / no file, and `repeat_of` names the first figure, which has the file / a file of its own |
 | `--raster-format webp\|png` | `webp` | pictures: lossy WebP, lossless when the crop holds text lines |
 | `--raster-quality N` | `90` | lossy WebP quality |
 | `--raster-lossless` | off | lossless WebP for every picture |
@@ -296,6 +296,7 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 | `--images-dpi N` | `150` | raster resolution, 36..600 |
 | `--images-max N` | `500` | most files; more fails the extraction |
 | `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
+| `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | renderer time for the whole document |
 
 Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
@@ -313,7 +314,9 @@ charts with different content are therefore never treated as repeats.
 `^p[0-9]{1,9}\.g?[0-9]{1,6}$`). SVG is parsed (roxmltree, no DTD), checked against an allowlist
 (`svg g defs path use clipPath mask rect image symbol linearGradient radialGradient stop pattern
 filter feColorMatrix`, their presentation attributes, references only `#id`, images only
-`data:image/png;base64,` with a PNG signature; no script, style, foreignObject, event
+`data:image/png;base64,` holding a whole well-formed PNG (IHDR first, 1..16384 px a side,
+correct CRCs, only IHDR/PLTE/IDAT/IEND and tRNS/gAMA/cHRM/sRGB/bKGD/pHYs/sBIT, nothing after
+IEND); `url(...)` in any case only as a whole value `url(#id)`, and no backslash in any value; no script, style, foreignObject, event
 attributes, external URLs or entities) and rewritten from the parsed tree: coordinates rounded
 to the precision in final page points (more decimals under an enlarging transform, one more on
 dashed strokes; image placement keeps 2 decimals and transform scale factors 6 significant
@@ -328,15 +331,22 @@ temporary name in a directory opened without following links, then renamed with
 `min_side_pt`, `repeats`, then `images`, sorted by page, pictures before figures, by index, one
 per line: `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`,
 `file` (or null), `format`, `bytes`, `sha256`, `width`, `height` (pixels; for SVG the box in
-points, rounded up), and when they apply `repeat_of`, `fallback` (`svg_allowlist`, `svg_size`),
-`skipped` (`fate`, `min_side`, `repeat`), `error` (renderer `pixels`, `render`, `empty`, `page`;
+points, rounded up; 0 without a file), and when they apply `repeat_of` (link mode),
+`fallback` (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB),
+`skipped` (`fate`, `min_side`, `repeat`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
+`timeout` when the deadline passed before the image was encoded; `file_bytes`;
 `mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
 byte count; `encode`, `utf8`, `svg_size`). Then `totals` (`images`, `marked`, `written`,
 `bytes`, `repeats`, `small`, `fallbacks`, `errors`). `--report` gains `file` per image and
 `images_written` (and `images_error` on failure).
 
+**Work bounds.** An SVG with more than 200,000 elements or references is not compacted (raster
+fallback); compaction is linear in elements and references (100,000 `<use>` of one glyph:
+0.19 s; 1,000,000 refused in 0.67 s) and stops at the `--images-timeout` deadline.
+
 **Failures and exit status.** One image failing is recorded (`error`) and the rest go on. The
-renderer failing (cannot run, crash, non-zero exit, broken framing, timeout), a cap
+renderer failing (cannot run, crash, any non-zero exit including 3 limit and 4 write failure,
+broken framing, timeout), a cap
 (`--images-max`, `--images-max-bytes`) or a write error removes DIR; the Markdown is still
 written and the exit status is **5**. pdftotext failing exits as before and removes DIR.
 

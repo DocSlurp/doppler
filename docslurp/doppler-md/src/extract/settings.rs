@@ -51,6 +51,8 @@ pub struct Settings {
     pub dpi: u32,
     pub max_images: usize,
     pub max_bytes: u64,
+    /// one file larger is not written (that image gets `error: file_bytes`)
+    pub max_file_bytes: u64,
     pub timeout: Duration,
     /// an `--images-*` flag other than `--images-dir` was given
     other_flags: bool,
@@ -71,6 +73,7 @@ impl Default for Settings {
             dpi: 150,
             max_images: 500,
             max_bytes: 256 << 20,
+            max_file_bytes: 8 << 20,
             timeout: Duration::from_secs(120),
             other_flags: false,
         }
@@ -90,6 +93,7 @@ const WITH_VALUE: &[&str] = &[
     "--images-dpi",
     "--images-max",
     "--images-max-bytes",
+    "--images-max-file-bytes",
     "--images-timeout",
 ];
 
@@ -154,6 +158,7 @@ impl Settings {
             "--images-dpi" => self.dpi = int(v, 36, 600).ok_or_else(bad)? as u32,
             "--images-max" => self.max_images = int(v, 0, 5000).ok_or_else(bad)? as usize,
             "--images-max-bytes" => self.max_bytes = bytes(v, 1, 64 << 30).ok_or_else(bad)?,
+            "--images-max-file-bytes" => self.max_file_bytes = bytes(v, 1, 64 << 30).ok_or_else(bad)?,
             "--images-timeout" => self.timeout = Duration::from_secs(int(v, 1, 86400).ok_or_else(bad)?),
             _ => return Err(format!("unknown option {name}")),
         }
@@ -233,6 +238,7 @@ mod tests {
         );
         assert_eq!((s.raster_quality, s.svg_precision, s.dpi, s.max_images), (90, 1, 150, 500));
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (512 << 10, 256 << 20, 120));
+        assert_eq!(s.max_file_bytes, 8 << 20);
     }
 
     #[test]
@@ -251,6 +257,7 @@ mod tests {
             ("--images-max", Some("20")),
             ("--images-max-bytes", Some("10M")),
             ("--images-timeout", Some("5")),
+            ("--images-max-file-bytes", Some("2M")),
         ])
         .unwrap();
         assert_eq!(s.min_side, MinSide::Pt(10.5));
@@ -262,6 +269,7 @@ mod tests {
         assert!(s.raster_lossless);
         assert_eq!((s.raster_quality, s.svg_precision, s.dpi, s.max_images), (75, 2, 300, 20));
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (1 << 20, 10 << 20, 5));
+        assert_eq!(s.max_file_bytes, 2 << 20);
         assert_eq!(
             with(&[("--images-dir", Some("o")), ("--images-min-side", Some("30px"))]).unwrap().min_side,
             MinSide::Px(30.0)
