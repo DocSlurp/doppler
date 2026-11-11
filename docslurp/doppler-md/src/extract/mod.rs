@@ -17,7 +17,7 @@ pub mod regions;
 pub mod settings;
 pub mod svg;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
@@ -86,6 +86,9 @@ struct Run<'a> {
     total_bytes: u64,
     /// content repeats: (key, sha256 of the rendered payload) -> entry
     seen_payload: HashMap<(RepeatKey, [u8; 32]), usize>,
+    /// repeat keys held by more than one job: only their payloads can repeat one another, so
+    /// only they are hashed (a raw crop is megabytes; hashing every one was ~4% of the pass)
+    shared_keys: HashSet<RepeatKey>,
     /// figures whose SVG failed: rendered again as rasters
     fallbacks: Vec<(usize, String)>,
     /// past it, records are not encoded or compacted any more (`error: timeout`)
@@ -144,6 +147,12 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
     }
     // the renderer takes the jobs by page; the report lists them by page already
     jobs.sort_by_key(|(j, _)| j.page);
+    // a fallback raster re-renders a job's own note, so the first pass's keys cover every record
+    let mut key_count: HashMap<RepeatKey, usize> = HashMap::new();
+    for (_, i) in &jobs {
+        *key_count.entry(repeat_key(&notes[*i])).or_default() += 1;
+    }
+    let shared_keys = key_count.into_iter().filter(|(_, c)| *c > 1).map(|(k, _)| k).collect();
     let mut run = Run {
         s,
         notes,
@@ -152,6 +161,7 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
         written: 0,
         total_bytes: 0,
         seen_payload: HashMap::new(),
+        shared_keys,
         fallbacks: Vec::new(),
         deadline,
     };
@@ -248,9 +258,12 @@ impl Run<'_> {
             Outcome::Rgb { data, .. } => data,
             Outcome::Svg(text) => text.as_bytes(),
         };
-        let key = (repeat_key(n), <[u8; 32]>::from(Sha256::digest(payload)));
-        if s.repeats != Repeats::Keep
-            && let Some(&first) = self.seen_payload.get(&key)
+        // no other job has this key: no payload can repeat it (nor be compared against it)
+        let rk = repeat_key(n);
+        let key = (s.repeats != Repeats::Keep && self.shared_keys.contains(&rk))
+            .then(|| (rk, <[u8; 32]>::from(Sha256::digest(payload))));
+        if let Some(key) = &key
+            && let Some(&first) = self.seen_payload.get(key)
         {
             self.entries[e].repeat_of = Some(self.notes[first].id.clone());
             self.entries[e].skipped = Some("repeat");
@@ -298,7 +311,7 @@ impl Run<'_> {
         self.dir.write(&name, &data)?;
         self.written += 1;
         self.total_bytes += data.len() as u64;
-        if s.repeats != Repeats::Keep {
+        if let Some(key) = key {
             self.seen_payload.insert(key, e);
         }
         let entry = &mut self.entries[e];
