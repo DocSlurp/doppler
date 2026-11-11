@@ -681,7 +681,9 @@ bool fixedPrintingOff()
 } // namespace
 
 extern "C" int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
-extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...);
+// default visibility: the build hides symbols (-fvisibility=hidden), and these must be exported
+extern "C" __attribute__((visibility("default"))) int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...);
+extern "C" __attribute__((visibility("default"))) int snprintf(char *__restrict s, size_t maxlen, const char *__restrict fmt, ...) noexcept;
 
 extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...)
 {

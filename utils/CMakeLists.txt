@@ -67,11 +67,6 @@ if (HAVE_CAIRO)
     target_link_libraries(pdfregions ${LCMS2_LIBRARIES})
     target_include_directories(pdfregions SYSTEM PRIVATE ${LCMS2_INCLUDE_DIR})
   endif()
-  # its snprintf / __snprintf_chk (fixed-point fast path) must be what libcairo and libpoppler
-  # bind to: export them from the executable
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(pdfregions PRIVATE "LINKER:--export-dynamic-symbol=snprintf" "LINKER:--export-dynamic-symbol=__snprintf_chk")
-  endif()
   install(TARGETS pdfregions DESTINATION bin)
   install(FILES pdfregions.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 endif ()
