@@ -3,6 +3,7 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -74,6 +75,11 @@ pub struct Renderer {
     /// `-opw PW`, `-upw PW`
     pub passwords: Vec<OsString>,
     pub file: OsString,
+    /// `-confine`: `require`, `auto` or `off`
+    pub confine: &'static str,
+    /// `-max-svg-bytes` and `-max-output-bytes`
+    pub max_svg_bytes: u64,
+    pub max_output_bytes: u64,
 }
 
 /// `$PDFREGIONS`, else `pdfregions` beside this executable, else `pdfregions` on `PATH`.
@@ -107,9 +113,9 @@ impl Renderer {
         deadline: Instant,
         timeout_arg: u64,
         each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<bool>, String> {
         if jobs.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         if jobs.len() > MAX_JOBS {
             return Err(format!("more than {MAX_JOBS} regions to render"));
@@ -121,7 +127,15 @@ impl Renderer {
             .args(&self.passwords)
             .arg("-timeout")
             .arg(timeout_arg.to_string())
+            .arg("-confine")
+            .arg(self.confine)
+            .arg("-max-svg-bytes")
+            .arg(self.max_svg_bytes.to_string())
+            .arg("-max-output-bytes")
+            .arg(self.max_output_bytes.to_string())
             .arg(&self.file)
+            // a group of its own, so the whole group can be killed at the deadline
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -129,6 +143,9 @@ impl Renderer {
             .map_err(|e| format!("cannot run {}: {e}", self.exe.display()))?;
         let result = self.drive(&mut child, jobs, deadline, each);
         if result.is_err() {
+            if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -141,7 +158,7 @@ impl Renderer {
         jobs: &[Job],
         deadline: Instant,
         each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<(), String> {
+    ) -> Result<Option<bool>, String> {
         let name = self.exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (Some(mut stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
@@ -178,9 +195,9 @@ impl Renderer {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let _ = diagnostics.join();
+                    let confined = diagnostics.join().ok().flatten();
                     return match status.code() {
-                        Some(0) => Ok(()),
+                        Some(0) => Ok(confined),
                         Some(n) => Err(format!("{name} exited with status {n}")),
                         None => Err(format!("{name} was killed by a signal")),
                     };
@@ -193,15 +210,30 @@ impl Renderer {
     }
 }
 
-fn forward_diagnostics(stderr: impl Read, name: &str) {
+/// Forwards the renderer's diagnostics; returns `confined=` of its status line.
+fn forward_diagnostics(stderr: impl Read, name: &str) -> Option<bool> {
     let mut r = BufReader::new(stderr);
     let mut sent = 0usize;
     let mut line = Vec::new();
+    let mut confined = None;
     loop {
         line.clear();
         match r.by_ref().take(1024).read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => return confined,
             Ok(_) => {}
+        }
+        // the status line: "pdfregions: confined=0|1 landlock=<abi> seccomp=0|1"
+        if confined.is_none()
+            && let Some(rest) = line.strip_prefix(b"pdfregions: confined=")
+        {
+            confined = match rest.first() {
+                Some(b'1') => Some(true),
+                Some(b'0') => Some(false),
+                _ => None,
+            };
+            if confined.is_some() {
+                continue;
+            }
         }
         if sent < MAX_DIAGNOSTICS {
             // the renderer writes fixed ASCII strings; anything else is not shown

@@ -297,7 +297,8 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 | `--images-max N` | `500` | most files; more fails the extraction |
 | `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
-| `--images-timeout S` | `120` | renderer time for the whole document |
+| `--images-timeout S` | `120` | renderer time for the whole document; at the deadline pdfregions' process group is killed |
+| `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 
 Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
 link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
@@ -336,7 +337,8 @@ points, rounded up; 0 without a file), and when they apply `repeat_of` (link mod
 `skipped` (`fate`, `min_side`, `repeat`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
 `timeout` when the deadline passed before the image was encoded; `file_bytes`;
 `mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
-byte count; `encode`, `utf8`, `svg_size`). Then `totals` (`images`, `marked`, `written`,
+byte count; `encode`, `utf8`, `svg_size`). pdfregions also gets `-max-svg-bytes 8MiB` (larger:
+`err:svgsize`, raster fallback) and `-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`, `marked`, `written`,
 `bytes`, `repeats`, `small`, `fallbacks`, `errors`). `--report` gains `file` per image and
 `images_written` (and `images_error` on failure).
 
@@ -345,7 +347,7 @@ fallback); compaction is linear in elements and references (100,000 `<use>` of o
 0.19 s; 1,000,000 refused in 0.67 s) and stops at the `--images-timeout` deadline.
 
 **Failures and exit status.** One image failing is recorded (`error`) and the rest go on. The
-renderer failing (cannot run, crash, any non-zero exit including 3 limit and 4 write failure,
+renderer failing (cannot run, crash, any non-zero exit including 3 limit, 4 write failure and 5 cannot confine,
 broken framing, timeout), a cap
 (`--images-max`, `--images-max-bytes`) or a write error removes DIR; the Markdown is still
 written and the exit status is **5**. pdftotext failing exits as before and removes DIR.

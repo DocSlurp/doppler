@@ -54,6 +54,8 @@ pub struct Settings {
     /// one file larger is not written (that image gets `error: file_bytes`)
     pub max_file_bytes: u64,
     pub timeout: Duration,
+    /// pdfregions `-confine`: `require`, `auto` or `off`
+    pub confine: &'static str,
     /// an `--images-*` flag other than `--images-dir` was given
     other_flags: bool,
 }
@@ -75,6 +77,7 @@ impl Default for Settings {
             max_bytes: 256 << 20,
             max_file_bytes: 8 << 20,
             timeout: Duration::from_secs(120),
+            confine: "auto",
             other_flags: false,
         }
     }
@@ -95,6 +98,7 @@ const WITH_VALUE: &[&str] = &[
     "--images-max-bytes",
     "--images-max-file-bytes",
     "--images-timeout",
+    "--images-confine",
 ];
 
 impl Settings {
@@ -159,6 +163,14 @@ impl Settings {
             "--images-max" => self.max_images = int(v, 0, 5000).ok_or_else(bad)? as usize,
             "--images-max-bytes" => self.max_bytes = bytes(v, 1, 64 << 30).ok_or_else(bad)?,
             "--images-max-file-bytes" => self.max_file_bytes = bytes(v, 1, 64 << 30).ok_or_else(bad)?,
+            "--images-confine" => {
+                self.confine = match v {
+                    "require" => "require",
+                    "auto" => "auto",
+                    "off" => "off",
+                    _ => return Err(format!("{name} takes require, auto or off, not {v:?}")),
+                }
+            }
             "--images-timeout" => self.timeout = Duration::from_secs(int(v, 1, 86400).ok_or_else(bad)?),
             _ => return Err(format!("unknown option {name}")),
         }
@@ -258,6 +270,7 @@ mod tests {
             ("--images-max-bytes", Some("10M")),
             ("--images-timeout", Some("5")),
             ("--images-max-file-bytes", Some("2M")),
+            ("--images-confine", Some("require")),
         ])
         .unwrap();
         assert_eq!(s.min_side, MinSide::Pt(10.5));
@@ -270,6 +283,7 @@ mod tests {
         assert_eq!((s.raster_quality, s.svg_precision, s.dpi, s.max_images), (75, 2, 300, 20));
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (1 << 20, 10 << 20, 5));
         assert_eq!(s.max_file_bytes, 2 << 20);
+        assert_eq!(s.confine, "require");
         assert_eq!(
             with(&[("--images-dir", Some("o")), ("--images-min-side", Some("30px"))]).unwrap().min_side,
             MinSide::Px(30.0)
@@ -294,6 +308,7 @@ mod tests {
             ("--images-max", "5001"),
             ("--images-max-bytes", "1T"),
             ("--images-timeout", "0"),
+            ("--images-confine", "yes"),
             ("--images-dir", ""),
         ] {
             assert!(with(&[("--images-dir", Some("o")), (k, Some(v))]).is_err(), "{k} {v}");

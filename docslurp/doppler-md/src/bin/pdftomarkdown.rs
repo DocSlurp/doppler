@@ -73,6 +73,7 @@ and DIR/manifest.json listing every image):
   --images-max N              most files (500); --images-max-bytes N (256MiB); both fail
                               the extraction; --images-max-file-bytes N (8MiB): that file only
   --images-timeout S          renderer time for the document (120)
+  --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   Exit status 5: Markdown written, image extraction failed (DIR removed).
 
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
@@ -299,7 +300,15 @@ fn convert(
         && written.is_ok()
         && report.page_found()
     {
-        let renderer = Renderer { exe: regions::locate(), passwords: passwords.to_vec(), file: file.clone() };
+        let renderer = Renderer {
+            exe: regions::locate(),
+            passwords: passwords.to_vec(),
+            file: file.clone(),
+            confine: images.confine,
+            max_svg_bytes: doppler_md::extract::MAX_SVG_INPUT as u64,
+            // raw RGB is several times the encoded files: 8 times the file cap, 64 MiB..2 GiB
+            max_output_bytes: images.max_bytes.saturating_mul(8).clamp(64 << 20, 2 << 30),
+        };
         match doppler_md::extract::extract(&mut report, images, &renderer, dir) {
             Ok(_) => *out_dir = None,
             Err(e) => {

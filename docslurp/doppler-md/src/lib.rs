@@ -300,6 +300,8 @@ pub struct Report {
     pub images_written: Option<usize>,
     /// why image extraction failed (the folder was removed); a fixed message, no document text
     pub images_error: Option<String>,
+    /// whether pdfregions reported itself confined (its `confined=` status line)
+    pub images_confined: Option<bool>,
 }
 
 impl Report {
@@ -416,6 +418,7 @@ impl Report {
             images,
             watermark,
             self.images_written.map(|n| format!(",\"images_written\":{n}")).unwrap_or_default()
+                + &self.images_confined.map(|c| format!(",\"images_confined\":{c}")).unwrap_or_default()
                 + &self
                     .images_error
                     .as_ref()

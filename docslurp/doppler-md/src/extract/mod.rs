@@ -34,7 +34,7 @@ use settings::{RasterFormat, Repeats, Settings, VectorFormat};
 /// timeout, exit status 3).
 const GRACE: Duration = Duration::from_secs(2);
 /// Raw SVG larger than this is not compacted: the figure is rendered as a raster.
-const MAX_SVG_INPUT: usize = 8 << 20;
+pub const MAX_SVG_INPUT: usize = 8 << 20;
 
 /// One image of the manifest.
 #[derive(Clone, Debug, Default)]
@@ -151,7 +151,8 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
     };
     let (job_list, owners): (Vec<Job>, Vec<usize>) = jobs.into_iter().unzip();
     let timeout_arg = s.timeout.as_secs().max(1);
-    renderer.run(&job_list, deadline, timeout_arg, &mut |k, outcome| run.record(owners[k], outcome))?;
+    let mut confined =
+        renderer.run(&job_list, deadline, timeout_arg, &mut |k, outcome| run.record(owners[k], outcome))?;
     // figures whose SVG was refused: lossless rasters, in a second pass
     if !run.fallbacks.is_empty() {
         let fb: Vec<(Job, usize)> = run
@@ -164,7 +165,11 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
             .collect();
         let (job_list, owners): (Vec<Job>, Vec<usize>) = fb.into_iter().unzip();
         let left = deadline.saturating_duration_since(Instant::now()).saturating_sub(GRACE).as_secs().max(1);
-        renderer.run(&job_list, deadline, left, &mut |k, outcome| run.record(owners[k], outcome))?;
+        let again = renderer.run(&job_list, deadline, left, &mut |k, outcome| run.record(owners[k], outcome))?;
+        confined = match (confined, again) {
+            (Some(a), Some(b)) => Some(a && b),
+            (a, b) => a.or(b),
+        };
     }
     let manifest = manifest(&run);
     run.dir.write("manifest.json", manifest.as_bytes())?;
@@ -175,6 +180,7 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
         n.file = f;
     }
     report.images_written = Some(written);
+    report.images_confined = confined;
     Ok(written)
 }
 

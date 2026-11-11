@@ -140,6 +140,7 @@ fn extracts_files_and_a_deterministic_manifest_without_changing_the_markdown() {
     let m: serde_json::Value = serde_json::from_str(&manifest).unwrap();
     assert_eq!(m["totals"]["written"], 2);
     assert!(err.contains("\"images_written\":2") && err.contains("\"file\":\"p1.1.webp\""), "{err}");
+    assert!(err.contains("\"images_confined\":true") && !err.contains("confined=1"), "{err}");
     let svg = std::fs::read_to_string(d1.join("p1.g1.svg")).unwrap();
     assert!(svg.starts_with("<svg xmlns=") && !svg.contains("<g>"), "{svg}");
     let webp = std::fs::read(d1.join("p1.1.webp")).unwrap();
@@ -244,4 +245,34 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
     assert!(m.contains("\"error\":\"file_bytes\""), "{m}");
+}
+
+/// The real pdfregions (`$PDFREGIONS_REAL`, else `../../build/utils/pdfregions`).
+#[test]
+fn the_real_renderer_extracts_the_pictures_and_figures() {
+    let Some((p, s, pdf)) = setup("real") else { return };
+    let real = std::env::var_os("PDFREGIONS_REAL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/utils/pdfregions"));
+    if !real.is_file() {
+        eprintln!("skipped: no real pdfregions");
+        return;
+    }
+    let plain = run(&p, &["--markers", &pdf], "ok");
+    let d = s.0.join("out");
+    let r = Command::new(PDFTOMARKDOWN)
+        .args(["--report", "--images-dir", d.to_str().unwrap(), &pdf])
+        .env("PDFTOTEXT", &p)
+        .env("PDFREGIONS", &real)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert_eq!(r.status.code(), Some(0), "{err}");
+    assert_eq!(r.stdout, plain.stdout);
+    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    assert!(files(&d).contains(&"p1.1.webp".to_string()) && files(&d).contains(&"p1.g1.svg".to_string()), "{m}\n{err}");
+    assert!(!m.contains("\"error\""), "{m}");
+    assert!(err.contains("\"images_confined\""), "{err}");
+    let svg = std::fs::read_to_string(d.join("p1.g1.svg")).unwrap();
+    assert!(svg.contains("<path"), "{svg}");
 }

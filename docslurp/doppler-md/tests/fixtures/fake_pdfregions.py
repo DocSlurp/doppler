@@ -6,6 +6,7 @@ with a flat-colour rgb8 crop or a trivial SVG. FAKE_PDFREGIONS_MODE: ok (default
 import os, sys, time
 
 mode = os.environ.get("FAKE_PDFREGIONS_MODE", "ok")
+sys.stderr.write("pdfregions: confined=1 landlock=3 seccomp=1\n")
 out = sys.stdout.buffer
 jobs = [l.rstrip("\n").split("\t") for l in sys.stdin if l.strip()]
 if mode == "hang":
