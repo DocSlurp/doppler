@@ -136,13 +136,18 @@ default; `0` restores the old output). Left in, a pale "CONFIDENTIAL" at 45 degr
 stray one-letter headings and tables of letters, and a horizontal "DRAFT" was glued to the first
 paragraph. A word goes when it is large (`watermark_size`, 1.5 body sizes) and any of:
 
-- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white) not on a
-  dark box; white text on banners and photos is kept;
+- **pale**: a visible grey tint (luminance `watermark_min_lum` 0.72 up to, not including, white;
+  channels within `watermark_max_chroma` 0.12 of each other) not on a dark box, and rotated or
+  drawn across other text of the page. White text on banners and photos, light colours (a gold
+  or light-blue heading) and a light grey heading on its own are kept;
 - **diagonal**: three or more words of one font size on a line at least 15 degrees from both axes
   (a vertical label stays);
 - **repeated**: the same word at the same place on as many pages as a running header needs
   (`furniture_min_share`, at least 2, over the same window; `--window 0` sees only the page
-  itself and removes none, see [Streaming](#streaming)).
+  itself and removes none, see [Streaming](#streaming)), when it also looks like a watermark on
+  the page (a grey tint, rotated, or drawn across other text) and every word of its line does.
+  A heading repeated at the same place (a short report's, a slide deck's, "(continued)") stays,
+  and a line is never left in pieces.
 
 With `--markers`, a picture of at least 5% of the page at the same place and size on that many
 pages gets no marker (`placed: watermark`). Small watermarks of one page that are dark and

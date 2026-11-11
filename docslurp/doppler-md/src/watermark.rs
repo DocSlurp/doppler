@@ -5,21 +5,26 @@
 //! paragraph. Evidence, any of:
 //!
 //! - **pale**: a visible word at least `watermark_size` times the page's body size, in a grey
-//!   light enough to be a tint (`watermark_min_lum` up to, but not including, white) and not on
-//!   a dark box. White text is left alone: it is how titles are set on dark banners and photos.
+//!   light enough to be a tint (`watermark_min_lum` up to, but not including, white; nearly
+//!   colourless, `watermark_max_chroma`), not on a dark box, and drawn across other text of the
+//!   page or rotated. White text is left alone: it is how titles are set on dark banners and
+//!   photos; so are light colours (a gold heading) and a light grey heading on its own.
 //! - **diagonal**: three or more words of one font and size, at least `watermark_size` times
 //!   the body size, on a line that is neither horizontal nor vertical. Poppler reads each word
 //!   of such a run as a rotated fragment.
 //! - **repeated**: the same large word at the same place on at least as many pages as a running
-//!   header must repeat on (`furniture_min_share`, at least 2). Pictures likewise: the same
-//!   picture at the same place on that many pages.
+//!   header must repeat on (`furniture_min_share`, at least 2), which also looks like a watermark
+//!   on the page (a grey tint, rotated, or drawn across other text), and whose line is all such
+//!   words: a heading repeated at the same place (a short report's, a slide deck's, a
+//!   "(continued)" heading) is content. Pictures likewise: the same picture at the same place on
+//!   that many pages.
 
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::model::{Image, Line, Page, Word};
 use crate::params::Params;
-use crate::pyc::{fcmp, pmax, strip};
+use crate::pyc::{fcmp, pmax, pmin, strip};
 use crate::tables::luminance;
 
 fn centre(w: &Word) -> (f64, f64) {
@@ -106,6 +111,61 @@ impl Fenwick {
         }
         s
     }
+}
+
+/// A grey light enough to be a tint: `watermark_min_lum` up to, not including, white, with
+/// channels within `watermark_max_chroma` of each other.
+fn grey_tint(color: &str, p: &Params) -> bool {
+    let l = luminance(color);
+    if !(l >= p.watermark_min_lum && l < 0.97) {
+        return false;
+    }
+    let ch = |i: usize| crate::pyc::py_hex(crate::pyc::cp_slice(color, i, i + 2)).map(|v| v as f64 / 255.0);
+    match (ch(1), ch(3), ch(5)) {
+        (Some(r), Some(g), Some(b)) => pmax(r, pmax(g, b)) - pmin(r, pmin(g, b)) <= p.watermark_max_chroma,
+        _ => false,
+    }
+}
+
+/// The most line boxes [`across_text`] compares on a page: past it, words are taken as not
+/// drawn across text (and kept).
+const MAX_ACROSS_WORK: usize = 4_000_000;
+
+/// Per word `(line, word)`: whether it is drawn across other text of the page, i.e. its box
+/// overlaps another line that holds a word of less than watermark size (body text, not
+/// another large word). Lines are sorted by top edge and only those that can reach the word
+/// are compared, within [`MAX_ACROSS_WORK`].
+fn across_text(page: &Page, words: &[(usize, usize)], body: f64, p: &Params) -> Vec<bool> {
+    let mut out = vec![false; words.len()];
+    if words.is_empty() {
+        return out;
+    }
+    let mut text: Vec<usize> = (0..page.lines.len())
+        .filter(|&li| {
+            let l = &page.lines[li];
+            l.y0 <= l.y1 && l.x0 <= l.x1 && l.words.iter().any(|w| !w.invisible && !large(w, body, p))
+        })
+        .collect();
+    text.sort_by(|&a, &b| fcmp(page.lines[a].y0, page.lines[b].y0));
+    let tallest = text.iter().map(|&li| page.lines[li].y1 - page.lines[li].y0).fold(0.0, pmax);
+    let mut work = 0usize;
+    for (k, &(li, wi)) in words.iter().enumerate() {
+        let w = &page.lines[li].words[wi];
+        let from = text.partition_point(|&o| page.lines[o].y0 < w.y0 - tallest);
+        let to = text.partition_point(|&o| page.lines[o].y0 < w.y1);
+        for &o in &text[from..to.max(from)] {
+            work += 1;
+            if work > MAX_ACROSS_WORK {
+                return out;
+            }
+            let l = &page.lines[o];
+            if o != li && l.y1 > w.y0 && l.x0 < w.x1 && l.x1 > w.x0 {
+                out[k] = true;
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Whether the word is large for this page and drawn visibly.
@@ -199,18 +259,23 @@ pub(crate) fn strip_local(page: &mut Page, p: &Params) -> usize {
         .iter()
         .enumerate()
         .flat_map(|(li, l)| l.words.iter().enumerate().map(move |(wi, w)| (li, wi, w)))
-        .filter(|(_, _, w)| {
-            let l = luminance(&w.color);
-            large(w, body, p) && l >= p.watermark_min_lum && l < 0.97
-        })
+        .filter(|(_, _, w)| large(w, body, p) && grey_tint(&w.color, p))
         .map(|(li, wi, w)| (li, wi, centre(w)))
         .collect();
     let points: Vec<(f64, f64)> = pale_words.iter().map(|c| c.2).collect();
-    let pale: HashSet<(usize, usize)> = pale_words
+    let light: Vec<(usize, usize)> = pale_words
         .iter()
         .zip(on_dark_boxes(page, &points))
         .filter(|(_, dark)| !dark)
         .map(|((li, wi, _), _)| (*li, *wi))
+        .collect();
+    // a grey heading on its own is content: a watermark is rotated or lies across the text
+    let across = across_text(page, &light, body, p);
+    let pale: HashSet<(usize, usize)> = light
+        .iter()
+        .zip(across)
+        .filter(|&(&(li, wi), across)| across || page.lines[li].words[wi].rot != 0)
+        .map(|(k, _)| *k)
         .collect();
     if diag.is_empty() && pale.is_empty() {
         return 0;
@@ -246,7 +311,9 @@ pub(crate) fn image_key(page: &Page, im: &Image) -> Option<String> {
 }
 
 /// Remove the large words that repeat (`counts` holds the pages with each key, the page's own
-/// included; `need` is how many make a watermark). Returns how many words went.
+/// included; `need` is how many make a watermark) and look like a watermark on this page: a
+/// grey tint, rotated, or drawn across other text. A line goes whole or not at all, so a
+/// heading is never left in pieces. Returns how many words went.
 pub(crate) fn strip_repeated(
     page: &mut Page,
     body: f64,
@@ -254,7 +321,34 @@ pub(crate) fn strip_repeated(
     need: f64,
     p: &Params,
 ) -> usize {
-    remove(page, |_, _, w| large(w, body, p) && counts.get(&word_key(w)).is_some_and(|&n| n as f64 >= need))
+    let repeated: Vec<(usize, usize)> = page
+        .lines
+        .iter()
+        .enumerate()
+        .flat_map(|(li, l)| l.words.iter().enumerate().map(move |(wi, w)| (li, wi, w)))
+        .filter(|(_, _, w)| large(w, body, p) && counts.get(&word_key(w)).is_some_and(|&n| n as f64 >= need))
+        .map(|(li, wi, _)| (li, wi))
+        .collect();
+    if repeated.is_empty() {
+        return 0;
+    }
+    let across = across_text(page, &repeated, body, p);
+    let marked: HashSet<(usize, usize)> = repeated
+        .iter()
+        .zip(across)
+        .filter(|&(&(li, wi), across)| {
+            let w = &page.lines[li].words[wi];
+            across || w.rot != 0 || grey_tint(&w.color, p)
+        })
+        .map(|(k, _)| *k)
+        .collect();
+    // only lines that are all watermark
+    let whole: HashSet<usize> = marked
+        .iter()
+        .map(|&(li, _)| li)
+        .filter(|&li| (0..page.lines[li].words.len()).all(|wi| marked.contains(&(li, wi))))
+        .collect();
+    remove(page, |li, _, _| whole.contains(&li))
 }
 
 #[cfg(test)]
@@ -324,6 +418,7 @@ mod tests {
         }
     }
 
+    /// `pale` grey words (rotated, so watermarks without lying across text), `boxes` dark boxes.
     fn pale_page(pale: usize, boxes: usize) -> Page {
         let mut rules = Vec::with_capacity(boxes);
         for i in 0..boxes {
@@ -332,7 +427,7 @@ mod tests {
             rules.push(rule(x, y, x + 1.0, y + 1.0, "#101010"));
         }
         let mut pg = page(rules);
-        let word = |x0: f64, y: f64, size: f64, text: &str, color: &str| Word {
+        let word = |x0: f64, y: f64, size: f64, text: &str, color: &str, rot: u8| Word {
             x0,
             x1: x0 + size,
             y0: y,
@@ -344,17 +439,18 @@ mod tests {
             base: y + 0.8 * size,
             space: true,
             color: Rc::from(color),
-            rot: 0,
+            rot,
             invisible: false,
             glyphs: GlyphRange::default(),
         };
         let body: Vec<Word> = (0..pale / 2 + 10)
-            .map(|i| word(72.0 + i as f64 * 0.01, 90.0, 10.0, "bodytextbodytext", "#000000"))
+            .map(|i| word(72.0 + i as f64 * 0.01, 90.0, 10.0, "bodytextbodytext", "#000000", 0))
             .collect();
         pg.lines.push(Rc::new(Line::new(body, 0, 0)));
         for li in 0..pale / 50 {
-            let ws =
-                (0..50).map(|k| word(72.0 + k as f64 * 10.0, 100.0 + li as f64 * 0.5, 20.0, "W", "#cccccc")).collect();
+            let ws = (0..50)
+                .map(|k| word(72.0 + k as f64 * 10.0, 100.0 + li as f64 * 0.5, 20.0, "W", "#cccccc", 1))
+                .collect();
             pg.lines.push(Rc::new(Line::new(ws, 1 + li as i64, 0)));
         }
         pg

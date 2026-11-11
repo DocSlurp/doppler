@@ -234,6 +234,9 @@ params! {
     watermark_size: num = 1.5,
     /// a pale word is at least this luminance (white, the text of banners, is not pale)
     watermark_min_lum: num = 0.72,
+    /// a pale word is a grey: its channels differ by at most this much (0 to 1); a light colour
+    /// (a gold or light-blue heading) is not pale
+    watermark_max_chroma: num = 0.12,
     /// a minor heading after a table that starts with a multi-level section number (4.6.3) and
     /// opens body text is a heading, not the table's caption
     section_headings_after_tables: flag = true,
