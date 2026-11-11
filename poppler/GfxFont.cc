@@ -2309,6 +2309,47 @@ bool GfxFont::isBase14Font(std::string_view family, std::string_view style)
 // GfxFontDict
 //------------------------------------------------------------------------
 
+std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref id, const Dict &fontDict)
+{
+    if (xref->getGeneration() != generation) {
+        entries.clear();
+        generation = xref->getGeneration();
+    }
+    ++clock;
+    Entry *hit = nullptr;
+    for (Entry &e : entries) {
+        if (e.id == id && e.tag == tag) {
+            hit = &e;
+            break;
+        }
+    }
+    if (hit && hit->font.use_count() == 1) {
+        hit->lastUse = clock;
+        return hit->font;
+    }
+    std::shared_ptr<GfxFont> font = GfxFont::makeFont(xref, tag, id, fontDict);
+    if (hit || !font) {
+        // in use elsewhere (keep the cached one for later pages), or nothing to cache
+        return font;
+    }
+    if (entries.size() >= maxEntries) {
+        // free the least recently used idle entry; if every entry is in use, do not cache
+        Entry *victim = nullptr;
+        for (Entry &e : entries) {
+            if (e.font.use_count() == 1 && (!victim || e.lastUse < victim->lastUse)) {
+                victim = &e;
+            }
+        }
+        if (!victim) {
+            return font;
+        }
+        *victim = Entry { .id = id, .tag = std::string(tag), .font = font, .lastUse = clock };
+        return font;
+    }
+    entries.push_back(Entry { .id = id, .tag = std::string(tag), .font = font, .lastUse = clock });
+    return font;
+}
+
 GfxFontDict::GfxFontDict(XRef *xref, const Ref fontDictRef, const Dict &fontDict)
 {
     Ref r;
@@ -2331,7 +2372,8 @@ GfxFontDict::GfxFontDict(XRef *xref, const Ref fontDictRef, const Dict &fontDict
                 r.gen = 100000;
                 r.num = hashFontObject(&obj2);
             }
-            fonts[i] = GfxFont::makeFont(xref, fontDict.getKey(i), r, *obj2.getDict());
+            GfxFontCache *cache = obj1.isRef() ? xref->getFontCache() : nullptr;
+            fonts[i] = cache ? cache->get(xref, fontDict.getKey(i), r, *obj2.getDict()) : GfxFont::makeFont(xref, fontDict.getKey(i), r, *obj2.getDict());
             if (fonts[i] && !fonts[i]->isOk()) {
                 // XXX: it may be meaningful to distinguish between
                 // NULL and !isOk() so that when we do lookups

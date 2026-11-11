@@ -965,6 +965,8 @@ int main(int argc, char *argv[])
     if (!doc->isOk()) {
         return 1;
     }
+    // pages usually share their fonts: parse each once per document (see GfxFontCache)
+    doc->getXRef()->setFontCache(std::make_shared<GfxFontCache>());
 
 #ifdef ENFORCE_PERMISSIONS
     // check for copy permission
