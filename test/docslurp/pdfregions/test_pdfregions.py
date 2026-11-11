@@ -300,7 +300,15 @@ with t.TempDir() as d:
         rc2, per_job, _ = regions(tpath, jobs, env={"PDFREGIONS_SVG_TOGETHER": "0"})
         recs = parse_records(one_pass)
         t.check(rc1 == rc2 == OK and len(recs) == len(jobs) and all(h[1] == "ok" for h, _ in recs), "svg in one pass (%s): every job answered" % label, repr((rc1, rc2, err1)))
-        t.check(one_pass == per_job, "svg in one pass (%s): the same bytes as one pass per job" % label)
+        # cairo numbers source surfaces from a process-wide counter (source-N), which depends on
+        # what was drawn before in either mode; pdftomarkdown renames ids by document order
+        # (per record, as pdftomarkdown compacts each SVG on its own)
+        def renumber(out):
+            def one(payload):
+                names = {}
+                return re.sub(rb"source-[0-9]+", lambda m: names.setdefault(m.group(0), b"source-%d" % len(names)), payload)
+            return [(h[:5], one(p)) for h, p in parse_records(out)]
+        t.check(renumber(one_pass) == renumber(per_job), "svg in one pass (%s): the same bytes as one pass per job, but for cairo's source-N numbering" % label)
         want = b"svg-together chunks=%d fallback=%d" % (chunks, 0 if chunks else 2)
         t.check(want in err1, "svg in one pass (%s): %s" % (label, want.decode()), repr(err1))
 
