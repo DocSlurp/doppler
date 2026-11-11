@@ -1117,6 +1117,7 @@ private:
     unsigned char buf[flateWindow]; // output data buffer
     int index; // current index into output buffer
     int remain; // number valid bytes in output buffer
+    int batchLimit = 64; // bytes readSome decodes ahead: doubles per call up to 4096 (small reads stay small)
     int codeBuf; // input buffer
     int codeSize; // number of bits in input buffer
     int // literal and distance code lengths

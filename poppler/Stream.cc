@@ -58,6 +58,7 @@
 #include <cstdlib>
 #include <cstddef>
 #include <climits>
+#include <algorithm>
 #include <cstring>
 #include <cctype>
 #include "goo/gmem.h"
@@ -2728,6 +2729,7 @@ bool FlateStream::flateRewind(bool unfiltered)
 {
     index = 0;
     remain = 0;
+    batchLimit = 64;
     codeBuf = 0;
     codeSize = 0;
     compressedBlock = false;
@@ -2789,15 +2791,23 @@ int FlateStream::getChars(int nChars, unsigned char *buffer)
     if (pred) {
         return pred->getChars(nChars, buffer);
     }
-    for (int i = 0; i < nChars; ++i) {
-        const int c = doGetRawChar();
-        if (likely(c != EOF)) {
-            buffer[i] = c;
-        } else {
-            return i;
+    // the bytes doGetRawChar would return one at a time, copied in runs out of the window
+    int n = 0;
+    while (n < nChars) {
+        if (remain == 0) {
+            if (endOfBlock && eof) {
+                break;
+            }
+            readSome();
+            continue;
         }
+        const int chunk = std::min({ nChars - n, remain, flateWindow - index });
+        memcpy(buffer + n, buf + index, chunk);
+        index = (index + chunk) & flateMask;
+        remain -= chunk;
+        n += chunk;
     }
-    return nChars;
+    return n;
 }
 
 int FlateStream::lookChar()
@@ -2855,6 +2865,7 @@ void FlateStream::readSome()
     int i, j, k;
     int c;
 
+    // called with remain == 0 (by lookChar and doGetRawChar)
     if (endOfBlock) {
         if (!startBlock()) {
             return;
@@ -2862,39 +2873,53 @@ void FlateStream::readSome()
     }
 
     if (compressedBlock) {
-        if ((code1 = getHuffmanCodeWord(&litCodeTab)) == EOF) {
-            goto err;
+        // Decode symbols until the block ends or flateBatch bytes are ready, instead of one symbol
+        // per call: the bytes, their order and the end-of-data point are the same. Unread bytes sit
+        // in buf[index, index + remain); the next symbol (at most 258 bytes) is written after them,
+        // and back-references read written bytes up to 32768 back, which the window still holds.
+        // The batch starts small and doubles, so a reader that only peeks (a font type sniff) does
+        // not decode far ahead.
+        const int flateBatch = batchLimit;
+        if (batchLimit < 4096) {
+            batchLimit *= 2;
         }
-        if (code1 < 256) {
-            buf[index] = code1;
-            remain = 1;
-        } else if (code1 == 256) {
-            endOfBlock = true;
-            remain = 0;
-        } else {
-            code1 -= 257;
-            code2 = lengthDecode[code1].bits;
-            if (code2 > 0 && (code2 = getCodeWord(code2)) == EOF) {
+        i = index;
+        remain = 0;
+        do {
+            if ((code1 = getHuffmanCodeWord(&litCodeTab)) == EOF) {
                 goto err;
             }
-            len = lengthDecode[code1].first + code2;
-            if ((code1 = getHuffmanCodeWord(&distCodeTab)) == EOF) {
-                goto err;
-            }
-            code2 = distDecode[code1].bits;
-            if (code2 > 0 && (code2 = getCodeWord(code2)) == EOF) {
-                goto err;
-            }
-            dist = distDecode[code1].first + code2;
-            i = index;
-            j = (index - dist) & flateMask;
-            for (k = 0; k < len; ++k) {
-                buf[i] = buf[j];
+            if (code1 < 256) {
+                buf[i] = code1;
                 i = (i + 1) & flateMask;
-                j = (j + 1) & flateMask;
+                ++remain;
+            } else if (code1 == 256) {
+                endOfBlock = true;
+                break;
+            } else {
+                code1 -= 257;
+                code2 = lengthDecode[code1].bits;
+                if (code2 > 0 && (code2 = getCodeWord(code2)) == EOF) {
+                    goto err;
+                }
+                len = lengthDecode[code1].first + code2;
+                if ((code1 = getHuffmanCodeWord(&distCodeTab)) == EOF) {
+                    goto err;
+                }
+                code2 = distDecode[code1].bits;
+                if (code2 > 0 && (code2 = getCodeWord(code2)) == EOF) {
+                    goto err;
+                }
+                dist = distDecode[code1].first + code2;
+                j = (i - dist) & flateMask;
+                for (k = 0; k < len; ++k) {
+                    buf[i] = buf[j];
+                    i = (i + 1) & flateMask;
+                    j = (j + 1) & flateMask;
+                }
+                remain += len;
             }
-            remain = len;
-        }
+        } while (remain < flateBatch);
 
     } else {
         len = (blockLen < flateWindow) ? blockLen : flateWindow;
@@ -2915,9 +2940,9 @@ void FlateStream::readSome()
     return;
 
 err:
+    // the bytes decoded before the error are still delivered, as when each symbol had its own call
     error(errSyntaxError, getPos(), "Unexpected end of file in flate stream");
     endOfBlock = eof = true;
-    remain = 0;
 }
 
 bool FlateStream::startBlock()

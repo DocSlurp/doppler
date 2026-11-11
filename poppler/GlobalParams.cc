@@ -422,17 +422,11 @@ std::string GlobalParams::appendToPath(const std::string &path, const std::strin
 
 GlobalParams::GlobalParams(std::string customPopplerDataDir) : popplerDataDir(std::move(customPopplerDataDir))
 {
-    // scan the encoding in reverse because we want the lowest-numbered
-    // index for each char name ('space' is encoded twice)
-    macRomanReverseMap = new NameToCharCode();
-    for (int i = 255; i >= 0; --i) {
-        if (macRomanEncoding[i]) {
-            macRomanReverseMap->add(macRomanEncoding[i], static_cast<CharCode>(i));
-        }
-    }
+    // the char name tables are built on first use (initNameTables)
+    macRomanReverseMap = nullptr;
 
-    nameToUnicodeZapfDingbats = new NameToCharCode();
-    nameToUnicodeText = new NameToCharCode();
+    nameToUnicodeZapfDingbats = nullptr;
+    nameToUnicodeText = nullptr;
     sysFonts = new SysFontList();
     textEncoding = std::string { "UTF-8" };
     printCommands = false;
@@ -447,15 +441,6 @@ GlobalParams::GlobalParams(std::string customPopplerDataDir) : popplerDataDir(st
     utf8Map = nullptr;
 
     baseFontsInitialized = false;
-
-    // set up the initial nameToUnicode tables
-    for (int i = 0; nameToUnicodeZapfDingbatsTab[i].name; ++i) {
-        nameToUnicodeZapfDingbats->add(nameToUnicodeZapfDingbatsTab[i].name, nameToUnicodeZapfDingbatsTab[i].u);
-    }
-
-    for (int i = 0; nameToUnicodeTextTab[i].name; ++i) {
-        nameToUnicodeText->add(nameToUnicodeTextTab[i].name, nameToUnicodeTextTab[i].u);
-    }
 
     // set up the residentUnicodeMaps table
     residentUnicodeMaps.reserve(6);
@@ -482,7 +467,7 @@ void GlobalParams::scanEncodingDirs()
     std::error_code ec; // if ec is set, we also get the end iterator, so that's kind of okay.  If not creating with a error code, we get an exception if poppler data is missing
     for (const auto &entry : std::filesystem::directory_iterator { dataRoot + "/nameToUnicode", ec }) {
         if (entry.is_regular_file()) {
-            parseNameToUnicode(entry.path());
+            nameToUnicodeFiles.push_back(entry.path());
         }
     }
 
@@ -498,6 +483,31 @@ void GlobalParams::scanEncodingDirs()
         addCMapDir(entry.path().filename().string(), entry.path().string());
         toUnicodeDirs.push_back(entry.path().string());
     }
+}
+
+void GlobalParams::initNameTables()
+{
+    std::call_once(nameTablesOnce, [this] {
+        // scan the encoding in reverse because we want the lowest-numbered
+        // index for each char name ('space' is encoded twice)
+        macRomanReverseMap = new NameToCharCode();
+        for (int i = 255; i >= 0; --i) {
+            if (macRomanEncoding[i]) {
+                macRomanReverseMap->add(macRomanEncoding[i], static_cast<CharCode>(i));
+            }
+        }
+        nameToUnicodeZapfDingbats = new NameToCharCode();
+        nameToUnicodeText = new NameToCharCode();
+        for (int i = 0; nameToUnicodeZapfDingbatsTab[i].name; ++i) {
+            nameToUnicodeZapfDingbats->add(nameToUnicodeZapfDingbatsTab[i].name, nameToUnicodeZapfDingbatsTab[i].u);
+        }
+        for (int i = 0; nameToUnicodeTextTab[i].name; ++i) {
+            nameToUnicodeText->add(nameToUnicodeTextTab[i].name, nameToUnicodeTextTab[i].u);
+        }
+        for (const auto &file : nameToUnicodeFiles) {
+            parseNameToUnicode(file);
+        }
+    });
 }
 
 void GlobalParams::parseNameToUnicode(const std::filesystem::path &name)
@@ -573,13 +583,15 @@ GlobalParams::~GlobalParams()
 
 CharCode GlobalParams::getMacRomanCharCode(const char *charName)
 {
-    // no need to lock - macRomanReverseMap is constant
+    // no need to lock - macRomanReverseMap is constant once built
+    initNameTables();
     return macRomanReverseMap->lookup(charName);
 }
 
 Unicode GlobalParams::mapNameToUnicodeAll(const char *charName)
 {
-    // no need to lock - nameToUnicodeZapfDingbats and nameToUnicodeText are constant
+    // no need to lock - nameToUnicodeZapfDingbats and nameToUnicodeText are constant once built
+    initNameTables();
     Unicode u = nameToUnicodeZapfDingbats->lookup(charName);
     if (!u) {
         u = nameToUnicodeText->lookup(charName);
@@ -589,7 +601,8 @@ Unicode GlobalParams::mapNameToUnicodeAll(const char *charName)
 
 Unicode GlobalParams::mapNameToUnicodeText(const char *charName)
 {
-    // no need to lock - nameToUnicodeText is constant
+    // no need to lock - nameToUnicodeText is constant once built
+    initNameTables();
     return nameToUnicodeText->lookup(charName);
 }
 

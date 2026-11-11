@@ -101,6 +101,7 @@ static bool bbox = false;
 static bool bboxLayout = false;
 static bool physLayout = false;
 static bool useCropBox = false;
+static bool cropSizes = false;
 static double colspacing = TextOutputDev::minColSpacing1_default;
 static double fixedPitch = 0;
 static bool rawOrder = false;
@@ -151,6 +152,7 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
+                                   { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
                                    { .arg = "-colspacing",
                                      .kind = argFP,
                                      .val = &colspacing,
@@ -317,13 +319,50 @@ static TextBounds projectLine(const TextLine *line, const UnicodeMap *uMap, bool
 
 } // namespace
 
+// Appends value as printf("%f") does in the C locale (std::to_chars with precision 6 is exactly
+// rounded too, so the text is identical), without printf's multi-precision formatting.
+static void appendFixed6(std::string &out, double value)
+{
+    char buffer[384]; // the fixed representation of the largest finite double fits
+    const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed, 6);
+    if (result.ec == std::errc()) {
+        out.append(buffer, result.ptr);
+    } else {
+        char fallback[400];
+        snprintf(fallback, sizeof(fallback), "%f", value);
+        out += fallback;
+    }
+}
+
 // -wordmeta: extra attributes of a <word> element, each preceded by a space.
 static std::string wordMetaXmlAttributes(const WordMetadata &meta)
 {
-    char buf[256];
-    snprintf(buf, sizeof(buf), " fontSize=\"%f\" rotation=\"%d\" spaceAfter=\"%d\" invisible=\"%d\" color=\"%s\" baseline=\"%f\"", meta.fontSize, meta.rotation, meta.spaceAfter ? 1 : 0, meta.invisible ? 1 : 0,
-             hexColor(meta.r, meta.g, meta.b).c_str(), meta.baseline);
-    return " fontName=\"" + myXmlTokenReplace(meta.fontName.c_str()) + "\"" + buf;
+    std::string tail = " fontSize=\"";
+    appendFixed6(tail, meta.fontSize);
+    tail += "\" rotation=\"" + std::to_string(meta.rotation) + "\" spaceAfter=\"" + (meta.spaceAfter ? "1" : "0") + "\" invisible=\"" + (meta.invisible ? "1" : "0") + "\" color=\"" + hexColor(meta.r, meta.g, meta.b) + "\" baseline=\"";
+    appendFixed6(tail, meta.baseline);
+    tail += "\"";
+    // as the snprintf into a 256-byte buffer this replaces: huge values are cut at 255 bytes
+    if (tail.size() > 255) {
+        tail.resize(255);
+    }
+    return " fontName=\"" + myXmlTokenReplace(meta.fontName.c_str()) + "\"" + tail;
+}
+
+// <line> or <block> start tag with printf("%f") coordinates.
+static void putBoxTag(FILE *f, const char *open, double xMin, double yMin, double xMax, double yMax)
+{
+    std::string tag = open;
+    tag += " xMin=\"";
+    appendFixed6(tag, xMin);
+    tag += "\" yMin=\"";
+    appendFixed6(tag, yMin);
+    tag += "\" xMax=\"";
+    appendFixed6(tag, xMax);
+    tag += "\" yMax=\"";
+    appendFixed6(tag, yMax);
+    tag += "\">\n";
+    fwrite(tag.data(), 1, tag.size(), f);
 }
 
 // -wordmeta: extra TSV columns of a word row (starting with a tab), after the text column.
@@ -965,6 +1004,8 @@ int main(int argc, char *argv[])
     if (!doc->isOk()) {
         return 1;
     }
+    // pages usually share their fonts: parse each once per document (see GfxFontCache)
+    doc->getXRef()->setFontCache(std::make_shared<GfxFontCache>());
 
 #ifdef ENFORCE_PERMISSIONS
     // check for copy permission
@@ -1241,7 +1282,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
                 }
             }
         });
-        fprintf(f, "        <line xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
+        putBoxTag(f, "        <line", bounds.xMin, bounds.yMin, bounds.xMax, bounds.yMax);
         fwrite(words.data(), 1, words.size(), f);
         fputs("        </line>\n", f);
         return;
@@ -1297,6 +1338,12 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             // after the glyph attributes, so a reader that stops at the first unknown one still sees them
             glyphAttrs += " number=\"" + std::to_string(page) + "\"" + (textOut->getImagesTruncated() ? " imagesTruncated=\"1\"" : "") + (textOut->getGraphicsTruncated() ? " graphicsTruncated=\"1\"" : "");
         }
+        if (cropSizes) {
+            // last, so a reader that stops at the first unknown attribute still sees the others; %g as pdfinfo
+            char crop[64];
+            snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));
+            glyphAttrs += crop;
+        }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
@@ -1326,7 +1373,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             fprintf(f, "    <flow>\n");
             for (blk = flow->getBlocks(); blk; blk = blk->getNext()) {
                 blk->getBBox(&xMin, &yMin, &xMax, &yMax);
-                fprintf(f, "      <block xMin=\"%f\" yMin=\"%f\" xMax=\"%f\" yMax=\"%f\">\n", xMin, yMin, xMax, yMax);
+                putBoxTag(f, "      <block", xMin, yMin, xMax, yMax);
                 for (line = blk->getLines(); line; line = line->getNext()) {
                     printLine(f, line, uMap);
                 }

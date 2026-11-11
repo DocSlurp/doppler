@@ -104,6 +104,8 @@ enum class StreamCompression
     Compress, /* Compresses the stream */
 };
 
+class GfxFontCache;
+
 class POPPLER_PRIVATE_EXPORT XRef
 {
 public:
@@ -207,6 +209,12 @@ public:
 
     // Was the XRef modified?
     bool isModified() const { return modified; }
+    // Changes whenever an object's reference can resolve to something else (reconstruction, edits); caches
+    // keyed by Ref compare it before reusing an entry.
+    unsigned int getGeneration() const { return generation; }
+    // Optional per-document cache of parsed fonts (GfxFontDict); off unless a caller installs one.
+    GfxFontCache *getFontCache() const { return fontCache.get(); }
+    void setFontCache(std::shared_ptr<GfxFontCache> cache) { fontCache = std::move(cache); }
     // Set the modification flag for XRef to true.
     void setModified() { modified = true; }
 
@@ -267,6 +275,8 @@ private:
     std::unique_ptr<BaseStream> strOwner; // ownership if any of str (can be null if others own the stream)
     mutable std::recursive_mutex mutex;
     std::function<void()> xrefReconstructedCb;
+    unsigned int generation = 0;
+    std::shared_ptr<GfxFontCache> fontCache;
 
     RefRecursionChecker refsBeingFetched;
 

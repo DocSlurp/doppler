@@ -42,6 +42,8 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   --markers      mark where pictures sit in the text for restitching: ![image](doppler-image:pN.M)
                  between paragraphs or inside a line, and charts and diagrams drawn with paths:
                  ![image](doppler-image:pN.gK) (pdftotext -images); report: images
+  --page-info    report: page_info, per page its crop box size as pdfinfo prints it, its word and
+                 invisible-word counts, and its text layer (none, invisible, visible or mixed)
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
   --stream       write pages as they are converted (--window 16)
@@ -97,6 +99,7 @@ fn main() -> ExitCode {
     let mut want_report = false;
     let mut strict = false;
     let mut window: Option<usize> = None;
+    let mut page_sizes = false;
     // pdftotext options, in order
     let mut pass: Vec<OsString> = Vec::new();
     let mut passwords: Vec<OsString> = Vec::new();
@@ -125,6 +128,7 @@ fn main() -> ExitCode {
             "--html" => opts.tables = TableFormat::Html,
             "--math" => opts.math = true,
             "--markers" => opts.markers = true,
+            "--page-info" => page_sizes = true,
             "--strict" => strict = true,
             "--stream" => window = Some(STREAM_WINDOW),
             "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
@@ -227,6 +231,7 @@ fn main() -> ExitCode {
             &opts,
             window,
             strict,
+            page_sizes,
             &pass,
             &file,
             want_report,
@@ -251,6 +256,7 @@ fn convert(
     opts: &Options,
     window: Option<usize>,
     strict: bool,
+    page_sizes: bool,
     pass: &[OsString],
     file: &OsString,
     want_report: bool,
@@ -265,6 +271,7 @@ fn convert(
         .args(if strict { None } else { Some("-compact-layout") })
         .args(if opts.math { Some("-glyphs") } else { None })
         .args(if opts.markers { Some("-images") } else { None })
+        .args(if page_sizes { Some("-crop-sizes") } else { None })
         .args(pass)
         .arg(file)
         .arg("-")
