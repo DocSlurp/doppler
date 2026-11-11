@@ -318,6 +318,24 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 
+**Two passes with an images plan.** A run that converts can also write the images plan
+(`--images-plan-out FILE`, with `--markers` or `--images-dir`; FILE must be new and its folder
+is reached without following symbolic links), and a later `--images-dir` run extracts from it
+(`--images-plan FILE`) without running pdftotext or converting again: the same files and
+manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
+and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
+`--stream`/`--window`, `--math`, `--html`) and the version; the extracting run must be given the
+same PDF and options, and refuses any difference, or a malformed plan (non-finite coordinates,
+invalid or repeated ids, an id on another page than its line or outside the range), with exit 2.
+A plan that cannot be written gives exit 5 after the Markdown.
+
+**What is byte-identical.** With the same options, pdftomarkdown's Markdown, report, image
+files and manifest are the same bytes as the release before the shared SVG pass and the
+decoder changes. Raw `pdfregions` SVG records may differ only in cairo's `source-N` ids (and so
+in record length); pages with damaged fonts or streams render one job at a time. stderr is not
+covered: poppler's syntax-error offsets and how often a repeated font warning is printed may
+differ on damaged files.
+
 Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
 link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
 
@@ -386,7 +404,8 @@ the defaults; lossless output decodes to the same pixels).
 
 ## Exit status and report
 
-- 5 (`pdftomarkdown --images-dir`): the Markdown was written but image extraction failed.
+- 5 (`pdftomarkdown --images-dir` or `--images-plan-out`): the Markdown was written but image
+  extraction failed, or the images plan could not be written.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names
