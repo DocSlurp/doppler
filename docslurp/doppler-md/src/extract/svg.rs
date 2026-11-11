@@ -1637,7 +1637,9 @@ mod tests {
         assert!(compact(&svg(&body(1_000_000)), 1).is_err());
         let refused = t.elapsed();
         eprintln!("100k uses: {ok:?}; 1M uses refused in {refused:?}");
-        assert!(ok.as_secs_f64() < 5.0 && refused.as_secs_f64() < 5.0, "{ok:?} {refused:?}");
+        // quadratic work took over 5 s for 100k and minutes for 1M; debug builds are ~10x slower
+        let limit = if cfg!(debug_assertions) { 30.0 } else { 5.0 };
+        assert!(ok.as_secs_f64() < limit && refused.as_secs_f64() < limit, "{ok:?} {refused:?}");
     }
 
     #[test]
