@@ -21,15 +21,15 @@ MARKER = "ZZDOCMARKER"
 utils = t.Utils.from_args()
 
 
-def run(util, *args, stdin=b"", timeout=120, stdout=subprocess.PIPE):
+def run(util, *args, stdin=b"", timeout=120, stdout=subprocess.PIPE, env=None):
     cmd = [os.path.join(utils.bindir, util)] + [str(a) for a in args]
-    proc = subprocess.run(cmd, input=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    proc = subprocess.run(cmd, input=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout, env=None if env is None else {**os.environ, **env})
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def regions(path, jobs, *args, timeout=120):
+def regions(path, jobs, *args, timeout=120, env=None):
     data = "".join("\t".join(str(f) for f in job) + "\n" for job in jobs).encode()
-    return run("pdfregions", *args, path, stdin=data, timeout=timeout)
+    return run("pdfregions", *args, path, stdin=data, timeout=timeout, env=env)
 
 
 def parse_records(out, strict=True):
@@ -281,6 +281,77 @@ with t.TempDir() as d:
         rc, out, err = regions(epath, job, *args)
         recs = parse_records(out)
         t.check(rc == OK and recs[0][0][1] == "ok" and mostly(recs[0][1], (0, 0, 0), 0.99), "encrypted with %s: decrypts and renders" % args[0], repr((rc, err)))
+
+    # --- svg jobs of a page drawn in one pass: the same bytes as one pass per job --------
+    # 20 svg jobs (two chunks of at most 16) around the image XObject, the vector square and
+    # the text, with raster jobs between them; the page with the inline image falls back to
+    # one pass per job (an inline image cannot be read twice)
+    no_inline = CONTENT.split(b"  q 20 0 0 20")[0] + b" BT /F1 12 Tf 72 72 Td (" + MARKER.encode() + b") Tj ET"
+    for label, content, chunks in (("no inline image", no_inline, 2), ("inline image", CONTENT, 0)):
+        tpath = d.write("together-%d.pdf" % chunks, t.simple_page_pdf(content, resources=RESOURCES, extra_objects=[image_xobject()]))
+        boxes = [(90 + 7 * k, 110 + 5 * k, 260 + 11 * k, 200 + 13 * k) for k in range(10)] + [(380, 600, 470, 710), (60, 700, 200, 730), (0, 0, 612, 792), (280, 470, 340, 520)]
+        jobs = []
+        for k in range(20):
+            x0, y0, x1, y1 = boxes[k % len(boxes)]
+            jobs.append(("p1.g%d" % (k + 1), 1, x0, y0, x1, y1, "svg", 0))
+            if k % 6 == 2:
+                jobs.append(("p1.%d" % (k + 1), 1, x0, y0, x1, y1, "raster", 96))
+        rc1, one_pass, err1 = regions(tpath, jobs, env={"PDFREGIONS_SVG_STATS": "1"})
+        rc2, per_job, _ = regions(tpath, jobs, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+        recs = parse_records(one_pass)
+        t.check(rc1 == rc2 == OK and len(recs) == len(jobs) and all(h[1] == "ok" for h, _ in recs), "svg in one pass (%s): every job answered" % label, repr((rc1, rc2, err1)))
+        # cairo numbers source surfaces from a process-wide counter (source-N), which depends on
+        # what was drawn before in either mode; pdftomarkdown renames ids by document order
+        # (per record, as pdftomarkdown compacts each SVG on its own)
+        def renumber(out):
+            def one(payload):
+                names = {}
+                return re.sub(rb"source-[0-9]+", lambda m: names.setdefault(m.group(0), b"source-%d" % len(names)), payload)
+            return [(h[:5], one(p)) for h, p in parse_records(out)]
+        t.check(renumber(one_pass) == renumber(per_job), "svg in one pass (%s): the same bytes as one pass per job, but for cairo's source-N numbering" % label)
+        want = b"svg-together chunks=%d fallback=%d" % (chunks, 0 if chunks else 2)
+        t.check(want in err1, "svg in one pass (%s): %s" % (label, want.decode()), repr(err1))
+
+    # --- svg in one pass: bounded memory, and every job gets the outcome it has alone -----------
+    import random
+    import zlib
+
+    # two 1200 x 1200 photos-like RGB images (noise compresses poorly): each SVG device embeds its
+    # own PNG of each, so 16 devices would hold ~16 times what one job holds
+    noise = random.Random(7).randbytes(1200 * 1200 * 3)
+    big = t.stream("/Type /XObject /Subtype /Image /Width 1200 /Height 1200 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode", zlib.compress(noise, 1))
+    bpath = d.write("bigimages.pdf", t.simple_page_pdf(b"q 300 0 0 300 50 450 cm /Im1 Do Q q 300 0 0 300 260 100 cm /Im1 Do Q", resources="<< /XObject << /Im1 6 0 R >> >>", extra_objects=[big]))
+    bjobs = [("p1.g%d" % (k + 1), 1, 20 * k, 20 * k, 400 + 10 * k, 600 + 10 * k, "svg", 0) for k in range(16)]
+
+    rc2, per_job, _ = regions(bpath, bjobs, "-max-memory", 512, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+    rc1, one_pass, err1 = regions(bpath, bjobs, "-max-memory", 512, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_STATS": "1"})
+    t.check(rc1 == rc2 == OK and renumber(one_pass) == renumber(per_job), "svg in one pass, large images: the same records as one pass per job")
+    # -max-memory 512: the pass may add 32 MiB; 16 copies of the images are far more
+    t.check(b"chunks=0 fallback=1 " in err1, "svg in one pass, large images: past the memory slack the page is drawn one job at a time", repr(err1))
+    rc3, plenty, err3 = regions(bpath, bjobs[:2], "-max-memory", 0, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_STATS": "1"})
+    t.check(rc3 == OK and b"chunks=1 fallback=0 retry=0" in err3 and renumber(plenty) == renumber(per_job)[:2], "svg in one pass, large images: two jobs fit in the default slack", repr(err3))
+
+    # a job whose shared-pass SVG is too large (or failed) is drawn again on its own
+    sjobs = [("p1.g1", 1, 100, 120, 244, 192, "svg", 0), ("p1.g2", 1, 380, 600, 470, 710, "svg", 0), ("p1.g3", 1, 60, 700, 200, 730, "svg", 0)]
+    spath = os.path.join(d.path, "together-2.pdf")
+    rc1, one_pass, err1 = regions(spath, sjobs, "-max-svg-bytes", 900, env={"PDFREGIONS_SVG_STATS": "1"})
+    rc2, per_job, _ = regions(spath, sjobs, "-max-svg-bytes", 900, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+    statuses = [h[1] for h, _ in parse_records(one_pass)]
+    t.check(rc1 == rc2 == OK and renumber(one_pass) == renumber(per_job) and "err:svgsize" in statuses, "svg in one pass: err:svgsize jobs are drawn again alone, the same outcomes as one pass per job", repr((statuses, err1)))
+    t.check(re.search(rb"retry=[1-9]", err1) is not None, "svg in one pass: the retried jobs are counted", repr(err1))
+
+    # --- an inline image's Flate data does not swallow EI and what follows ---------------
+    # The deflate data has no final block: after the image's one byte, the bits of " EI" and a
+    # comment line still decode as literals. The decoder must stop where upstream stops (one
+    # symbol per call) so the EI scan finds the marker and the text and square after it draw.
+    ei_data = b"x\x01jxfL EI\n%MoamgOKoGY27sAaHWm8pkLWq67maddQhUgvaa48MooSxVhScBWVh9ULgBJspeRUC0K2bAgklTR9g0CRhT4LwUUhogjr5o6x7JByK\n"
+    ei_content = b"q 100 0 0 100 50 150 cm BI /W 1 /H 1 /BPC 8 /CS /G /F /Fl ID " + ei_data + b"Q\nBT /F1 12 Tf 20 100 Td (" + MARKER.encode() + b") Tj ET\n0 0 1 rg 20 20 100 30 re f\n"
+    epath = d.write("inline-ei.pdf", t.simple_page_pdf(ei_content, resources="<< /Font << /F1 4 0 R >> >>"))
+    rc, out, err = regions(epath, [("p1.g1", 1, 0, 0, 612, 792, "svg", 72), ("p1.1", 1, 20, 742, 120, 772, "raster", 72)])
+    recs = parse_records(out)
+    t.check(rc == OK and [h[1] for h, _ in recs] == ["ok", "ok"], "inline image without a final deflate block: both jobs render", repr((rc, err)))
+    t.check(recs[0][1].count(b"<use") >= len(MARKER), "inline image without a final deflate block: the text after EI is drawn", repr(recs[0][1].count(b"<use")))
+    t.check(mostly(recs[1][1], (0, 0, 255), 0.9), "inline image without a final deflate block: the square after EI is drawn")
 
     # --- limits: timeout and memory --------------------------------------------------
     heavy = b"".join(b"%d %d m %d %d %d %d %d %d c S\n" % (i % 600, i % 780, i % 600 + 5, i % 780 + 9, i % 600 + 9, i % 780 + 2, i % 600 + 12, i % 780 + 6) for i in range(40000))

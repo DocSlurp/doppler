@@ -45,6 +45,10 @@ pub struct Settings {
     pub raster_format: RasterFormat,
     pub raster_quality: u8,
     pub raster_lossless: bool,
+    /// libwebp effort: lossy method, lossless method and lossless quality
+    pub raster_method: u8,
+    pub lossless_method: u8,
+    pub lossless_quality: u8,
     pub vector_format: VectorFormat,
     pub svg_precision: u8,
     pub svg_max_bytes: u64,
@@ -71,6 +75,9 @@ impl Default for Settings {
             raster_format: RasterFormat::Webp,
             raster_quality: 90,
             raster_lossless: false,
+            raster_method: 4,
+            lossless_method: 4,
+            lossless_quality: 50,
             vector_format: VectorFormat::Svg,
             svg_precision: 1,
             svg_max_bytes: 512 << 10,
@@ -93,6 +100,9 @@ const WITH_VALUE: &[&str] = &[
     "--images-repeats",
     "--raster-format",
     "--raster-quality",
+    "--raster-method",
+    "--lossless-method",
+    "--lossless-quality",
     "--vector-format",
     "--svg-precision",
     "--svg-max-bytes",
@@ -153,6 +163,9 @@ impl Settings {
                 }
             }
             "--raster-quality" => self.raster_quality = int(v, 0, 100).ok_or_else(bad)? as u8,
+            "--raster-method" => self.raster_method = int(v, 0, 6).ok_or_else(bad)? as u8,
+            "--lossless-method" => self.lossless_method = int(v, 0, 6).ok_or_else(bad)? as u8,
+            "--lossless-quality" => self.lossless_quality = int(v, 0, 100).ok_or_else(bad)? as u8,
             "--vector-format" => {
                 self.vector_format = match v {
                     "svg" => VectorFormat::Svg,
@@ -192,9 +205,20 @@ impl Settings {
     /// The flags given make sense together.
     pub fn check(&self) -> Result<(), String> {
         if self.other_flags && self.dir.is_none() {
-            return Err("the --images-* and --raster-*, --vector-*, --svg-* options need --images-dir".into());
+            return Err(
+                "the --images-*, --raster-*, --lossless-*, --vector-* and --svg-* options need --images-dir".into()
+            );
         }
         Ok(())
+    }
+
+    /// The WebP encoder effort.
+    pub fn effort(&self) -> super::encode::Effort {
+        super::encode::Effort {
+            lossy_method: self.raster_method,
+            lossless_method: self.lossless_method,
+            lossless_quality: self.lossless_quality,
+        }
     }
 
     /// The smallest side, in page points.
@@ -263,6 +287,7 @@ mod tests {
         assert_eq!((s.raster_quality, s.svg_precision, s.dpi, s.max_images), (90, 1, 150, 500));
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (512 << 10, 256 << 20, 120));
         assert_eq!(s.max_file_bytes, 8 << 20);
+        assert_eq!(s.effort(), super::super::encode::Effort::default());
     }
 
     #[test]
@@ -284,6 +309,9 @@ mod tests {
             ("--images-max-file-bytes", Some("2M")),
             ("--images-confine", Some("require")),
             ("--images-pages", Some("3-19")),
+            ("--raster-method", Some("2")),
+            ("--lossless-method", Some("1")),
+            ("--lossless-quality", Some("25")),
         ])
         .unwrap();
         assert_eq!(s.min_side, MinSide::Pt(10.5));
@@ -298,6 +326,9 @@ mod tests {
         assert_eq!(s.max_file_bytes, 2 << 20);
         assert_eq!(s.confine, "require");
         assert_eq!(s.pages, Some((3, 19)));
+        assert_eq!((s.raster_method, s.lossless_method, s.lossless_quality), (2, 1, 25));
+        let e = s.effort();
+        assert_eq!((e.lossy_method, e.lossless_method, e.lossless_quality), (2, 1, 25));
         assert_eq!(with(&[("--images-dir", Some("o")), ("--images-pages", Some("7"))]).unwrap().pages, Some((7, 7)));
         assert_eq!(
             with(&[("--images-dir", Some("o")), ("--images-min-side", Some("30px"))]).unwrap().min_side,
@@ -314,6 +345,13 @@ mod tests {
             ("--images-repeats", "drop"),
             ("--raster-format", "jpeg"),
             ("--raster-quality", "101"),
+            ("--raster-method", "7"),
+            ("--raster-method", "-1"),
+            ("--raster-method", "fast"),
+            ("--lossless-method", "7"),
+            ("--lossless-method", ""),
+            ("--lossless-quality", "101"),
+            ("--lossless-quality", "2.5"),
             ("--vector-format", "pdf"),
             ("--svg-precision", "3"),
             ("--svg-precision", "0"),
@@ -335,5 +373,6 @@ mod tests {
         // the others need --images-dir
         assert!(with(&[("--images-dpi", Some("100"))]).is_err());
         assert!(with(&[("--raster-lossless", None)]).is_err());
+        assert!(with(&[("--raster-method", Some("2"))]).is_err());
     }
 }

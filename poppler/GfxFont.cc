@@ -75,6 +75,7 @@
 #include <fofi/FoFiType1C.h>
 #include <fofi/FoFiTrueType.h>
 #include "GfxFont.h"
+#include "XRef.h"
 #include "PSOutputDev.h"
 #include "Stream.h"
 
@@ -2309,6 +2310,91 @@ bool GfxFont::isBase14Font(std::string_view family, std::string_view style)
 // GfxFontDict
 //------------------------------------------------------------------------
 
+std::shared_ptr<GfxFont> GfxFontCache::get(XRef *xref, std::string_view tag, Ref id, const Dict &fontDict)
+{
+    if (bypass) {
+        return GfxFont::makeFont(xref, tag, id, fontDict);
+    }
+    if ((++lookups & 4095) == 0 && hits * 64 < lookups) {
+        bypass = true;
+        entries.clear();
+        seen.clear();
+        seenOrder.clear();
+        return GfxFont::makeFont(xref, tag, id, fontDict);
+    }
+    if (xref->getGeneration() != generation) {
+        entries.clear();
+        seen.clear();
+        seenOrder.clear();
+        generation = xref->getGeneration();
+    }
+    ++clock;
+    Entry *hit = nullptr;
+    for (Entry &e : entries) {
+        if (e.id == id && e.tag == tag) {
+            hit = &e;
+            break;
+        }
+    }
+    if (hit && hit->font.use_count() == 1) {
+        hit->lastUse = clock;
+        ++hits;
+        return hit->font;
+    }
+    std::shared_ptr<GfxFont> font = GfxFont::makeFont(xref, tag, id, fontDict);
+    if (hit || !font) {
+        // in use elsewhere (keep the cached one for later pages), or nothing to cache
+        return font;
+    }
+    // keep it only the second time it is asked for
+    std::string key(sizeof(id.num) + sizeof(id.gen), '\0');
+    memcpy(key.data(), &id.num, sizeof(id.num));
+    memcpy(key.data() + sizeof(id.num), &id.gen, sizeof(id.gen));
+    key.append(tag);
+    const auto again = seen.find(key);
+    if (again == seen.end()) {
+        if (seen.size() >= maxSeen) {
+            // forget the oldest live key
+            while (!seenOrder.empty()) {
+                const auto oldest = seen.find(seenOrder.front().first);
+                const bool live = oldest != seen.end() && oldest->second == seenOrder.front().second;
+                seenOrder.pop_front();
+                if (live) {
+                    seen.erase(oldest);
+                    break;
+                }
+            }
+        }
+        seen.emplace(key, seenNext);
+        seenOrder.emplace_back(std::move(key), seenNext++);
+        if (seenOrder.size() > 2 * maxSeen + 16) {
+            // drop stale keys, keeping the order
+            std::erase_if(seenOrder, [this](const std::pair<std::string, uint64_t> &k) {
+                const auto it = seen.find(k.first);
+                return it == seen.end() || it->second != k.second;
+            });
+        }
+        return font;
+    }
+    seen.erase(again);
+    if (entries.size() >= maxEntries) {
+        // free the least recently used idle entry; if every entry is in use, do not cache
+        Entry *victim = nullptr;
+        for (Entry &e : entries) {
+            if (e.font.use_count() == 1 && (!victim || e.lastUse < victim->lastUse)) {
+                victim = &e;
+            }
+        }
+        if (!victim) {
+            return font;
+        }
+        *victim = Entry { .id = id, .tag = std::string(tag), .font = font, .lastUse = clock };
+        return font;
+    }
+    entries.push_back(Entry { .id = id, .tag = std::string(tag), .font = font, .lastUse = clock });
+    return font;
+}
+
 GfxFontDict::GfxFontDict(XRef *xref, const Ref fontDictRef, const Dict &fontDict)
 {
     Ref r;
@@ -2331,7 +2417,8 @@ GfxFontDict::GfxFontDict(XRef *xref, const Ref fontDictRef, const Dict &fontDict
                 r.gen = 100000;
                 r.num = hashFontObject(&obj2);
             }
-            fonts[i] = GfxFont::makeFont(xref, fontDict.getKey(i), r, *obj2.getDict());
+            GfxFontCache *cache = obj1.isRef() ? xref->getFontCache() : nullptr;
+            fonts[i] = cache ? cache->get(xref, fontDict.getKey(i), r, *obj2.getDict()) : GfxFont::makeFont(xref, fontDict.getKey(i), r, *obj2.getDict());
             if (fonts[i] && !fonts[i]->isOk()) {
                 // XXX: it may be meaningful to distinguish between
                 // NULL and !isOk() so that when we do lookups

@@ -20,6 +20,8 @@
 #include <poppler-config.h>
 #include <algorithm>
 #include <cerrno>
+#include <charconv>
+#include <cstdarg>
 #include <climits>
 #include <cmath>
 #include <csignal>
@@ -66,6 +68,7 @@
 #include "splash/SplashBitmap.h"
 #include "CairoOutputDev.h"
 #include "CairoFontEngine.h"
+#include "GfxState.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "Win32Console.h"
@@ -140,7 +143,13 @@ static int fail(int code, const char *msg)
 }
 
 // Poppler's own messages can quote document strings, so they are dropped.
-static void quietErrorCallback(ErrorCategory /*category*/, Goffset /*pos*/, const char * /*msg*/) { }
+// poppler's messages are not printed; their count tells a pass over a page that met a damaged
+// object (a broken font, a bad stream), which the SVG jobs then render one at a time
+static unsigned long errorsSeen = 0;
+static void quietErrorCallback(ErrorCategory /*category*/, Goffset /*pos*/, const char * /*msg*/)
+{
+    ++errorsSeen;
+}
 
 // Some Poppler and cairo paths write to stderr directly, so on POSIX fd 2 is
 // pointed at /dev/null and this tool's fixed messages go to a saved copy.
@@ -568,6 +577,43 @@ static bool writeAll(int fd, const char *data, size_t len)
 }
 
 static bool outputFailed = false;
+// draw the SVG jobs of a page in one pass (PDFREGIONS_SVG_TOGETHER=0: one pass per job)
+static bool svgTogether = true;
+// at most this many SVG jobs share one pass: bounds the surfaces alive at once, and lets
+// records flow before a long page is done (a timeout keeps the records already written)
+static constexpr size_t svgChunk = 16;
+// PDFREGIONS_SVG_STATS=1: one diagnostic line with the pages drawn together and the fallbacks (tests)
+static bool svgStats = false;
+static long svgPagesTogether = 0, svgPagesFallback = 0, svgRetries = 0;
+// Memory a pass over a page for several SVG jobs may add to the process's resident size, in
+// KiB: min(64 MiB, -max-memory / 16). Each device holds its own copy of everything drawn (and
+// cairo decodes and encodes the images of each when it finishes), so past this the pass stops
+// and the jobs render one at a time, as one job would alone; the finished SVGs a pass keeps for
+// later records count against it too.
+static long long svgSlackKiB = 64 * 1024;
+// /proc/self/statm, opened before confinement; -1 when unavailable (then no pass is shared)
+static int statmFd = -1;
+
+// The process's resident size in KiB now, or -1 when unknown. (getrusage's peak is no use: it
+// keeps the high-water mark of the process before exec, such as a large parent's.)
+static long long residentKiB()
+{
+#ifndef _WIN32
+    if (statmFd >= 0) {
+        char buf[128];
+        const ssize_t n = pread(statmFd, buf, sizeof(buf) - 1, 0);
+        if (n > 0) {
+            buf[n] = '\0';
+            unsigned long long size = 0, resident = 0;
+            if (sscanf(buf, "%llu %llu", &size, &resident) == 2) {
+                static const long long pageKiB = sysconf(_SC_PAGESIZE) / 1024;
+                return static_cast<long long>(resident) * pageKiB;
+            }
+        }
+    }
+#endif
+    return -1;
+}
 static unsigned long long outputBytes = 0;
 static unsigned long long maxOutputBytes = 0;
 
@@ -598,6 +644,126 @@ static void emitError(const Job &job, const char *code)
 {
     const std::string status = std::string("err:") + code;
     emitRecord(job, status.c_str(), "-", 0, 0, nullptr, 0);
+}
+
+//------------------------------------------------------------------------
+// fixed-point printing
+//------------------------------------------------------------------------
+
+// cairo's SVG surface prints every coordinate with snprintf "%f" (and numbers
+// under 0.1 with "%.18f", then "%.*f"); glibc formats those through its
+// multi-precision code, which was about a tenth of the image pass on figure-
+// heavy documents. This process (C locale, default rounding) answers a format
+// that is exactly "%f", "%.<N>f" or "%.*f" with a finite double through
+// std::to_chars(fixed, precision): correctly rounded like glibc, so the same
+// characters; anything else goes to glibc. Defining the functions here makes
+// libcairo and libpoppler call them (an executable's definitions come first).
+namespace {
+
+// The precision of a whole format "%f" (6), "%.<N>f" (N), "%.*f" (*star), else -1.
+int fixedFormat(const char *fmt, bool *star)
+{
+    *star = false;
+    if (fmt[0] != '%') {
+        return -1;
+    }
+    if (fmt[1] == 'f' && fmt[2] == '\0') {
+        return 6;
+    }
+    if (fmt[1] != '.') {
+        return -1;
+    }
+    if (fmt[2] == '*' && fmt[3] == 'f' && fmt[4] == '\0') {
+        *star = true;
+        return 0;
+    }
+    int prec = 0, i = 2;
+    for (; fmt[i] >= '0' && fmt[i] <= '9' && i < 5; ++i) {
+        prec = prec * 10 + (fmt[i] - '0');
+    }
+    return i > 2 && fmt[i] == 'f' && fmt[i + 1] == '\0' ? prec : -1;
+}
+
+// snprintf's answer for a fixed format, or -1 to leave it to glibc.
+int fixedPrint(char *s, size_t maxlen, int prec, double v)
+{
+    if (prec < 0 || prec > 60 || !std::isfinite(v)) {
+        return -1;
+    }
+    char buf[400];
+    const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::fixed, prec);
+    if (r.ec != std::errc()) {
+        return -1;
+    }
+    const size_t n = static_cast<size_t>(r.ptr - buf);
+    if (maxlen > 0) {
+        const size_t k = std::min(n, maxlen - 1);
+        memcpy(s, buf, k);
+        s[k] = '\0';
+    }
+    return static_cast<int>(n);
+}
+
+bool fixedPrintingOff()
+{
+    static const bool off = [] {
+        const char *e = getenv("PDFREGIONS_GLIBC_PRINTF");
+        return e && strcmp(e, "1") == 0;
+    }();
+    return off;
+}
+
+} // namespace
+
+extern "C" int __vsnprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, va_list ap);
+// default visibility: the build hides symbols (-fvisibility=hidden), and these must be exported
+extern "C" __attribute__((visibility("default"))) int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...);
+extern "C" __attribute__((visibility("default"))) int snprintf(char *__restrict s, size_t maxlen, const char *__restrict fmt, ...) noexcept;
+
+extern "C" int __snprintf_chk(char *s, size_t maxlen, int flag, size_t slen, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    bool star;
+    int prec = fixedPrintingOff() || slen < maxlen ? -1 : fixedFormat(fmt, &star);
+    int n = -1;
+    if (prec >= 0) {
+        va_list probe;
+        va_copy(probe, ap);
+        if (star) {
+            prec = va_arg(probe, int);
+        }
+        n = fixedPrint(s, maxlen, prec, va_arg(probe, double));
+        va_end(probe);
+    }
+    if (n < 0) {
+        n = __vsnprintf_chk(s, maxlen, flag, slen, fmt, ap);
+    }
+    va_end(ap);
+    return n;
+}
+
+extern "C" int snprintf(char *__restrict s, size_t maxlen, const char *__restrict fmt, ...) noexcept
+{
+    va_list ap;
+    va_start(ap, fmt);
+    bool star;
+    int prec = fixedPrintingOff() ? -1 : fixedFormat(fmt, &star);
+    int n = -1;
+    if (prec >= 0) {
+        va_list probe;
+        va_copy(probe, ap);
+        if (star) {
+            prec = va_arg(probe, int);
+        }
+        n = fixedPrint(s, maxlen, prec, va_arg(probe, double));
+        va_end(probe);
+    }
+    if (n < 0) {
+        n = vsnprintf(s, maxlen, fmt, ap);
+    }
+    va_end(ap);
+    return n;
 }
 
 //------------------------------------------------------------------------
@@ -676,6 +842,386 @@ public:
     }
 };
 
+// Draws one page into several output devices at once: the page's content is
+// parsed and interpreted once and every call goes to each device in turn.
+// Used for the SVG jobs of one page, which all draw the whole page at 72 dpi
+// with the same Gfx state and differ only in their own cairo clip, so each
+// device receives exactly the calls it would get from a render of its own.
+// Anything that could make the devices' inputs differ from separate renders
+// marks the tee unsafe; the caller then discards every device's output and
+// renders the jobs one at a time as before:
+//  - an inline image: its stream replays only what the first device read;
+//  - a shaded fill entered with a path (the device rewrites the state path);
+//  - devices answering a question differently.
+class TeeOutputDev : public OutputDev
+{
+public:
+    TeeOutputDev(std::vector<OutputDev *> devsA, long long limitKiBA) : devs(std::move(devsA)), limitKiB(limitKiBA) { }
+
+    bool isUnsafe() const { return unsafe; }
+    bool overMemory() const { return memory; }
+    // Gfx calls this about every 10 operators; memory is read every 8th call (paths and text
+    // grow slowly; an image is checked before each device draws it)
+    static bool abortCheck(void *data)
+    {
+        auto *tee = static_cast<TeeOutputDev *>(data);
+        if ((++tee->checks & 7) == 0) {
+            tee->checkMemory();
+        }
+        return tee->unsafe;
+    }
+
+    // questions: every device is the same kind with the same settings
+    bool upsideDown() override { return agree([](OutputDev *d) { return d->upsideDown(); }); }
+    bool useDrawChar() override { return agree([](OutputDev *d) { return d->useDrawChar(); }); }
+    bool useTilingPatternFill() override { return agree([](OutputDev *d) { return d->useTilingPatternFill(); }); }
+    bool useShadedFills(int type) override { return agree([type](OutputDev *d) { return d->useShadedFills(type); }); }
+    bool useFillColorStop() override { return agree([](OutputDev *d) { return d->useFillColorStop(); }); }
+    bool useDrawForm() override { return agree([](OutputDev *d) { return d->useDrawForm(); }); }
+    bool interpretType3Chars() override { return agree([](OutputDev *d) { return d->interpretType3Chars(); }); }
+    bool needNonText() override { return agree([](OutputDev *d) { return d->needNonText(); }); }
+    bool needCharCount() override { return agree([](OutputDev *d) { return d->needCharCount(); }); }
+    bool needClipToCropBox() override { return agree([](OutputDev *d) { return d->needClipToCropBox(); }); }
+    bool supportJPXtransparency() override { return agree([](OutputDev *d) { return d->supportJPXtransparency(); }); }
+    bool needImageMaskGeometry() override { return agree([](OutputDev *d) { return d->needImageMaskGeometry(); }); }
+    bool needImageGeometry() override { return agree([](OutputDev *d) { return d->needImageGeometry(); }); }
+    bool getVectorAntialias() override { return agree([](OutputDev *d) { return d->getVectorAntialias(); }); }
+    bool checkTransparencyGroup(GfxState *state, bool knockout) override { return agree([&](OutputDev *d) { return d->checkTransparencyGroup(state, knockout); }); }
+    bool axialShadedSupportExtend(GfxState *state, GfxAxialShading *shading) override { return agree([&](OutputDev *d) { return d->axialShadedSupportExtend(state, shading); }); }
+    bool radialShadedSupportExtend(GfxState *state, GfxRadialShading *shading) override { return agree([&](OutputDev *d) { return d->radialShadedSupportExtend(state, shading); }); }
+
+    void setDefaultCTM(const std::array<double, 6> &ctm) override
+    {
+        OutputDev::setDefaultCTM(ctm);
+        each([&](OutputDev *d) { d->setDefaultCTM(ctm); });
+    }
+    void setVectorAntialias(bool vaa) override
+    {
+        each([&](OutputDev *d) { d->setVectorAntialias(vaa); });
+    }
+
+#define TEE_STATE(name)                                                                                                                                                                                                                        \
+    void name(GfxState *state) override                                                                                                                                                                                                       \
+    {                                                                                                                                                                                                                                          \
+        each([&](OutputDev *d) { d->name(state); });                                                                                                                                                                                          \
+    }
+    TEE_STATE(saveState)
+    TEE_STATE(restoreState)
+    TEE_STATE(updateAll)
+    TEE_STATE(updateLineDash)
+    TEE_STATE(updateFlatness)
+    TEE_STATE(updateLineJoin)
+    TEE_STATE(updateLineCap)
+    TEE_STATE(updateMiterLimit)
+    TEE_STATE(updateLineWidth)
+    TEE_STATE(updateStrokeAdjust)
+    TEE_STATE(updateAlphaIsShape)
+    TEE_STATE(updateTextKnockout)
+    TEE_STATE(updateFillColorSpace)
+    TEE_STATE(updateStrokeColorSpace)
+    TEE_STATE(updateFillColor)
+    TEE_STATE(updateStrokeColor)
+    TEE_STATE(updateBlendMode)
+    TEE_STATE(updateFillOpacity)
+    TEE_STATE(updateStrokeOpacity)
+    TEE_STATE(updatePatternOpacity)
+    TEE_STATE(clearPatternOpacity)
+    TEE_STATE(updateFillOverprint)
+    TEE_STATE(updateStrokeOverprint)
+    TEE_STATE(updateOverprintMode)
+    TEE_STATE(updateTransfer)
+    TEE_STATE(updateFont)
+    TEE_STATE(updateTextMat)
+    TEE_STATE(updateCharSpace)
+    TEE_STATE(updateRender)
+    TEE_STATE(updateRise)
+    TEE_STATE(updateWordSpace)
+    TEE_STATE(updateHorizScaling)
+    TEE_STATE(updateTextPos)
+    TEE_STATE(saveTextPos)
+    TEE_STATE(restoreTextPos)
+    TEE_STATE(stroke)
+    TEE_STATE(fill)
+    TEE_STATE(eoFill)
+    TEE_STATE(clip)
+    TEE_STATE(eoClip)
+    TEE_STATE(clipToStrokePath)
+    TEE_STATE(beginStringOp)
+    TEE_STATE(endStringOp)
+    TEE_STATE(endString)
+    TEE_STATE(endType3Char)
+    TEE_STATE(beginTextObject)
+    TEE_STATE(endTextObject)
+    TEE_STATE(endActualText)
+    TEE_STATE(imageMaskGeometry)
+    TEE_STATE(endMarkedContent)
+    TEE_STATE(endTransparencyGroup)
+    TEE_STATE(clearSoftMask)
+#undef TEE_STATE
+
+    void startPage(int pageNum, GfxState *state, XRef *xref) override
+    {
+        each([&](OutputDev *d) { d->startPage(pageNum, state, xref); });
+    }
+    void endPage() override
+    {
+        each([](OutputDev *d) { d->endPage(); });
+    }
+    void dump() override
+    {
+        each([](OutputDev *d) { d->dump(); });
+    }
+    void updateCTM(GfxState *state, double m11, double m12, double m21, double m22, double m31, double m32) override
+    {
+        each([&](OutputDev *d) { d->updateCTM(state, m11, m12, m21, m22, m31, m32); });
+    }
+    void updateFillColorStop(GfxState *state, double offset) override
+    {
+        each([&](OutputDev *d) { d->updateFillColorStop(state, offset); });
+    }
+    void updateTextShift(GfxState *state, double shift) override
+    {
+        each([&](OutputDev *d) { d->updateTextShift(state, shift); });
+    }
+    bool tilingPatternFill(GfxState *state, Gfx *gfx, Catalog *cat, GfxTilingPattern *tPat, const std::array<double, 6> &mat, int x0, int y0, int x1, int y1, double xStep, double yStep) override
+    {
+        return agree([&](OutputDev *d) { return d->tilingPatternFill(state, gfx, cat, tPat, mat, x0, y0, x1, y1, xStep, yStep); });
+    }
+    // these three draw the clip box through the state's path and clear it
+    bool functionShadedFill(GfxState *state, GfxFunctionShading *shading) override
+    {
+        pathless(state);
+        return agree([&](OutputDev *d) { return d->functionShadedFill(state, shading); });
+    }
+    bool gouraudTriangleShadedFill(GfxState *state, GfxGouraudTriangleShading *shading) override
+    {
+        pathless(state);
+        return agree([&](OutputDev *d) { return d->gouraudTriangleShadedFill(state, shading); });
+    }
+    bool patchMeshShadedFill(GfxState *state, GfxPatchMeshShading *shading) override
+    {
+        pathless(state);
+        return agree([&](OutputDev *d) { return d->patchMeshShadedFill(state, shading); });
+    }
+    bool axialShadedFill(GfxState *state, GfxAxialShading *shading, double tMin, double tMax) override
+    {
+        return agree([&](OutputDev *d) { return d->axialShadedFill(state, shading, tMin, tMax); });
+    }
+    bool radialShadedFill(GfxState *state, GfxRadialShading *shading, double sMin, double sMax) override
+    {
+        return agree([&](OutputDev *d) { return d->radialShadedFill(state, shading, sMin, sMax); });
+    }
+    void beginString(GfxState *state, const std::string &str) override
+    {
+        each([&](OutputDev *d) { d->beginString(state, str); });
+    }
+    void drawChar(GfxState *state, double x, double y, double dx, double dy, double originX, double originY, CharCode code, int nBytes, const Unicode *u, int uLen) override
+    {
+        each([&](OutputDev *d) { d->drawChar(state, x, y, dx, dy, originX, originY, code, nBytes, u, uLen); });
+    }
+    void drawString(GfxState *state, const std::string &str) override
+    {
+        each([&](OutputDev *d) { d->drawString(state, str); });
+    }
+    bool beginType3Char(GfxState *state, double x, double y, double dx, double dy, CharCode code, const Unicode *u, int uLen) override
+    {
+        return agree([&](OutputDev *d) { return d->beginType3Char(state, x, y, dx, dy, code, u, uLen); });
+    }
+    void incCharCount(int nChars) override
+    {
+        each([&](OutputDev *d) { d->incCharCount(nChars); });
+    }
+    void beginActualText(GfxState *state, const std::string &text) override
+    {
+        each([&](OutputDev *d) { d->beginActualText(state, text); });
+    }
+    // images: each device rewinds the stream before reading it (an XObject
+    // stream rereads from the file); an inline image cannot be reread
+    void drawImageMask(GfxState *state, Object *ref, Stream *str, int width, int height, bool invert, bool interpolate, bool inlineImg) override
+    {
+        image(inlineImg, [&](OutputDev *d) { d->drawImageMask(state, ref, str, width, height, invert, interpolate, inlineImg); });
+    }
+    bool setSoftMaskFromImageMask(GfxState *state, Object *ref, Stream *str, int width, int height, bool invert, bool inlineImg, std::array<double, 6> &baseMatrix) override
+    {
+        if (inlineImg) {
+            unsafe = true;
+            return devs[0]->setSoftMaskFromImageMask(state, ref, str, width, height, invert, inlineImg, baseMatrix);
+        }
+        const std::array<double, 6> base = baseMatrix;
+        bool first = true, answer = false;
+        for (OutputDev *d : devs) {
+            std::array<double, 6> m = base;
+            const bool r = d->setSoftMaskFromImageMask(state, ref, str, width, height, invert, inlineImg, m);
+            if (first) {
+                answer = r;
+                baseMatrix = m;
+                first = false;
+            } else if (r != answer || m != baseMatrix) {
+                unsafe = true;
+            }
+        }
+        return answer;
+    }
+    void unsetSoftMaskFromImageMask(GfxState *state, std::array<double, 6> &baseMatrix) override
+    {
+        const std::array<double, 6> base = baseMatrix;
+        bool first = true;
+        for (OutputDev *d : devs) {
+            std::array<double, 6> m = base;
+            d->unsetSoftMaskFromImageMask(state, m);
+            if (first) {
+                baseMatrix = m;
+                first = false;
+            } else if (m != baseMatrix) {
+                unsafe = true;
+            }
+        }
+    }
+    void drawImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, const int *maskColors, bool inlineImg) override
+    {
+        image(inlineImg, [&](OutputDev *d) { d->drawImage(state, ref, str, width, height, colorMap, interpolate, maskColors, inlineImg); });
+    }
+    void drawMaskedImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, Stream *maskStr, int maskWidth, int maskHeight, bool maskInvert, bool maskInterpolate) override
+    {
+        image(false, [&](OutputDev *d) { d->drawMaskedImage(state, ref, str, width, height, colorMap, interpolate, maskStr, maskWidth, maskHeight, maskInvert, maskInterpolate); });
+    }
+    void drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str, int width, int height, GfxImageColorMap *colorMap, bool interpolate, Stream *maskStr, int maskWidth, int maskHeight, GfxImageColorMap *maskColorMap,
+                             bool maskInterpolate) override
+    {
+        image(false, [&](OutputDev *d) { d->drawSoftMaskedImage(state, ref, str, width, height, colorMap, interpolate, maskStr, maskWidth, maskHeight, maskColorMap, maskInterpolate); });
+    }
+    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref) override
+    {
+        each([&](OutputDev *d) { d->imageGeometry(state, width, height, stencil, ref); });
+    }
+    void beginMarkedContent(const std::string &name, Dict *properties) override
+    {
+        each([&](OutputDev *d) { d->beginMarkedContent(name, properties); });
+    }
+    void markPoint(const std::string &name) override
+    {
+        each([&](OutputDev *d) { d->markPoint(name); });
+    }
+    void markPoint(const std::string &name, Dict *properties) override
+    {
+        each([&](OutputDev *d) { d->markPoint(name, properties); });
+    }
+    void opiBegin(GfxState *state, const Dict &opiDict) override
+    {
+        each([&](OutputDev *d) { d->opiBegin(state, opiDict); });
+    }
+    void opiEnd(GfxState *state, const Dict &opiDict) override
+    {
+        each([&](OutputDev *d) { d->opiEnd(state, opiDict); });
+    }
+    void type3D0(GfxState *state, double wx, double wy) override
+    {
+        each([&](OutputDev *d) { d->type3D0(state, wx, wy); });
+    }
+    void type3D1(GfxState *state, double wx, double wy, double llx, double lly, double urx, double ury) override
+    {
+        each([&](OutputDev *d) { d->type3D1(state, wx, wy, llx, lly, urx, ury); });
+    }
+    void beginForm(Object *obj, Ref id) override
+    {
+        each([&](OutputDev *d) { d->beginForm(obj, id); });
+    }
+    void drawForm(Ref id) override
+    {
+        each([&](OutputDev *d) { d->drawForm(id); });
+    }
+    void endForm(Object *obj, Ref id) override
+    {
+        each([&](OutputDev *d) { d->endForm(obj, id); });
+    }
+    void psXObject(Stream *psStream, Stream *level1Stream) override
+    {
+        // never reached with cairo devices; a stream read twice is not the same
+        unsafe = true;
+        devs[0]->psXObject(psStream, level1Stream);
+    }
+    void beginTransparencyGroup(GfxState *state, const std::array<double, 4> &bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask) override
+    {
+        each([&](OutputDev *d) { d->beginTransparencyGroup(state, bbox, blendingColorSpace, isolated, knockout, forSoftMask); });
+    }
+    void paintTransparencyGroup(GfxState *state, const std::array<double, 4> &bbox) override
+    {
+        each([&](OutputDev *d) { d->paintTransparencyGroup(state, bbox); });
+    }
+    void setSoftMask(GfxState *state, const std::array<double, 4> &bbox, bool alpha, Function *transferFunc, const GfxColor &backdropColor) override
+    {
+        each([&](OutputDev *d) { d->setSoftMask(state, bbox, alpha, transferFunc, backdropColor); });
+    }
+    void processLink(AnnotLink *link) override
+    {
+        each([&](OutputDev *d) { d->processLink(link); });
+    }
+
+private:
+    template<class F>
+    void each(F &&f)
+    {
+        for (OutputDev *d : devs) {
+            f(d);
+        }
+    }
+    // every device is asked; the first one's answer is used, and a device
+    // that answers otherwise makes the result unusable
+    template<class F>
+    bool agree(F &&f)
+    {
+        const bool answer = f(devs[0]);
+        for (size_t i = 1; i < devs.size(); ++i) {
+            if (f(devs[i]) != answer) {
+                unsafe = true;
+            }
+        }
+        return answer;
+    }
+    // an image is copied into every device: the memory is checked before each copy, and once
+    // over the pass is discarded, so the other devices skip it (drawing an image changes no
+    // device state)
+    template<class F>
+    void image(bool inlineImg, F &&f)
+    {
+        if (inlineImg) {
+            unsafe = true;
+            f(devs[0]);
+            return;
+        }
+        for (OutputDev *d : devs) {
+            if (checkMemory()) {
+                return;
+            }
+            f(d);
+        }
+    }
+    // true (and the pass unsafe) once the resident size passed the pass's limit
+    bool checkMemory()
+    {
+        // an unreadable resident size counts as over the limit: the shared pass is dropped
+        if (!memory) {
+            const long long rss = residentKiB();
+            if (rss < 0 || rss > limitKiB) {
+                memory = unsafe = true;
+            }
+        }
+        return memory;
+    }
+    void pathless(GfxState *state)
+    {
+        if (state->isCurPt() || state->isPath()) {
+            unsafe = true;
+        }
+    }
+
+    std::vector<OutputDev *> devs;
+    long long limitKiB;
+    unsigned checks = 0;
+    bool unsafe = false;
+    bool memory = false;
+};
+
 class Renderer
 {
 public:
@@ -708,8 +1254,13 @@ public:
     void renderPage(const std::vector<Job> &jobs, size_t first, size_t last);
 
 private:
+    struct SvgCanvas;
     void renderRaster(const Job &job, const PixelRect &rect);
     void renderSvg(const Job &job, const Region &r);
+    bool beginSvg(SvgCanvas &c);
+    const char *finishSvg(SvgCanvas &c, std::string *svg);
+    void emitSvg(const Job &job, const char *error, const std::string &svg);
+    bool renderSvgTogether(const std::vector<Job> &jobs, const std::vector<std::pair<size_t, Region>> &svgJobs, std::vector<std::pair<const char *, std::string>> *results);
 
     PDFDoc *doc;
     long long maxPixels;
@@ -754,9 +1305,19 @@ void Renderer::renderRaster(const Job &job, const PixelRect &rect)
     }
 }
 
+// cairo's output for one canvas; a discarded canvas drops what cairo writes when it finishes
+struct SvgSink
+{
+    std::string out;
+    bool drop = false;
+};
+
 static cairo_status_t appendToString(void *closure, const unsigned char *data, unsigned int length)
 {
-    static_cast<std::string *>(closure)->append(reinterpret_cast<const char *>(data), length);
+    auto *sink = static_cast<SvgSink *>(closure);
+    if (!sink->drop) {
+        sink->out.append(reinterpret_cast<const char *>(data), length);
+    }
     return CAIRO_STATUS_SUCCESS;
 }
 
@@ -776,45 +1337,67 @@ static std::string formatNumber(double v)
     return s == "-0" ? "0" : s;
 }
 
-void Renderer::renderSvg(const Job &job, const Region &r)
+// One SVG job's surface and device: the region drawn at the origin.
+struct Renderer::SvgCanvas
 {
+    Region r;
+    // heap-held: cairo keeps its address while the canvas moves
+    std::unique_ptr<SvgSink> sink = std::make_unique<SvgSink>();
+    cairo_surface_t *surface = nullptr;
+    cairo_t *cr = nullptr;
+    std::unique_ptr<CairoOutputDev> cairo;
+};
+
+// Sets up the surface and device; false when the job cannot render.
+bool Renderer::beginSvg(SvgCanvas &c)
+{
+    const Region &r = c.r;
     const double w = r.x1 - r.x0, h = r.y1 - r.y0;
-    std::string out;
-    cairo_surface_t *surface = cairo_svg_surface_create_for_stream(appendToString, &out, w, h);
-    cairo_svg_surface_restrict_to_version(surface, CAIRO_SVG_VERSION_1_2);
-    cairo_svg_surface_set_document_unit(surface, CAIRO_SVG_UNIT_PT);
+    c.surface = cairo_svg_surface_create_for_stream(appendToString, c.sink.get(), w, h);
+    cairo_svg_surface_restrict_to_version(c.surface, CAIRO_SVG_VERSION_1_2);
+    cairo_svg_surface_set_document_unit(c.surface, CAIRO_SVG_UNIT_PT);
     if (!cairoFonts) {
-        cairo_surface_destroy(surface);
-        emitError(job, "render");
-        return;
+        cairo_surface_destroy(c.surface);
+        c.surface = nullptr;
+        return false;
     }
-    std::unique_ptr<CairoOutputDev> cairo = noImages ? std::make_unique<NoImages<CairoOutputDev>>() : std::make_unique<CairoOutputDev>();
-    cairo->startDoc(doc, cairoFonts.get());
+    c.cairo = noImages ? std::make_unique<NoImages<CairoOutputDev>>() : std::make_unique<CairoOutputDev>();
+    c.cairo->startDoc(doc, cairoFonts.get());
     // embedded images are PNG only (pdftomarkdown's SVG allowlist), never the source JPEG etc.
-    cairo->setEmbedMimeData(false);
-    cairo_t *cr = cairo_create(surface);
-    cairo->setCairo(cr);
+    c.cairo->setEmbedMimeData(false);
+    c.cr = cairo_create(c.surface);
+    c.cairo->setCairo(c.cr);
     // printing: keep vectors and images at their own resolution
-    cairo->setPrinting(true);
-    cairo_save(cr);
-    cairo_translate(cr, -r.x0, -r.y0);
-    cairo_rectangle(cr, r.x0, r.y0, w, h);
-    cairo_clip(cr);
-    doc->displayPageSlice(cairo.get(), job.page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1);
-    cairo_restore(cr);
-    cairo->setCairo(nullptr);
-    cairo.reset();
-    cairo_status_t status = cairo_status(cr);
-    cairo_destroy(cr);
-    cairo_surface_finish(surface);
+    c.cairo->setPrinting(true);
+    cairo_save(c.cr);
+    cairo_translate(c.cr, -r.x0, -r.y0);
+    cairo_rectangle(c.cr, r.x0, r.y0, w, h);
+    cairo_clip(c.cr);
+    return true;
+}
+
+// Finishes the surface after the page was drawn: nullptr and the SVG, or an
+// error code.
+const char *Renderer::finishSvg(SvgCanvas &c, std::string *svgOut)
+{
+    const Region &r = c.r;
+    const double w = r.x1 - r.x0, h = r.y1 - r.y0;
+    cairo_restore(c.cr);
+    c.cairo->setCairo(nullptr);
+    c.cairo.reset();
+    cairo_status_t status = cairo_status(c.cr);
+    cairo_destroy(c.cr);
+    c.cr = nullptr;
+    cairo_surface_finish(c.surface);
     if (status == CAIRO_STATUS_SUCCESS) {
-        status = cairo_surface_status(surface);
+        status = cairo_surface_status(c.surface);
     }
-    cairo_surface_destroy(surface);
+    cairo_surface_destroy(c.surface);
+    c.surface = nullptr;
     if (status != CAIRO_STATUS_SUCCESS) {
-        emitError(job, "render");
-        return;
+        return "render";
     }
+    std::string &out = c.sink->out;
 
     // cairo draws the region at the origin (viewBox "0 0 w h"). Put it back
     // in page coordinates: viewBox = the region, content translated by its
@@ -824,17 +1407,16 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     const size_t viewBox = svgStart == std::string::npos ? std::string::npos : out.find(" viewBox=\"", svgStart);
     const size_t close = out.rfind("</svg>");
     if (svgEnd == std::string::npos || viewBox == std::string::npos || viewBox > svgEnd || close == std::string::npos || close < svgEnd) {
-        emitError(job, "render");
-        return;
+        return "render";
     }
     const size_t valueStart = viewBox + 10;
     const size_t valueEnd = out.find('"', valueStart);
     if (valueEnd == std::string::npos || valueEnd > svgEnd) {
-        emitError(job, "render");
-        return;
+        return "render";
     }
     const std::string box = formatNumber(r.x0) + " " + formatNumber(r.y0) + " " + formatNumber(w) + " " + formatNumber(h);
-    std::string svg;
+    std::string &svg = *svgOut;
+    svg.clear();
     svg.reserve(out.size() + 96);
     svg.append(out, 0, valueStart);
     svg += box;
@@ -845,10 +1427,112 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     svg.append(out, close, std::string::npos);
     std::string().swap(out);
     if (svg.size() > maxSvgBytes) {
-        emitError(job, "svgsize");
+        std::string().swap(svg);
+        return "svgsize";
+    }
+    return nullptr;
+}
+
+void Renderer::emitSvg(const Job &job, const char *error, const std::string &svg)
+{
+    if (error) {
+        emitError(job, error);
+    } else {
+        emitRecord(job, "ok", "svg", 0, 0, svg.data(), svg.size());
+    }
+}
+
+void Renderer::renderSvg(const Job &job, const Region &r)
+{
+    SvgCanvas c;
+    c.r = r;
+    if (!beginSvg(c)) {
+        emitError(job, "render");
         return;
     }
-    emitRecord(job, "ok", "svg", 0, 0, svg.data(), svg.size());
+    doc->displayPageSlice(c.cairo.get(), job.page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1);
+    std::string svg;
+    const char *error = finishSvg(c, &svg);
+    emitSvg(job, error, svg);
+}
+
+// Answer of renderSvgTogether for a job to render on its own.
+static const char retryAlone[] = "retry";
+
+// Every SVG job of one page from a single pass over the page (TeeOutputDev).
+// False when the pass could differ from separate renders, or met a damaged object or the
+// memory limit (results unset): the caller then renders each job on its own. A job whose
+// result is not a clean SVG (cairo failed, too large) or does not fit the memory kept for
+// later records gets retryAlone, and is rendered on its own when due, so every job's outcome
+// is the one it has alone.
+bool Renderer::renderSvgTogether(const std::vector<Job> &jobs, const std::vector<std::pair<size_t, Region>> &svgJobs, std::vector<std::pair<const char *, std::string>> *results)
+{
+    std::vector<SvgCanvas> canvases(svgJobs.size());
+    std::vector<OutputDev *> devs;
+    bool ok = true;
+    for (size_t k = 0; k < svgJobs.size(); ++k) {
+        canvases[k].r = svgJobs[k].second;
+        if (!beginSvg(canvases[k])) {
+            ok = false;
+            break;
+        }
+        devs.push_back(canvases[k].cairo.get());
+    }
+    const long long start = residentKiB();
+    bool unsafe = !ok || start < 0;
+    auto fonts = cairoFonts ? cairoFonts->cacheSnapshot() : std::vector<std::shared_ptr<CairoFont>>();
+    if (!unsafe) {
+        const unsigned long errorsBefore = errorsSeen;
+        TeeOutputDev tee(devs, start + svgSlackKiB);
+        doc->displayPageSlice(&tee, jobs[svgJobs[0].first].page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1, TeeOutputDev::abortCheck, &tee);
+        unsafe = tee.isUnsafe() || errorsSeen != errorsBefore;
+    }
+    results->assign(svgJobs.size(), { nullptr, std::string() });
+    size_t kept = 0;
+    const size_t keepLimit = static_cast<size_t>(svgSlackKiB) * 1024;
+    for (size_t k = 0; k < canvases.size(); ++k) {
+        SvgCanvas &c = canvases[k];
+        if (!c.cr) {
+            continue;
+        }
+        // cairo decodes images when a surface finishes: past the memory limit the rest are
+        // discarded and their jobs drawn alone
+        const long long rss = unsafe ? 0 : residentKiB();
+        const bool over = !unsafe && (rss < 0 || rss > start + svgSlackKiB);
+        if (unsafe || over) {
+            if (over) {
+                (*results)[k].first = retryAlone;
+            }
+            // discard: finish and free without keeping anything. A finishing SVG surface replays
+            // what was recorded (decoding and encoding every image), so clear the recording first
+            // with an unclipped CLEAR paint
+            c.sink->drop = true;
+            cairo_restore(c.cr);
+            c.cairo->setCairo(nullptr);
+            c.cairo.reset();
+            cairo_destroy(c.cr);
+            cairo_t *clear = cairo_create(c.surface);
+            cairo_set_operator(clear, CAIRO_OPERATOR_CLEAR);
+            cairo_paint(clear);
+            cairo_destroy(clear);
+            cairo_surface_finish(c.surface);
+            cairo_surface_destroy(c.surface);
+            continue;
+        }
+        auto &[error, svg] = (*results)[k];
+        error = finishSvg(c, &svg);
+        if (error || kept + svg.size() > keepLimit) {
+            std::string().swap(svg);
+            error = retryAlone;
+        } else {
+            kept += svg.size();
+        }
+    }
+    if (unsafe && cairoFonts) {
+        // the jobs are drawn again one at a time: from the fonts as they were before this pass
+        cairoFonts->restoreCache(std::move(fonts));
+    }
+    return !unsafe;
 }
 
 void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t last)
@@ -871,13 +1555,48 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
         return;
     }
 
+    // SVG jobs of the page are drawn together, up to svgChunk at a time (one pass over the
+    // page per chunk), when the first of a chunk is due; records stay in job order.
+    // PDFREGIONS_SVG_TOGETHER=0 draws each on its own
+    std::vector<std::pair<size_t, Region>> svgJobs;
+    for (size_t i = first; i < last; ++i) {
+        if (jobs[i].mode == Mode::Svg) {
+            if (const std::optional<Region> region = clipToPage(jobs[i], w, h)) {
+                svgJobs.emplace_back(i, *region);
+            }
+        }
+    }
+    std::vector<std::pair<const char *, std::string>> svgResults;
+    size_t nextSvg = 0, chunkStart = 0, chunkEnd = 0;
+    bool together = false;
+
     for (size_t i = first; i < last; ++i) {
         const Job &job = jobs[i];
         const std::optional<Region> region = clipToPage(job, w, h);
         if (!region) {
             emitError(job, "empty");
         } else if (job.mode == Mode::Svg) {
-            renderSvg(job, *region);
+            if (nextSvg >= chunkEnd) {
+                chunkStart = nextSvg;
+                chunkEnd = std::min(svgJobs.size(), nextSvg + svgChunk);
+                together = false;
+                if (svgTogether && chunkEnd - chunkStart > 1) {
+                    const std::vector<std::pair<size_t, Region>> chunk(svgJobs.begin() + chunkStart, svgJobs.begin() + chunkEnd);
+                    together = renderSvgTogether(jobs, chunk, &svgResults);
+                    ++(together ? svgPagesTogether : svgPagesFallback);
+                }
+            }
+            if (together && svgResults[nextSvg - chunkStart].first == retryAlone) {
+                ++svgRetries;
+                renderSvg(job, *region);
+            } else if (together) {
+                auto &[error, svg] = svgResults[nextSvg - chunkStart];
+                emitSvg(job, error, svg);
+                std::string().swap(svg);
+            } else {
+                renderSvg(job, *region);
+            }
+            ++nextSvg;
         } else {
             const PixelRect rect = pixelRect(*region, job.dpi, w, h);
             if (rect.area() > maxPixels) {
@@ -932,6 +1651,23 @@ int main(int argc, char *argv[])
     maxOutputBytes = static_cast<unsigned long long>(maxOutput);
     limitMemory(maxMemory);
     std::set_new_handler(outOfMemory);
+
+    if (const char *t = getenv("PDFREGIONS_SVG_TOGETHER")) {
+        svgTogether = strcmp(t, "0") != 0;
+    }
+    if (maxMemory > 0) {
+        svgSlackKiB = std::min(svgSlackKiB, maxMemory * 1024 / 16);
+    }
+#ifndef _WIN32
+    statmFd = open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
+#endif
+    if (residentKiB() <= 0) {
+        // without a measure of memory a shared pass could not be bounded
+        svgTogether = false;
+    }
+    if (const char *t = getenv("PDFREGIONS_SVG_STATS")) {
+        svgStats = strcmp(t, "1") == 0;
+    }
 
     std::vector<Job> jobs;
     if (const char *problem = readJobs(stdin, &jobs)) {
@@ -1001,6 +1737,11 @@ int main(int argc, char *argv[])
             renderer.renderPage(jobs, first, last);
             first = last;
         }
+    }
+    if (svgStats) {
+        char line[128];
+        snprintf(line, sizeof(line), "svg-together chunks=%ld fallback=%ld retry=%ld", svgPagesTogether, svgPagesFallback, svgRetries);
+        writeDiagnostic(line);
     }
     if (outputFailed) {
         return fail(exitWriteError, "cannot write output");

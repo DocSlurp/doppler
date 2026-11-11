@@ -896,6 +896,7 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
 // Attempt to construct an xref table for a damaged file.
 bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
 {
+    ++generation;
     int *streamObjNums = nullptr;
     int streamObjNumsLen = 0;
     int streamObjNumsSize = 0;
@@ -1542,6 +1543,7 @@ int XRef::getNumEntry(Goffset offset)
 
 void XRef::add(Ref ref, Goffset offs, bool used)
 {
+    ++generation;
     add(ref.num, ref.gen, offs, used);
 }
 
@@ -1584,6 +1586,7 @@ bool XRef::add(int num, int gen, Goffset offs, bool used)
 
 void XRef::setModifiedObject(const Object *o, Ref r)
 {
+    ++generation;
     xrefLocker();
     if (r.num < 0 || r.num >= size) {
         error(errInternal, -1, "XRef::setModifiedObject on unknown ref: {0:d}, {1:d}", r.num, r.gen);
@@ -1632,6 +1635,7 @@ Ref XRef::addIndirectObject(const Object &o)
 
 void XRef::removeIndirectObject(Ref r)
 {
+    ++generation;
     xrefLocker();
     if (r.num < 0 || r.num >= size) {
         error(errInternal, -1, "XRef::removeIndirectObject on unknown ref: {0:d}, {1:d}", r.num, r.gen);

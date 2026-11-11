@@ -306,3 +306,129 @@ fn the_real_renderer_extracts_the_pictures_and_figures() {
     let svg = std::fs::read_to_string(d.join("p1.g1.svg")).unwrap();
     assert!(svg.contains("<path"), "{svg}");
 }
+
+fn hex(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Pass 1 writes a plan (`--images-plan-out`), pass 2 extracts from it (`--images-plan`): the
+/// same files and manifest as extraction after a conversion. A plan is bound to its PDF, page
+/// range, settings and version, and a tampered plan is refused: exit 2, nothing written.
+#[test]
+fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
+    let Some((p, s, pdf)) = setup("plan") else { return };
+    let plan = s.0.join("doc.plan");
+    let plan_s = plan.to_str().unwrap();
+    let one = run(&p, &["--stream", "--html", "--markers", "--images-plan-out", plan_s, &pdf], "ok");
+    assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
+    assert_eq!(
+        one.stdout,
+        run(&p, &["--stream", "--html", "--markers", &pdf], "ok").stdout,
+        "Markdown changed with --images-plan-out"
+    );
+    let text = std::fs::read_to_string(&plan).unwrap();
+    assert!(text.starts_with("doppler-images-plan\t2\nsource\t"), "{text}");
+    let direct = s.0.join("direct");
+    assert_eq!(
+        run(&p, &["--stream", "--html", "--images-dir", direct.to_str().unwrap(), &pdf], "ok").status.code(),
+        Some(0)
+    );
+    let planned = s.0.join("planned");
+    let two = run(
+        &p,
+        &["--stream", "--html", "--images-plan", plan_s, "--images-dir", planned.to_str().unwrap(), &pdf],
+        "ok",
+    );
+    assert_eq!(two.status.code(), Some(0), "{}", String::from_utf8_lossy(&two.stderr));
+    assert!(two.stdout.is_empty());
+    assert_eq!(files(&direct), files(&planned));
+    for f in files(&direct) {
+        assert_eq!(std::fs::read(direct.join(&f)).unwrap(), std::fs::read(planned.join(&f)).unwrap(), "{f}");
+    }
+
+    // another PDF (one more byte), other settings or pages, a missing PDF
+    let other = s.0.join("other.pdf");
+    let mut bytes = std::fs::read(&pdf).unwrap();
+    bytes.extend(b"%\n");
+    std::fs::write(&other, bytes).unwrap();
+    let other = other.to_str().unwrap();
+    let missing = s.0.join("missing.pdf");
+    let refused = |k: usize, args: &[&str], plan: &str, why: &str| {
+        let d = s.0.join(format!("refused-{k}"));
+        let mut a = args.to_vec();
+        a.extend(["--images-plan", plan, "--images-dir", d.to_str().unwrap()]);
+        let r = run(&p, &a, "ok");
+        let err = String::from_utf8_lossy(&r.stderr);
+        assert_eq!(r.status.code(), Some(2), "{k}: {err}");
+        assert!(err.contains(why), "{k}: {err}");
+        assert!(r.stdout.is_empty() && !d.exists(), "{k}");
+    };
+    refused(1, &["--stream", "--html", other], plan_s, "another PDF");
+    refused(2, &["--html", &pdf], plan_s, "settings");
+    refused(3, &["--stream", "--html", "--strict", &pdf], plan_s, "settings");
+    refused(4, &["--stream", "--html", "--params", r#"{"max_page_work": 1000}"#, &pdf], plan_s, "settings");
+    refused(5, &["--stream", "--html", "-f", "1", &pdf], plan_s, "pages");
+    refused(6, &["--stream", "--html", missing.to_str().unwrap()], plan_s, "missing.pdf");
+
+    // tampered plans
+    let first_image = text.lines().nth(5).unwrap().to_string();
+    let fields: Vec<&str> = first_image.split('\t').collect();
+    let id = String::from_utf8(
+        (0..fields[0].len()).step_by(2).map(|i| u8::from_str_radix(&fields[0][i..i + 2], 16).unwrap()).collect(),
+    )
+    .unwrap();
+    let page = fields[1];
+    let tampered = [
+        // an id naming another page than its line's
+        text.replacen(
+            &first_image,
+            &first_image.replacen(&fields[0], &hex(&id.replacen(&format!("p{page}."), "p999.", 1)), 1),
+            1,
+        ),
+        // a NaN coordinate
+        text.replacen(&first_image, &first_image.replacen(fields[2], "7ff8000000000000", 1), 1),
+        // a repeated line
+        text.replacen(&first_image, &format!("{first_image}\n{first_image}"), 1),
+        // not an image id
+        text.replacen(&first_image, &first_image.replacen(&fields[0], &hex("../x"), 1), 1),
+        // the header of another document
+        text.replacen(&text.lines().nth(1).unwrap().to_string(), &format!("source\t{}\t10", "0".repeat(64)), 1),
+    ];
+    for (k, t) in tampered.iter().enumerate() {
+        assert_ne!(t, &text, "{k}");
+        let f = s.0.join(format!("tampered-{k}.plan"));
+        std::fs::write(&f, t).unwrap();
+        refused(10 + k, &["--stream", "--html", &pdf], f.to_str().unwrap(), "--images-plan");
+    }
+}
+
+/// `--images-plan-out` needs --markers (else the plan would be empty) and a FILE; its file must
+/// be new and is reached without following symbolic links.
+#[test]
+fn plan_out_needs_markers_and_a_new_confined_file() {
+    let Some((p, s, pdf)) = setup("planout") else { return };
+    let plan = s.0.join("p.plan");
+    let r = run(&p, &["--images-plan-out", plan.to_str().unwrap(), &pdf], "ok");
+    assert_eq!(r.status.code(), Some(2));
+    assert!(r.stdout.is_empty() && !plan.exists());
+    let r = run(&p, &["--markers", "--images-plan-out", plan.to_str().unwrap(), "-"], "ok");
+    assert_eq!(r.status.code(), Some(2));
+    let target = s.0.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, s.0.join("link")).unwrap();
+    std::fs::write(&plan, b"keep").unwrap();
+    for path in [s.0.join("link/p.plan"), s.0.join("link"), plan.clone(), s.0.join("absent/p.plan")] {
+        let r = run(&p, &["--markers", "--images-plan-out", path.to_str().unwrap(), &pdf], "ok");
+        assert_eq!(r.status.code(), Some(2), "{}: {}", path.display(), String::from_utf8_lossy(&r.stderr));
+        assert!(r.stdout.is_empty());
+    }
+    assert!(files(&target).is_empty());
+    assert_eq!(std::fs::read(&plan).unwrap(), b"keep");
+    // with --images-dir, markers are implied
+    let fresh = s.0.join("fresh.plan");
+    let d = s.0.join("out");
+    let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-plan-out", fresh.to_str().unwrap(), &pdf], "ok");
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(std::fs::read_to_string(&fresh).unwrap().lines().count() > 5);
+    assert!(!files(&s.0).iter().any(|f| f.ends_with(".part")));
+}

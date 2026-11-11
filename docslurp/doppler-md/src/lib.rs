@@ -442,6 +442,29 @@ impl Report {
                     .as_ref()
                     .map(|e| format!(",\"images_error\":{}", serde_json::Value::String(e.clone())))
                     .unwrap_or_default()
+                + &if r.page_info.iter().all(|p| p.crop.is_none()) {
+                    // only with the producer's crop sizes (pdftomarkdown --page-info)
+                    String::new()
+                } else {
+                    let v: Vec<String> = r
+                        .page_info
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            format!(
+                                "{{\"page\":{},\"size\":{},\"words\":{},\"invisible\":{},\"text\":\"{}\"}}",
+                                // the PDF's page number (pdftotext writes it with -crop-sizes), so a
+                                // -f/-l range reports its own pages; else the position
+                                p.number.unwrap_or(i as u32 + 1),
+                                p.crop.as_deref().map_or("null".to_string(), |s| format!("\"{s}\"")),
+                                p.words,
+                                p.invisible,
+                                p.text_layer()
+                            )
+                        })
+                        .collect();
+                    format!(",\"page_info\":[{}]", v.join(","))
+                }
         )
     }
 }

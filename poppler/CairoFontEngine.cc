@@ -593,3 +593,15 @@ std::shared_ptr<CairoFont> CairoFontEngine::getFont(const std::shared_ptr<GfxFon
     }
     return font;
 }
+
+std::vector<std::shared_ptr<CairoFont>> CairoFontEngine::cacheSnapshot() const
+{
+    std::scoped_lock lock(mutex);
+    return fontCache;
+}
+
+void CairoFontEngine::restoreCache(std::vector<std::shared_ptr<CairoFont>> snapshot)
+{
+    std::scoped_lock lock(mutex);
+    fontCache = std::move(snapshot);
+}

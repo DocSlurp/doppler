@@ -38,6 +38,10 @@
 
 #include <memory>
 #include <array>
+#include <cstdint>
+#include <deque>
+#include <string>
+#include <unordered_map>
 #include <optional>
 
 #include "goo/GooString.h"
@@ -444,6 +448,55 @@ private:
     GfxFontCIDWidths widths; // character widths
     std::vector<int> cidToGID; // CID --> GID mapping (for embedded
                                //   TrueType fonts)
+};
+
+//------------------------------------------------------------------------
+// GfxFontCache
+//------------------------------------------------------------------------
+
+// Parsed fonts of one document, reused across the font dictionaries of its pages and forms (install with
+// XRef::setFontCache). Building a font (encoding, widths, ToUnicode CMap, embedded font program for the
+// built-in encoding) is pure in (xref, tag, Ref), so a page that names a font it has already seen reuses
+// the parsed object. A cached font is lent only while nothing else holds it: an output device that keeps
+// fonts of the current page (TextOutputDev compares them by pointer) still sees one object per font
+// dictionary, as without the cache. A font is kept only once a second font dictionary asks for it (a
+// document whose pages each bring their own fonts, such as an OCR layer per scanned page, keeps
+// nothing), at most maxEntries of them, least recently used idle ones freed first. Everything is
+// dropped when the xref changes (getGeneration). Not thread-safe; one document per thread.
+class POPPLER_PRIVATE_EXPORT GfxFontCache
+{
+public:
+    explicit GfxFontCache(size_t maxEntriesA = 32, size_t maxSeenA = 4096) : maxEntries(maxEntriesA), maxSeen(maxSeenA) { }
+    GfxFontCache(const GfxFontCache &) = delete;
+    GfxFontCache &operator=(const GfxFontCache &) = delete;
+
+    // The font for indirect reference id with resource name tag (fontDict is its fetched dictionary).
+    std::shared_ptr<GfxFont> get(XRef *xref, std::string_view tag, Ref id, const Dict &fontDict);
+
+private:
+    struct Entry
+    {
+        Ref id;
+        std::string tag;
+        std::shared_ptr<GfxFont> font;
+        unsigned long long lastUse;
+    };
+    size_t maxEntries;
+    size_t maxSeen;
+    // fonts asked for once and not kept, by key (Ref and tag) with the order they were first asked for;
+    // seenOrder lists keys oldest first, with stale ones (asked for again since) skipped and compacted
+    // away. At most maxSeen live keys: the oldest goes first, in constant time.
+    std::unordered_map<std::string, uint64_t> seen;
+    std::deque<std::pair<std::string, uint64_t>> seenOrder;
+    uint64_t seenNext = 0;
+    // lookups and cache hits; a document where under 1 in 64 lookups hits after 4096 of them
+    // (every page brings its own fonts) stops caching: the bookkeeping would only cost time
+    uint64_t lookups = 0;
+    uint64_t hits = 0;
+    bool bypass = false;
+    unsigned int generation = 0;
+    unsigned long long clock = 0;
+    std::vector<Entry> entries;
 };
 
 //------------------------------------------------------------------------

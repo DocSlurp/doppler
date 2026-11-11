@@ -65,8 +65,24 @@ credential-free VM in production.
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
   Embedded images are `data:image/png` only (no source JPEG/JPX/JBIG2/CCITT mime data).
   Uncompacted; pdftomarkdown compacts and checks it.
-- The document and page are opened once for all jobs and fonts are cached; each job then draws
-  the page clipped to its region (so raster crops match pdftoppm exactly).
+- The document and page are opened once for all jobs and fonts are cached; each raster job then
+  draws the page clipped to its region (so raster crops match pdftoppm exactly). The SVG jobs of
+  a page (up to 16 at a time) share one pass over the page: every drawing call goes to each job's
+  own cairo surface and clip. A page whose pass could differ from one pass per job is drawn one
+  job at a time instead: an inline image (it cannot be read twice), devices that disagree, any
+  parser message during the pass (a damaged font or stream, where cairo's glyph handling can
+  depend on drawing order; the font cache is put back as it was before the pass), or memory: the
+  pass may add at most min(64 MiB, `-max-memory`/16) to the resident size (`/proc/self/statm`;
+  without it no pass is shared), counting the finished SVGs it keeps for later records. A job
+  whose shared-pass result is not a clean SVG (`err:render`, `err:svgsize`) is drawn on its own
+  as well, so every job gets the outcome it has alone. `PDFREGIONS_SVG_TOGETHER=0` always draws
+  one job at a time.
+- What is identical to one pass per job: every record's status and kind, raster payloads, and
+  SVG payloads except cairo's `source-N` ids (a process-wide counter, so the numbers and with them
+  the record length differ). pdftomarkdown renumbers ids by document order when it compacts an
+  SVG, so its files and manifest are the same bytes either way. Diagnostics are not part of the
+  contract: poppler's messages are not printed, and the `svg-together` stats line
+  (`PDFREGIONS_SVG_STATS=1`) is for tests.
 
 ## Ownership
 
