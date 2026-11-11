@@ -305,7 +305,12 @@ pub struct Report {
     /// (0-based) pages whose pictures and drawings used up their placing budget: the rest were
     /// marked between paragraphs, unchecked for text, or left unmarked as small drawings
     pub images_budget_pages: Vec<usize>,
+    /// images past [`MAX_DOC_IMAGES`] that have no entry in `images` (their markers stand)
+    pub images_notes_dropped: usize,
 }
+
+/// The most image entries a report keeps for a document (the producer's own document cap).
+pub const MAX_DOC_IMAGES: usize = 100_000;
 
 impl Report {
     /// Whether the input had any `<page>` (input that is not doppler XHTML has none).
@@ -370,10 +375,10 @@ impl Report {
                     "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}}}",
                     n.id,
                     n.page,
-                    n.bbox.0,
-                    n.bbox.1,
-                    n.bbox.2,
-                    n.bbox.3,
+                    coord(n.bbox.0),
+                    coord(n.bbox.1),
+                    coord(n.bbox.2),
+                    coord(n.bbox.3),
                     n.px.0,
                     n.px.1,
                     if n.vector {
@@ -394,12 +399,15 @@ impl Report {
                     }
                 )
             };
-            let budget = if self.images_budget_pages.is_empty() {
+            let mut budget = if self.images_budget_pages.is_empty() {
                 String::new()
             } else {
                 let pages: Vec<String> = self.images_budget_pages.iter().map(|i| (i + 1).to_string()).collect();
                 format!(",\"images_budget_pages\":[{}]", pages.join(","))
             };
+            if self.images_notes_dropped > 0 {
+                budget += &format!(",\"images_notes_dropped\":{}", self.images_notes_dropped);
+            }
             format!(",\"images\":[{}]{budget}", self.images.iter().map(one).collect::<Vec<_>>().join(","))
         };
         format!(
@@ -436,6 +444,12 @@ impl Report {
                     .unwrap_or_default()
         )
     }
+}
+
+/// A report coordinate, within a billion points of the origin (direct XHTML can say 1e308, which
+/// would print as hundreds of digits).
+fn coord(v: f64) -> f64 {
+    v.clamp(-1e9, 1e9)
 }
 
 /// One Markdown string per page.
@@ -680,7 +694,7 @@ impl<'p> Converter<'p> {
             for (k, id) in absorbed {
                 gone[k] = true;
                 let old = &raster[k].1;
-                for n in self.report.images.iter_mut().filter(|n| n.page == number) {
+                for n in &mut self.report.images[first_note..] {
                     if n.id == *old || n.group.as_deref() == Some(old.as_str()) {
                         n.fate = images::Fate::Grouped;
                         n.group = Some(id.clone());
@@ -730,6 +744,10 @@ impl<'p> Converter<'p> {
                 md
             }
         };
+        if self.report.images.len() > MAX_DOC_IMAGES {
+            self.report.images_notes_dropped += self.report.images.len() - MAX_DOC_IMAGES;
+            self.report.images.truncate(MAX_DOC_IMAGES);
+        }
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
         out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
