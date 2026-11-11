@@ -861,7 +861,7 @@ pub struct ParseReport {
 
 /// What one page holds: kept words, how many of them are invisible (render mode 3, usually an
 /// OCR layer over a scan), and its crop box size when the producer wrote it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageInfo {
     /// `"W H"`: the crop box size as `pdfinfo` prints it (`%g`), from doppler
     /// `pdftotext -crop-sizes` (`crop="W H"`); `None` when absent or not a short number
