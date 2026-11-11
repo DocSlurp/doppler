@@ -122,6 +122,12 @@ public:
 
     std::shared_ptr<CairoFont> getFont(const std::shared_ptr<GfxFont> &gfxFont, PDFDoc *doc, bool printing, XRef *xref);
 
+    // The cached fonts, to put back with restoreCache: fonts made in between are dropped, so a
+    // render that is thrown away leaves the next one exactly as if it had not happened (a damaged
+    // font can draw differently the first time it is used than later).
+    std::vector<std::shared_ptr<CairoFont>> cacheSnapshot() const;
+    void restoreCache(std::vector<std::shared_ptr<CairoFont>> snapshot);
+
 private:
     FT_Library lib;
     mutable std::mutex mutex;

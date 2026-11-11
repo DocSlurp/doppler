@@ -143,7 +143,13 @@ static int fail(int code, const char *msg)
 }
 
 // Poppler's own messages can quote document strings, so they are dropped.
-static void quietErrorCallback(ErrorCategory /*category*/, Goffset /*pos*/, const char * /*msg*/) { }
+// poppler's messages are not printed; their count tells a pass over a page that met a damaged
+// object (a broken font, a bad stream), which the SVG jobs then render one at a time
+static unsigned long errorsSeen = 0;
+static void quietErrorCallback(ErrorCategory /*category*/, Goffset /*pos*/, const char * /*msg*/)
+{
+    ++errorsSeen;
+}
 
 // Some Poppler and cairo paths write to stderr directly, so on POSIX fd 2 is
 // pointed at /dev/null and this tool's fixed messages go to a saved copy.
@@ -578,7 +584,36 @@ static bool svgTogether = true;
 static constexpr size_t svgChunk = 16;
 // PDFREGIONS_SVG_STATS=1: one diagnostic line with the pages drawn together and the fallbacks (tests)
 static bool svgStats = false;
-static long svgPagesTogether = 0, svgPagesFallback = 0;
+static long svgPagesTogether = 0, svgPagesFallback = 0, svgRetries = 0;
+// Memory a pass over a page for several SVG jobs may add to the process's resident size, in
+// KiB: min(64 MiB, -max-memory / 16). Each device holds its own copy of everything drawn (and
+// cairo decodes and encodes the images of each when it finishes), so past this the pass stops
+// and the jobs render one at a time, as one job would alone; the finished SVGs a pass keeps for
+// later records count against it too.
+static long long svgSlackKiB = 64 * 1024;
+// /proc/self/statm, opened before confinement; -1 when unavailable (then no pass is shared)
+static int statmFd = -1;
+
+// The process's resident size in KiB now, or -1 when unknown. (getrusage's peak is no use: it
+// keeps the high-water mark of the process before exec, such as a large parent's.)
+static long long residentKiB()
+{
+#ifndef _WIN32
+    if (statmFd >= 0) {
+        char buf[128];
+        const ssize_t n = pread(statmFd, buf, sizeof(buf) - 1, 0);
+        if (n > 0) {
+            buf[n] = '\0';
+            unsigned long long size = 0, resident = 0;
+            if (sscanf(buf, "%llu %llu", &size, &resident) == 2) {
+                static const long long pageKiB = sysconf(_SC_PAGESIZE) / 1024;
+                return static_cast<long long>(resident) * pageKiB;
+            }
+        }
+    }
+#endif
+    return -1;
+}
 static unsigned long long outputBytes = 0;
 static unsigned long long maxOutputBytes = 0;
 
@@ -821,10 +856,16 @@ public:
 class TeeOutputDev : public OutputDev
 {
 public:
-    explicit TeeOutputDev(std::vector<OutputDev *> devsA) : devs(std::move(devsA)) { }
+    TeeOutputDev(std::vector<OutputDev *> devsA, long long limitKiBA) : devs(std::move(devsA)), limitKiB(limitKiBA) { }
 
     bool isUnsafe() const { return unsafe; }
-    static bool abortCheck(void *data) { return static_cast<TeeOutputDev *>(data)->unsafe; }
+    bool overMemory() const { return memory; }
+    static bool abortCheck(void *data)
+    {
+        auto *tee = static_cast<TeeOutputDev *>(data);
+        tee->checkMemory();
+        return tee->unsafe;
+    }
 
     // questions: every device is the same kind with the same settings
     bool upsideDown() override { return agree([](OutputDev *d) { return d->upsideDown(); }); }
@@ -1133,6 +1174,9 @@ private:
         }
         return answer;
     }
+    // an image is copied into every device: the memory is checked before each copy, and once
+    // over the pass is discarded, so the other devices skip it (drawing an image changes no
+    // device state)
     template<class F>
     void image(bool inlineImg, F &&f)
     {
@@ -1141,7 +1185,20 @@ private:
             f(devs[0]);
             return;
         }
-        each(f);
+        for (OutputDev *d : devs) {
+            if (checkMemory()) {
+                return;
+            }
+            f(d);
+        }
+    }
+    // true (and the pass unsafe) once the resident size passed the pass's limit
+    bool checkMemory()
+    {
+        if (!memory && residentKiB() > limitKiB) {
+            memory = unsafe = true;
+        }
+        return memory;
     }
     void pathless(GfxState *state)
     {
@@ -1151,7 +1208,9 @@ private:
     }
 
     std::vector<OutputDev *> devs;
+    long long limitKiB;
     bool unsafe = false;
+    bool memory = false;
 };
 
 class Renderer
@@ -1237,9 +1296,19 @@ void Renderer::renderRaster(const Job &job, const PixelRect &rect)
     }
 }
 
+// cairo's output for one canvas; a discarded canvas drops what cairo writes when it finishes
+struct SvgSink
+{
+    std::string out;
+    bool drop = false;
+};
+
 static cairo_status_t appendToString(void *closure, const unsigned char *data, unsigned int length)
 {
-    static_cast<std::string *>(closure)->append(reinterpret_cast<const char *>(data), length);
+    auto *sink = static_cast<SvgSink *>(closure);
+    if (!sink->drop) {
+        sink->out.append(reinterpret_cast<const char *>(data), length);
+    }
     return CAIRO_STATUS_SUCCESS;
 }
 
@@ -1263,7 +1332,8 @@ static std::string formatNumber(double v)
 struct Renderer::SvgCanvas
 {
     Region r;
-    std::string out;
+    // heap-held: cairo keeps its address while the canvas moves
+    std::unique_ptr<SvgSink> sink = std::make_unique<SvgSink>();
     cairo_surface_t *surface = nullptr;
     cairo_t *cr = nullptr;
     std::unique_ptr<CairoOutputDev> cairo;
@@ -1274,7 +1344,7 @@ bool Renderer::beginSvg(SvgCanvas &c)
 {
     const Region &r = c.r;
     const double w = r.x1 - r.x0, h = r.y1 - r.y0;
-    c.surface = cairo_svg_surface_create_for_stream(appendToString, &c.out, w, h);
+    c.surface = cairo_svg_surface_create_for_stream(appendToString, c.sink.get(), w, h);
     cairo_svg_surface_restrict_to_version(c.surface, CAIRO_SVG_VERSION_1_2);
     cairo_svg_surface_set_document_unit(c.surface, CAIRO_SVG_UNIT_PT);
     if (!cairoFonts) {
@@ -1318,7 +1388,7 @@ const char *Renderer::finishSvg(SvgCanvas &c, std::string *svgOut)
     if (status != CAIRO_STATUS_SUCCESS) {
         return "render";
     }
-    std::string &out = c.out;
+    std::string &out = c.sink->out;
 
     // cairo draws the region at the origin (viewBox "0 0 w h"). Put it back
     // in page coordinates: viewBox = the region, content translated by its
@@ -1365,7 +1435,8 @@ void Renderer::emitSvg(const Job &job, const char *error, const std::string &svg
 
 void Renderer::renderSvg(const Job &job, const Region &r)
 {
-    SvgCanvas c { r, {}, nullptr, nullptr, nullptr };
+    SvgCanvas c;
+    c.r = r;
     if (!beginSvg(c)) {
         emitError(job, "render");
         return;
@@ -1376,48 +1447,80 @@ void Renderer::renderSvg(const Job &job, const Region &r)
     emitSvg(job, error, svg);
 }
 
+// Answer of renderSvgTogether for a job to render on its own.
+static const char retryAlone[] = "retry";
+
 // Every SVG job of one page from a single pass over the page (TeeOutputDev).
-// False when the pass could differ from separate renders (results unset):
-// the caller then renders each job on its own.
+// False when the pass could differ from separate renders, or met a damaged object or the
+// memory limit (results unset): the caller then renders each job on its own. A job whose
+// result is not a clean SVG (cairo failed, too large) or does not fit the memory kept for
+// later records gets retryAlone, and is rendered on its own when due, so every job's outcome
+// is the one it has alone.
 bool Renderer::renderSvgTogether(const std::vector<Job> &jobs, const std::vector<std::pair<size_t, Region>> &svgJobs, std::vector<std::pair<const char *, std::string>> *results)
 {
-    std::vector<SvgCanvas> canvases;
-    canvases.reserve(svgJobs.size());
-    for (const auto &[i, r] : svgJobs) {
-        canvases.push_back(SvgCanvas { r, {}, nullptr, nullptr, nullptr });
-    }
+    std::vector<SvgCanvas> canvases(svgJobs.size());
     std::vector<OutputDev *> devs;
     bool ok = true;
-    for (SvgCanvas &c : canvases) {
-        if (!beginSvg(c)) {
+    for (size_t k = 0; k < svgJobs.size(); ++k) {
+        canvases[k].r = svgJobs[k].second;
+        if (!beginSvg(canvases[k])) {
             ok = false;
             break;
         }
-        devs.push_back(c.cairo.get());
+        devs.push_back(canvases[k].cairo.get());
     }
     bool unsafe = !ok;
+    const long long start = residentKiB();
+    auto fonts = cairoFonts ? cairoFonts->cacheSnapshot() : std::vector<std::shared_ptr<CairoFont>>();
     if (ok) {
-        TeeOutputDev tee(devs);
+        const unsigned long errorsBefore = errorsSeen;
+        TeeOutputDev tee(devs, start + svgSlackKiB);
         doc->displayPageSlice(&tee, jobs[svgJobs[0].first].page, 72.0, 72.0, 0, true, false, false, -1, -1, -1, -1, TeeOutputDev::abortCheck, &tee);
-        unsafe = tee.isUnsafe();
+        unsafe = tee.isUnsafe() || errorsSeen != errorsBefore;
     }
     results->assign(svgJobs.size(), { nullptr, std::string() });
+    size_t kept = 0;
+    const size_t keepLimit = static_cast<size_t>(svgSlackKiB) * 1024;
     for (size_t k = 0; k < canvases.size(); ++k) {
         SvgCanvas &c = canvases[k];
         if (!c.cr) {
             continue;
         }
-        if (unsafe) {
-            // discard: finish and free without keeping anything
+        // cairo decodes images when a surface finishes: past the memory limit the rest are
+        // discarded and their jobs drawn alone
+        const bool over = !unsafe && residentKiB() > start + svgSlackKiB;
+        if (unsafe || over) {
+            if (over) {
+                (*results)[k].first = retryAlone;
+            }
+            // discard: finish and free without keeping anything. A finishing SVG surface replays
+            // what was recorded (decoding and encoding every image), so clear the recording first
+            // with an unclipped CLEAR paint
+            c.sink->drop = true;
             cairo_restore(c.cr);
             c.cairo->setCairo(nullptr);
             c.cairo.reset();
             cairo_destroy(c.cr);
+            cairo_t *clear = cairo_create(c.surface);
+            cairo_set_operator(clear, CAIRO_OPERATOR_CLEAR);
+            cairo_paint(clear);
+            cairo_destroy(clear);
             cairo_surface_finish(c.surface);
             cairo_surface_destroy(c.surface);
             continue;
         }
-        (*results)[k].first = finishSvg(c, &(*results)[k].second);
+        auto &[error, svg] = (*results)[k];
+        error = finishSvg(c, &svg);
+        if (error || kept + svg.size() > keepLimit) {
+            std::string().swap(svg);
+            error = retryAlone;
+        } else {
+            kept += svg.size();
+        }
+    }
+    if (unsafe && cairoFonts) {
+        // the jobs are drawn again one at a time: from the fonts as they were before this pass
+        cairoFonts->restoreCache(std::move(fonts));
     }
     return !unsafe;
 }
@@ -1473,7 +1576,10 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
                     ++(together ? svgPagesTogether : svgPagesFallback);
                 }
             }
-            if (together) {
+            if (together && svgResults[nextSvg - chunkStart].first == retryAlone) {
+                ++svgRetries;
+                renderSvg(job, *region);
+            } else if (together) {
                 auto &[error, svg] = svgResults[nextSvg - chunkStart];
                 emitSvg(job, error, svg);
                 std::string().swap(svg);
@@ -1538,6 +1644,16 @@ int main(int argc, char *argv[])
 
     if (const char *t = getenv("PDFREGIONS_SVG_TOGETHER")) {
         svgTogether = strcmp(t, "0") != 0;
+    }
+    if (maxMemory > 0) {
+        svgSlackKiB = std::min(svgSlackKiB, maxMemory * 1024 / 16);
+    }
+#ifndef _WIN32
+    statmFd = open("/proc/self/statm", O_RDONLY | O_CLOEXEC);
+#endif
+    if (residentKiB() <= 0) {
+        // without a measure of memory a shared pass could not be bounded
+        svgTogether = false;
     }
     if (const char *t = getenv("PDFREGIONS_SVG_STATS")) {
         svgStats = strcmp(t, "1") == 0;
@@ -1613,8 +1729,8 @@ int main(int argc, char *argv[])
         }
     }
     if (svgStats) {
-        char line[96];
-        snprintf(line, sizeof(line), "svg-together chunks=%ld fallback=%ld", svgPagesTogether, svgPagesFallback);
+        char line[128];
+        snprintf(line, sizeof(line), "svg-together chunks=%ld fallback=%ld retry=%ld", svgPagesTogether, svgPagesFallback, svgRetries);
         writeDiagnostic(line);
     }
     if (outputFailed) {

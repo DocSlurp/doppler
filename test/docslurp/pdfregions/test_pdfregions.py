@@ -312,6 +312,34 @@ with t.TempDir() as d:
         want = b"svg-together chunks=%d fallback=%d" % (chunks, 0 if chunks else 2)
         t.check(want in err1, "svg in one pass (%s): %s" % (label, want.decode()), repr(err1))
 
+    # --- svg in one pass: bounded memory, and every job gets the outcome it has alone -----------
+    import random
+    import zlib
+
+    # two 1200 x 1200 photos-like RGB images (noise compresses poorly): each SVG device embeds its
+    # own PNG of each, so 16 devices would hold ~16 times what one job holds
+    noise = random.Random(7).randbytes(1200 * 1200 * 3)
+    big = t.stream("/Type /XObject /Subtype /Image /Width 1200 /Height 1200 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode", zlib.compress(noise, 1))
+    bpath = d.write("bigimages.pdf", t.simple_page_pdf(b"q 300 0 0 300 50 450 cm /Im1 Do Q q 300 0 0 300 260 100 cm /Im1 Do Q", resources="<< /XObject << /Im1 6 0 R >> >>", extra_objects=[big]))
+    bjobs = [("p1.g%d" % (k + 1), 1, 20 * k, 20 * k, 400 + 10 * k, 600 + 10 * k, "svg", 0) for k in range(16)]
+
+    rc2, per_job, _ = regions(bpath, bjobs, "-max-memory", 512, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+    rc1, one_pass, err1 = regions(bpath, bjobs, "-max-memory", 512, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_STATS": "1"})
+    t.check(rc1 == rc2 == OK and renumber(one_pass) == renumber(per_job), "svg in one pass, large images: the same records as one pass per job")
+    # -max-memory 512: the pass may add 32 MiB; 16 copies of the images are far more
+    t.check(b"chunks=0 fallback=1 " in err1, "svg in one pass, large images: past the memory slack the page is drawn one job at a time", repr(err1))
+    rc3, plenty, err3 = regions(bpath, bjobs[:2], "-max-memory", 0, "-max-svg-bytes", 1 << 30, env={"PDFREGIONS_SVG_STATS": "1"})
+    t.check(rc3 == OK and b"chunks=1 fallback=0 retry=0" in err3 and renumber(plenty) == renumber(per_job)[:2], "svg in one pass, large images: two jobs fit in the default slack", repr(err3))
+
+    # a job whose shared-pass SVG is too large (or failed) is drawn again on its own
+    sjobs = [("p1.g1", 1, 100, 120, 244, 192, "svg", 0), ("p1.g2", 1, 380, 600, 470, 710, "svg", 0), ("p1.g3", 1, 60, 700, 200, 730, "svg", 0)]
+    spath = os.path.join(d.path, "together-2.pdf")
+    rc1, one_pass, err1 = regions(spath, sjobs, "-max-svg-bytes", 900, env={"PDFREGIONS_SVG_STATS": "1"})
+    rc2, per_job, _ = regions(spath, sjobs, "-max-svg-bytes", 900, env={"PDFREGIONS_SVG_TOGETHER": "0"})
+    statuses = [h[1] for h, _ in parse_records(one_pass)]
+    t.check(rc1 == rc2 == OK and renumber(one_pass) == renumber(per_job) and "err:svgsize" in statuses, "svg in one pass: err:svgsize jobs are drawn again alone, the same outcomes as one pass per job", repr((statuses, err1)))
+    t.check(re.search(rb"retry=[1-9]", err1) is not None, "svg in one pass: the retried jobs are counted", repr(err1))
+
     # --- an inline image's Flate data does not swallow EI and what follows ---------------
     # The deflate data has no final block: after the image's one byte, the bits of " EI" and a
     # comment line still decode as literals. The decoder must stop where upstream stops (one
