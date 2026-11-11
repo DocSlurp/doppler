@@ -76,3 +76,21 @@ credential-free VM in production.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records
   against the report (id, size), encodes WebP / compacts and allowlists SVG, writes DIR and
   `manifest.json`.
+
+## Security model (council review, 2026-11-10)
+
+- **Decoders.** Region renders decode every image codec Poppler supports (DCT, JPX, JBIG2,
+  CCITT, Flate), as page rendering already does in the same VM; there is no decoder
+  allowlist. Accepted: the attack surface equals today's page rasterisation, and it is bounded
+  by the VM (credential-free, network-blocked, one job per VM), `pdfregions`' own confinement
+  (`-confine`: no_new_privs, Landlock write/network denial, seccomp), and its memory, pixel,
+  output and time caps. `-no-images` renders without decoding images when a caller needs only
+  vector drawing.
+- **The SVG allowlist is a correctness filter, not the boundary.** pdfregions and pdftomarkdown
+  share the VM, so a decoder compromise could rewrite an SVG after the allowlist ran. Whoever
+  serves figures must keep them inert: a fixed `image/svg+xml` type, `nosniff`, and a CSP of
+  `default-src 'none'; style-src 'unsafe-inline'; sandbox` (DocSlurp pins this with a test).
+- **Figures never fail the Markdown.** The Markdown is written before extraction starts; any
+  extraction failure is exit 5 with the folder removed.
+- **Confinement in production.** Pass `--images-confine require` once the VM kernel is known to
+  support Landlock and seccomp; with `auto`, the report's `images_confined` says whether it held.
