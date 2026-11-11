@@ -75,6 +75,7 @@
 #include <fofi/FoFiType1C.h>
 #include <fofi/FoFiTrueType.h>
 #include "GfxFont.h"
+#include "XRef.h"
 #include "PSOutputDev.h"
 #include "Stream.h"
 
