@@ -860,10 +860,14 @@ public:
 
     bool isUnsafe() const { return unsafe; }
     bool overMemory() const { return memory; }
+    // Gfx calls this about every 10 operators; memory is read every 8th call (paths and text
+    // grow slowly; an image is checked before each device draws it)
     static bool abortCheck(void *data)
     {
         auto *tee = static_cast<TeeOutputDev *>(data);
-        tee->checkMemory();
+        if ((++tee->checks & 7) == 0) {
+            tee->checkMemory();
+        }
         return tee->unsafe;
     }
 
@@ -1209,6 +1213,7 @@ private:
 
     std::vector<OutputDev *> devs;
     long long limitKiB;
+    unsigned checks = 0;
     bool unsafe = false;
     bool memory = false;
 };
