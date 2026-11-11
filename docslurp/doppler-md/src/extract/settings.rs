@@ -56,6 +56,8 @@ pub struct Settings {
     pub timeout: Duration,
     /// pdfregions `-confine`: `require`, `auto` or `off`
     pub confine: &'static str,
+    /// only figures on these pages (1-based, inclusive) are extracted
+    pub pages: Option<(u32, u32)>,
     /// an `--images-*` flag other than `--images-dir` was given
     other_flags: bool,
 }
@@ -78,6 +80,7 @@ impl Default for Settings {
             max_file_bytes: 8 << 20,
             timeout: Duration::from_secs(120),
             confine: "auto",
+            pages: None,
             other_flags: false,
         }
     }
@@ -99,6 +102,7 @@ const WITH_VALUE: &[&str] = &[
     "--images-max-file-bytes",
     "--images-timeout",
     "--images-confine",
+    "--images-pages",
 ];
 
 impl Settings {
@@ -170,6 +174,14 @@ impl Settings {
                     "off" => "off",
                     _ => return Err(format!("{name} takes require, auto or off, not {v:?}")),
                 }
+            }
+            "--images-pages" => {
+                let (a, b) = v.split_once('-').unwrap_or((v, v));
+                let (a, b) = (int(a, 1, i32::MAX as u64).ok_or_else(bad)?, int(b, 1, i32::MAX as u64).ok_or_else(bad)?);
+                if a > b {
+                    return Err(bad());
+                }
+                self.pages = Some((a as u32, b as u32));
             }
             "--images-timeout" => self.timeout = Duration::from_secs(int(v, 1, 86400).ok_or_else(bad)?),
             _ => return Err(format!("unknown option {name}")),
@@ -271,6 +283,7 @@ mod tests {
             ("--images-timeout", Some("5")),
             ("--images-max-file-bytes", Some("2M")),
             ("--images-confine", Some("require")),
+            ("--images-pages", Some("3-19")),
         ])
         .unwrap();
         assert_eq!(s.min_side, MinSide::Pt(10.5));
@@ -284,6 +297,8 @@ mod tests {
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (1 << 20, 10 << 20, 5));
         assert_eq!(s.max_file_bytes, 2 << 20);
         assert_eq!(s.confine, "require");
+        assert_eq!(s.pages, Some((3, 19)));
+        assert_eq!(with(&[("--images-dir", Some("o")), ("--images-pages", Some("7"))]).unwrap().pages, Some((7, 7)));
         assert_eq!(
             with(&[("--images-dir", Some("o")), ("--images-min-side", Some("30px"))]).unwrap().min_side,
             MinSide::Px(30.0)
@@ -309,6 +324,9 @@ mod tests {
             ("--images-max-bytes", "1T"),
             ("--images-timeout", "0"),
             ("--images-confine", "yes"),
+            ("--images-pages", "5-2"),
+            ("--images-pages", "0-2"),
+            ("--images-pages", "1-"),
             ("--images-dir", ""),
         ] {
             assert!(with(&[("--images-dir", Some("o")), (k, Some(v))]).is_err(), "{k} {v}");

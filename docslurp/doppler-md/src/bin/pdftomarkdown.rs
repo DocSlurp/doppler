@@ -74,6 +74,8 @@ and DIR/manifest.json listing every image):
                               the extraction; --images-max-file-bytes N (8MiB): that file only
   --images-timeout S          renderer time for the document (120)
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
+  --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
+                              covers every converted page
   Exit status 5: Markdown written, image extraction failed (DIR removed).
 
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.

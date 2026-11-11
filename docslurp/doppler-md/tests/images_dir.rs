@@ -245,6 +245,36 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
     assert!(m.contains("\"error\":\"file_bytes\""), "{m}");
+    // link mode: when the first placement gets no file, no repeat points to it
+    let d = s.0.join("linkcap");
+    let r = run(
+        &p,
+        &["--images-dir", d.to_str().unwrap(), "--images-repeats", "link", "--images-max-file-bytes", "100", &pdf],
+        "ok",
+    );
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    let m: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.join("manifest.json")).unwrap()).unwrap();
+    let all = m["images"].as_array().unwrap();
+    for e in all {
+        if let Some(t) = e["repeat_of"].as_str() {
+            assert!(all.iter().any(|f| f["id"] == t && f["file"].is_string()), "{m}");
+        }
+    }
+    // page 2's picture is a repeat (same image object) of page 1's, which was too large
+    let p2 = all.iter().find(|e| e["id"] == "p2.1").unwrap();
+    assert_eq!(
+        (p2["error"].as_str(), p2["repeat_of"].is_null(), p2["file"].is_null()),
+        (Some("repeat_target"), true, true),
+        "{m}"
+    );
+    // pages: only page 2 is extracted
+    let d = s.0.join("pages");
+    let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-pages", "2-2", &pdf], "ok");
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(files(&d), ["manifest.json", "p2.1.webp"]);
+    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    assert!(m.contains("\"skipped\":\"pages\""), "{m}");
 }
 
 /// The real pdfregions (`$PDFREGIONS_REAL`, else `../../build/utils/pdfregions`).

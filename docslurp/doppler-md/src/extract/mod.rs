@@ -108,6 +108,12 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
             entries[i].error = Some("id".into());
             continue;
         }
+        if let Some((a, b)) = s.pages
+            && !(a..=b).contains(&n.page)
+        {
+            entries[i].skipped = Some("pages");
+            continue;
+        }
         if !matches!(n.fate, Fate::Block | Fate::Inline) {
             entries[i].skipped = Some("fate");
             continue;
@@ -171,6 +177,7 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
             (a, b) => a.or(b),
         };
     }
+    resolve_repeats(&mut run.entries, notes);
     let manifest = manifest(&run);
     run.dir.write("manifest.json", manifest.as_bytes())?;
     run.dir.sync()?;
@@ -182,6 +189,32 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
     report.images_written = Some(written);
     report.images_confined = confined;
     Ok(written)
+}
+
+/// Every `repeat_of` names an entry with a file: a repeat whose first placement got none
+/// (an error, a cap, itself a repeat) points to another repeat of it that has one, or else
+/// loses `repeat_of` and gets `error: repeat_target`.
+fn resolve_repeats(entries: &mut [Entry], notes: &[Note]) {
+    let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    for i in 0..entries.len() {
+        let Some(target) = entries[i].repeat_of.clone() else { continue };
+        let t = index.get(target.as_str()).copied();
+        if t.is_some_and(|t| entries[t].file.is_some()) {
+            continue;
+        }
+        // another placement of the same image with a file
+        let other = (0..entries.len()).find(|&k| {
+            k != i && entries[k].file.is_some() && (entries[k].repeat_of.as_deref() == Some(&target) || t == Some(k))
+        });
+        match other {
+            Some(k) => entries[i].repeat_of = Some(notes[k].id.clone()),
+            None => {
+                entries[i].repeat_of = None;
+                entries[i].skipped = None;
+                entries[i].error = Some("repeat_target".into());
+            }
+        }
+    }
 }
 
 impl Run<'_> {

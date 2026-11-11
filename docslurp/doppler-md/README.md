@@ -297,7 +297,8 @@ byte-identical to `--markers` without it and is written first; the folder is fil
 | `--images-max N` | `500` | most files; more fails the extraction |
 | `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
-| `--images-timeout S` | `120` | renderer time for the whole document; at the deadline pdfregions' process group is killed |
+| `--images-timeout S` | `120` | time for everything after the Markdown is written (rendering, compaction, encoding, fallbacks); at the deadline pdfregions' process group is killed |
+| `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 
 Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR, a symbolic
@@ -334,8 +335,10 @@ per line: `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vec
 `file` (or null), `format`, `bytes`, `sha256`, `width`, `height` (pixels; for SVG the box in
 points, rounded up; 0 without a file), and when they apply `repeat_of` (link mode),
 `fallback` (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB),
-`skipped` (`fate`, `min_side`, `repeat`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
-`timeout` when the deadline passed before the image was encoded; `file_bytes`;
+`skipped` (`fate`, `min_side`, `repeat`, `pages`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
+`timeout` when the deadline passed before the image was encoded; `file_bytes`; `repeat_target`
+when a repeat's first placement got no file and no other placement of it has one — a
+`repeat_of` always names an entry with a file;
 `mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
 byte count; `encode`, `utf8`, `svg_size`). pdfregions also gets `-max-svg-bytes 8MiB` (larger:
 `err:svgsize`, raster fallback) and `-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`, `marked`, `written`,
