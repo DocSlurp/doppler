@@ -3049,11 +3049,9 @@ void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
         added.pastDocumentCap = true;
         imagesTruncated = true;
     }
-    // watch an image drawn plainly that covers at least half the page for paint over it (a
-    // full-page scan may be copied only when nothing is); any other image stays overlaid
-    const double area = pageWidth * pageHeight;
-    const double share = (added.xMax - added.xMin) * (added.yMax - added.yMin) / area;
-    if (!added.overlaid && area > 0 && std::isfinite(share) && share >= 0.5 && overpaintWatched < maxOverpaintWatch) {
+    // watch an image drawn plainly for paint over it (a scan may be copied, and a repeat linked
+    // to an earlier placement, only when nothing is); past the watch list it stays overlaid
+    if (!added.overlaid && overpaintWatched < maxOverpaintWatch) {
         overpaintWatch[overpaintWatched++] = images.size() - 1;
     } else {
         added.overlaid = true;

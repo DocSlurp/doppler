@@ -103,28 +103,34 @@ static char confineArg[16] = "auto";
 static char maxSvgBytesArg[32] = "33554432";
 static char maxOutputBytesArg[32] = "536870912";
 static char maxCopyBytesArg[32] = "67108864";
-static char maxCopyPixelsArg[32] = "100000000";
+static char maxCopyPixelsArg[32] = "16777216";
 static bool noImages = false;
 static char confineCheckPath[4096] = "";
 
-static const ArgDesc argDesc[] = { { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
-                                   { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
-                                   { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 2048)" },
-                                   { .arg = "-max-pixels", .kind = argString, .val = maxPixelsArg, .size = sizeof(maxPixelsArg), .usage = "largest raster crop in pixels (default 16777216)" },
-                                   { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 120)" },
-                                   { .arg = "-max-svg-bytes", .kind = argString, .val = maxSvgBytesArg, .size = sizeof(maxSvgBytesArg), .usage = "largest SVG record; larger is err:svgsize (default 33554432)" },
-                                   { .arg = "-max-output-bytes", .kind = argString, .val = maxOutputBytesArg, .size = sizeof(maxOutputBytesArg), .usage = "total stdout bytes; a record past it exits 3 (default 536870912)" },
-                                   { .arg = "-max-copy-bytes", .kind = argString, .val = maxCopyBytesArg, .size = sizeof(maxCopyBytesArg), .usage = "largest copied JPEG stream (copy jobs); larger is err:copysize (default 67108864)" },
-                                   { .arg = "-max-copy-pixels", .kind = argString, .val = maxCopyPixelsArg, .size = sizeof(maxCopyPixelsArg), .usage = "largest image decoded by a copy job, in pixels; larger is err:pixels (default 100000000)" },
-                                   { .arg = "-no-images", .kind = argFlag, .val = &noImages, .size = 0, .usage = "draw no images (vector-only renders; image data is never decoded)" },
-                                   { .arg = "-confine-check", .kind = argString, .val = confineCheckPath, .size = sizeof(confineCheckPath), .usage = "test aid: after confining, try to create this file, run a program and open a socket; report on stderr" },
-                                   { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write sandbox after opening the PDF: require, auto or off (default auto)" },
-                                   { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
-                                   { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   {} };
+static const ArgDesc argDesc[] = {
+    { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
+    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
+    { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 2048)" },
+    { .arg = "-max-pixels", .kind = argString, .val = maxPixelsArg, .size = sizeof(maxPixelsArg), .usage = "largest raster crop in pixels (default 16777216)" },
+    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 120)" },
+    { .arg = "-max-svg-bytes", .kind = argString, .val = maxSvgBytesArg, .size = sizeof(maxSvgBytesArg), .usage = "largest SVG record; larger is err:svgsize (default 33554432)" },
+    { .arg = "-max-output-bytes", .kind = argString, .val = maxOutputBytesArg, .size = sizeof(maxOutputBytesArg), .usage = "total stdout bytes; a record past it exits 3 (default 536870912)" },
+    { .arg = "-max-copy-bytes", .kind = argString, .val = maxCopyBytesArg, .size = sizeof(maxCopyBytesArg), .usage = "largest copied JPEG stream (copy jobs); larger is err:copysize (default 67108864)" },
+    { .arg = "-max-copy-pixels",
+      .kind = argString,
+      .val = maxCopyPixelsArg,
+      .size = sizeof(maxCopyPixelsArg),
+      .usage = "largest image decoded by a copy job, in pixels (8 times that for 1-bit images); larger is err:pixels (default 16777216)" },
+    { .arg = "-no-images", .kind = argFlag, .val = &noImages, .size = 0, .usage = "draw no images (vector-only renders; image data is never decoded)" },
+    { .arg = "-confine-check", .kind = argString, .val = confineCheckPath, .size = sizeof(confineCheckPath), .usage = "test aid: after confining, try to create this file, run a program and open a socket; report on stderr" },
+    { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write sandbox after opening the PDF: require, auto or off (default auto)" },
+    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
+    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    {}
+};
 
 //------------------------------------------------------------------------
 // diagnostics and limits
@@ -1212,107 +1218,307 @@ static constexpr int copyMaxEntries = 10000;
 
 // Whether image XObject <target> is named in <resources>' /XObject, directly or inside the
 // resources of a form XObject named there (forms nested at most copyMaxFormDepth deep). Only
-// dictionaries are read; each form is visited once, and at most copyMaxEntries entries in all.
-static bool xobjectReachable(XRef *xref, Dict *resources, Ref target, int depth, std::set<Ref> *forms, int *budget)
+// dictionaries are read. The search goes level by level, so each form is visited once, at the
+// shallowest depth it is named at; at most copyMaxEntries entries in all.
+static bool xobjectReachable(XRef *xref, Dict *resources, Ref target, std::set<Ref> *forms, int *budget)
 {
-    if (!resources) {
-        return false;
-    }
-    const Object xobjects = resources->lookup("XObject");
-    if (!xobjects.isDict()) {
-        return false;
-    }
-    Dict *dict = xobjects.getDict();
-    std::vector<Ref> nested;
-    for (int i = 0; i < dict->getLength(); ++i) {
-        if (--*budget < 0) {
+    // names <target> directly; collects the forms it names that were not seen yet
+    auto scan = [&](Dict *res, bool nest, std::vector<Ref> *next) -> bool {
+        if (!res) {
             return false;
         }
-        const Object &value = dict->getValNF(i);
-        if (!value.isRef()) {
-            continue;
+        const Object xobjects = res->lookup("XObject");
+        if (!xobjects.isDict()) {
+            return false;
         }
-        if (value.getRef() == target) {
-            return true;
+        Dict *dict = xobjects.getDict();
+        for (int i = 0; i < dict->getLength(); ++i) {
+            if (--*budget < 0) {
+                return false;
+            }
+            const Object &value = dict->getValNF(i);
+            if (!value.isRef()) {
+                continue;
+            }
+            if (value.getRef() == target) {
+                return true;
+            }
+            if (nest && forms->insert(value.getRef()).second) {
+                next->push_back(value.getRef());
+            }
         }
-        if (depth < copyMaxFormDepth && forms->insert(value.getRef()).second) {
-            nested.push_back(value.getRef());
-        }
+        return false;
+    };
+    std::vector<Ref> level;
+    if (scan(resources, copyMaxFormDepth > 0, &level)) {
+        return true;
     }
-    for (const Ref r : nested) {
-        const Object form = xref->fetch(r);
-        if (!form.isStream()) {
-            continue;
+    for (int depth = 1; depth <= copyMaxFormDepth && !level.empty() && *budget >= 0; ++depth) {
+        std::vector<Ref> next;
+        for (const Ref r : level) {
+            const Object form = xref->fetch(r);
+            if (!form.isStream()) {
+                continue;
+            }
+            Dict *formDict = form.getStream()->getDict();
+            if (!formDict->lookup("Subtype").isName("Form")) {
+                continue;
+            }
+            const Object formResources = formDict->lookup("Resources");
+            if (formResources.isDict() && scan(formResources.getDict(), depth < copyMaxFormDepth, &next)) {
+                return true;
+            }
         }
-        Dict *formDict = form.getStream()->getDict();
-        if (!formDict->lookup("Subtype").isName("Form")) {
-            continue;
-        }
-        const Object formResources = formDict->lookup("Resources");
-        if (formResources.isDict() && xobjectReachable(xref, formResources.getDict(), target, depth + 1, forms, budget)) {
-            return true;
-        }
+        level = std::move(next);
     }
     return false;
 }
 
-// Checks a JPEG for a copy: SOI, a baseline, extended or progressive Huffman frame (SOF0..2)
-// of 8-bit samples with <comps> components and the image's size, a scan, and EOI at the end
-// (at most 64 bytes of padding after it are cut). Sets <length> to the bytes to keep.
-static bool checkJpeg(const std::vector<unsigned char> &d, int width, int height, int comps, size_t *length)
+// Checks a JPEG for a copy and rewrites it without metadata: SOI, a baseline, extended or
+// progressive Huffman frame (SOF0..2) of 8-bit samples with <comps> components and the image's
+// size, a scan, and EOI at the end (at most 64 bytes of padding after it are cut). The output
+// keeps the tables (DQT, DHT, DRI), the frame, the scans and their entropy-coded data, and only
+// a canonical JFIF APP0 (version 1.01, 1:1, no thumbnail) and a canonical Adobe APP14 (its
+// colour transform) when the stream had them: those decide how the samples decode. Every other
+// APPn (Exif with its orientation and thumbnail, ICC, XMP, Photoshop) and every COM is dropped,
+// before the frame and between scans, so no document-supplied string or second image reaches
+// the file and viewers show the pixels as the PDF draws them.
+static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height, int comps, std::vector<unsigned char> *out)
 {
     const size_t n = d.size();
     if (n < 4 || d[0] != 0xFF || d[1] != 0xD8) {
         return false;
     }
+    // EOI ends the stream (padding of at most 64 bytes after it is cut)
+    size_t end = n;
+    const size_t floor = n > 66 ? n - 66 : 2;
+    while (end >= floor + 2 && !(d[end - 2] == 0xFF && d[end - 1] == 0xD9)) {
+        --end;
+    }
+    if (end < floor + 2) {
+        return false;
+    }
+    out->clear();
+    out->reserve(end);
+    out->insert(out->end(), { 0xFF, 0xD8 });
+    bool jfif = false, adobe = false;
+    unsigned char transform = 0;
     size_t i = 2;
-    bool frame = false;
-    while (i + 4 <= n) {
+    bool frame = false, scan = false;
+    size_t headerEnd = 0; // where the canonical APP segments go: right after SOI
+    headerEnd = out->size();
+    while (i < end - 2) {
         if (d[i] != 0xFF) {
-            return false;
+            if (!scan) {
+                return false; // no data before the first scan
+            }
+            out->push_back(d[i++]);
+            continue;
         }
-        unsigned char marker = d[i + 1];
+        const unsigned char marker = d[i + 1];
         if (marker == 0xFF) {
             ++i; // fill byte
             continue;
         }
-        if (marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) || marker == 0x01) {
-            return false; // no image before the scan
+        if (scan && (marker == 0x00 || (marker >= 0xD0 && marker <= 0xD7))) {
+            // a stuffed 0xFF, or a restart marker, inside entropy-coded data
+            out->insert(out->end(), { 0xFF, marker });
+            i += 2;
+            continue;
         }
-        const size_t len = (static_cast<size_t>(d[i + 2]) << 8) | d[i + 3];
-        if (len < 2 || i + 2 + len > n) {
+        if (marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) || marker == 0x01 || marker == 0x00) {
+            return false; // no image inside, nothing before the scan, EOI only last
+        }
+        if (i + 4 > end) {
             return false;
         }
-        if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
-            // a frame: only Huffman baseline, extended and progressive, once
-            if (frame || marker > 0xC2 || len < 8) {
+        const size_t len = (static_cast<size_t>(d[i + 2]) << 8) | d[i + 3];
+        if (len < 2 || i + 2 + len > end) {
+            return false;
+        }
+        const unsigned char *seg = d.data() + i;
+        if (marker == 0xE0) {
+            jfif = jfif || (len >= 7 && !memcmp(seg + 4, "JFIF\0", 5));
+        } else if (marker == 0xEE) {
+            if (len >= 14 && !memcmp(seg + 4, "Adobe", 5)) {
+                adobe = true;
+                transform = seg[15];
+            }
+        } else if ((marker >= 0xE1 && marker <= 0xEF) || marker == 0xFE) {
+            // other metadata: dropped
+        } else if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) {
+            // a frame: only Huffman baseline, extended and progressive, once, before any scan
+            if (frame || scan || len < 8) {
                 return false;
             }
-            const int precision = d[i + 4];
-            const int h = (d[i + 5] << 8) | d[i + 6];
-            const int w = (d[i + 7] << 8) | d[i + 8];
-            const int nc = d[i + 9];
+            const int precision = seg[4];
+            const int h = (seg[5] << 8) | seg[6];
+            const int w = (seg[7] << 8) | seg[8];
+            const int nc = seg[9];
             if (precision != 8 || w != width || h != height || nc != comps || len != 8 + 3 * static_cast<size_t>(nc)) {
                 return false;
             }
             frame = true;
+            out->insert(out->end(), seg, seg + 2 + len);
         } else if (marker == 0xDA) {
             if (!frame) {
                 return false;
             }
-            // the entropy-coded data follows: EOI must end the stream
-            size_t end = n;
-            const size_t floor = n > 66 ? n - 66 : i + 2 + len;
-            while (end >= floor + 2 && !(d[end - 2] == 0xFF && d[end - 1] == 0xD9)) {
-                --end;
-            }
-            if (end < floor + 2 || end <= i + 2 + len) {
-                return false;
-            }
-            *length = end;
-            return true;
+            scan = true;
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xDB || marker == 0xC4 || marker == 0xDD) {
+            // tables and the restart interval
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else {
+            return false; // anything else (other frames, arithmetic coding, DNL, extensions)
         }
         i += 2 + len;
+    }
+    if (!scan || i != end - 2) {
+        return false;
+    }
+    out->insert(out->end(), { 0xFF, 0xD9 });
+    std::vector<unsigned char> app;
+    if (jfif) {
+        app.insert(app.end(), { 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00 });
+    }
+    if (adobe) {
+        app.insert(app.end(), { 0xFF, 0xEE, 0x00, 0x0E, 'A', 'd', 'o', 'b', 'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, transform });
+    }
+    out->insert(out->begin() + static_cast<std::ptrdiff_t>(headerEnd), app.begin(), app.end());
+    return true;
+}
+
+// Reads at most <limit> bytes of <str> (rewound and closed here) into <out>; false when the
+// stream cannot be read or is longer.
+static bool readPrefix(Stream *str, size_t limit, std::vector<unsigned char> *out, bool *longer)
+{
+    out->clear();
+    *longer = false;
+    if (!str || !str->rewind()) {
+        return false;
+    }
+    std::vector<unsigned char> buf(1 << 16);
+    int got;
+    while ((got = str->doGetChars(static_cast<int>(std::min<size_t>(buf.size(), limit + 1 - out->size())), buf.data())) > 0) {
+        out->insert(out->end(), buf.data(), buf.data() + got);
+        if (out->size() > limit) {
+            out->resize(limit);
+            *longer = true;
+            break;
+        }
+    }
+    str->close();
+    return true;
+}
+
+static uint32_t be32(const unsigned char *p)
+{
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+// The size a JPEG 2000 stream really decodes to: its codestream's SIZ marker (image size minus
+// offset, and the component count), read from a raw codestream or from the jp2c box of a JP2
+// file. Boxes before jp2c are skipped (at most <data>, the first bytes of the stream). False when
+// no SIZ is found or it is malformed.
+static bool jpxSize(const std::vector<unsigned char> &data, uint64_t *width, uint64_t *height, int *comps)
+{
+    const size_t n = data.size();
+    size_t at = 0;
+    if (n >= 12 && be32(data.data()) == 12 && !memcmp(data.data() + 4, "jP  ", 4)) {
+        // JP2 boxes: find the contiguous codestream
+        bool found = false;
+        int boxes = 0;
+        while (at + 8 <= n && ++boxes <= 4096) {
+            uint64_t len = be32(data.data() + at);
+            size_t header = 8;
+            if (len == 1) {
+                if (at + 16 > n) {
+                    return false;
+                }
+                len = (static_cast<uint64_t>(be32(data.data() + at + 8)) << 32) | be32(data.data() + at + 12);
+                header = 16;
+            }
+            if (!memcmp(data.data() + at + 4, "jp2c", 4)) {
+                at += header;
+                found = true;
+                break;
+            }
+            if (len < header || len > n - at) {
+                return false; // to the end of the file, or past what was read
+            }
+            at += static_cast<size_t>(len);
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    // SOC, then SIZ: Lsiz Rsiz Xsiz Ysiz XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz
+    if (at + 42 > n || data[at] != 0xFF || data[at + 1] != 0x4F || data[at + 2] != 0xFF || data[at + 3] != 0x51) {
+        return false;
+    }
+    const unsigned char *siz = data.data() + at + 4;
+    const uint32_t xsiz = be32(siz + 4), ysiz = be32(siz + 8), xo = be32(siz + 12), yo = be32(siz + 16);
+    const int csiz = (siz[36] << 8) | siz[37];
+    if (xo >= xsiz || yo >= ysiz || csiz < 1) {
+        return false;
+    }
+    *width = xsiz - xo;
+    *height = ysiz - yo;
+    *comps = csiz;
+    return true;
+}
+
+// The page size of an embedded JBIG2 stream (PDF form: segments without the file header): its
+// page information segment, which must come within the first segments. False when there is
+// none, its height is unknown (striped, 0xffffffff) or a segment before it has an unknown length.
+static bool jbig2PageSize(const std::vector<unsigned char> &d, uint64_t *width, uint64_t *height)
+{
+    const size_t n = d.size();
+    size_t at = 0;
+    for (int seg = 0; seg < 64 && at + 11 <= n; ++seg) {
+        const uint32_t number = be32(d.data() + at);
+        const unsigned char flags = d[at + 4];
+        const int type = flags & 0x3f;
+        size_t p = at + 5;
+        // referred-to segments: a count in the top 3 bits, or the long form
+        uint64_t refs = d[p] >> 5;
+        if (refs == 7) {
+            if (p + 4 > n) {
+                return false;
+            }
+            refs = be32(d.data() + p) & 0x1fffffff;
+            p += 4 + (refs + 8) / 8;
+        } else {
+            p += 1;
+        }
+        const size_t refSize = number <= 256 ? 1 : number <= 65536 ? 2 : 4;
+        if (refs > 4096) {
+            return false;
+        }
+        p += static_cast<size_t>(refs) * refSize;
+        p += (flags & 0x40) ? 4 : 1; // page association
+        if (p + 4 > n) {
+            return false;
+        }
+        const uint32_t length = be32(d.data() + p);
+        p += 4;
+        if (type == 48) {
+            if (p + 8 > n || length < 8) {
+                return false;
+            }
+            const uint32_t w = be32(d.data() + p), h = be32(d.data() + p + 4);
+            if (w == 0 || h == 0 || h == 0xffffffffu) {
+                return false;
+            }
+            *width = w;
+            *height = h;
+            return true;
+        }
+        if (length == 0xffffffffu || length > n - p) {
+            return false;
+        }
+        at = p + length;
     }
     return false;
 }
@@ -1334,7 +1540,7 @@ void Renderer::copyImage(const Job &job)
     Page *page = doc->getPage(job.page);
     std::set<Ref> forms;
     int budget = copyMaxEntries;
-    if (!page || !xobjectReachable(xref, page->getResourceDict(), job.ref, 0, &forms, &budget)) {
+    if (!page || !xobjectReachable(xref, page->getResourceDict(), job.ref, &forms, &budget)) {
         emitError(job, "copy");
         return;
     }
@@ -1382,17 +1588,63 @@ void Renderer::copyImage(const Job &job)
             return;
         }
         const int comps = info.color == ImageColor::Gray || info.color == ImageColor::ICC1 ? 1 : 3;
-        size_t length = 0;
-        if (!checkJpeg(data, width, height, comps, &length)) {
+        std::vector<unsigned char> clean;
+        if (!cleanJpeg(data, width, height, comps, &clean)) {
             emitError(job, "jpeg");
             return;
         }
-        emitRecord(job, "ok", "jpeg", width, height, reinterpret_cast<const char *>(data.data()), length);
+        emitRecord(job, "ok", "jpeg", width, height, reinterpret_cast<const char *>(clean.data()), clean.size());
         return;
     }
-    if (static_cast<long long>(width) * height > maxCopyPixels) {
+    // decoded samples: 8 bits (or more) a pixel, but packed 1-bit rows for a bilevel image,
+    // whose cap is 8 times the pixels for the same bytes
+    const long long pixelCap = info.copy == ImageCopy::Bilevel ? (maxCopyPixels > LLONG_MAX / 8 ? LLONG_MAX : maxCopyPixels * 8) : maxCopyPixels;
+    if (static_cast<long long>(width) * height > pixelCap) {
         emitError(job, "pixels");
         return;
+    }
+    // what the codec really decodes, before it decodes: a JPEG 2000 codestream's SIZ, a JBIG2
+    // page information segment, a CCITT stream's /Columns and /Rows, which must be the image's
+    // own size (a 100x100 image whose codestream is 16000x16000 would decode it all)
+    const StreamKind kind = str->getKind();
+    if (kind == strJPX || kind == strJBIG2) {
+        std::vector<unsigned char> head;
+        bool longer = false;
+        uint64_t w = 0, h = 0;
+        int ncomps = 1;
+        const bool sized = readPrefix(str->getNextStream(), kind == strJPX ? maxCopyBytes : 1 << 20, &head, &longer) && (kind == strJPX ? jpxSize(head, &w, &h, &ncomps) : jbig2PageSize(head, &w, &h));
+        if (!sized) {
+            emitError(job, "decode");
+            return;
+        }
+        if (w != static_cast<uint64_t>(width) || h != static_cast<uint64_t>(height) || ncomps > 4) {
+            emitError(job, "pixels");
+            return;
+        }
+    } else if (kind == strCCITTFax) {
+        Object parms = dict->lookup("DecodeParms");
+        if (parms.isNull()) {
+            parms = dict->lookup("DP");
+        }
+        if (parms.isArray() && parms.arrayGetLength() == 1) {
+            parms = parms.arrayGet(0);
+        }
+        const Object columns = parms.isDict() ? parms.dictLookup("Columns") : Object();
+        const Object rows = parms.isDict() ? parms.dictLookup("Rows") : Object();
+        const int cols = columns.isInt() ? columns.getInt() : 1728;
+        if (cols != width || (rows.isInt() && rows.getInt() != height)) {
+            emitError(job, "pixels");
+            return;
+        }
+    }
+    // a codec under another filter would decode unchecked: refused
+    int filters = 0;
+    for (Stream *inner = str->getNextStream(); inner; inner = inner->getNextStream()) {
+        const StreamKind k = inner->getKind();
+        if (k == strJPX || k == strJBIG2 || k == strDCT || k == strCCITTFax || ++filters > 16) {
+            emitError(job, "decode");
+            return;
+        }
     }
     if (info.copy == ImageCopy::Bilevel) {
         const size_t rowBytes = (static_cast<size_t>(width) + 7) / 8;

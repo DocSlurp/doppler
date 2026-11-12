@@ -635,8 +635,8 @@ struct TextImage
     // it later on the page (a fill, stroke, shading, pattern, visible glyph or another image,
     // annotation appearances included), a clip or the page edge cuts it, a non-rectangular
     // clip applies, or it is drawn through a soft mask, a blend mode, an opacity below 1 or a
-    // transfer function. Only images covering at least half the page are checked (at most
-    // TextPage::maxOverpaintWatch per page); every other image keeps true.
+    // transfer function. The first TextPage::maxOverpaintWatch images drawn plainly on a page
+    // are checked; any other image keeps true.
     bool overlaid = true;
 };
 
@@ -731,7 +731,7 @@ public:
     // overlaps as overlaid (TextImage::overlaid). Images are watched from addImage on.
     void noteOverpaint(double x0, double y0, double x1, double y1);
     bool watchingOverpaint() const { return overpaintWatched > 0; }
-    static constexpr size_t maxOverpaintWatch = 8;
+    static constexpr size_t maxOverpaintWatch = 64;
 
     // Add one painted path that is not axis-aligned (TextOutputDev::setCollectImages). The page
     // keeps a fixed grid of cells, each the summary of the paths centred in it, so memory and

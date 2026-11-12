@@ -260,6 +260,125 @@ def test_overlaid(d):
         t.check(' orient="' in scan_img, "%s: orient= written with a copy class" % name, scan_img)
 
 
+def segments(data):
+    """The marker codes of a JPEG's segments up to its first scan, and whether a COM or APPn
+    other than JFIF APP0 / Adobe APP14 appears anywhere."""
+    codes, i = [], 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        m = data[i + 1]
+        codes.append(m)
+        if m == 0xDA:
+            break
+        i += 2 + ((data[i + 2] << 8) | data[i + 3])
+    return codes
+
+
+def test_jpeg_metadata(d):
+    # Exif (orientation 6, a path in a string), an XMP packet, a comment, and a non-canonical
+    # Adobe segment: the copy keeps the frame, tables and scan, a canonical JFIF and Adobe
+    exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0/home/victim/private/path.pdf"
+    xmp = b"http://ns.adobe.com/xap/1.0/\0<x:xmpmeta>GPS 51.5 -0.12</x:xmpmeta>"
+    com = b"SECRET-COMMENT /home/victim/private/path.pdf"
+
+    def seg(marker, body):
+        return bytes([0xFF, marker]) + (len(body) + 2).to_bytes(2, "big") + body
+
+    soi_jfif = GRAY_JPEG[:20]  # SOI and the canonical JFIF APP0 of t.jpeg
+    rest = GRAY_JPEG[20:]
+    sos = rest.index(b"\xff\xda")
+    dirty = soi_jfif + seg(0xE1, exif) + seg(0xE1, xmp) + seg(0xFE, com) + rest[:sos] + seg(0xFE, com) + rest[sos:]
+    rgb_rest = RGB_JPEG[20:]
+    adobe = RGB_JPEG[:2] + seg(0xEE, b"Adobe\x00\x65\x80\x00\x12\x34\x01extra") + seg(0xE2, b"ICC_PROFILE\0\x01\x01junk") + rgb_rest
+    objs = [
+        image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", dirty),  # 6
+        image("/Width 37 /Height 21 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", adobe),  # 7
+    ]
+    pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q q 10 0 0 10 20 0 cm /B Do Q", resources="<< /XObject << /A 6 0 R /B 7 0 R >> >>", extra_objects=objs)
+    path = d.write("exif.pdf", pdf)
+    rc, r, err = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0")])
+    t.check(rc == 0 and r["p1.1"][:4] == ("ok", "jpeg", 160, 200), "a JPEG with metadata is still copied", r.get("p1.1", ("missing",))[:4])
+    t.check(r["p1.1"][4] == GRAY_JPEG, "Exif, XMP and comments (before the frame and before the scan) are dropped; the rest is the stream as stored")
+    t.check(b"SECRET" not in r["p1.1"][4] and b"victim" not in r["p1.1"][4] and b"Exif" not in r["p1.1"][4], "no document string reaches the copy")
+    clean = r["p1.2"][4]
+    canon = b"\xff\xee\x00\x0eAdobe\x00\x64\x00\x00\x00\x00\x01"
+    t.check(r["p1.2"][0] == "ok" and canon in clean and b"extra" not in clean and b"ICC_PROFILE" not in clean, "Adobe APP14 becomes canonical (its transform kept); ICC is dropped", clean[:40])
+    t.check(segments(clean)[:2] == [0xEE, 0xDB] or 0xE2 not in segments(clean), "no APP2 left", segments(clean))
+    # a stream with metadata after EOI, or another image inside: still refused
+    nested = GRAY_JPEG[:-2] + GRAY_JPEG + b"\xff\xd9"
+    pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q", resources="<< /XObject << /A 6 0 R >> >>", extra_objects=[image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", nested)])
+    rc, r, _ = copy(d.write("nested.pdf", pdf), [("p1.1", 1, "6.0")])
+    t.check(r["p1.1"][0] == "err:jpeg", "a JPEG with another JPEG inside is refused", r["p1.1"][:4])
+
+
+def test_codec_sizes(d):
+    # the codec's own size, not the dictionary's, decides: a 100x100 JPX whose codestream is
+    # 16000x16000 (raw and in a JP2 box), a JBIG2 page of 5000x5000 for a 10x10 image, and a
+    # CCITT stream of 100000 columns, are err:pixels without decoding
+    siz = b"\xff\x4f\xff\x51\x00\x29\x00\x00" + b"".join(v.to_bytes(4, "big") for v in (16000, 16000, 0, 0, 16000, 16000, 0, 0)) + b"\x00\x01\x07\x01\x01"
+    j2k = siz + b"\xff\x90junk"
+    box = lambda kind, body: (len(body) + 8).to_bytes(4, "big") + kind + body
+    jp2 = box(b"jP  ", b"\r\n\x87\n") + box(b"ftyp", b"jp2 \0\0\0\0jp2 ") + box(b"jp2c", j2k)
+    page_info = (0).to_bytes(4, "big") + b"\x30\x00\x01" + (19).to_bytes(4, "big") + (5000).to_bytes(4, "big") + (5000).to_bytes(4, "big") + bytes(8) + b"\x00\x00\x00"
+    objs = [
+        image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /JPXDecode", j2k),  # 6
+        image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /JPXDecode", jp2),  # 7
+        image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", page_info),  # 8
+        image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 100000 /Rows 40 >>", G4),  # 9
+        # a JPX under a Flate filter: never decoded unchecked
+        image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/JPXDecode /FlateDecode]", zlib.compress(j2k)),  # 10
+    ]
+    pdf = t.simple_page_pdf(b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, n) for k, n in enumerate(range(6, 11))), resources="<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in range(6, 11)), extra_objects=objs)
+    path = d.write("codecs.pdf", pdf)
+    rc, r, err = copy(path, [("p1.%d" % (n - 5), 1, "%d.0" % n) for n in range(6, 11)])
+    t.check(rc == 0, "codec size checks: exit 0", err)
+    got = {k: v[0] for k, v in r.items()}
+    t.check(got.get("p1.1") == "err:pixels" and got.get("p1.2") == "err:pixels", "JPX codestream larger than /Width x /Height: err:pixels", got)
+    t.check(got.get("p1.3") == "err:pixels", "JBIG2 page larger than the image: err:pixels", got)
+    t.check(got.get("p1.4") == "err:pixels", "CCITT /Columns not /Width: err:pixels", got)
+    t.check(got.get("p1.5") in ("err:copy", "err:decode"), "a codec under another filter is not decoded", got)
+
+
+def mh_bits(bits):
+    out = bytearray()
+    for k in range(0, len(bits), 8):
+        out.append(int(bits[k : k + 8].ljust(8, "0"), 2))
+    return bytes(out)
+
+
+def test_ccitt_black(d):
+    # Modified Huffman (/K 0), 16 x 2: row 1 white 4, black 8, white 4; row 2 white 0, black 16.
+    # gray1 rows are 0 black: F0 0F, then 00 00
+    mh = mh_bits("1011" "000101" "1011" + "00110101" "0000010111")
+    objs = [image("/Width 16 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K 0 /Columns 16 /Rows 2 >>", mh)]
+    pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q", resources="<< /XObject << /A 6 0 R >> >>", extra_objects=objs)
+    rc, r, _ = copy(d.write("ccitt-black.pdf", pdf), [("p1.1", 1, "6.0")])
+    t.check(r["p1.1"][:4] == ("ok", "gray1", 16, 2) and r["p1.1"][4] == b"\xf0\x0f\x00\x00", "CCITT black runs: 0 is black in gray1", r["p1.1"])
+    # /BlackIs1 true reads the same bits the other way round
+    objs = [image("/Width 16 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K 0 /Columns 16 /Rows 2 /BlackIs1 true >>", mh)]
+    pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q", resources="<< /XObject << /A 6 0 R >> >>", extra_objects=objs)
+    rc, r, _ = copy(d.write("ccitt-black1.pdf", pdf), [("p1.1", 1, "6.0")])
+    t.check(r["p1.1"][4] == b"\x0f\xf0\xff\xff", "CCITT /BlackIs1: inverted", r["p1.1"])
+
+
+def test_reachable_shallow(d):
+    # form F (holding form G, holding the image) is named first at the end of a deep chain
+    # A -> A2 -> A3 -> F, where G is past the search, and then by form B on the page: the
+    # search reaches F at its shallow depth through B and finds the image
+    form = lambda target: t.stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /X %d 0 R >> >>" % target, "/X Do")
+    objs = [
+        image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 6
+        form(6),  # 7: G
+        form(7),  # 8: F
+        form(8),  # 9: A3
+        form(9),  # 10: A2
+        form(10),  # 11: A
+        form(8),  # 12: B
+    ]
+    pdf = t.simple_page_pdf(b"/A Do /B Do", resources="<< /XObject << /A 11 0 R /B 12 0 R >> >>", extra_objects=objs)
+    rc, r, _ = copy(d.write("shallow.pdf", pdf), [("p1.1", 1, "6.0")])
+    t.check(r["p1.1"][0] == "ok", "a form reached deep first and shallow later is searched at its shallow depth", r["p1.1"][:4])
+
+
 with t.TempDir() as d:
     path = d.write("copy.pdf", copy_pdf())
     test_copies(path)
@@ -269,4 +388,8 @@ with t.TempDir() as d:
     test_deep_forms(d)
     test_attributes(d)
     test_overlaid(d)
+    test_jpeg_metadata(d)
+    test_codec_sizes(d)
+    test_ccitt_black(d)
+    test_reachable_shallow(d)
 t.finish()
