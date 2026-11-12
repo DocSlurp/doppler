@@ -63,6 +63,12 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
     let at = |i: usize, s: &str| bytes.len() >= i + s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s.as_bytes());
     let mut i = 0;
     while i + 5 <= bytes.len() {
+        // only a `d` or a `p` (any case) can start either pattern
+        let lead = bytes[i] | 0x20;
+        if lead != b'd' && lead != b'p' {
+            i += 1;
+            continue;
+        }
         if at(i, "doppler") && (at(i + 7, ":") || at(i + 7, "-image:")) {
             out.push_str(&md[from..i + 7]);
             out.push('\u{200b}');
