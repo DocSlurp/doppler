@@ -107,7 +107,7 @@ fn cli_exits_2_without_pages_and_prints_report() {
     let (code, out, err) = run(&page(&format!("<line>{}</line>", word(50.0, 50.0, "hi"))), &["--report"]);
     assert_eq!((code, out.as_str()), (Some(0), "hi"));
     let line = err.lines().next().unwrap();
-    assert!(line.starts_with("{\"page_found\":true,\"pages\":1,") && line.ends_with("\"degraded\":[]}"), "{line}");
+    assert!(line.starts_with("{\"page_found\":true,\"pages\":1,") && line.ends_with("\"degraded\":[],\"body_size\":10,\"body_color\":\"\",\"body_sample_pages\":1,\"body_sample_text_pages\":1,\"body_given\":[]}"), "{line}");
 }
 
 #[test]

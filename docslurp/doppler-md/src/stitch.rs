@@ -42,6 +42,16 @@ pub(crate) struct Carry {
     table: Option<TableEdge>,
     /// the page ends in a plain paragraph with no end of sentence
     open_paragraph: bool,
+    /// `table` is a table that may run on from the previous page (its header could have been
+    /// inherited): this carry depends on the one the page was handed
+    depends: bool,
+}
+
+impl Carry {
+    /// Whether this carry depends on the one its page was handed.
+    pub(crate) fn depends_on_prev(&self) -> bool {
+        self.depends
+    }
 }
 
 /// Cells compared as text: case, spacing and trailing punctuation do not tell headers apart.
@@ -128,6 +138,10 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
             first += notes;
         }
     }
+    // whether the first block could continue a table from the previous page, whatever that
+    // page left open
+    let candidate =
+        matches!(blocks.get(first), Some(Block::Table(t)) if t.header.is_none() && t.y0 <= 0.35 * page_height);
     let mut marker: Option<(usize, String)> = None;
     if let Some(edge) = &prev.table
         && let Some(Block::Table(t)) = blocks.get_mut(first)
@@ -155,6 +169,7 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
     {
         marker = Some((first, format!("<!-- doppler{seal}:paragraph-continued -->")));
     }
+    let shift = marker.is_some() as usize;
     if let Some((at, text)) = marker {
         blocks.insert(at, Block::Rendered(Rc::new(vec![text])));
     }
@@ -167,5 +182,6 @@ pub(crate) fn stitch(blocks: &mut Vec<Block>, prev: &Carry, page_height: f64, p:
         }
         _ => None,
     };
-    Carry { table, open_paragraph: open_paragraph(blocks) }
+    let depends = candidate && table.is_some() && blocks.len().checked_sub(1 + notes) == Some(first + shift);
+    Carry { table, open_paragraph: open_paragraph(blocks), depends }
 }

@@ -6,7 +6,7 @@ use std::io::{BufWriter, Read, StdoutLock, Write};
 use std::process::ExitCode;
 
 use doppler_md::model::{self, Parser};
-use doppler_md::{Converter, Options, Params, Report};
+use doppler_md::{BodySample, Converter, Options, Params, Report, Window};
 
 /// Read size. Pages are written as soon as the converter's window allows, so this bounds the
 /// input buffered ahead of the parser, not the latency.
@@ -26,21 +26,37 @@ pub struct Run<'p> {
     /// flush after every page (a streaming window), not only at the end
     flush_pages: bool,
     write_error: Option<std::io::Error>,
+    /// stop reading once the body estimate is fixed (`--estimate-body`)
+    stop_at_body: bool,
 }
 
 impl<'p> Run<'p> {
-    /// `window`: pages of lookahead (see [`Converter`]); `None` reads the whole document first.
-    pub fn new(p: &'p Params, o: &Options, window: Option<usize>) -> Self {
+    /// `win`: the furniture window, body estimate and context (see [`Converter`]).
+    pub fn new(p: &'p Params, o: &Options, win: Window) -> Self {
+        let flush_pages = win.furniture.is_some();
         Run {
             parser: Parser::with_glyphs(o.math),
-            conv: Converter::new(p, *o, window),
+            conv: Converter::with(p, *o, win),
             partial: Vec::new(),
             text: String::new(),
             out: BufWriter::new(std::io::stdout().lock()),
             written: 0,
-            flush_pages: window.is_some(),
+            flush_pages,
             write_error: None,
+            stop_at_body: false,
         }
+    }
+
+    /// Stop reading once the body estimate is fixed (the rest of the input is not needed).
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn stop_at_body(&mut self) {
+        self.stop_at_body = true;
+    }
+
+    /// Whether reading stopped early because the body estimate was fixed.
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn body_known(&self) -> bool {
+        self.conv.body().is_some()
     }
 
     /// Converts everything `input` yields. Stops early, with `Ok`, once stdout fails (the error
@@ -56,6 +72,9 @@ impl<'p> Run<'p> {
             };
             self.decode(&buf[..n], false);
             self.feed();
+            if self.stop_at_body && self.conv.body().is_some() {
+                return Ok(());
+            }
         }
         Ok(())
     }
@@ -153,8 +172,91 @@ fn write_page(
     }
 }
 
-/// The value of `--window N`: pages of lookahead either side.
-pub fn parse_window(v: Option<&str>) -> Result<usize, String> {
-    let v = v.ok_or("--window needs a number of pages")?;
-    v.parse::<usize>().map_err(|_| format!("--window: not a number of pages: {v:?}"))
+/// `--stream`'s furniture window, in pages either side.
+pub const STREAM_WINDOW: usize = 16;
+/// `--stream`'s body estimate.
+pub const STREAM_BODY: Option<BodySample> = None;
+/// The body estimate of `--window N` without `--body-pages` (`None`: the first N + 1 pages).
+pub const WINDOW_BODY: Option<BodySample> = None;
+
+/// The window and body options shared by both binaries.
+#[derive(Default)]
+pub struct WindowArgs {
+    stream: bool,
+    window: Option<usize>,
+    body_pages: Option<usize>,
+    body_size: Option<f64>,
+    body_color: Option<String>,
+}
+
+/// Help text for [`WindowArgs`].
+pub const WINDOW_HELP: &str = "\
+  --stream         write pages as they are converted: --window 16 (and its body estimate)
+  --window N       furniture window: running headers/footers, repeated watermark words and
+                   pictures are judged over the N pages either side of each page (not the whole
+                   document); each page is written once the next N are complete. 2 to 4 pages
+                   already find headers and footers; 0 finds none
+  --body-pages N   estimate the body font size and colour from the pages up to the N-th with
+                   text; no page is written before then (default: the first window + 1 pages
+                   with --window, the whole document without)
+  --body-size PT   use this body font size instead of an estimate (the report's body_size)
+  --body-color C   use this body colour instead of an estimate (the report's body_color)
+";
+
+impl WindowArgs {
+    /// Takes `flag` (and its value from `next`) when it is one of these options.
+    pub fn take(&mut self, flag: &str, next: &mut dyn FnMut() -> Option<String>) -> Option<Result<(), String>> {
+        let count = |v: Option<String>, what: &str, min: usize| -> Result<usize, String> {
+            let v = v.ok_or(format!("{what} needs a number of pages"))?;
+            match v.parse::<usize>() {
+                Ok(n) if n >= min => Ok(n),
+                _ => Err(format!("{what}: not a number of pages from {min}: {v:?}")),
+            }
+        };
+        let r = match flag {
+            "--stream" => {
+                self.stream = true;
+                Ok(())
+            }
+            "--window" => count(next(), "--window", 0).map(|n| self.window = Some(n)),
+            "--body-pages" => count(next(), "--body-pages", 1).map(|n| self.body_pages = Some(n)),
+            "--body-size" => match next().map(|v| (v.parse::<f64>(), v)) {
+                Some((Ok(pt), _)) if pt.is_finite() && pt > 0.0 && pt <= 10_000.0 => {
+                    self.body_size = Some(pt);
+                    Ok(())
+                }
+                Some((_, v)) => Err(format!("--body-size: not a font size in points (0 to 10000): {v:?}")),
+                None => Err("--body-size needs a font size in points".into()),
+            },
+            "--body-color" => match next() {
+                Some(c) if c.chars().count() <= 64 && !c.chars().any(char::is_control) => {
+                    self.body_color = Some(c);
+                    Ok(())
+                }
+                Some(_) => Err("--body-color: at most 64 characters, no control characters".into()),
+                None => Err("--body-color needs a colour (as the report's body_color)".into()),
+            },
+            _ => return None,
+        };
+        Some(r)
+    }
+
+    /// The converter window these options ask for.
+    pub fn window(&self) -> Window {
+        let furniture = self.window.or(self.stream.then_some(STREAM_WINDOW));
+        let preset = if self.stream && self.window.is_none() {
+            STREAM_BODY
+        } else if furniture.is_some() {
+            WINDOW_BODY
+        } else {
+            None
+        };
+        Window {
+            furniture,
+            body: self.body_pages.map(BodySample::TextPages).or(preset),
+            body_size: self.body_size,
+            body_color: self.body_color.clone(),
+            ..Window::default()
+        }
+    }
 }
