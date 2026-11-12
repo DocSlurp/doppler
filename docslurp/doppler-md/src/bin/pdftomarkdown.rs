@@ -198,10 +198,12 @@ fn main() -> ExitCode {
                 };
                 facts_path = Some(path);
             }
-            "--page-facts-fd" => match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<u32>().ok()) {
-                Some(n) if (3..=i32::MAX as u32).contains(&n) => facts_fd = Some(n),
-                _ => return usage_error("--page-facts-fd needs a descriptor number of 3 or more"),
-            },
+            "--page-facts-fd" => {
+                match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<u32>().ok()) {
+                    Some(n) if (3..=i32::MAX as u32).contains(&n) => facts_fd = Some(n),
+                    _ => return usage_error("--page-facts-fd needs a descriptor number of 3 or more"),
+                }
+            }
             "--page-facts-level" => match args.next().as_deref().and_then(|l| l.to_str()) {
                 Some(l @ ("basic" | "full")) => facts_opts.extend(["-page-facts-level".into(), l.into()]),
                 _ => return usage_error("--page-facts-level needs basic or full"),
@@ -217,10 +219,12 @@ fn main() -> ExitCode {
                 }
             }
             "--page-facts-timing" => facts_opts.push("-page-facts-timing".into()),
-            "--scan-max-words" => match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<u32>().ok()) {
-                Some(n) if n <= i32::MAX as u32 => scan_opts = vec!["-scan-max-words".into(), n.to_string().into()],
-                _ => return usage_error("--scan-max-words needs a number"),
-            },
+            "--scan-max-words" => {
+                match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<u32>().ok()) {
+                    Some(n) if n <= i32::MAX as u32 => scan_opts = vec!["-scan-max-words".into(), n.to_string().into()],
+                    _ => return usage_error("--scan-max-words needs a number"),
+                }
+            }
             "--images-plan-out" | "--images-plan" => {
                 let Some(path) = args.next() else {
                     return usage_error(&format!("{s} needs a FILE"));
@@ -273,7 +277,9 @@ fn main() -> ExitCode {
     }
     let want_facts = facts_path.is_some() || facts_fd.is_some();
     if !facts_opts.is_empty() && !want_facts {
-        return usage_error("--page-facts-level, --page-facts-include and --page-facts-timing need --page-facts or --page-facts-fd");
+        return usage_error(
+            "--page-facts-level, --page-facts-include and --page-facts-timing need --page-facts or --page-facts-fd",
+        );
     }
     if want_facts && plan_in.is_some() {
         return usage_error("--images-plan runs no pdftotext: it takes no --page-facts");

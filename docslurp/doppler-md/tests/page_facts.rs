@@ -10,7 +10,8 @@ const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
 
 fn tools() -> Option<(PathBuf, PathBuf)> {
     let build = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/utils");
-    let pdftotext = std::env::var_os("PDFTOTEXT").filter(|p| !p.is_empty()).map_or(build.join("pdftotext"), PathBuf::from);
+    let pdftotext =
+        std::env::var_os("PDFTOTEXT").filter(|p| !p.is_empty()).map_or(build.join("pdftotext"), PathBuf::from);
     let facts = std::env::var_os("PDFPAGEFACTS")
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
@@ -46,11 +47,17 @@ impl Drop for Scratch {
 fn make_pdf() -> Vec<u8> {
     let text = |y: i32, mode: &str| {
         (0..5)
-            .map(|i| format!("BT /F1 11 Tf {mode}72 {} Td (Earnings beat the forecast again in quarter {i}.) Tj ET\n", y - 14 * i))
+            .map(|i| {
+                format!(
+                    "BT /F1 11 Tf {mode}72 {} Td (Earnings beat the forecast again in quarter {i}.) Tj ET\n",
+                    y - 14 * i
+                )
+            })
             .collect::<String>()
     };
-    let grid: String =
-        (0..5).map(|k| format!("72 {y} m 472 {y} l S {x} 400 m {x} 560 l S\n", y = 560 - 40 * k, x = 72 + 100 * k)).collect();
+    let grid: String = (0..5)
+        .map(|k| format!("72 {y} m 472 {y} l S {x} 400 m {x} 560 l S\n", y = 560 - 40 * k, x = 72 + 100 * k))
+        .collect();
     let contents = [
         text(700, ""),
         format!("q 612 0 0 792 0 0 cm /Im1 Do Q\n{}", text(700, "3 Tr ")),
@@ -112,7 +119,9 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
     let s = Scratch::new("file");
     let pdf = s.0.join("doc.pdf");
     std::fs::write(&pdf, make_pdf()).unwrap();
-    for (level, extra) in [("basic", vec![]), ("full", vec![]), ("basic", vec!["--page-facts-include", "vectors,forms"])] {
+    for (level, extra) in
+        [("basic", vec![]), ("full", vec![]), ("basic", vec!["--page-facts-include", "vectors,forms"])]
+    {
         for range in [vec![], vec!["-f", "2", "-l", "3"]] {
             for mode in [vec!["--stream", "--markers"], vec![]] {
                 let f = s.0.join(format!("facts-{level}-{}-{}-{}.jsonl", extra.len(), range.len(), mode.len()));
@@ -126,7 +135,10 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
                 let mut plain_args: Vec<&str> = mode.clone();
                 plain_args.extend(&range);
                 let without = md(&pdftotext, &plain_args, &pdf);
-                assert_eq!(with.stdout, without.stdout, "Markdown changed by --page-facts ({level} {range:?} {mode:?})");
+                assert_eq!(
+                    with.stdout, without.stdout,
+                    "Markdown changed by --page-facts ({level} {range:?} {mode:?})"
+                );
 
                 let mut ref_args: Vec<&str> = vec!["-level", level];
                 ref_args.extend(&range);
@@ -141,7 +153,8 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
                 let lines: Vec<serde_json::Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
                 assert_eq!(lines.first().unwrap()["type"], "doc");
                 assert_eq!(lines.last().unwrap()["type"], "run");
-                let pages: Vec<u64> = lines.iter().filter(|l| l["type"] == "page").map(|l| l["page"].as_u64().unwrap()).collect();
+                let pages: Vec<u64> =
+                    lines.iter().filter(|l| l["type"] == "page").map(|l| l["page"].as_u64().unwrap()).collect();
                 assert_eq!(pages, if range.is_empty() { vec![1, 2, 3, 4] } else { vec![2, 3] });
                 use std::os::unix::fs::PermissionsExt;
                 assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
@@ -157,8 +170,11 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
     assert_eq!(p2["images"]["scan"], "single");
     assert_eq!(p2["text"]["textLayer"], "invisible");
     // no part files are left behind
-    let leftovers: Vec<_> =
-        std::fs::read_dir(&s.0).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().contains(".part")).collect();
+    let leftovers: Vec<_> = std::fs::read_dir(&s.0)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".part"))
+        .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
