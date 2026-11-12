@@ -45,8 +45,8 @@ and
 .I creator
 strings, which are untrusted. Diagnostics go to standard error as fixed strings; Poppler's
 own messages are dropped, and standard error points at /dev/null while the document is
-processed. Nothing is written but standard output. Once the document is open the process
-confines itself (see
+processed. Nothing is written but standard output, and descriptors above 2 are closed at
+start. Once the file is open, and before it is parsed, the process confines itself (see
 .BR \-confine ).
 Run it under a memory limit and a timeout, inside the sandbox customer files require: it
 parses hostile input.
@@ -84,9 +84,14 @@ Address-space limit, 0 for none (default 4096). Running out of memory exits with
 A page with more visible words is not a scan (default 20).
 .TP
 .BI \-confine " require|auto|off"
-After opening the document, drop the ability to write, create or remove files, use the
-network or run programs (Landlock and seccomp on Linux). auto (the default) applies what
-the kernel supports; require exits with 5 when it cannot confine; off does nothing.
+After opening the file and before parsing it, drop the ability to write, create or remove
+files, use the network or run programs (Landlock and seccomp on Linux). require (the
+default) exits with 5 when it cannot confine; auto applies what the kernel supports and
+writes a warning when that is not everything; off does nothing.
+.TP
+.BI \-timeout " seconds"
+Wall-clock limit for the whole run, 0 for none (default 600). Exceeding it exits with 3; the
+lines already written are whole.
 .TP
 .B \-timing
 Add factsMs to page lines and totalMs and peakRssKiB to the run line. These differ between
@@ -117,7 +122,7 @@ The document is encrypted and needs a password (a doc line with
 is written).
 .TP
 3
-A limit was reached (\-max\-pages, after the lines; or memory).
+A limit was reached (\-max\-pages, after the lines; memory; or \-timeout).
 .TP
 5
 .B \-confine require

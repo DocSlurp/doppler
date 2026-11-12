@@ -75,13 +75,13 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
-| `incrementalUpdates` | cross-reference sections chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections and 30 million tokens, absent past that |
+| `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
 | `tagged` | the catalog has `/StructTreeRoot` (the tree is not parsed) |
 | `markedContent` | `/MarkInfo /Marked true` |
-| `lang` | the catalog `/Lang`, only when it looks like a BCP 47 tag (`^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8}){0,4}$`) |
+| `lang` | the catalog `/Lang`, only when its bytes (ASCII, or UTF-16BE of ASCII) are a BCP 47-like tag (`^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8}){0,4}$`); nothing is dropped to make it one |
 | `outlineCount` | outline items (`/First`/`/Next`), at most 10,000 (`truncated` names it past that) |
 | `pageLabels` | the catalog has `/PageLabels` |
-| `embeddedFiles` | entries of the `/EmbeddedFiles` name tree, walking at most 10,000 nodes |
+| `embeddedFiles` | entries of the `/EmbeddedFiles` name tree, walking at most 10,000 nodes and counting at most 1,000,000 entries (`truncated` either way); an array several nodes share is counted once |
 | `javascript` | a `/JavaScript` name tree, or a JavaScript `/OpenAction` or catalog `/AA` action (presence only; page and annotation actions are not searched) |
 | `openAction` | the catalog has `/OpenAction` |
 | `launchAction` | the `/OpenAction` or a catalog `/AA` action is a Launch action |
@@ -89,7 +89,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `truncated` | which of `embeddedFiles`, `outlineCount`, `strings` hit a cap |
 | `acroForm` | `none` or `present` (a catalog `/AcroForm` dictionary) |
 | `needAppearances` | `/AcroForm /NeedAppearances true` |
-| `xfa` | `none`, `static`, or `dynamic` when the XFA config packet sets `<dynamicRender>required` (at most 1 MiB of it is read) |
+| `xfa` | `none`, `static`, or `dynamic` when the XFA config packet sets `<dynamicRender>required` (at most 1 MiB of it is read, and only through Flate, LZW, ASCII hex/85 or RunLength filters: a packet behind an image codec is not decoded and reads as `static`) |
 | `ocgCount`, `ocgOffByDefault` | optional content groups, and those off in the default configuration |
 | `unusualFeatures` | the document-level flags below |
 
@@ -114,7 +114,7 @@ per grid row a box spans, however many boxes a hostile page draws.
 |---|---|
 | `widthPt`, `heightPt` | the CropBox size, swapped for a 90 or 270 degree rotation (in units of `userUnit`) |
 | `rotation` | `/Rotate`, normalised to 0, 90, 180, 270 |
-| `userUnit` | `/UserUnit` (default 1) |
+| `userUnit` | `/UserUnit` (default 1; 0.0001 to 1,000,000, 4 decimals) |
 | `mediaBox`, `cropBox` | `[x0,y0,x1,y1]`, both present only when they differ |
 
 ### `text` (basic; ratios with `oddtext`)
@@ -129,7 +129,7 @@ out lines, write the same values.
 |---|---|
 | `charCount` | characters |
 | `visibleCharCount`, `invisibleCharCount` | invisible: render mode 3 (no paint), or the glyph's centre outside the clip. White-on-white is not detected |
-| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when drawn in render mode 3 |
+| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when none of its glyphs is visible (render mode 3, or centre outside the clip), as for characters |
 | `textLayer` | `none` (no words), `invisible` (all invisible: an OCR layer), `visible`, `mixed` (the issue's three values plus `mixed`, as `pdftomarkdown --page-info` reports) |
 | `textCoverage` | grid union of word boxes |
 | `clippedCharCount` | characters whose centre is outside the clip (included in `invisibleCharCount`) |
@@ -140,7 +140,7 @@ out lines, write the same values.
 | `verticalCharRatio` | characters of vertical-writing fonts |
 | `rotatedTextRatio` | characters not upright on the page as displayed (rotated by a multiple of 90 degrees, or diagonal); vertical writing counts as upright. Text of a `/Rotate 90` page that is upright in the page's own coordinates is rotated as displayed |
 | `textOverImageRatio` | characters whose centre lies in an image grid cell |
-| `invisibleOverFullPageImage` | the page has a full-page image and at least half of its render-mode-3 characters lie over images (an OCR layer over a scan) |
+| `invisibleOverFullPageImage` | the page has a full-page image and at least half of its invisible characters lie over images (an OCR layer over a scan) |
 
 ### `fonts` (`fonts`)
 
@@ -160,8 +160,9 @@ Fonts that drew characters on the page (at most 256 tracked: `truncated`).
 
 Every visible image and stencil mask, from the image dictionary only (the data is never
 read or decoded); tiny ones (under 2 points a side after clipping) are skipped, as for
-`pdftotext -images`. At most 2,000 per page and 100,000 per run are kept (`truncated`, and
-`limit-hit`; page locality does not hold past the run cap).
+`pdftotext -images`. At most 2,000 per page are kept (`truncated`, and `limit-hit`).
+pdftotext's run-wide budget of 100,000 images (and rules) limits only its XHTML: the facts
+and the scan test of a page never depend on the pages before it.
 
 | field | meaning |
 |---|---|
@@ -184,9 +185,13 @@ per inch along the image's own axes), `filter` (the codec, the last `/Filter`: `
 XObject's object number: the same picture on several pages has the same `obj`; callers
 aggregate across lines, a page line never depends on other pages), and `copy`, how its
 pixels can be taken out without rendering: `jpeg` (copy the stream: sole DCT filter, 8 bits,
-gray or RGB, no `/Decode`, no mask), `bilevel` (1-bit CCITT, JBIG2 or gray, no soft mask),
-`decode` (a single image to decode at native size), `render` (inline, masked or
-soft-masked images, unusual encodings: render the region).
+gray or RGB, no `/Decode`, no `/DecodeParms` that could set `/ColorTransform`, no mask),
+`bilevel` (1-bit CCITT, JBIG2 or gray, no `/Decode`, no soft mask), `decode` (a single image
+to decode at native size), `render` (inline, masked or soft-masked images, unusual
+encodings, an XObject whose data is an external file (`/F`): render the region). The class
+reads the dictionary only: a copier must still check the bytes (for `jpeg`: a baseline SOF
+whose component count matches the colour space and whose size matches `/Width` and
+`/Height`), since a hostile dictionary can say anything.
 
 **Scan detection** (shared with `pdftotext -images`, which writes `scan="..." scanImage="K"`
 on `<page>`): `fullPageImage`, and at most 20 visible words (`-scan-max-words N`;
@@ -211,7 +216,7 @@ quarter of the page (mixed raster content); `tiled` when only the union reaches 
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
-| `limitHit` | the 100,000-path cap or the rule cap was hit: counts are lower bounds (`drawing-limit`) |
+| `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds (`drawing-limit`) |
 
 ### `forms` (`forms`)
 
@@ -316,13 +321,25 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   with `error` (or `locked`).
 - `pdfpagefacts` writes nothing but stdout; diagnostics are fixed strings (poppler's messages
   are dropped and fd 2 points at /dev/null while the document is processed); it caps its
-  address space (`-max-memory`, 4096 MiB) and, once the document is open, confines itself:
-  no file writes or creation, no network, no exec (`-confine require|auto|off`, Landlock +
-  seccomp, shared with pdfregions in `utils/Confine`). It must still run inside the
-  credential-free, network-blocked VM boundary DocSlurp requires for customer files.
+  address space (`-max-memory`, 4096 MiB) and run time (`-timeout`, 600 s, exit 3), closes
+  descriptors above 2 at start, and confines itself after opening the file and before
+  parsing a byte of it: no file writes or creation, no network, no exec (`-confine
+  require|auto|off`, default `require`: a kernel without Landlock or seccomp is exit 5;
+  `auto` falls back with a fixed-string warning; Landlock + seccomp, shared with pdfregions in
+  `utils/Confine`). It must still run inside the credential-free, network-blocked VM boundary
+  DocSlurp requires for customer files.
 - pdftomarkdown's `--page-facts FILE` must not exist, is reached without following symbolic
-  links, is created mode 0600 under a temporary name and renamed into place when pdftotext
-  has finished; the descriptor is inheritable only while pdftotext starts.
+  links, is created mode 0600 under a temporary name and renamed into place as soon as
+  pdftotext has finished (before image extraction); a FILE without a run line is incomplete.
+  The descriptor is inheritable only while pdftotext starts; a caller's `--page-facts-fd`
+  descriptor cannot be marked close-on-exec from safe Rust, so pdfregions (and pdfpagefacts)
+  close every descriptor above 2 at start.
+- The structure and form walks fetch each shared object once: widgets' indirect `/Parent`,
+  `/V`, `/FT`, `/Ff`, `/AP` through a per-document cache, a name tree's shared `/Names` and
+  `/Kids` arrays once per walk, and the `/Prev` walk within a byte budget.
+- A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
+  around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and
+  exits 5.
 - Tests: a mutation fuzz of the fixtures (`test/docslurp/page-facts/test_mutation_fuzz.py`,
   320 cases in ctest; `PAGE_FACTS_FUZZ_CASES=2000` locally): no signal, exit 0-3, every line
   valid JSON and valid against the schema, pdftotext agreeing with pdfpagefacts.
@@ -331,7 +348,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
 
 0 ok; 1 cannot open (a doc line with `error`), no pages, or stdout cannot be written; 2
 encrypted and the password is needed (a doc line with `locked`); 3 limit (`-max-pages`, then
-the run line has `stop`; or out of memory); 5 `-confine require` could not confine; 99 usage
+the run line has `stop`; out of memory; or `-timeout`); 5 `-confine require` (the default)
+could not confine; 99 usage
 (including a first page past the last).
 
 ## What is not here (deferred)

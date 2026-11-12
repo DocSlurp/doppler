@@ -131,8 +131,9 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   computes them on the same pass (`-page-facts-fd N`); the Markdown does not change.
 - **Without one:** `pdfpagefacts [-level basic|full] [-f N] [-l N] FILE.pdf|-` writes them to
   stdout: no text output, no images, no rendering; fixed-string diagnostics, `-max-memory`,
-  `-max-pages`, and a Landlock + seccomp sandbox once the PDF is open (`utils/Confine`, shared
-  with pdfregions). Exit 0 ok, 1 cannot open, 2 needs a password, 3 limit, 99 usage.
+  `-max-pages`, `-timeout`, and a Landlock + seccomp sandbox entered after the file is opened
+  and before it is parsed (`utils/Confine`, shared with pdfregions; `-confine require` by
+  default). Exit 0 ok, 1 cannot open, 2 needs a password, 3 limit, 5 cannot confine, 99 usage.
 - The three write byte-identical lines for the same input, range and level. Facts are
   deterministic (timing only with `-timing`) and page-local (`-f p -l p` gives a page the
   same line as a whole run). They never contain document text, paths, URIs or field values,
