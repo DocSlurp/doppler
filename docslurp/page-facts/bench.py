@@ -144,6 +144,10 @@ def main():
         def md_cmd(path, *extra):
             return [md, "--stream"] + list(extra) + [path]
 
+        def fd5(cmd):
+            # descriptor 5 is /dev/null in the harness; without it a shell opens it
+            return cmd if HARNESS else ["sh", "-c", 'exec "$0" "$@" 5>/dev/null'] + cmd
+
         def with_facts(path, level, *extra):
             # --page-facts needs a new file each run: descriptor 5 (/dev/null, opened by the
             # harness) takes the same writes
@@ -154,6 +158,8 @@ def main():
         commands = [
             ("pdfinfo", lambda p: [os.path.join(b, "pdfinfo"), p]),
             ("pdftotext pass (as pdftomarkdown runs it)", lambda p: [os.path.join(b, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", p, "-"]),
+            ("  + -page-facts-fd basic", lambda p: fd5([os.path.join(b, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", "-page-facts-fd", "5", p, "-"])),
+            ("  + -page-facts-fd full", lambda p: fd5([os.path.join(b, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", "-page-facts-fd", "5", "-page-facts-level", "full", p, "-"])),
             ("pdfpagefacts basic", lambda p: [os.path.join(b, "pdfpagefacts"), "-level", "basic", p]),
             ("pdfpagefacts full", lambda p: [os.path.join(b, "pdfpagefacts"), "-level", "full", p]),
             ("pdftomarkdown --stream", lambda p: md_cmd(p)),
