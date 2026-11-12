@@ -101,6 +101,12 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
                                    {} };
 
+// A value that fills its buffer may have been cut short by parseArgs: refused.
+static bool parseShareArg(const char *text, size_t bufferSize, double *share)
+{
+    return strlen(text) + 1 < bufferSize && ScanThresholds::parseShare(text, share);
+}
+
 static bool parseLimit(const char *text, long long minValue, long long maxValue, long long *value)
 {
     char *end = nullptr;
@@ -254,8 +260,8 @@ int main(int argc, char *argv[])
     const bool ok = parseArgs(argDesc, &argc, argv);
     const bool confineOk = !strcmp(confineArg, "require") || !strcmp(confineArg, "auto") || !strcmp(confineArg, "off");
     const bool limitsOk = confineOk && parseLimit(maxPagesArg, 1, 1000000000LL, &maxPages) && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(scanMaxWordsArg, 0, 1000000000LL, &scanMaxWords)
-            && ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage) && ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap) && parseLimit(timeoutArg, 0, 86400, &timeout)
-            && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
+            && parseShareArg(scanMinCoverageArg, sizeof(scanMinCoverageArg), &scanThresholds.minCoverage) && parseShareArg(scanLayerOverlapArg, sizeof(scanLayerOverlapArg), &scanThresholds.layerOverlap)
+            && parseLimit(timeoutArg, 0, 86400, &timeout) && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfpagefacts version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
