@@ -10,10 +10,11 @@
 //! `manifest.json`, written last, lists every image and every file.
 //!
 //! Full-page scans (`page-scan`) are taken out without rendering where the scan image's
-//! dictionary allows: a JPEG is copied byte for byte (`.jpg`), a bilevel image decoded once to
-//! a 1-bit PNG, any other single image decoded once at native size and scaled to
-//! `--scan-max-dpi` at most; tiles, layers, turned images and `--scan-pages render` are
-//! rendered at `--scan-dpi`. A copy that fails its checks is `not-extracted` (reason `copy`),
+//! dictionary allows and nothing else shows over it: a JPEG is copied without its metadata
+//! (`.jpg`), a bilevel image decoded once to a 1-bit PNG, any other single image decoded once at
+//! native size (at most [`regions::MAX_COPY_PIXELS`]) and scaled to `--scan-max-dpi` at most;
+//! tiles, layers, turned or covered images, larger ones and `--scan-pages render` are rendered
+//! at `--scan-dpi`. A copy that fails its checks is `not-extracted` (reason `copy`),
 //! never rendered into another format. Scans have their own budget per batch (`--scan-max`,
 //! `--scan-max-bytes`), so a scanned book never starves the figures, nor the reverse.
 //!

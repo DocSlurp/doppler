@@ -20,8 +20,8 @@ production.
   (per crop, 4096 x 4096), `-timeout 120` (whole run, wall clock), `-max-svg-bytes 33554432`
   (per SVG record, else `err:svgsize`), `-max-output-bytes 536870912` (all of stdout; a record
   that would pass it is not written and the run exits 3), `-max-copy-bytes 67108864` (largest
-  copied JPEG, else `err:copysize`), `-max-copy-pixels 100000000` (largest image a copy job
-  decodes, else `err:pixels`), `-confine auto`.
+  copied JPEG, else `err:copysize`), `-max-copy-pixels 16777216` (largest image a copy job
+  decodes, 8 times that for 1-bit images, else `err:pixels`; pdftomarkdown passes it), `-confine auto`.
 - `-no-images`: images are not drawn (their data is never decoded), for vector-only renders.
 - Confinement (Linux): after opening the PDF and loading fontconfig, pdfregions sets
   `PR_SET_NO_NEW_PRIVS`, a Landlock ruleset that denies every filesystem write, create, remove,
@@ -81,20 +81,33 @@ production.
   behind pdftotext's `copy=` (`classifyImageCopy` over `Gfx::readImageDictInfo`), so a job
   cannot ask for more than the producer reported. Width and height in the record are the
   image's `/Width` and `/Height`:
-  - `kind=jpeg` (class `jpeg`): the DCT filter's input (the stored bytes, decrypted), unchanged,
-    after checks: SOI first, one frame header SOF0, SOF1 or SOF2 (Huffman baseline, extended
-    or progressive) of 8-bit samples with the image's size and as many components as its
-    colour space (1 or 3), a scan, and EOI within the last 66 bytes (padding after it is cut).
-    Nothing is decoded.
+  - `kind=jpeg` (class `jpeg`): the DCT filter's input (the stored bytes, decrypted), after
+    checks: SOI first, one frame header SOF0, SOF1 or SOF2 (Huffman baseline, extended or
+    progressive) of 8-bit samples with the image's size and as many components as its colour
+    space (1 or 3), scans, and EOI within the last 66 bytes (padding after it is cut); no other
+    image inside. It is rewritten without metadata: tables (DQT, DHT, DRI), the frame, the scans
+    and their entropy-coded data stay; a JFIF APP0 and an Adobe APP14 become canonical (JFIF
+    1.01, 1:1, no thumbnail; Adobe with the stream's colour transform); every other APPn (Exif,
+    its orientation and thumbnail, ICC, XMP, Photoshop) and every COM goes, before the frame
+    and between scans. Viewers then show the pixels as the PDF draws them, and no document
+    string reaches the file. A stream without metadata comes back byte for byte. Nothing is
+    decoded.
   - `kind=gray1` (class `bilevel`: CCITT, JBIG2, 1 bpc grey or a stencil mask, no `/Decode`):
     the decoded samples, `ceil(width/8) * height` bytes, rows top first, most significant bit
     first, 0 black (the PDF's own sense); a short stream ends in white rows.
   - `kind=gray8` or `kind=rgb8` (class `decode`: another single image): its samples decoded once
     at native size through its colour space and `/Decode` (`gray8` for a one-component grey
     space, else `rgb8`), as rendering would read them.
+  - Before a `gray1`, `gray8` or `rgb8` copy is decoded, the size the codec really decodes must
+    be the image's `/Width` x `/Height`: a JPEG 2000 codestream's SIZ (raw, or in the jp2c box
+    of a JP2 file; image size minus offset), a JBIG2 page information segment (an unknown,
+    striped height is refused), CCITT `/Columns` and `/Rows`. Otherwise `err:pixels`. A codec
+    under another filter (`[/JPXDecode /FlateDecode]`) is `err:decode`. JBIG2 symbol and region
+    bitmaps, and the codecs on the render path, stay bounded by `-max-memory` only.
   - Copy jobs use the decoders page rendering uses, inside the same confinement and limits;
     pdftomarkdown sends them only for page scans whose `copy=` is `jpeg`, `bilevel` or
-    `decode`, that are upright (no `orient=`) and single (not tiled or layered).
+    `decode`, that are upright with nothing over them (`orient="0" overlaid="0"`) and single
+    (not tiled or layered); a `decode` scan over 16,777,216 pixels is rendered instead.
 - `kind=svg`: UTF-8 SVG, width/height fields 0; the root `<svg>` has `width`/`height` in pt and
   `viewBox` equal to the (cut) region (`x0 y0 x1-x0 y1-y0`, at most 6 decimals), so the figure
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
@@ -123,7 +136,7 @@ production.
 
 - `pdftotext`: placement and ids only (unchanged contract; plus `ref="num gen"` on `<image>`
   for an image XObject, so repeats of one object can be found; `filter= bpc= cs= smask=
-  decode= inline= copy=` from its dictionary and `orient=` when it is not upright; and
+  decode= inline= copy=` from its dictionary, then `orient=` and `overlaid=` on every image; and
   `scan= scanImage=` on `<page>` for a full-page scan).
 - `pdfregions`: renders regions and copies images it can verify; no policy, no files.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records

@@ -24,7 +24,7 @@ const MAX_DIAGNOSTICS: usize = 4096;
 pub enum Mode {
     Raster,
     Svg,
-    /// an image XObject's own pixels (`obj`): a JPEG unchanged, 1-bit rows, or decoded samples
+    /// an image XObject's own pixels (`obj`): a JPEG without its metadata, 1-bit rows, or decoded samples
     Copy,
 }
 
@@ -70,7 +70,7 @@ pub enum Outcome {
         data: Vec<u8>,
     },
     Svg(String),
-    /// a copy job's JPEG, unchanged (the image's declared size)
+    /// a copy job's JPEG, metadata stripped (the image's declared size)
     Jpeg {
         width: u32,
         height: u32,

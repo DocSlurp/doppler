@@ -9,7 +9,7 @@
 //! |---|---|
 //! | picture `pN.M` | `page-{N:04}/image-{M:03}.{webp,png}` |
 //! | vector figure `pN.gK` | `page-{N:04}/figure-{K:03}.{svg,webp,png}` |
-//! | page scan `pN.M` | `page-{N:04}/image-{M:03}.{jpg,png,webp}`: `.jpg` for a JPEG copied unchanged, `.png` for a bilevel scan, else `--raster-format` |
+//! | page scan `pN.M` | `page-{N:04}/image-{M:03}.{jpg,png,webp}`: `.jpg` for a copied JPEG (metadata stripped), `.png` for a bilevel scan, else `--raster-format` |
 //!
 //! Padding is a minimum width: page 12345 is `page-12345`. A link is the prefix
 //! (`--images-link-prefix`, default `images/`) followed by the path.
@@ -118,7 +118,7 @@ pub fn extension(vector: bool, style: &LinkStyle) -> &'static str {
 }
 
 /// The file extension of a note's file: a page scan's by how it is taken out (a JPEG copied
-/// unchanged is `.jpg`, a bilevel scan `.png`, anything decoded or rendered the raster format),
+/// (metadata stripped) is `.jpg`, a bilevel scan `.png`, anything decoded or rendered the raster format),
 /// anything else by [`extension`].
 pub fn note_extension(n: &Note, style: &LinkStyle) -> &'static str {
     if n.fate == Fate::PageScan {

@@ -43,7 +43,7 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
 | `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
 | (restitching pictures, tables and paragraphs across pages) | `pdftomarkdown --markers FILE.pdf`, see [doppler-md](docslurp/doppler-md/README.md#restitching-markers---markers) |
-| `pdfimages` / cropping figures yourself | `pdftomarkdown --images-dir DIR FILE.pdf` (WebP/SVG per marked picture and figure, the original JPEG or a 1-bit PNG per scanned page, at the path its Markdown link names, `manifest.json`), see [doppler-md](docslurp/doppler-md/README.md#extracting-images-and-figures---images-dir) |
+| `pdfimages` / cropping figures yourself | `pdftomarkdown --images-dir DIR FILE.pdf` (WebP/SVG per marked picture and figure, the original JPEG (metadata stripped) or a 1-bit PNG per scanned page, at the path its Markdown link names, `manifest.json`), see [doppler-md](docslurp/doppler-md/README.md#extracting-images-and-figures---images-dir) |
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
 
@@ -140,10 +140,12 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   except the capped, sanitised and untrusted `producer`/`creator`.
 - `pdftotext -images` also writes the scan verdict (`scan=`, `scanImage=` on `<page>`) and
   each image's dictionary facts (`filter=`, `bpc=`, `cs=`, `smask=`, `decode=`, `inline=`,
-  `copy=` on `<image>`, and `orient=` when an image is not upright), appended last; the facts
-  and the XHTML use the same classifier. `pdftomarkdown` places such pages as `page-scan`
-  (`![page N scan](...)` first) and, with `--images-dir`, copies their pixels through
-  `pdfregions` copy jobs (a JPEG byte for byte, bilevel as 1-bit PNG) instead of rendering;
+  `copy=` on `<image>`, then `orient=` and `overlaid=`: how its pixels land on the page and
+  whether anything else shows over them), appended last; the facts and the XHTML use the same
+  classifier. `pdftomarkdown` places such pages as `page-scan` (`![page N scan](...)` first)
+  and, with `--images-dir`, copies the pixels of an upright scan with nothing over it through
+  `pdfregions` copy jobs (a JPEG without its metadata, bilevel as 1-bit PNG) instead of
+  rendering; a redaction box, white-out, clip or annotation over a scan makes it rendered;
   see [Page scans](docslurp/doppler-md/README.md#page-scans).
 - Page counts for billing stay with `pdfpagecount`: `pageCount` in the doc line is what
   poppler processes.

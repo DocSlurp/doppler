@@ -235,7 +235,7 @@ impl Fate {
 /// render of the page region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanSource {
-    /// its JPEG stream, copied unchanged (`.jpg`)
+    /// its JPEG stream, copied without its metadata segments (`.jpg`)
     Jpeg,
     /// its 1-bit samples, decoded once (`.png`)
     Bilevel,

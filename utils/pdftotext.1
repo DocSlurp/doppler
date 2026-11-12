@@ -265,8 +265,14 @@ for an inline image, and
 (jpeg, bilevel, decode or render: how its pixels can be taken out without rendering, see
 docslurp/page-facts/README.md), and last
 .I orient
-(90, 180, 270 or other) when the image's rows and columns do not land on the
-page as stored (turned clockwise, mirrored or skewed; page rotation included).
+(0 when the image's rows and columns land on the page as stored; 90, 180 or 270
+when turned clockwise, other when mirrored or skewed; page rotation included) and
+.I overlaid
+(0 when nothing else shows over the image: no later fill, stroke, shading,
+pattern, visible glyph, image or annotation appearance overlaps it, no clip or
+page edge cuts it, no non-rectangular clip applies, and it is not drawn through
+a soft mask, blend mode, opacity below 1 or transfer function; 1 otherwise, and
+for every image past the first 64 drawn plainly on a page).
 The PDF page number is
 .I number
 on
