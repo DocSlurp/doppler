@@ -106,9 +106,11 @@ computed by pdftotext on the same pass, written unchanged, never on stdout; see
 docslurp/page-facts/README.md):
   --page-facts FILE           write them to FILE, which must not exist (mode 0600; its folder
                               is reached without following symbolic links). FILE appears when
-                              pdftotext has finished
+                              pdftotext has finished, before image extraction; a FILE
+                              without a run line is incomplete (pdftotext failed)
   --page-facts-fd N           write them to descriptor N (3 or more), open for writing and
-                              inherited from the caller
+                              inherited from the caller (the image renderer does not keep it)
+  A facts write that fails (the reader closed it, say) keeps the Markdown: exit status 5.
   --page-facts-level L        basic (default) or full
   --page-facts-include LIST   families added to basic: fonts,oddtext,images-detail,vectors,
                               forms,annots,ocg,structure
@@ -354,21 +356,9 @@ fn main() -> ExitCode {
             &mut out_dir,
             plan_file.map(|f| (f, pages, settings)),
             &facts_opts,
-            facts_file.as_ref(),
+            facts_file,
         ),
     };
-    // the facts file appears once pdftotext is done, whatever the conversion's outcome (its
-    // lines say what was read); one pdftotext never wrote to is removed
-    let mut code = code;
-    if let Some(f) = facts_file
-        && f.written()
-        && let Err(e) = f.commit()
-    {
-        eprintln!("pdftomarkdown: --page-facts: {e}");
-        if code == ExitCode::SUCCESS {
-            code = ExitCode::from(5);
-        }
-    }
     // a folder left over is a failed or skipped extraction
     if let Some(d) = out_dir {
         let _ = d.remove();
@@ -393,7 +383,7 @@ fn convert(
     out_dir: &mut Option<OutDir>,
     plan_out: Option<(NewFile, (Option<u32>, Option<u32>), String)>,
     facts_opts: &[OsString],
-    facts_file: Option<&FactsFile>,
+    mut facts_file: Option<FactsFile>,
 ) -> ExitCode {
     // the plan names the bytes converted: hash them first
     let plan_out = match plan_out.map(|(f, pages, settings)| binding(file, pages, settings).map(|b| (f, b))) {
@@ -406,7 +396,7 @@ fn convert(
     };
     let exe = pdftotext();
     // the facts descriptor is inherited by pdftotext only
-    if let Some(f) = facts_file
+    if let Some(f) = &facts_file
         && let Err(e) = f.set_inheritable(true)
     {
         eprintln!("pdftomarkdown: --page-facts: {e}");
@@ -426,7 +416,7 @@ fn convert(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn();
-    if let Some(f) = facts_file
+    if let Some(f) = &facts_file
         && let Err(e) = f.set_inheritable(false)
     {
         eprintln!("pdftomarkdown: --page-facts: {e}");
@@ -458,6 +448,7 @@ fn convert(
     if run.write_failed() {
         let _ = child.kill();
         let _ = child.wait();
+        commit_facts(facts_file.take());
         return run.finish("pdftomarkdown", want_report, &no_page);
     }
     let status = match child.wait() {
@@ -467,12 +458,24 @@ fn convert(
             return ExitCode::FAILURE;
         }
     };
+    // the facts file appears as soon as pdftotext is done, before image extraction, whatever
+    // the conversion's outcome (its lines say what was read; one without a run line is
+    // incomplete); one pdftotext never wrote to is removed
+    let mut facts_failed = !commit_facts(facts_file.take());
+    // pdftotext's exit status 4: the XHTML is complete but the facts could not be written (a
+    // reader that closed its end, say). The Markdown stands: exit status 5 at the end.
+    let facts_requested = !facts_opts.is_empty() && facts_opts[0] == "-page-facts-fd";
+    let status_ok = status.success() || (facts_requested && status.code() == Some(4));
+    if !status.success() && status_ok {
+        eprintln!("pdftomarkdown: {} could not write the page facts", exe.display());
+        facts_failed = true;
+    }
     if let Err(e) = read {
         eprintln!("pdftomarkdown: reading the output of {}: {e}", exe.display());
         return ExitCode::FAILURE;
     }
     // a failed pdftotext leaves stdout empty, except for the pages a --window run already wrote
-    if !status.success() {
+    if !status_ok {
         match status.code() {
             // 99 is poppler's usage error: a page range past the end of the document, or a
             // pdftotext without the fork's options
@@ -495,7 +498,7 @@ fn convert(
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
-    let mut failed = false;
+    let mut failed = facts_failed;
     if let Some((f, b)) = plan_out
         && written.is_ok()
         && report.page_found()
@@ -528,6 +531,21 @@ fn convert(
         return ExitCode::from(5);
     }
     code
+}
+
+/// Renames the facts file into place if pdftotext wrote to it (an empty one is removed); false
+/// when that failed.
+fn commit_facts(facts_file: Option<FactsFile>) -> bool {
+    match facts_file {
+        Some(f) if f.written() => match f.commit() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("pdftomarkdown: --page-facts: {e}");
+                false
+            }
+        },
+        _ => true,
+    }
 }
 
 fn renderer(file: &OsString, images: &Settings, passwords: &[OsString]) -> Renderer {

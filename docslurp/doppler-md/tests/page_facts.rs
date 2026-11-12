@@ -235,3 +235,64 @@ fn facts_options_are_checked_before_anything_runs() {
     assert_eq!(out.status.code(), Some(2));
     assert!(!s.0.join("f.jsonl").exists());
 }
+
+#[test]
+fn a_closed_facts_reader_keeps_the_markdown() {
+    let Some((pdftotext, _)) = tools() else { return };
+    let s = Scratch::new("epipe");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    let err = s.0.join("stderr.txt");
+    // descriptor 5 is the write end of a pipe whose reader is gone before pdftotext writes
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec "$0" --page-facts-fd 5 --page-facts-level full "$1" 5>&2 2>"$2""#)
+        .arg(PDFTOMARKDOWN)
+        .arg(&pdf)
+        .arg(&err)
+        .env("PDFTOTEXT", &pdftotext)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let out = child.wait_with_output().unwrap();
+    let message = std::fs::read_to_string(&err).unwrap_or_default();
+    // the Markdown stands; the failed sidecar is exit status 5
+    assert_eq!(out.status.code(), Some(5), "{message}");
+    assert_eq!(out.stdout, md(&pdftotext, &[], &pdf).stdout);
+    assert!(message.contains("could not write the page facts"), "{message}");
+}
+
+#[test]
+fn facts_file_appears_before_image_extraction() {
+    let Some((pdftotext, _)) = tools() else { return };
+    let s = Scratch::new("early");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    let f = s.0.join("facts.jsonl");
+    let dir = s.0.join("images");
+    // a renderer that records whether the facts file is already in place, then fails
+    let probe = s.0.join("renderer.sh");
+    let seen = s.0.join("seen.txt");
+    std::fs::write(
+        &probe,
+        format!("#!/bin/sh\nif [ -f '{}' ]; then echo yes > '{}'; fi\nexit 1\n", f.display(), seen.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = Command::new(PDFTOMARKDOWN)
+        .args(["--page-facts", f.to_str().unwrap(), "--images-dir", dir.to_str().unwrap()])
+        .arg(&pdf)
+        .env("PDFTOTEXT", &pdftotext)
+        .env("PDFREGIONS", &probe)
+        .output()
+        .unwrap();
+    assert!(f.is_file(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        std::fs::read_to_string(&seen).unwrap_or_default().trim(),
+        "yes",
+        "facts file missing during extraction"
+    );
+}
