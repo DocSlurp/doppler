@@ -147,8 +147,10 @@ fn turned_or_unreferenced_scans_are_rendered() {
         assert_eq!(report.images[0].scan.map(|s| s.as_str()), Some("render"), "{extra}");
     }
     // bilevel and decodable scans: .png and the raster format
-    let ccitt = image(FULL, (2550, 3300), 9, &format!(" filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"{EXACT}"));
-    let flate = image(FULL, (2550, 3300), 10, &format!(" filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"{EXACT}"));
+    let ccitt =
+        image(FULL, (2550, 3300), 9, &format!(" filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"{EXACT}"));
+    let flate =
+        image(FULL, (2550, 3300), 10, &format!(" filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"{EXACT}"));
     let (md, report) =
         convert(&doc(&[page(1, Some(("single", 1)), &ccitt), page(2, Some(("single", 1)), &flate)]), ScanPages::Image);
     assert_eq!(
@@ -385,7 +387,10 @@ fn scans_with_anything_over_them_are_rendered_not_copied() {
             "{e}"
         );
     }
-    assert_eq!((entry(&m, "p5.1")["source"].as_str(), entry(&m, "p5.1")["format"].as_str()), (Some("copy"), Some("jpg")));
+    assert_eq!(
+        (entry(&m, "p5.1")["source"].as_str(), entry(&m, "p5.1")["format"].as_str()),
+        (Some("copy"), Some("jpg"))
+    );
     // the rendered files show the black boxes: the middle of the band (x 300, y 400 in PDF
     // space, so 392 points from the top) is black, where the scan itself is not
     for page in [1, 2] {
@@ -398,4 +403,67 @@ fn scans_with_anything_over_them_are_rendered_not_copied() {
         let px = &img[(y * w + x) * channels..(y * w + x) * channels + 3];
         assert!(px.iter().all(|&v| v < 16), "page {page}: the redaction box is in the file: {px:?}");
     }
+}
+
+#[test]
+fn a_spent_figure_budget_does_not_stop_the_scans_after_it() {
+    // two pictures on page 1 with a figure budget of one, then two scans in the same batch
+    let Some((t, r, s)) = fixtures("fig-budget") else { return };
+    let pdf = s.0.join("budget.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--images-max", "1", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    let pictures: Vec<&serde_json::Value> =
+        m["images"].as_array().unwrap().iter().filter(|e| e["page"] == 1 && e["fate"] == "block").collect();
+    assert_eq!(pictures.len(), 2, "{m}");
+    assert_eq!(pictures.iter().filter(|e| e["status"] == "extracted").count(), 1, "{m}");
+    assert_eq!(pictures.iter().filter(|e| e["reason"] == "budget").count(), 1, "{m}");
+    for id in ["p2.1", "p3.1"] {
+        assert_eq!(entry(&m, id)["status"], "extracted", "{m}");
+    }
+    assert_eq!(m["totals"]["scans"], 2);
+    assert_eq!(m["batches"][0]["status"], "budget");
+}
+
+#[test]
+fn a_scan_past_the_copy_cap_is_rendered_not_decoded() {
+    // 4200 x 4200 samples (17.6 M) would be decoded whole; the render at --scan-dpi is cheaper
+    let Some((t, r, s)) = fixtures("huge") else { return };
+    let pdf = s.0.join("huge.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    assert_eq!(String::from_utf8_lossy(&res.stdout), "![page 1 scan](images/page-0001/image-001.webp)");
+    let m = manifest(&out);
+    let e = entry(&m, "p1.1");
+    assert_eq!((e["status"].as_str(), e["source"].as_str()), (Some("extracted"), Some("render")), "{e}");
+    assert_eq!((e["width"].as_u64(), e["height"].as_u64()), (Some(1275), Some(1650)), "{e}");
+}
+
+#[test]
+fn an_encode_that_ends_past_the_deadline_is_dropped() {
+    // the lossless encode at the highest effort takes seconds; the document deadline is one
+    let Some((t, r, s)) = fixtures("slow") else { return };
+    let pdf = s.0.join("slow.pdf");
+    let out = s.0.join("out");
+    let args = [
+        "--images-dir",
+        out.to_str().unwrap(),
+        "--images-deadline",
+        "1",
+        "--raster-lossless",
+        "--lossless-method",
+        "6",
+        "--lossless-quality",
+        "100",
+        pdf.to_str().unwrap(),
+    ];
+    let res = run(&t, &r, &args);
+    assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    assert_eq!(m["complete"], false);
+    let e = entry(&m, "p1.1");
+    assert_eq!((e["status"].as_str(), e["reason"].as_str()), (Some("not-extracted"), Some("deadline")), "{e}");
+    assert!(!out.join("page-0001/image-001.webp").exists());
 }

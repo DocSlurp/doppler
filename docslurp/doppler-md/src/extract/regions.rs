@@ -93,6 +93,11 @@ pub enum Outcome {
     Error(String),
 }
 
+/// `-max-copy-pixels`: the largest image a copy job decodes (the renderer's raster cap; 1-bit
+/// images get 8 times as many pixels). A page scan to decode that is larger is rendered at
+/// `--scan-dpi` instead, so decoded samples never cost more than a render.
+pub const MAX_COPY_PIXELS: u64 = 16_777_216;
+
 /// How to start the renderer.
 pub struct Renderer {
     pub exe: PathBuf,
@@ -204,6 +209,8 @@ impl Renderer {
             .arg(self.max_output_bytes.to_string())
             .arg("-max-copy-bytes")
             .arg(self.max_copy_bytes.max(1).to_string())
+            .arg("-max-copy-pixels")
+            .arg(MAX_COPY_PIXELS.to_string())
             .arg(&self.file)
             // a group of its own, so the whole group can be killed at the deadline
             .process_group(0)

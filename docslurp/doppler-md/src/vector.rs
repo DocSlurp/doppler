@@ -97,6 +97,7 @@ pub fn place(
             members: unit.len(),
             group: None,
             obj: None,
+            plain: false,
             text: true,
             file: None,
             degraded: false,

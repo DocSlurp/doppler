@@ -196,6 +196,10 @@ struct Run<'a> {
     scan_batch_written: usize,
     scan_batch_bytes: u64,
     scan_over: bool,
+    /// a picture or figure over this batch's budget (the rest of the batch goes on for scans)
+    figures_over: bool,
+    /// page scans rendered although their dictionary allows a decode (past the copy cap)
+    scan_render: HashSet<usize>,
     scans_written: usize,
     scan_bytes: u64,
     /// content repeats: (key, sha256 of the rendered payload) -> entry
@@ -236,6 +240,7 @@ pub fn extract(
     let mut jobs: Vec<(Job, usize)> = Vec::new();
     let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
     let mut promoted: HashSet<&str> = HashSet::new();
+    let mut scan_render: HashSet<usize> = HashSet::new();
     for (i, n) in notes.iter().enumerate() {
         let e = &mut entries[i];
         let scan = n.fate == Fate::PageScan;
@@ -281,8 +286,15 @@ pub fn extract(
             }
             entries[i].repeat_of = Some(first.clone());
         }
+        // a scan to decode past the copy cap is rendered instead (same raster format, so the
+        // same link): its samples would cost more than a render
+        let pixels = u64::from(n.px.0).saturating_mul(u64::from(n.px.1));
+        let decode_too_big = n.scan == Some(ScanSource::Decode) && pixels > regions::MAX_COPY_PIXELS;
+        if scan && decode_too_big {
+            scan_render.insert(i);
+        }
         let job = match (scan, n.scan, n.obj) {
-            (true, Some(ScanSource::Jpeg | ScanSource::Bilevel | ScanSource::Decode), Some(obj)) => {
+            (true, Some(ScanSource::Jpeg | ScanSource::Bilevel | ScanSource::Decode), Some(obj)) if !decode_too_big => {
                 Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Copy, dpi: 0, obj: Some(obj) }
             }
             (true, _, _) => {
@@ -317,6 +329,8 @@ pub fn extract(
         scan_batch_written: 0,
         scan_batch_bytes: 0,
         scan_over: false,
+        figures_over: false,
+        scan_render,
         scans_written: 0,
         scan_bytes: 0,
         seen_payload: HashMap::new(),
@@ -406,6 +420,7 @@ impl Run<'_> {
         self.scan_batch_written = 0;
         self.scan_batch_bytes = 0;
         self.scan_over = false;
+        self.figures_over = false;
         self.fallbacks.clear();
         self.deadline = Instant::now() + s.timeout + GRACE;
         if let Some(d) = self.doc_deadline {
@@ -417,7 +432,7 @@ impl Run<'_> {
         for (_, i) in over {
             self.entries[*i].status = Status::NotExtracted("budget");
         }
-        if status == "ok" && (!over.is_empty() || self.scan_over) {
+        if status == "ok" && (!over.is_empty() || self.scan_over || self.figures_over) {
             status = "budget";
         }
         // figures whose SVG was refused: lossless rasters, in a second pass
@@ -585,12 +600,21 @@ impl Run<'_> {
                 }
             }
         };
+        // an encode or compaction can take long: its result counts only within the deadlines
+        self.past_deadline()?;
         if data.len() as u64 > s.max_file_bytes {
             self.entries[e].status = Status::NotExtracted("file_bytes");
             return Ok(());
         }
         if self.batch_written + 1 > s.max_images || self.batch_bytes + data.len() as u64 > s.max_bytes {
-            return Err(Halt::Stop("budget"));
+            // the figures' pool of this batch is spent: the rest of the batch goes on for the
+            // scans, unless their pool is spent too
+            self.entries[e].status = Status::NotExtracted("budget");
+            self.figures_over = true;
+            if self.scan_pool_spent() {
+                return Err(Halt::Stop("budget"));
+            }
+            return Ok(());
         }
         if self.total_bytes + data.len() as u64 > s.doc_max_bytes {
             self.doc_full = true;
@@ -629,7 +653,8 @@ impl Run<'_> {
     fn record_scan(&mut self, e: usize, outcome: Outcome) -> Result<(), Halt> {
         let n = &self.notes[e];
         let s = self.s;
-        let source = n.scan.unwrap_or(ScanSource::Render);
+        let source =
+            if self.scan_render.contains(&e) { ScanSource::Render } else { n.scan.unwrap_or(ScanSource::Render) };
         let wrong = |run: &mut Self, why: &str| {
             run.entries[e].status = Status::NotExtracted("copy");
             run.entries[e].error = Some(why.to_string());
@@ -670,16 +695,19 @@ impl Run<'_> {
                     if (width, height) != n.px {
                         return wrong(self, "size");
                     }
-                    let rgb =
-                        if data.len() == width as usize * height as usize { encode::gray_to_rgb(&data) } else { data };
-                    // at most --scan-max-dpi across the scan's box
+                    // at most --scan-max-dpi across the scan's box; grey is scaled before it
+                    // is expanded to RGB
                     let (x0, y0, x1, y1) = n.bbox;
                     let fit = |px: u32, pt: f64| -> u32 {
                         let most = (pt / 72.0 * f64::from(s.scan_max_dpi)).round();
                         if most.is_finite() && most >= 1.0 && most < f64::from(px) { most as u32 } else { px }
                     };
                     let (w, h) = (fit(width, x1 - x0), fit(height, y1 - y0));
-                    let rgb = encode::downscale(rgb, width, height, 3, w, h);
+                    let rgb = if data.len() == width as usize * height as usize {
+                        encode::gray_to_rgb(&encode::downscale(data, width, height, 1, w, h))
+                    } else {
+                        encode::downscale(data, width, height, 3, w, h)
+                    };
                     self.timing.decode += t.elapsed();
                     match self.encode_raster(n, &rgb, w, h) {
                         Some((bytes, ext)) => (bytes, ext, w, h, "decode"),
@@ -700,12 +728,17 @@ impl Run<'_> {
                 }
                 _ => return wrong(self, "kind"),
             };
+        self.past_deadline()?;
         let len = data.len() as u64;
         if self.scan_batch_written + 1 > s.scan_max || self.scan_batch_bytes + len > s.scan_max_bytes {
             // the scan pool of this batch is spent: this scan is not written, the rest of the
-            // batch (figures, and scans that still fit) goes on
+            // batch (figures, and scans that still fit) goes on, unless the figures' pool is
+            // spent too
             self.entries[e].status = Status::NotExtracted("budget");
             self.scan_over = true;
+            if self.figures_over {
+                return Err(Halt::Stop("budget"));
+            }
             return Ok(());
         }
         if self.total_bytes + len > s.doc_max_bytes {
@@ -735,6 +768,24 @@ impl Run<'_> {
         entry.width = width;
         entry.height = height;
         Ok(())
+    }
+
+    /// `Halt::Stop` once the document's deadline (`deadline`) or this batch's (`timeout`) has
+    /// passed: the record just made (an encode can take seconds) is dropped.
+    fn past_deadline(&self) -> Result<(), Halt> {
+        let now = Instant::now();
+        if self.doc_deadline.is_some_and(|d| now >= d) {
+            return Err(Halt::Stop("deadline"));
+        }
+        if now >= self.deadline {
+            return Err(Halt::Stop("timeout"));
+        }
+        Ok(())
+    }
+
+    /// Whether this batch's scan pool can take no more scans.
+    fn scan_pool_spent(&self) -> bool {
+        self.scan_over || self.scan_batch_written >= self.s.scan_max || self.scan_batch_bytes >= self.s.scan_max_bytes
     }
 
     /// RGB pixels in the raster format a picture `n` gets, timed; with the file extension.

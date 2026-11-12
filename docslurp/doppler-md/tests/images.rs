@@ -367,19 +367,39 @@ fn text_of_the_pdf_cannot_pass_for_an_image_path() {
 
 #[test]
 fn a_repeated_image_object_links_to_its_first_placement() {
-    let pic = |x0: f64, y0: f64| {
+    let pic_with = |x0: f64, y0: f64, extra: &str| {
         format!(
-            "<image xMin=\"{x0}\" yMin=\"{y0}\" xMax=\"{}\" yMax=\"{}\" width=\"600\" height=\"300\" ref=\"12 0\"/>",
+            "<image xMin=\"{x0}\" yMin=\"{y0}\" xMax=\"{}\" yMax=\"{}\" width=\"600\" height=\"300\" ref=\"12 0\"{extra}/>",
             x0 + 300.0,
             y0 + 150.0
         )
     };
-    let one = |n: u32, y: f64| page(n, &(line(100.0, "A paragraph above the figure ends here.") + &pic(72.0, y)));
-    let xhtml = format!("<doc>{}{}</doc>", one(1, 200.0), one(2, 300.0));
+    let plain = " orient=\"0\" overlaid=\"0\"";
+    let one_with = |n: u32, y: f64, extra: &str| {
+        page(n, &(line(100.0, "A paragraph above the figure ends here.") + &pic_with(72.0, y, extra)))
+    };
+    let one = |n: u32, y: f64| one_with(n, y, plain);
+    // pages 3 to 7 draw the same object at the same size but turned, covered (a redaction
+    // box), soft-masked, as a stencil mask, or from a producer that does not say: their
+    // renders may differ, so each gets its own file
+    let xhtml = format!(
+        "<doc>{}{}{}{}{}{}{}</doc>",
+        one(1, 200.0),
+        one(2, 300.0),
+        one_with(3, 240.0, " orient=\"180\" overlaid=\"0\""),
+        one_with(4, 260.0, " orient=\"0\" overlaid=\"1\""),
+        one_with(5, 280.0, " smask=\"1\" orient=\"0\" overlaid=\"0\""),
+        one_with(6, 320.0, " kind=\"mask\" orient=\"0\" overlaid=\"0\""),
+        one_with(7, 340.0, ""),
+    );
     let (md, report) = convert(&xhtml, true);
     let pages: Vec<&str> = md.split('\u{c}').collect();
     assert!(pages[0].contains("![image](images/page-0001/image-001.webp)"), "{md}");
     assert!(pages[1].contains("![image](images/page-0001/image-001.webp)"), "{md}");
+    for n in 3..=7 {
+        assert!(pages[n - 1].contains(&format!("](images/page-{n:04}/image-001.webp)")), "page {n}: {md}");
+        assert_eq!(report.images[n - 1].repeat_of, None, "page {n}");
+    }
     assert_eq!(report.images[1].repeat_of.as_deref(), Some("p1.1"));
     assert!(
         report.to_json().contains("\"path\":\"page-0001/image-001.webp\",\"repeat_of\":\"p1.1\""),

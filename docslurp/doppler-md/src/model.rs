@@ -306,6 +306,10 @@ pub struct Image {
     /// page as stored (`orient="0"`) and nothing else shows over it, cuts or masks it
     /// (`overlaid="0"`). Either attribute missing reads as not, so an older producer renders.
     pub copy_exact: bool,
+    /// a render of its box shows its own pixels and nothing else, so another placement of the
+    /// same object at the same size renders the same: [`Image::copy_exact`], not an image mask
+    /// (painted in the fill colour) and not masked (`smask=`, it shows what lies under it)
+    pub plain: bool,
 }
 
 /// An image's copy class, as the producer's `copy=` says it: `jpeg` (a JPEG to copy unchanged),
@@ -406,7 +410,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 29] = [
+const KEYS: [&str; 30] = [
     "xMin",
     "yMin",
     "xMax",
@@ -436,6 +440,7 @@ const KEYS: [&str; 29] = [
     "scan",
     "scanImage",
     "overlaid",
+    "smask",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -470,6 +475,7 @@ fn key_index(name: &str) -> Option<usize> {
         "scan" => 26,
         "scanImage" => 27,
         "overlaid" => 28,
+        "smask" => 29,
         _ => return None,
     })
 }
@@ -814,6 +820,7 @@ const ORIENT: usize = 25;
 const SCAN: usize = 26;
 const SCAN_IMAGE: usize = 27;
 const OVERLAID: usize = 28;
+const SMASK: usize = 29;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -1277,6 +1284,10 @@ impl ParseState {
                             _ => CopyClass::Render,
                         },
                         copy_exact: a.0[ORIENT] == Some("0") && a.0[OVERLAID] == Some("0"),
+                        plain: a.0[ORIENT] == Some("0")
+                            && a.0[OVERLAID] == Some("0")
+                            && a.0[SMASK].is_none()
+                            && a.0[KIND] != Some("mask"),
                     };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {

@@ -10,6 +10,11 @@ G4 stream), so no binary fixture is checked in:
   redacted.pdf  scans a copy would un-redact: p1 the DCT scan under a black box, p2 a Flate
               scan under a black box, p3 the DCT scan with a white-out and visible text, p4
               the DCT scan cut by a clip; p5 the plain DCT scan (copied)
+  budget.pdf  p1 text with two block pictures, p2 and p3 the DCT scan (a figure budget of one
+              must not stop the scans after it in the same batch)
+  huge.pdf    a 4200 x 4200 Flate grey scan, past the copy cap (rendered instead)
+  slow.pdf    a 1000 x 1000 Flate grey scan whose lossless encode at the highest effort takes
+              seconds (an encode past the deadline is dropped)
 """
 
 import os
@@ -104,3 +109,38 @@ for content, _ in red_pages:
     objs.append(t.stream("", content))
 with open(os.path.join(out, "redacted.pdf"), "wb") as f:
     f.write(t.build_pdf(objs))
+
+
+def simple_doc(pages_content, xobjects, mediabox="0 0 612 792"):
+    """A PDF of len(pages_content) pages sharing the font and the image objects in
+    `xobjects` (name -> stream object). Objects: 1 catalog, 2 pages, pages, font, images,
+    contents."""
+    m = len(pages_content)
+    font_n = 3 + m
+    names = list(xobjects)
+    img_n = {name: font_n + 1 + k for k, name in enumerate(names)}
+    first_content = font_n + 1 + len(names)
+    res = "<< /Font << /F1 %d 0 R >> /XObject << %s >> >>" % (font_n, " ".join("/%s %d 0 R" % (k, v) for k, v in img_n.items()))
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % (3 + i) for i in range(m)), m),
+    ]
+    for i in range(m):
+        objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [%s] /Resources %s /Contents %d 0 R >>" % (mediabox, res, first_content + i))
+    objs.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+    objs.extend(xobjects[k] for k in names)
+    objs.extend(t.stream("", c) for c in pages_content)
+    return t.build_pdf(objs)
+
+
+dct = img("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", jpeg)
+dct_strip = img("/Width 160 /Height 50 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", strip)
+with open(os.path.join(out, "budget.pdf"), "wb") as f:
+    f.write(simple_doc([text + b"q 200 0 0 250 72 300 cm /S Do Q q 320 0 0 100 72 100 cm /T Do Q", b"q 612 0 0 792 0 0 cm /S Do Q", b"q 612 0 0 792 0 0 cm /U Do Q"], {"S": dct, "T": dct_strip, "U": img("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", jpeg)}))
+huge = img("/Width 4200 /Height 4200 /ColorSpace /DeviceGray /BitsPerComponent 8", bytes(4200 * 4200), compress=True)
+with open(os.path.join(out, "huge.pdf"), "wb") as f:
+    f.write(simple_doc([b"q 612 0 0 792 0 0 cm /H Do Q"], {"H": huge}))
+noise = bytes(((x * 7 + y * 13) ^ (x * y >> 5)) & 255 for y in range(1000) for x in range(1000))
+slow = img("/Width 1000 /Height 1000 /ColorSpace /DeviceGray /BitsPerComponent 8", noise, compress=True)
+with open(os.path.join(out, "slow.pdf"), "wb") as f:
+    f.write(simple_doc([b"q 1000 0 0 1000 0 0 cm /N Do Q"], {"N": slow}, mediabox="0 0 1000 1000"))

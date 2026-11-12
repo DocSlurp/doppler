@@ -506,7 +506,7 @@ fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
         "Markdown changed with --images-plan-out"
     );
     let text = std::fs::read_to_string(&plan).unwrap();
-    assert!(text.starts_with("doppler-images-plan\t4\nsource\t"), "{text}");
+    assert!(text.starts_with("doppler-images-plan\t5\nsource\t"), "{text}");
     let direct = s.0.join("direct");
     assert_eq!(
         run(&p, &["--stream", "--html", "--images-dir", direct.to_str().unwrap(), &pdf], "ok").status.code(),

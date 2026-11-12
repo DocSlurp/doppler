@@ -226,11 +226,15 @@ impl Linker {
                 continue;
             }
             let own = note_path(n, &self.style);
-            // a rendered page scan is its page's region, not its image object's pixels alone
+            // a rendered page scan is its page's region, not its image object's pixels alone;
+            // and two placements of one object render the same only when each shows the
+            // object's own pixels alone, upright (not turned, mirrored, covered, clipped,
+            // masked or painted as a mask)
             let rendered_scan = n.fate == Fate::PageScan && n.scan.is_none_or(|s| s == ScanSource::Render);
             if self.style.repeats != Repeats::Keep
                 && sound_box(n)
                 && !rendered_scan
+                && n.plain
                 && let Some(obj) = n.obj
             {
                 let key = (repeat_key(n), obj, note_extension(n, &self.style));
@@ -274,6 +278,7 @@ mod tests {
             members: 1,
             group: None,
             obj,
+            plain: true,
             text: false,
             file: None,
             degraded: false,

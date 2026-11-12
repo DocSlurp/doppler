@@ -13,8 +13,8 @@
 //! `doppler-images-plan 4`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
 //! `settings SHA256-HEX`, `version VERSION`; then one line per image:
 //! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj scan`, where `id-hex` is the id's UTF-8 bytes in
-//! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is three of `0`/`1`
-//! (mask, vector, text), `fate` the report's word, `obj` `num.gen` or `-`, and `scan` how a
+//! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is four of `0`/`1`
+//! (mask, vector, text, plain), `fate` the report's word, `obj` `num.gen` or `-`, and `scan` how a
 //! page scan's file is made (`jpeg`, `bilevel`, `decode`, `render`) or `-`. Ids are image ids
 //! (`pN.M`, `pN.gK`), unique, and their page is the line's page, inside the page range.
 
@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use crate::extract::outdir::valid_id;
 use crate::images::{Fate, Note, ScanSource};
 
-const HEADER: &str = "doppler-images-plan\t4";
+const HEADER: &str = "doppler-images-plan\t5";
 
 /// What a plan is bound to: the conversion that wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,7 +148,7 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
         let (x0, y0, x1, y1) = n.bbox;
         let _ = write!(
             out,
-            "\t{}\t{:016x}\t{:016x}\t{:016x}\t{:016x}\t{}\t{}\t{}{}{}\t{}\t",
+            "\t{}\t{:016x}\t{:016x}\t{:016x}\t{:016x}\t{}\t{}\t{}{}{}{}\t{}\t",
             n.page,
             x0.to_bits(),
             y0.to_bits(),
@@ -159,6 +159,7 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
             u8::from(n.mask),
             u8::from(n.vector),
             u8::from(n.text),
+            u8::from(n.plain),
             n.fate.as_str(),
         );
         match n.obj {
@@ -183,7 +184,7 @@ pub fn read(text: &str) -> Result<(Binding, Vec<Note>), String> {
     }
     let mut lines = text.split('\n');
     if lines.next() != Some(HEADER) {
-        return Err("not an images plan (version 4)".into());
+        return Err("not an images plan (version 5)".into());
     }
     let binding = read_binding(&mut lines).ok_or("images plan: bad header")?;
     let mut notes = Vec::new();
@@ -260,7 +261,7 @@ fn parse_line(line: &str) -> Option<Note> {
     let bbox = (bits(f[2])?, bits(f[3])?, bits(f[4])?, bits(f[5])?);
     let px = (f[6].parse().ok()?, f[7].parse().ok()?);
     let flags = f[8].as_bytes();
-    if flags.len() != 3 || !flags.iter().all(|b| *b == b'0' || *b == b'1') {
+    if flags.len() != 4 || !flags.iter().all(|b| *b == b'0' || *b == b'1') {
         return None;
     }
     let fate = *FATES.iter().find(|x| x.as_str() == f[9])?;
@@ -286,6 +287,7 @@ fn parse_line(line: &str) -> Option<Note> {
         members: 1,
         group: None,
         obj,
+        plain: flags[3] == b'1',
         text: flags[2] == b'1',
         file: None,
         degraded: false,
@@ -320,6 +322,7 @@ mod tests {
             members: 1,
             group: None,
             obj,
+            plain: true,
             text: true,
             file: None,
             degraded: false,
@@ -354,8 +357,8 @@ mod tests {
             assert_eq!(a.bbox.0.to_bits(), b.bbox.0.to_bits());
             assert_eq!(a.bbox.3.to_bits(), b.bbox.3.to_bits());
             assert_eq!(
-                (a.px, a.mask, a.vector, a.text, a.fate, a.obj, a.scan),
-                (b.px, b.mask, b.vector, b.text, b.fate, b.obj, b.scan)
+                (a.px, a.mask, a.vector, a.text, a.plain, a.fate, a.obj, a.scan),
+                (b.px, b.mask, b.vector, b.text, b.plain, b.fate, b.obj, b.scan)
             );
         }
         let open = Binding { first: None, last: None, ..binding() };
@@ -366,7 +369,7 @@ mod tests {
     fn refuses_anything_else() {
         assert!(read("").is_err());
         assert!(read("doppler-images-plan\t1\n").is_err());
-        assert!(read(&write(&binding(), &[note("p3.1", false, None)]).replace("plan\t4", "plan\t3")).is_err());
+        assert!(read(&write(&binding(), &[note("p3.1", false, None)]).replace("plan\t5", "plan\t4")).is_err());
         let good = write(&binding(), &[note("p3.1", false, None)]);
         assert!(read(&good).is_ok());
         assert!(read(&good[..good.len() - 1]).is_err());

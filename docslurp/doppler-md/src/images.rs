@@ -226,6 +226,10 @@ pub struct Note {
     pub group: Option<String>,
     /// the image XObject (`ref="num gen"` from the producer), when known
     pub obj: Option<(u32, u32)>,
+    /// drawn upright with nothing over it, cutting or masking it, not an image mask (the
+    /// producer's `orient="0"`, `overlaid="0"`, no `smask=`): only such placements of one object
+    /// are linked as repeats at conversion, since their renders are the same
+    pub plain: bool,
     /// lines of text lie inside the box (a crop of it holds labels: encode it losslessly)
     pub text: bool,
     /// the file written for it by image extraction (`pdftomarkdown --images-dir`): its path
@@ -301,7 +305,8 @@ pub fn place(
                 }))
                 .collect(),
         };
-        let source = if scans == ScanPages::Render || sc.kind != ScanKind::Single || !im.copy_exact || im.obj.is_none() {
+        let source = if scans == ScanPages::Render || sc.kind != ScanKind::Single || !im.copy_exact || im.obj.is_none()
+        {
             ScanSource::Render
         } else {
             match im.copy {
@@ -357,6 +362,7 @@ pub fn place(
             members: 1,
             group: None,
             obj: im.obj,
+            plain: im.plain,
             text: false,
             file: None,
             degraded: false,
