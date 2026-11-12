@@ -4,8 +4,9 @@ Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML. 
 byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-10-26/`, v24).
 
 ```sh
-doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
+doppler-md [--html] [--math] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--params JSON] [--report] [FILE|-]
+pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
+              [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -248,43 +249,89 @@ field boxes, charts, org-chart boxes and photo labels stay as they were.
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw
-XHTML is never held whole. Two decisions look past one page: the body font size and colour
-(the most common in the document) and running headers and footers (margin lines repeated on
-`furniture_min_share` of the pages). By default both see the whole document, so every page
-waits for the last one; output is unchanged.
+XHTML is never held whole. Two decisions look past one page, and they are set separately:
 
-`--window N` decides them from a window instead: the body size from the first N + 1 pages,
-fixed after that, and headers and footers from the N pages either side of each page. Each
-page is written (and flushed) once the next N are complete; the parser completes a page when
-the following `<page>` opens. So at most N + 2 pages are held at a time (N + 1 in the converter
-and the one being parsed), with the margin keys of N more. `--stream` is `--window 16`. A document of at
-most N + 1 pages converts exactly as without a window.
+- **Furniture** (`--window N`): running headers and footers (margin lines repeated on
+  `furniture_min_share` of the pages), repeated watermark words and backdrop pictures, and with
+  `--markers` repeated header and footer pictures, are judged over the N pages either side of
+  each page. Each page is written (and flushed) once the next N are complete.
+- **Body size and colour** (the most common, by characters): heading levels, emphasis and table
+  decisions are relative to them, so they are fixed once, before the first page is written.
+  `--body-pages N` estimates them from the pages up to the N-th with text (at most 2N pages
+  read, so a scan without a text layer is not held). `--body-size PT` and `--body-color C`
+  give them instead (the values `--report` prints as `body_size` and `body_color`).
 
-**Do not use `--window 0`, and avoid very small windows.** Everything that finds content by
-its repetition across pages looks only inside the window: running headers and footers,
-repeated watermark words and backdrop pictures (`watermarks`), and, with `--markers`,
-repeated header and footer pictures. With `--window 0` the converter sees one page at a time,
-so none of these is removed: every running header, footer and repeated watermark lands in the
-body text (only page numbers and pale or diagonal watermarks, which a single page shows by
-itself, still go). The body size also comes from the first page alone, which shifts heading
-levels when that page is a cover. Use `--stream` (16 pages), or no window when latency does
-not matter. Cross-page continuation markers (`--markers`) are unaffected: they need only
-the previous page.
+Without `--window` both see the whole document, so every page waits for the last one. With a
+window the body sample defaults to 32 pages with text. `--stream` is `--window 4` with that
+sample. The converter holds the larger of the window + 1 and the body sample (plus the page
+being parsed, and the margin keys of N written pages); a document no longer than both converts
+exactly as without a window. The report always has `body_size`, `body_color`,
+`body_sample_pages` (pages read when the estimate was fixed), `body_sample_text_pages` and
+`body_given`.
 
-The library API is
-`model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
-`Converter` without a window).
+**Choosing a window.** Measured on 15 long PDFs (FURNITURE.md): 4 pages either side removes the
+most running headers and footers without removing content; 2 pages also drops lines that
+appear on two of five nearby pages (it changed 10 judged golden cases); 8 and 16 pages keep
+chapter-specific running heads that do not reach the share within the larger window, and the
+whole document keeps more still. Most of what used to differ between small windows and the
+whole document was the body size taken from front matter (the old sample was the first
+window + 1 pages), not furniture. `--window 0` sees one page at a time and removes no repeated
+content at all (only page numbers and pale or diagonal watermarks, which a page shows by
+itself). Cross-page continuation markers (`--markers`) need only the previous page.
 
-On the 258-input golden set, `--stream` changes one document, the 477-page Ghostscript manual,
-where running chapter headers ("Chapter 6. Using") on under 40% of the document's pages now
-drop within their chapter instead of joining the body text. `--window 8` also changes the
-26-page inaugural scan (heading levels, from a body size taken over its OCR'd cover pages);
-`--window 64` changes nothing. On the Ghostscript manual, the first Markdown arrives after
-about 0.1 s instead of when pdftotext finishes (4 to 6 s on a loaded machine), and peak
-memory drops from 69 MB to that of pdftotext (about 25 MB) with or without a window.
+The library API is `model::Parser`, `model::decode_lossy` and `Converter` (`Converter::with`
+takes a `Window`: furniture window, `BodySample`, a given body, and context pages;
+`to_markdown_report_with` is a `Converter` without a window).
+
+On the 258-input golden set `--stream` changes three documents: the 477-page Ghostscript manual
+(running chapter headers on under 40% of the document's pages drop within their chapter), a
+10-K (a company name over the statements drops) and a US Code title (where "Page N" and section
+running heads sit). On the Ghostscript manual the first Markdown arrives about 0.05 s after the
+start instead of when pdftotext finishes, and peak memory is that of pdftotext (about 25 MB)
+instead of 69 MB; the converter alone stays at 16 MiB with a 32-page body sample.
 
 With a window, pages already written stay written when pdftotext later fails: the exit
 status, not the output, says whether the conversion finished.
+
+### Page ranges and sharding (`--context`, `--body-size`, `--estimate-body`)
+
+A host that converts a long PDF as page ranges in parallel can get the same bytes as one run
+over the whole document with the same window:
+
+1. Estimate the body once: `pdftomarkdown --stream --estimate-body FILE.pdf` prints
+   `{"body_size":10,"body_color":"#000000","body_sample_pages":33,...}` and stops after the
+   sample (it reads only the sample pages: about 0.1 s). `--report` of any run that starts at
+   page 1 prints the same values.
+2. Convert each range with the same window options, the body given, and context at least the
+   window: `pdftomarkdown --stream --body-size 10 --body-color '#000000' -f 65 -l 128
+   --context 4 FILE.pdf`. pdftotext reads pages 61 to 132 (clamped to the document); the
+   context pages count towards repetition, but are not laid out, written or reported (no
+   Markdown, image notes, math or degraded entries; the parse counts cover only the range).
+3. Join the ranges' pages with form feeds.
+
+The report of a range has `"range":{"first_page":65,"context_before":4,"context_after":4,
+"identity":[...],"doc_work_limit":50000000}`. `identity` lists why its pages may still differ
+from the whole run:
+
+- `body`: the body was estimated from the range's own pages (no `--body-size` and
+  `--body-color`, and the range does not start at page 1, or ends before the sample is
+  complete).
+- `furniture`: no window, so repetition is judged over the whole document, which a range
+  cannot see.
+- `context`: fewer context pages than the window on a side where the document goes on.
+- `markers`: with `--markers`, a table that may run on from before the context (continuation
+  markers and inherited table headers follow it page to page; the leading context pages are
+  laid out, unwritten, to carry it).
+- `doc_work`: always for a range after page 1. The document-wide work budget (`max_doc_work`)
+  is spent page by page, and a range cannot see what the pages before it spent. The ranges are
+  identical when the sum of their `doc_work` stays within `doc_work_limit` (a whole run would
+  then degrade no page for it); otherwise compare the whole run's `degraded` entries.
+
+Measured locally on eight long PDFs (3,306 pages, 64-page ranges, `--context 4`, window 4 and
+the estimated body), every page was byte-identical to the whole run. Context costs pdftotext
+time for the extra pages (layout is skipped): with 64-page ranges, `--context 4` adds 6 to 12%
+CPU over the same ranges without context and `--context 16` 31 to 39%; with 16-page ranges
+29 to 38% and 92 to 121%; with 256-page ranges at most a few percent (FURNITURE.md).
 
 ## Extracting images and figures (`--images-dir`)
 
@@ -324,7 +371,7 @@ is reached without following symbolic links), and a later `--images-dir` run ext
 (`--images-plan FILE`) without running pdftotext or converting again: the same files and
 manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
 and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
-`--stream`/`--window`, `--math`, `--html`) and the version; the extracting run must be given the
+`--stream`/`--window`, the body options, `--context`, `--math`, `--html`) and the version; the extracting run must be given the
 same PDF and options, and refuses any difference, or a malformed plan (non-finite coordinates,
 invalid or repeated ids, an id on another page than its line or outside the range), with exit 2.
 A plan that cannot be written gives exit 5 after the Markdown.
@@ -417,8 +464,9 @@ the defaults; lossless output decodes to the same pixels).
 - `--report` prints one line of JSON to stderr: pages found and unclosed, lines and words kept,
   words skipped by reason (`missing_coord`, `bad_number` for a malformed or non-finite number,
   `outside_line`, `unclosed_line` for words of a `<line>` that never closed on a page), whether
-  the input ended inside a line, rules skipped, the work used, and the pages read as plain
-  lines with the reason. The library returns the same as `to_markdown_report`.
+  the input ended inside a line, rules skipped, the work used, the pages read as plain
+  lines with the reason, the body size and colour used (see Streaming), and for a page range
+  the `range` object. The library returns the same as `to_markdown_report`.
 - `rules_truncated_pages` lists pages whose producer marked `rulesTruncated="1"`, even when
   no rules were kept. This is incomplete upstream rule evidence, independent of layout
   degradation; it does not force plain-line fallback. An absent marker, `"0"`, or an
