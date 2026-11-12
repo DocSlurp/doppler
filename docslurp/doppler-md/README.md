@@ -5,7 +5,7 @@ byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-1
 
 ```sh
 doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--] FILE.pdf
+pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--images-dir DIR ...] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -75,9 +75,10 @@ paragraphs that cross a page, needs to know where they were. `--markers` (librar
 (image dictionaries only: the image data is never decoded). Without it the output is
 byte-identical.
 
-- **Pictures.** `![image](doppler-image:pN.M)`: `N` is the PDF page number and `M` the picture's
-  position in pdftotext's list for that page, so the id does not change with the layout around
-  it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
+- **Pictures.** `![image](images/page-0012/image-003.webp)`: the link is the path the picture
+  gets under `--images-dir` (see [Image links](#image-links)). Its id `pN.M` (`p12.3` here) has
+  `N`, the PDF page number, and `M`, the picture's position in pdftotext's list for that page,
+  so the id does not change with the layout around it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
   one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
   body sizes, transitively) are one figure with one marker, at its first image. No marker for
   a page background under a text layer (one picture, or a figure of pieces such as the strips
@@ -93,7 +94,8 @@ byte-identical.
   Placing pictures and drawings has a page budget of its own (`max_page_work`, charged to
   `max_doc_work`); a page that used it up is listed in `images_budget_pages`, and its remaining
   pictures are marked between paragraphs and its remaining drawings left `small`.
-- **Vector figures.** `![image](doppler-image:pN.gK)`: a chart or diagram drawn with paths.
+- **Vector figures.** `![image](images/page-0012/figure-001.svg)` (id `pN.gK`): a chart or
+  diagram drawn with paths.
   `pdftotext -images` also writes `<graphic>` clusters of the drawing that is not axis-aligned
   (curves and diagonal segments; rules, boxes, grids, underlines and frames are left out).
   Clusters within a body size are one drawing; a drawing is a figure when it has at least 20
@@ -129,14 +131,53 @@ byte-identical.
 - **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
   goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
   without one after a hyphen.
+- **Page boundaries** (`--page-markers`, library `Options::page_markers`, independent of
+  `--markers`). Each page starts with `<!-- doppler:page N -->` and a blank line (an empty page
+  is the marker alone), `N` being the PDF page number (`-f`/`-l` runs name their real pages;
+  without the producer's `number=`, `Options::first_page` plus the page's position). The report
+  gains `page_numbers`, the pages written in order, so a caller can check a range or window run
+  is whole. The form-feed contract holds with or without it: pages are joined by `\f`, chunk `k`
+  (0-based) is PDF page `first + k`, and no page's Markdown holds a form feed (word text drops
+  C0 controls).
+
+### Image links
+
+A link is the image's path relative to the images folder, after a prefix:
+
+| Image | Path | Link (default prefix) |
+|---|---|---|
+| picture `p12.3` | `page-0012/image-003.webp` (`.png` with `--raster-format png`) | `images/page-0012/image-003.webp` |
+| vector figure `p12.g1` | `page-0012/figure-001.svg` (`.webp`/`.png` with `--vector-format`) | `images/page-0012/figure-001.svg` |
+
+Numbers are 1-based and zero-padded to at least 4 digits for the page and 3 for the index
+(page 12345 is `page-12345`). Only `src/extract/layout.rs` maps ids to paths. The link depends
+only on the id and on options known when the Markdown is written (`--images-link-prefix`,
+`--raster-format`, `--vector-format`, `--images-repeats`), never on what extraction later does,
+so the Markdown is final before any image exists and is byte-identical with or without
+`--images-dir`: a caller can index the text first and extract the images later (or never).
+`--images-link-prefix P` (default `images/`) may be empty, or up to 128 bytes of
+`A-Z a-z 0-9 . _ ~ / -`, relative (no leading `/`), with no empty or `..` segment, ending in
+`/`; anything else exits 2. These four options are valid with `--markers` alone.
+
+A picture that draws the same image object (`ref`) at the same size as an earlier marked one
+(`--images-repeats skip` or `link`, the default `skip`) links to the earlier one's path and gets
+no file of its own (manifest: `reason: repeat`, `repeat_of`), so a repeat never dangles. With
+`keep` every placement has its own path. The report's images give `path` (and `repeat_of`).
+Whether a linked file was written is the manifest's to say: a link whose image was not extracted
+(too small, over a budget, outside `--images-pages`) is listed `not-extracted` with the reason,
+so the caller can drop the link or keep only its alt text.
 
 The markers are ordinary Markdown and comments, so text of the PDF could imitate them, however
 its words are joined (glued words, a hyphen across lines, table cells, math rebuilt from glyph
-records). With `--markers`, the converter's own markers carry a random per-run seal while a page
-is laid out; in the written page, every `doppler:` and `doppler-image:` (in any case) without the
-seal gets a zero-width space after `doppler`, and then the seal is removed. A caller should
-parse markers only from runs made with `--markers`, match them case-sensitively, and still
-trust only ids that the report lists.
+records). With `--markers` or `--page-markers`, the converter's own markers carry a random
+per-run seal while a page is laid out. In the written page, first every `doppler:` and
+`doppler-image:` (in any case) without the seal gets a zero-width space after `doppler`, and
+every `page-` followed by four or more digits and `/image-` or `/figure-` (in any case, whatever
+the prefix) gets one after `page`; then the converter's sealed picture markers are expanded into
+their links, and the seal is removed. Only the converter can therefore put an image path or a
+`doppler:` comment into the Markdown. A caller should parse markers only from runs made with
+`--markers`, match them case-sensitively, and still trust only ids and paths that the report or
+manifest lists.
 
 ## Watermarks
 
@@ -292,29 +333,40 @@ status, not the output, says whether the conversion finished.
     pdftomarkdown --images-dir out/ --images-dpi 200 --images-repeats link --vector-format webp paper.pdf
 
 `--images-dir DIR` (implies `--markers`) writes a file for each marked picture (`pN.M`) and
-vector figure (`pN.gK`) to DIR, rendered by `pdfregions` (`$PDFREGIONS`, else beside the
-executable, else on `PATH`; protocol: `docslurp/extraction/PROTOCOL.md`). The Markdown is
-byte-identical to `--markers` without it and is written first; the folder is filled after.
+vector figure (`pN.gK`) to DIR at the path its link names ([Image links](#image-links)),
+rendered by `pdfregions` (`$PDFREGIONS`, else beside the executable, else on `PATH`; protocol:
+`docslurp/extraction/PROTOCOL.md`). The Markdown is byte-identical to `--markers` without it and
+is written first; then stdout is closed (pointed at `/dev/null`) and the folder is filled.
+**EOF on stdout means the Markdown is complete and its links final**; the report (stderr) and
+the exit status come after extraction. `--images-plan-out` / `--images-plan` (below) remain the
+two-process alternative.
+
+**Modes.** DIR and its page folders are created 0700 and files 0600, whatever the umask:
+images can be tenant data in a shared VM. Copy or `chmod` them to share.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--images-dir DIR` | off | DIR must not exist; created 0700 |
+| `--images-dir DIR` | off | DIR must not exist; created 0700 (page folders 0700, files 0600) |
+| `--images-link-prefix P` | `images/` | put before each path in the links (see [Image links](#image-links)); also with `--markers` alone |
 | `--images-min-side N[px\|pt]` | `24px` | no file when the smaller side is under N (px: output pixels at the dpi; pt: page points) |
-| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file (`skipped: repeat`) / no file, and `repeat_of` names the first figure, which has the file / a file of its own |
+| `--images-repeats skip\|link\|keep` | `skip` | a repeat of an earlier marked figure: no file, `reason: repeat` and `repeat_of` naming the first (`skip` and `link` are the same since manifest v2; a repeat of the same image object links to the first's file) / a file and link of its own |
 | `--raster-format webp\|png` | `webp` | pictures: lossy WebP, lossless when the crop holds text lines |
 | `--raster-quality N` | `90` | lossy WebP quality |
 | `--raster-lossless` | off | lossless WebP for every picture |
 | `--raster-method N` | `4` | lossy WebP encoder effort (libwebp `method`), 0 (fastest) to 6; lower is faster with slightly larger files |
 | `--lossless-method N` | `4` | lossless WebP encoder effort (libwebp `method`), 0 to 6 |
 | `--lossless-quality N` | `50` | lossless WebP effort (libwebp `quality`), 0 to 100; with `--lossless-method` it trades encode time for file size, never pixels |
-| `--vector-format svg\|webp\|png` | `svg` | vector figures; an SVG refused by the allowlist or over `--svg-max-bytes` becomes lossless WebP (`fallback`) |
+| `--vector-format svg\|webp\|png` | `svg` | vector figures; an SVG refused by the allowlist or over `--svg-max-bytes` becomes a lossless PNG wrapped in an SVG (`fallback`), so the `.svg` link holds |
 | `--svg-precision 1\|2` | `1` | decimals of a point in SVG coordinates |
 | `--svg-max-bytes N` | `512KiB` | largest compacted SVG kept |
 | `--images-dpi N` | `150` | raster resolution, 36..600 |
-| `--images-max N` | `500` | most files; more fails the extraction |
-| `--images-max-bytes N` | `256MiB` | most bytes written; more fails the extraction |
+| `--images-batch-pages N` | `64` | pages per extraction batch: one pdfregions process each, with the budgets below |
+| `--images-max N` | `500` | most files per batch; past it the batch stops (`budget`) |
+| `--images-max-bytes N` | `256MiB` | most bytes written per batch; past it the batch stops (`budget`) |
+| `--images-doc-max-bytes N` | `4GiB` | most bytes for the document; past it every later image is `doc_budget` |
+| `--images-deadline S` | none | time for the whole extraction; past it every later image is `deadline` |
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
-| `--images-timeout S` | `120` | time for everything after the Markdown is written (rendering, compaction, encoding, fallbacks); at the deadline pdfregions' process group is killed |
+| `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`) |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 
@@ -325,13 +377,16 @@ is reached without following symbolic links), and a later `--images-dir` run ext
 manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
 and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
 `--stream`/`--window`, `--math`, `--html`) and the version; the extracting run must be given the
-same PDF and options, and refuses any difference, or a malformed plan (non-finite coordinates,
+same PDF and options (and the link options above: `--images-link-prefix`, `--images-repeats`,
+`--raster-format`, `--vector-format`; the plan format is version 3), and refuses any difference, or a malformed plan (non-finite coordinates,
 invalid or repeated ids, an id on another page than its line or outside the range), with exit 2.
-A plan that cannot be written gives exit 5 after the Markdown.
+A plan that cannot be written gives exit 6 after the Markdown.
 
-**What is byte-identical.** With the same options, pdftomarkdown's Markdown, report, image
-files and manifest are the same bytes as the release before the shared SVG pass and the
-decoder changes. Raw `pdfregions` SVG records may differ only in cairo's `source-N` ids (and so
+**What is byte-identical.** Without `--markers`, `--page-markers` and `--images-dir` the
+Markdown and report are the same bytes as before image links became paths. With them, the
+links, file layout, manifest (version 2) and exit status 5 changed meaning in that release;
+otherwise rendering and encoding are unchanged, so each image file has the same bytes as
+before. Raw `pdfregions` SVG records may differ only in cairo's `source-N` ids (and so
 in record length); pages with damaged fonts or streams render one job at a time. stderr is not
 covered: poppler's syntax-error offsets and how often a repeated font warning is printed may
 differ on damaged files.
@@ -343,12 +398,18 @@ link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
 side. No file for `watermark`, `furniture`, `duplicate`, `background`, `fragment`, `small`,
 `text` and `grouped` (grouped images are inside their figure's file: the figure is rendered
 at its union box). A repeat is a marked figure with the same box size (to half a point), pixel
-size and kind as an earlier one and either the same image object (`ref`, not rendered again)
-or, without a `ref` (vector figures, inline images), byte-identical rendered output. Same-size
-charts with different content are therefore never treated as repeats.
+size and kind as an earlier one and either the same image object (`ref`: known at conversion,
+so its link is the first placement's path, and not rendered again) or, without a `ref` (vector
+figures, inline images), byte-identical rendered output (found only at extraction: its own link
+stays and the manifest says `not-extracted`, `reason: repeat`, `repeat_of`). Same-size charts
+with different content are therefore never treated as repeats. When the first placement of an
+image object lies outside `--images-pages`, the first repeat inside them writes its file (at
+the shared path; the manifest entry is `extracted` with `repeat_of`).
 
-**Files.** `DIR/<id>.webp|png|svg`, named only from the ids (checked against
-`^p[0-9]{1,9}\.g?[0-9]{1,6}$`). SVG is parsed (roxmltree, no DTD), checked against an allowlist
+**Files.** `DIR/page-NNNN/image-MMM.webp|png` and `DIR/page-NNNN/figure-KKK.svg|webp|png`,
+named only from the ids (checked against `^page-[0-9]{4,10}/(image|figure)-[0-9]{3,7}\.(webp|png|svg|jpg)$`
+with no extra leading zeros). Page folders are made with `mkdirat` (0700, must not exist) under
+the folder's descriptor and opened with `O_NOFOLLOW`. SVG is parsed (roxmltree, no DTD), checked against an allowlist
 (`svg g defs path use clipPath mask rect image symbol linearGradient radialGradient stop pattern
 filter feColorMatrix`, their presentation attributes, references only `#id`, images only
 `data:image/png;base64,` holding a whole well-formed PNG (IHDR first, 1..16384 px a side,
@@ -359,36 +420,62 @@ to the precision in final page points (more decimals under an enlarging transfor
 dashed strokes; image placement keeps 2 decimals and transform scale factors 6 significant
 digits), relative path commands where shorter, hex colours, defaults dropped where nothing
 inherits another value, identical glyph definitions merged, short ids, shared styles hoisted to
-groups, unreferenced definitions, empty groups and whitespace removed. WebP (libwebp) is a RIFF
+groups, unreferenced definitions, empty groups and whitespace removed. A refused SVG figure's
+fallback is `<svg width height viewBox><image width height href="data:image/png;base64,..."/></svg>`
+around a lossless PNG of the crop, passed through the same allowlist (about a third larger than
+the PNG; rare). WebP (libwebp) is a RIFF
 with one `VP8 `/`VP8L` chunk; PNG has only IHDR/IDAT/IEND. Files are written to an `O_EXCL`
 temporary name in a directory opened without following links, then renamed with
 `RENAME_NOREPLACE`.
 
-**manifest.json** (written last; the same input gives the same bytes): `version`, `dpi`,
-`min_side_pt`, `repeats`, then `images`, sorted by page, pictures before figures, by index, one
-per line: `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`,
-`file` (or null), `format`, `bytes`, `sha256`, `width`, `height` (pixels; for SVG the box in
-points, rounded up; 0 without a file), and when they apply `repeat_of` (link mode),
-`fallback` (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB),
-`skipped` (`fate`, `min_side`, `repeat`, `pages`), `error` (renderer `pixels`, `render`, `empty`, `page`, `svgsize`;
-`timeout` when the deadline passed before the image was encoded; `file_bytes`; `repeat_target`
-when a repeat's first placement got no file and no other placement of it has one — a
-`repeat_of` always names an entry with a file;
-`mismatch` when a record does not match its request in id, size within 1 px of box × dpi, or
-byte count; `encode`, `utf8`, `svg_size`). pdfregions also gets `-max-svg-bytes 8MiB` (larger:
-`err:svgsize`, raster fallback) and `-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`, `marked`, `written`,
-`bytes`, `repeats`, `small`, `fallbacks`, `errors`). `--report` gains `file` per image and
-`images_written` (and `images_error` on failure).
+**manifest.json** (version 2; written last, atomically, after the files are synced; the same
+input gives the same bytes; a DIR without a manifest is garbage). It is the source of truth:
+every link of the Markdown has an entry, and every file in DIR is listed. First line:
+`version` (2), `source_sha256` (the PDF), `link_prefix`, `dpi`, `min_side_pt`, `repeats`,
+`batch_pages`, `complete` (every batch finished); then `batches`, one per line:
+`{"pages":[A,B],"status":S,"cut_page":N}`, `status` `ok`, `budget`, `doc_budget`, `timeout`,
+`deadline`, `renderer` or `aborted`, and `cut_page` the first page with an image the batch did
+not get to. Then `images`, sorted by page, pictures before figures, by index, one per line:
+`id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`, `obj`
+(`[num,gen]` of the image object, or null: with `sha256`, a key for deduplicating across runs),
+`path` and `link` (null when unlinked; a repeat's are its first placement's), `status`
+(`extracted`, `not-extracted`, `unlinked` for a fate without a link), `reason` for
+`not-extracted` (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`, `error`
+for a per-image renderer or record error, and the batch stops `budget`, `doc_budget`,
+`timeout`, `deadline`, `renderer`, `aborted`), `error` with `reason: error` (renderer `pixels`,
+`render`, `empty`, `page`, `svgsize`, `renderer`; `mismatch` when a record does not match its
+request in id, size within 1 px of box × dpi, or byte count; `utf8`), `repeat_of`, `format`
+(the link's extension), `source` (`render`, or null without a file), `bytes`, `sha256`, `width`,
+`height` (pixels; for SVG the box in points, rounded up; 0 without a file), and `fallback`
+(`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB) when it applies. pdfregions
+gets `-max-svg-bytes 8MiB` (larger: `err:svgsize`, raster fallback) and, per batch,
+`-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`,
+`linked`, `extracted`, `not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `batches`,
+`batches_cut`). `--report` gains `path` and `file` per image, `images_written`,
+`images_complete`, `images_confined`, `images_ms` (`render`: the renderer processes' CPU;
+`webp`, `png`, `svg`: encoding and compaction on this thread; `wait`: blocked on the renderer;
+`copy`, `decode`: page scans, 0 for now) and `images_cpu_ms` (the renderers' user and system
+CPU from `/proc/self/stat`), and `images_error` on a hard failure.
 
 **Work bounds.** An SVG with more than 200,000 elements or references is not compacted (raster
 fallback); compaction is linear in elements and references (100,000 `<use>` of one glyph:
-0.19 s; 1,000,000 refused in 0.67 s) and stops at the `--images-timeout` deadline.
+0.19 s; 1,000,000 refused in 0.67 s) and stops at the batch's deadline.
 
-**Failures and exit status.** One image failing is recorded (`error`) and the rest go on. The
-renderer failing (cannot run, crash, any non-zero exit including 3 limit, 4 write failure and 5 cannot confine,
-broken framing, timeout), a cap
-(`--images-max`, `--images-max-bytes`) or a write error removes DIR; the Markdown is still
-written and the exit status is **5**. pdftotext failing exits as before and removes DIR.
+**Batches, partial results and exit status.** Images are extracted in batches of
+`--images-batch-pages` consecutive pages (page `p` is in batch `(p-1) / N`), one pdfregions
+process per batch with its own `-timeout`, `-max-output-bytes` and file and byte counters, so a
+long document is never cut by a whole-document cap. One image failing is recorded and the rest
+go on. A batch that reaches `--images-max` or `--images-max-bytes`, times out, or whose
+renderer fails (crash, signal, any non-zero exit including 3 limit and 5 cannot confine,
+broken framing) keeps the files it wrote (a record is used only once whole), marks its other
+images `not-extracted` with the reason, records `cut_page`, and the next batch starts with a
+fresh budget. Two failed batches in a row (timeout or renderer) mark the rest `aborted`
+without starting another renderer; `--images-doc-max-bytes` and `--images-deadline` mark the
+rest `doc_budget` or `deadline`. Then the manifest is written, DIR is kept, and the exit status
+is **5** (`complete: false`). Only a hard failure removes DIR, with exit status **6**: a write
+failure (disk full, I/O error), a manifest that cannot be written, or a renderer that cannot be
+started. The Markdown is written in every case. pdftotext failing exits as before and removes
+DIR.
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
@@ -404,8 +491,10 @@ the defaults; lossless output decodes to the same pixels).
 
 ## Exit status and report
 
-- 5 (`pdftomarkdown --images-dir` or `--images-plan-out`): the Markdown was written but image
-  extraction failed, or the images plan could not be written.
+- 5 (`pdftomarkdown --images-dir`): the Markdown was written and the images only in part; DIR
+  and its manifest are kept, and the manifest says why per image and per batch.
+- 6 (`pdftomarkdown --images-dir` or `--images-plan-out`): the Markdown was written but image
+  extraction failed hard (DIR removed), or the images plan could not be written.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

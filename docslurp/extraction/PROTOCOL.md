@@ -1,9 +1,13 @@
 # pdfregions ⇄ pdftomarkdown protocol (image and graphic extraction)
 
 `pdftomarkdown --images-dir DIR` runs `pdftotext -images` (placement, ids) as today, converts,
-then starts **one** `pdfregions` per document and sends it the regions to render. `pdfregions`
-writes no files; `pdftomarkdown` decides, encodes and writes. Both run inside the
-credential-free VM in production.
+writes the Markdown (whose links already name the files), closes stdout, then starts **one**
+`pdfregions` per extraction batch (`--images-batch-pages`, default 64 consecutive pages) and
+sends it that batch's regions to render, in page order. Each batch gets its own `-timeout`
+(`--images-timeout`) and `-max-output-bytes` (8 x `--images-max-bytes`, 64 MiB..2 GiB), so one
+document is never cut by a whole-document output cap. `pdfregions` writes no files;
+`pdftomarkdown` decides, encodes and writes. Both run inside the credential-free VM in
+production.
 
 ## Invocation
 
@@ -91,7 +95,19 @@ credential-free VM in production.
 - `pdfregions`: renders regions; no policy, no files.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records
   against the report (id, size), encodes WebP / compacts and allowlists SVG, writes DIR and
-  `manifest.json`.
+  `manifest.json`. It alone maps ids to paths (`page-NNNN/image-MMM.<ext>`,
+  `page-NNNN/figure-KKK.<ext>`; `docslurp/doppler-md/src/extract/layout.rs`), so ids on this
+  protocol never become paths here.
+
+## Output folder (pdftomarkdown)
+
+- DIR must not exist; it is created with `mkdirat` mode **0700**, and each page folder
+  (`page-NNNN`) with `mkdirat` mode **0700** under DIR's descriptor and opened `O_NOFOLLOW`.
+  Files are created **0600** (`O_CREAT|O_EXCL|O_NOFOLLOW` to a temporary name, renamed with
+  `RENAME_NOREPLACE`). The modes hold whatever the umask (it can only remove bits): images can
+  be tenant data in a shared VM tmp. Copy or `chmod` them to share.
+- `manifest.json` (version 2) is written last, after the files are synced; every link of the
+  Markdown has an entry and every file is listed. A DIR without a manifest is garbage.
 
 ## Security model (council review, 2026-11-10)
 
@@ -106,7 +122,13 @@ credential-free VM in production.
   share the VM, so a decoder compromise could rewrite an SVG after the allowlist ran. Whoever
   serves figures must keep them inert: a fixed `image/svg+xml` type, `nosniff`, and a CSP of
   `default-src 'none'; style-src 'unsafe-inline'; sandbox` (DocSlurp pins this with a test).
-- **Figures never fail the Markdown.** The Markdown is written before extraction starts; any
-  extraction failure is exit 5 with the folder removed.
+- **Figures never fail the Markdown.** The Markdown is written (and stdout closed) before
+  extraction starts. A batch that hits a budget, times out or whose renderer fails keeps the
+  files it wrote and the next batch goes on (two failed batches in a row stop the rest); the
+  manifest says what is missing and why, and the exit status is 5 with the folder kept. Only a
+  write failure or a renderer that cannot start fails the extraction: exit 6, folder removed.
+- **Links cannot be forged.** Only the converter's sealed markers expand to image paths; text of
+  the PDF that looks like `page-NNNN/image-` or `page-NNNN/figure-` (any case, any prefix) gets
+  a zero-width space after `page` first.
 - **Confinement in production.** Pass `--images-confine require` once the VM kernel is known to
   support Landlock and seccomp; with `auto`, the report's `images_confined` says whether it held.
