@@ -299,7 +299,8 @@ namespace {
 
 // fixed vocabularies; bit i of a mask is name i, and the names are sorted, so a mask prints
 // as a sorted list
-constexpr const char *warningNames[] = { "bad-content-stream", "broken-image", "internal-error", "io-error", "limit-hit", "missing-font", "non-finite", "out-of-range", "page-failed", "syntax-error", "syntax-warning", "unimplemented", "xref-repaired" };
+constexpr const char *warningNames[] = { "bad-content-stream", "broken-image", "internal-error", "io-error",       "limit-hit",     "missing-font", "non-finite",
+                                         "out-of-range",       "page-failed",  "syntax-error",   "syntax-warning", "unimplemented", "xref-repaired" };
 enum Warning : unsigned
 {
     wBadContent,
@@ -316,9 +317,9 @@ enum Warning : unsigned
     wUnimplemented,
     wXrefRepaired
 };
-constexpr const char *featureNames[] = { "acroform-empty",   "acroform-filled",  "annotation-freetext", "annotation-highlight", "annotation-other", "annotation-text", "drawing-limit", "embedded-files",
-                                         "encrypted-empty-password", "encrypted-user-password", "huge-page", "javascript-present", "layered-scan", "link-internal", "link-uri", "no-tounicode",
-                                         "ocg-hidden", "ocg-visible", "rotated-content", "rotated-page", "scan-page", "type3-font", "xfa-present" };
+constexpr const char *featureNames[] = { "acroform-empty",          "acroform-filled", "annotation-freetext", "annotation-highlight", "annotation-other", "annotation-text", "drawing-limit", "embedded-files", "encrypted-empty-password",
+                                         "encrypted-user-password", "huge-page",       "javascript-present",  "layered-scan",         "link-internal",    "link-uri",        "no-tounicode",  "ocg-hidden",     "ocg-visible",
+                                         "rotated-content",         "rotated-page",    "scan-page",           "type3-font",           "xfa-present" };
 enum Feature : unsigned
 {
     fAcroformEmpty,
@@ -1150,7 +1151,10 @@ void PageFacts::noteError(ErrorCategory category, const char *msg)
         break;
     }
     // the stage, from a few fixed message prefixes (the message itself is never kept)
-    static const char *const contentPrefixes[] = { "Unknown operator", "Too few (", "Too many (", "Too many args", "Leftover args", "Arg #", "Weird page contents", "Illegal character", "Unterminated", "End of file inside", "Found state under last state guard", "No current point", "Mismatched EMC" };
+    static const char *const contentPrefixes[] = {
+        "Unknown operator", "Too few (",     "Too many (", "Too many args", "Leftover args", "Arg #", "Weird page contents", "Illegal character", "Unterminated", "End of file inside", "Found state under last state guard",
+        "No current point", "Mismatched EMC"
+    };
     static const char *const fontPrefixes[] = { "No font in show", "Unknown font tag", "Unknown font type", "Couldn't find a font", "Couldn't create a font", "Bad font type" };
     static const char *const imagePrefixes[] = { "Bad image parameters", "Bad image", "Unknown image", "JPX", "JBIG2", "Bad DCT", "DCT", "CCITT", "Invalid Code", "Bad 2D code", "Bad white code", "Bad black code" };
     for (const char *p : contentPrefixes) {
@@ -1790,8 +1794,8 @@ void PageFacts::endPage(const TextPage &text)
     // E, F: forms and annotations
     if (wants(Forms | Annots) && s.page) {
         ::Annots *annots = s.page->getAnnots();
-        static constexpr const char *subtypeNames[] = { "text", "link", "freeText", "line", "square", "circle", "polygon", "polyLine", "highlight", "underline", "squiggly", "strikeOut", "stamp", "caret",
-                                                        "ink", "popup", "fileAttachment", "sound", "movie", "widget", "screen", "printerMark", "trapNet", "watermark", "threeD", "richMedia" };
+        static constexpr const char *subtypeNames[] = { "text",  "link", "freeText", "line",           "square", "circle", "polygon", "polyLine", "highlight",   "underline", "squiggly",  "strikeOut", "stamp",
+                                                        "caret", "ink",  "popup",    "fileAttachment", "sound",  "movie",  "widget",  "screen",   "printerMark", "trapNet",   "watermark", "threeD",    "richMedia" };
         std::array<uint64_t, 27> bySubtype {};
         uint64_t total = 0, visible = 0, linkUri = 0, linkInternal = 0, linkOther = 0;
         uint64_t fText = 0, fCheck = 0, fRadio = 0, fChoice = 0, fSig = 0, fPush = 0, filledN = 0, emptyN = 0, mismatch = 0, signedN = 0, unsignedN = 0;

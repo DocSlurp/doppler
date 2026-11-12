@@ -210,7 +210,9 @@ int main(int argc, char *argv[])
         fprintf(stderr, "%s\n", xpdfCopyright);
         if (!printVersion) {
             printUsage("pdfpagefacts", "<PDF-file | ->", argDesc);
-            fprintf(stderr, "JSON lines on stdout (schema doppler-page-facts/1). Exit codes: 0 ok, 1 cannot open (or stdout cannot be written), 2 encrypted and needs a password, 3 limit (pages, memory), 5 -confine require could not confine, 99 usage.\n");
+            fprintf(stderr,
+                    "JSON lines on stdout (schema doppler-page-facts/1). Exit codes: 0 ok, 1 cannot open (or stdout cannot be written), 2 encrypted and needs a password, 3 limit (pages, memory), 5 -confine require could not confine, 99 "
+                    "usage.\n");
         }
         if ((printVersion || printHelp) && ok && limitsOk) {
             return exitOk;
