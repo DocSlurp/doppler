@@ -93,6 +93,7 @@ closed once the Markdown is complete, before extraction):
   --images-min-side N[px|pt]  no file under this smallest side (24px: pixels at the dpi)
   --raster-quality N          lossy WebP quality (90)
   --raster-lossless           lossless WebP for every picture
+  --report-timing             with --report: also images_ms and images_cpu_ms (not deterministic)
   --raster-method N           lossy WebP encoder effort, 0 (fastest) to 6 (4)
   --lossless-method N         lossless WebP encoder effort, 0 to 6 (4); with
   --lossless-quality N        lossless effort 0 to 100 (50): lower is faster, a little larger,

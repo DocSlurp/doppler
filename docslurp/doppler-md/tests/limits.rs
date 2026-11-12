@@ -190,3 +190,30 @@ fn image_notes_are_capped_per_document() {
     assert_eq!(report.images_notes_dropped, 20_000);
     assert!(report.to_json().contains("\"images_notes_dropped\":20000"));
 }
+
+#[test]
+fn a_marker_past_the_note_cap_gets_no_path() {
+    // 50 pages of 2,000 small images fill the report's 100,000 notes; page 51's picture keeps
+    // its marker but has no note, no manifest entry and no file: no path either
+    let mut small = String::from(
+        "<page width=\"612\" height=\"792\"><block><line><word xMin=\"72\" xMax=\"100\" yMin=\"100\" yMax=\"110\" fontSize=\"10\" fontName=\"F\" baseline=\"108\">Text</word></line></block>",
+    );
+    for i in 0..2000 {
+        let (x, y) = ((i % 40) as f64 * 15.0, 100.0 + (i / 40) as f64 * 12.0);
+        small += &format!(
+            "<image xMin=\"{x}\" yMin=\"{y}\" xMax=\"{}\" yMax=\"{}\" width=\"1\" height=\"1\"/>",
+            x + 0.5,
+            y + 0.5
+        );
+    }
+    small += "</page>";
+    let last = "<page width=\"612\" height=\"792\"><block><line><word xMin=\"72\" xMax=\"300\" yMin=\"100\" yMax=\"110\" fontSize=\"10\" fontName=\"F\" baseline=\"108\">A paragraph above the figure.</word></line></block><image xMin=\"72\" yMin=\"200\" xMax=\"372\" yMax=\"350\" width=\"600\" height=\"300\" ref=\"9 0\" orient=\"0\" overlaid=\"0\"/></page>";
+    let xhtml = format!("<doc>{}{last}</doc>", small.repeat(50));
+    let o = doppler_md::Options { markers: true, ..Default::default() };
+    let (md, report) = doppler_md::to_markdown_report_with(&xhtml, &doppler_md::Params::default(), &o);
+    assert_eq!(report.images.len(), doppler_md::MAX_DOC_IMAGES);
+    assert!(report.images_notes_dropped >= 1);
+    let page51 = &md[50];
+    assert!(page51.contains("![image](doppler-image:p51.1)"), "{page51}");
+    assert!(!page51.contains("](images/"), "{page51}");
+}

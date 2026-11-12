@@ -168,7 +168,8 @@ pub fn downscale(pixels: Vec<u8>, width: u32, height: u32, channels: usize, new_
 }
 
 /// Whether `data` looks like a whole JPEG of `width` x `height`: SOI, a frame header (SOF0..2)
-/// of that size before the first scan, and EOI last. Cheap (headers only); the bytes are never
+/// of that size before the first scan, no metadata segment (APPn other than JFIF and Adobe, COM)
+/// before it, and EOI last. Cheap (headers only); the bytes are never
 /// decoded here.
 pub fn jpeg_ok(data: &[u8], width: u32, height: u32) -> bool {
     let n = data.len();
@@ -196,6 +197,9 @@ pub fn jpeg_ok(data: &[u8], width: u32, height: u32) -> bool {
                 return data[i + 4] == 8 && (w, h) == (width, height);
             }
             0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDA => return false,
+            // metadata the renderer strips (Exif, ICC, XMP, comments): a copy that still has it
+            // did not come from this tree's pdfregions
+            0xE1..=0xED | 0xEF | 0xFE => return false,
             _ => i += 2 + len,
         }
     }
@@ -285,6 +289,15 @@ mod tests {
         lossless[3] = 0xC3;
         assert!(!jpeg_ok(&lossless, 3, 2));
         assert!(!jpeg_ok(b"\x89PNG\r\n", 3, 2));
+        // an Exif or comment segment before the frame: refused
+        for marker in [0xE1u8, 0xE2, 0xFE] {
+            let mut meta = vec![0xFF, 0xD8, 0xFF, marker, 0x00, 0x04, b'x', b'y'];
+            meta.extend_from_slice(&j[2..]);
+            assert!(!jpeg_ok(&meta, 3, 2), "{marker:x}");
+        }
+        let mut jfif = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, b'x', b'y'];
+        jfif.extend_from_slice(&j[2..]);
+        assert!(jpeg_ok(&jfif, 3, 2));
     }
 
     fn crop() -> (Vec<u8>, u32, u32) {

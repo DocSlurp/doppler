@@ -405,7 +405,7 @@ pub fn extract(
     report.images_written = Some(written);
     report.images_confined = confined;
     report.images_complete = Some(complete);
-    report.images_timing = Some(timing);
+    report.images_timing = s.report_timing.then_some(timing);
     Ok(Summary { written, complete })
 }
 

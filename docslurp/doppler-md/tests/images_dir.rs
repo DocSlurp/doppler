@@ -176,7 +176,12 @@ fn extracts_files_where_the_links_point_without_changing_the_markdown() {
     assert_eq!(m["totals"]["extracted"], 2);
     assert!(err.contains("\"images_written\":2") && err.contains(&format!("\"file\":\"{PICTURE}\"")), "{err}");
     assert!(err.contains("\"images_confined\":true") && !err.contains("confined=1"), "{err}");
-    assert!(err.contains("\"images_complete\":true") && err.contains("\"images_ms\":{\"render\":"), "{err}");
+    assert!(err.contains("\"images_complete\":true") && !err.contains("\"images_ms\""), "{err}");
+    // timings only when asked: they differ from run to run
+    let dt = s.0.join("out-timing");
+    let timed = run(&p, &["--report", "--report-timing", "--images-dir", dt.to_str().unwrap(), &pdf], "ok");
+    let terr = String::from_utf8_lossy(&timed.stderr);
+    assert!(terr.contains("\"images_ms\":{\"render\":") && terr.contains("\"images_cpu_ms\":{"), "{terr}");
     let svg = std::fs::read_to_string(d1.join(FIGURE)).unwrap();
     assert!(svg.starts_with("<svg xmlns=") && !svg.contains("<g>"), "{svg}");
     let webp = std::fs::read(d1.join(PICTURE)).unwrap();

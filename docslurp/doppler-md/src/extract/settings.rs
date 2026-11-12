@@ -68,6 +68,9 @@ pub struct Settings {
     pub raster_format: RasterFormat,
     pub raster_quality: u8,
     pub raster_lossless: bool,
+    /// `--report-timing`: the report gains `images_ms` and `images_cpu_ms` (they change from
+    /// run to run, so they are left out of the deterministic report by default)
+    pub report_timing: bool,
     /// libwebp effort: lossy method, lossless method and lossless quality
     pub raster_method: u8,
     pub lossless_method: u8,
@@ -119,6 +122,7 @@ impl Default for Settings {
             raster_format: RasterFormat::Webp,
             raster_quality: 90,
             raster_lossless: false,
+            report_timing: false,
             raster_method: 4,
             lossless_method: 4,
             lossless_quality: 50,
@@ -187,7 +191,7 @@ const LINK_FLAGS: &[&str] =
 impl Settings {
     /// Whether `name` is one of these flags, and whether it takes a value.
     pub fn takes(name: &str) -> Option<bool> {
-        if name == "--raster-lossless" {
+        if name == "--raster-lossless" || name == "--report-timing" {
             Some(false)
         } else if WITH_VALUE.contains(&name) {
             Some(true)
@@ -200,6 +204,11 @@ impl Settings {
     pub fn apply(&mut self, name: &str, value: Option<&str>) -> Result<(), String> {
         if name == "--raster-lossless" {
             self.raster_lossless = true;
+            self.other_flags = true;
+            return Ok(());
+        }
+        if name == "--report-timing" {
+            self.report_timing = true;
             self.other_flags = true;
             return Ok(());
         }

@@ -642,7 +642,9 @@ impl<'p> Converter<'p> {
         let links: std::collections::HashMap<&str, &str> =
             notes.iter().filter_map(|n| Some((n.id.as_str(), n.link.as_deref()?))).collect();
         let linker = &self.linker;
-        images::unseal(&md, &self.seal, &|id| linker.target(id, links.get(id).copied()))
+        // a marker whose note was dropped (past the report's cap) has no manifest entry and no
+        // file: it keeps the neutral `doppler-image:<id>` form instead of a path
+        images::unseal(&md, &self.seal, &|id| links.get(id).and_then(|l| linker.target(id, Some(l))))
     }
 
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
