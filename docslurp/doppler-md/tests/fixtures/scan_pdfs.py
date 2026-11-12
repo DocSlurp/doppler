@@ -7,6 +7,9 @@ G4 stream), so no binary fixture is checked in:
               CCITT G4 scan, p4 a Flate RGB scan, p5 the DCT turned 90 degrees,
               p6 four DCT strips (tiled), p7 text with a small DCT picture (not a scan)
   scan.jpg    the JPEG stream embedded on pages 1 and 2
+  redacted.pdf  scans a copy would un-redact: p1 the DCT scan under a black box, p2 a Flate
+              scan under a black box, p3 the DCT scan with a white-out and visible text, p4
+              the DCT scan cut by a clip; p5 the plain DCT scan (copied)
 """
 
 import os
@@ -67,3 +70,37 @@ with open(os.path.join(out, "scans.pdf"), "wb") as f:
     f.write(t.build_pdf(objects))
 with open(os.path.join(out, "scan.jpg"), "wb") as f:
     f.write(jpeg)
+
+
+# redacted.pdf: objects 1 catalog, 2 pages, 3..7 pages, 8 font, 9 the DCT scan, 10 a Flate
+# scan, 11.. contents
+small_w, small_h = 153, 198
+small = bytes((x * 255 // small_w) if c == 0 else 200 for y in range(small_h) for x in range(small_w) for c in range(3))
+box = b"0 g 50 300 500 200 re f\n"
+red_pages = [
+    (b"q 612 0 0 792 0 0 cm /S Do Q\n" + box, "S"),
+    (b"q 612 0 0 792 0 0 cm /R Do Q\n" + box, "R"),
+    (b"q 612 0 0 792 0 0 cm /S Do Q\n1 g 50 300 500 200 re f BT 0 g /F1 24 Tf 200 390 Td (WITHHELD) Tj ET\n", "S"),
+    (b"q 0 0 612 700 re W n 612 0 0 792 0 0 cm /S Do Q\n", "S"),
+    (b"q 612 0 0 792 0 0 cm /S Do Q\n", "S"),
+]
+m = len(red_pages)
+red_font = 3 + m
+red_images = {"S": red_font + 1, "R": red_font + 2}
+red_contents = list(range(red_font + 3, red_font + 3 + m))
+objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % (3 + i) for i in range(m)), m),
+]
+for i, (_, name) in enumerate(red_pages):
+    objs.append(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> /XObject << /%s %d 0 R >> >> /Contents %d 0 R >>"
+        % (red_font, name, red_images[name], red_contents[i])
+    )
+objs.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+objs.append(img("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", jpeg))
+objs.append(img("/Width %d /Height %d /ColorSpace /DeviceRGB /BitsPerComponent 8" % (small_w, small_h), small, compress=True))
+for content, _ in red_pages:
+    objs.append(t.stream("", content))
+with open(os.path.join(out, "redacted.pdf"), "wb") as f:
+    f.write(t.build_pdf(objs))

@@ -43,7 +43,10 @@ fn image(b: (f64, f64, f64, f64), px: (u32, u32), obj: u32, extra: &str) -> Stri
 }
 
 const FULL: (f64, f64, f64, f64) = (0.0, 0.0, 612.0, 792.0);
-const DCT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\"";
+const DCT_DICT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\"";
+/// what pdftotext writes for an image with a copy class drawn upright with nothing over it
+const EXACT: &str = " orient=\"0\" overlaid=\"0\"";
+const DCT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\" orient=\"0\" overlaid=\"0\"";
 
 fn page(number: u32, scan: Option<(&str, usize)>, body: &str) -> String {
     let scan = scan.map(|(k, i)| format!(" scan=\"{k}\" scanImage=\"{i}\"")).unwrap_or_default();
@@ -132,12 +135,20 @@ fn tiled_strips_are_one_scan_of_their_union() {
 
 #[test]
 fn turned_or_unreferenced_scans_are_rendered() {
-    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT} orient=\"90\""));
+    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT} orient=\"90\" overlaid=\"0\""));
     let (md, _) = convert(&doc(&[page(1, Some(("single", 1)), &turned)]), ScanPages::Image);
     assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)");
+    // something shows over it (a redaction box, a clip, the page edge), or a producer that does
+    // not say: rendered, never copied
+    for extra in [" orient=\"0\" overlaid=\"1\"", " orient=\"0\"", " overlaid=\"0\"", ""] {
+        let im = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT}{extra}"));
+        let (md, report) = convert(&doc(&[page(1, Some(("single", 1)), &im)]), ScanPages::Image);
+        assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)", "{extra}");
+        assert_eq!(report.images[0].scan.map(|s| s.as_str()), Some("render"), "{extra}");
+    }
     // bilevel and decodable scans: .png and the raster format
-    let ccitt = image(FULL, (2550, 3300), 9, " filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"");
-    let flate = image(FULL, (2550, 3300), 10, " filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"");
+    let ccitt = image(FULL, (2550, 3300), 9, &format!(" filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"{EXACT}"));
+    let flate = image(FULL, (2550, 3300), 10, &format!(" filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"{EXACT}"));
     let (md, report) =
         convert(&doc(&[page(1, Some(("single", 1)), &ccitt), page(2, Some(("single", 1)), &flate)]), ScanPages::Image);
     assert_eq!(
@@ -355,4 +366,36 @@ fn scan_pages_skip_extracts_no_scan_and_render_renders_them() {
         m["images"].as_array().unwrap().iter().filter(|e| e["fate"] == "page-scan").collect();
     assert_eq!(scans.len(), 6);
     assert!(scans.iter().all(|e| e["source"] == "render" && e["status"] == "extracted"), "{m}");
+}
+
+#[test]
+fn scans_with_anything_over_them_are_rendered_not_copied() {
+    // a copy would show what a redaction box, a white-out or a clip hides on the page
+    let Some((t, r, s)) = fixtures("redacted") else { return };
+    let pdf = s.0.join("redacted.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    for id in ["p1.1", "p2.1", "p3.1", "p4.1"] {
+        let e = entry(&m, id);
+        assert_eq!(
+            (e["fate"].as_str(), e["source"].as_str(), e["format"].as_str()),
+            (Some("page-scan"), Some("render"), Some("webp")),
+            "{e}"
+        );
+    }
+    assert_eq!((entry(&m, "p5.1")["source"].as_str(), entry(&m, "p5.1")["format"].as_str()), (Some("copy"), Some("jpg")));
+    // the rendered files show the black boxes: the middle of the band (x 300, y 400 in PDF
+    // space, so 392 points from the top) is black, where the scan itself is not
+    for page in [1, 2] {
+        let e = entry(&m, &format!("p{page}.1"));
+        let bytes = std::fs::read(out.join(e["path"].as_str().unwrap())).unwrap();
+        let img = webp::Decoder::new(&bytes).decode().expect("a WebP");
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let channels = img.len() / (w * h);
+        let (x, y) = (w * 300 / 612, h * 392 / 792);
+        let px = &img[(y * w + x) * channels..(y * w + x) * channels + 3];
+        assert!(px.iter().all(|&v| v < 16), "page {page}: the redaction box is in the file: {px:?}");
+    }
 }

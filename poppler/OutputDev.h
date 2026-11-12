@@ -369,6 +369,15 @@ public:
     virtual void setSoftMask(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, bool /*alpha*/, Function * /*transferFunc*/, const GfxColor & /*backdropColor*/) { }
     virtual void clearSoftMask(GfxState * /*state*/) { }
 
+    //----- paints a device without non-text content does not get (needNonText() is false)
+    // Gfx calls this where it skips a pattern fill or stroke of the current path (<path>) or a
+    // shading paint over the clip (not <path>), so such a device still learns that something
+    // was painted there.
+    virtual void skippedPaint(GfxState * /*state*/, bool /*path*/, bool /*stroke*/) { }
+    // Gfx calls this where it skips setting an ExtGState soft mask for such a device: painting
+    // until the graphics state is restored goes through that mask.
+    virtual void skippedSoftMask(GfxState * /*state*/) { }
+
     //----- links
     virtual void processLink(AnnotLink * /*link*/) { }
 

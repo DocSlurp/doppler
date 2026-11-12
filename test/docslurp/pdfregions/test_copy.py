@@ -1,5 +1,5 @@
 """pdfregions copy jobs (docslurp/extraction/PROTOCOL.md, mode copy) and the pdftotext -images
-attributes that decide them (copy=, orient=, scan=).
+attributes that decide them (copy=, orient=, overlaid=, scan=).
 
 A copy job names an image XObject; pdfregions answers only for an image reachable from the
 job's page whose dictionary still has a copy class: a DCT stream byte for byte (kind=jpeg),
@@ -176,7 +176,7 @@ def test_attributes(d):
     objs = [image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG)]
     res = "<< /Font << /F1 4 0 R >> /XObject << /S 6 0 R >> >>"
     cases = {
-        "upright": (b"q 612 0 0 792 0 0 cm /S Do Q", "", None),
+        "upright": (b"q 612 0 0 792 0 0 cm /S Do Q", "", "0"),
         "turned": (b"q 0 -792 612 0 0 792 cm /S Do Q", "", "90"),
         "upside-down": (b"q -612 0 0 -792 612 792 cm /S Do Q", "", "180"),
         "flipped": (b"q 612 0 0 -792 0 792 cm /S Do Q", "", "other"),
@@ -206,6 +206,60 @@ def test_attributes(d):
     t.check(' scan="single" scanImage="1"' in pages[0], "an invisible OCR layer keeps the scan", pages)
 
 
+def test_overlaid(d):
+    # A copy of a scan's pixels shows the page only when nothing else shows over them:
+    # pdftotext -images says overlaid="0" only then (a redaction box, a white-out with text, an
+    # image patch, a shading, a clip, the page edge, a soft mask or opacity all make it "1").
+    objs = [
+        image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 6
+        image("/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", GRAY, compress=True),  # 7: a patch
+        t.stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Group << /S /Transparency >>", "0 g 0 0 612 792 re f"),  # 8: mask group
+    ]
+    shading = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 612 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+    res = (
+        "<< /Font << /F1 4 0 R >> /XObject << /S 6 0 R /P 7 0 R >> /Shading << /Sh %s >> "
+        "/ExtGState << /Half << /ca 0.5 >> /Mul << /BM /Multiply >> /Mask << /SMask << /S /Luminosity /G 8 0 R >> >> >> >>" % shading
+    )
+    scan = b"q 612 0 0 792 0 0 cm /S Do Q\n"
+    ocr = b"BT 3 Tr /F1 11 Tf 72 700 Td (Scanned words of the page) Tj ET\n"
+    cases = {
+        "plain": (scan, "0"),
+        "ocr-layer": (scan + ocr, "0"),
+        "box-underneath": (b"q 0 g 50 300 500 200 re f Q\n" + scan, "0"),
+        "clip-restored": (b"q 0 0 10 10 re W n Q q 0 0 m 10 0 l 0 10 l h W n Q\n" + scan, "0"),
+        "redaction-box": (scan + b"0 g 50 300 500 200 re f\n", "1"),
+        "stroke": (scan + b"0 G 4 w 100 100 m 300 300 l S\n", "1"),
+        "white-out-text": (scan + b"1 g 50 300 500 200 re f BT 0 g /F1 24 Tf 200 390 Td (REDACTED) Tj ET\n", "1"),
+        "visible-text": (scan + b"BT /F1 11 Tf 72 700 Td (Bates 000123) Tj ET\n", "1"),
+        "image-patch": (scan + b"q 500 0 0 200 50 300 cm /P Do Q\n", "1"),
+        "shading": (scan + b"q 50 300 500 200 re W n /Sh sh Q\n", "1"),
+        "clipped": (b"q 0 92 612 700 re W n " + scan + b"Q\n", "1"),
+        "odd-clip": (b"q 0 0 612 792 re 100 100 50 50 re W* n " + scan + b"Q\n", "1"),
+        "triangle-clip": (b"q 0 0 m 612 0 l 612 792 l 0 792 l 306 400 l h W n " + scan + b"Q\n", "1"),
+        "text-clip": (b"q BT 7 Tr /F1 400 Tf 0 100 Td (W) Tj ET " + scan + b"Q\n", "1"),
+        "off-page": (b"q 1224 0 0 792 -612 0 cm /S Do Q\n", "1"),
+        "opacity": (b"q /Half gs " + scan + b"Q\n", "1"),
+        "blend": (b"q /Mul gs " + scan + b"Q\n", "1"),
+        "soft-mask": (b"q /Mask gs " + scan + b"Q\n", "1"),
+        "annotation": (scan, "1"),
+    }
+    for name, (content, want) in cases.items():
+        extra = ""
+        if name == "annotation":
+            # a square annotation's appearance painted over the scan
+            objs_a = objs + [t.stream("/Type /XObject /Subtype /Form /BBox [0 0 500 200]", "0 g 0 0 500 200 re f")]  # 9
+            extra = "/Annots [<< /Type /Annot /Subtype /Square /Rect [50 300 550 500] /AP << /N 9 0 R >> >>]"
+            pdf = t.simple_page_pdf(content, resources=res, extra_objects=objs_a, page_extra=extra)
+        else:
+            pdf = t.simple_page_pdf(content, resources=res, extra_objects=objs)
+        path = d.write("over-%s.pdf" % name, pdf)
+        pages, images = attributes(path)
+        scan_img = images[0] if images else ""
+        got = re.search(r' overlaid="([01])"', scan_img)
+        t.check((got.group(1) if got else None) == want, "%s: overlaid=%s" % (name, want), (pages, images))
+        t.check(' orient="' in scan_img, "%s: orient= written with a copy class" % name, scan_img)
+
+
 with t.TempDir() as d:
     path = d.write("copy.pdf", copy_pdf())
     test_copies(path)
@@ -214,4 +268,5 @@ with t.TempDir() as d:
     test_bad_job_lines(path)
     test_deep_forms(d)
     test_attributes(d)
+    test_overlaid(d)
 t.finish()

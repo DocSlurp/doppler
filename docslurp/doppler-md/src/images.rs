@@ -183,7 +183,8 @@ impl Fate {
 }
 
 /// How the file of a full-page scan is made: the scan image's own pixels when its dictionary
-/// allows and it is upright, else a render of the page region.
+/// allows, it is upright and nothing else shows over it (`orient="0"`, `overlaid="0"`), else a
+/// render of the page region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanSource {
     /// its JPEG stream, copied unchanged (`.jpg`)
@@ -300,7 +301,7 @@ pub fn place(
                 }))
                 .collect(),
         };
-        let source = if scans == ScanPages::Render || sc.kind != ScanKind::Single || !im.upright || im.obj.is_none() {
+        let source = if scans == ScanPages::Render || sc.kind != ScanKind::Single || !im.copy_exact || im.obj.is_none() {
             ScanSource::Render
         } else {
             match im.copy {

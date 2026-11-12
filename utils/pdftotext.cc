@@ -1532,11 +1532,16 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                     dict += " inline=\"1\"";
                 }
                 dict += std::string(" copy=\"") + imageCopyName(info.copy) + "\"";
-                // last: how its pixels land on the page, when not upright (a copy of them would
-                // not show the page as drawn)
+                // last: how its pixels land on the page (a copy of them shows the page only when
+                // upright), and whether anything else shows over them (TextImage::overlaid). Both
+                // are always written for an image with a copy class, so a reader can treat their
+                // absence as "do not copy"; otherwise orient= only when not upright.
                 static const char *const orientations[] = { "0", "90", "180", "270", "other" };
-                if (image.orientation != TextImage::Upright) {
+                if (info.copy != ImageCopy::Render || image.orientation != TextImage::Upright) {
                     dict += std::string(" orient=\"") + orientations[image.orientation] + "\"";
+                }
+                if (info.copy != ImageCopy::Render) {
+                    dict += image.overlaid ? " overlaid=\"1\"" : " overlaid=\"0\"";
                 }
                 fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
                         image.stencil ? " kind=\"mask\"" : "", ref.c_str(), dict.c_str());

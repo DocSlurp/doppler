@@ -302,8 +302,10 @@ pub struct Image {
     pub obj: Option<(u32, u32)>,
     /// how its pixels can be taken out without rendering (`copy=`, from its dictionary only)
     pub copy: CopyClass,
-    /// its rows and columns land on the page as stored (no `orient=`)
-    pub upright: bool,
+    /// a copy of its pixels shows what the page shows there: its rows and columns land on the
+    /// page as stored (`orient="0"`) and nothing else shows over it, cuts or masks it
+    /// (`overlaid="0"`). Either attribute missing reads as not, so an older producer renders.
+    pub copy_exact: bool,
 }
 
 /// An image's copy class, as the producer's `copy=` says it: `jpeg` (a JPEG to copy unchanged),
@@ -404,7 +406,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 28] = [
+const KEYS: [&str; 29] = [
     "xMin",
     "yMin",
     "xMax",
@@ -433,6 +435,7 @@ const KEYS: [&str; 28] = [
     "orient",
     "scan",
     "scanImage",
+    "overlaid",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -466,6 +469,7 @@ fn key_index(name: &str) -> Option<usize> {
         "orient" => 25,
         "scan" => 26,
         "scanImage" => 27,
+        "overlaid" => 28,
         _ => return None,
     })
 }
@@ -809,6 +813,7 @@ const COPY: usize = 24;
 const ORIENT: usize = 25;
 const SCAN: usize = 26;
 const SCAN_IMAGE: usize = 27;
+const OVERLAID: usize = 28;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -1271,7 +1276,7 @@ impl ParseState {
                             Some("decode") => CopyClass::Decode,
                             _ => CopyClass::Render,
                         },
-                        upright: a.0[ORIENT].is_none(),
+                        copy_exact: a.0[ORIENT] == Some("0") && a.0[OVERLAID] == Some("0"),
                     };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {

@@ -1139,6 +1139,7 @@ void Gfx::opSetExtGState(Object args[], int /*numArgs*/)
             // A soft mask only affects painting.  Its group is a content
             // stream, so interpreting it would pass the mask's own text to
             // a text extraction device as if it were visible page content.
+            out->skippedSoftMask(state);
         } else if (obj2.isDict()) {
             Object obj3 = obj2.dictLookup("S");
             alpha = obj3.isName("Alpha");
@@ -1966,6 +1967,7 @@ void Gfx::doPatternFill(bool eoFill)
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
     if (!out->needNonText()) {
+        out->skippedPaint(state, true, false);
         return;
     }
 
@@ -1998,6 +2000,7 @@ void Gfx::doPatternStroke()
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
     if (!out->needNonText()) {
+        out->skippedPaint(state, true, true);
         return;
     }
 
@@ -2030,6 +2033,7 @@ void Gfx::doPatternText()
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
     if (!out->needNonText()) {
+        out->skippedPaint(state, false, false);
         return;
     }
 
@@ -2435,6 +2439,7 @@ void Gfx::opShFill(Object args[], int /*numArgs*/)
     // shadings only paint; skip the (potentially very expensive) evaluation
     // when the device ignores non-text content
     if (!out->needNonText()) {
+        out->skippedPaint(state, false, false);
         return;
     }
 

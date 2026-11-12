@@ -272,7 +272,7 @@ with t.TempDir() as d:
     t.check([s.groups() if s else None for s in scans] == [("single", "1"), None, ("tiled", "1"), ("layered", "1"), ("layered", "1"), None], "-images: scan= and scanImage= on <page>", repr(pages))
     t.check(all(p.rstrip(">").endswith('"') and (' scan="' not in p or re.search(r' scanImage="\d+"$', p.rstrip(">"))) for p in pages), "-images: scan attributes are last on <page>")
     imgs = re.findall(r"<image [^>]*/>", x)
-    t.check(' filter="dct" bpc="8" cs="rgb" copy="jpeg"/>' in imgs[0] and ' ref="' in imgs[0], "-images: filter, bpc, cs, copy last on <image>", imgs[0])
+    t.check(re.search(r' filter="dct" bpc="8" cs="rgb" copy="jpeg" orient="0" overlaid="[01]"/>', imgs[0]) and ' ref="' in imgs[0], "-images: filter, bpc, cs, copy, then orient and overlaid last on <image>", imgs[0])
     t.check(any(' inline="1" copy="render"' in i for i in imgs) and any(' smask="1"' in i for i in imgs), "-images: inline and smask attributes", repr(imgs))
     t.check(re.findall(r' scan="', pdftotext_plain(paths["scans"]).decode()) == [] and b"filter=" not in pdftotext_plain(paths["scans"]), "without -images: no scan or image attributes")
     rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", "-scan-max-words", "300", paths["scans"], "-"], capture_output=True).stdout.decode()
