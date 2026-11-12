@@ -29,6 +29,29 @@ pub enum RasterFormat {
     Png,
 }
 
+/// What becomes of a full-page scan (`--scan-pages`; the producer's `scan=` on `<page>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanPages {
+    /// the page's Markdown starts with `![page N scan](link)`; the file is the scan's own
+    /// pixels where its dictionary allows (a `.jpg` copy, a bilevel `.png`, else decoded once),
+    /// rendered otherwise (tiles, layers, a turned image)
+    Image,
+    /// placed as any picture (a backdrop under text, or a marker), and never extracted
+    Skip,
+    /// as `image`, but always rendered at `--scan-dpi` (`--raster-format`)
+    Render,
+}
+
+impl ScanPages {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScanPages::Image => "image",
+            ScanPages::Skip => "skip",
+            ScanPages::Render => "render",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VectorFormat {
     Svg,
@@ -70,6 +93,16 @@ pub struct Settings {
     pub doc_max_bytes: u64,
     /// `--images-deadline`: time for the whole extraction (none: only the per-batch timeout)
     pub deadline: Option<Duration>,
+    /// `--scan-pages`
+    pub scan_pages: ScanPages,
+    /// `--scan-dpi`: resolution of rendered scans
+    pub scan_dpi: u32,
+    /// `--scan-max-dpi`: a decoded scan finer than this is scaled down to it
+    pub scan_max_dpi: u32,
+    /// `--scan-max`, `--scan-max-bytes`: scan files and bytes per batch, apart from the
+    /// pictures' and figures' own budget
+    pub scan_max: usize,
+    pub scan_max_bytes: u64,
     /// an extraction flag (one that needs `--images-dir`) was given
     other_flags: bool,
     /// a flag that shapes the Markdown links (`--images-link-prefix`, `--images-repeats`,
@@ -103,6 +136,11 @@ impl Default for Settings {
             batch_pages: 64,
             doc_max_bytes: 4 << 30,
             deadline: None,
+            scan_pages: ScanPages::Image,
+            scan_dpi: 150,
+            scan_max_dpi: 300,
+            scan_max: 1000,
+            scan_max_bytes: 1 << 30,
             other_flags: false,
             link_flags: false,
         }
@@ -134,10 +172,17 @@ const WITH_VALUE: &[&str] = &[
     "--images-batch-pages",
     "--images-doc-max-bytes",
     "--images-deadline",
+    // page scans
+    "--scan-pages",
+    "--scan-dpi",
+    "--scan-max-dpi",
+    "--scan-max",
+    "--scan-max-bytes",
 ];
 
 /// The flags that shape the Markdown links: valid with `--markers` alone.
-const LINK_FLAGS: &[&str] = &["--images-link-prefix", "--images-repeats", "--raster-format", "--vector-format"];
+const LINK_FLAGS: &[&str] =
+    &["--images-link-prefix", "--images-repeats", "--raster-format", "--vector-format", "--scan-pages"];
 
 impl Settings {
     /// Whether `name` is one of these flags, and whether it takes a value.
@@ -230,6 +275,18 @@ impl Settings {
             "--images-batch-pages" => self.batch_pages = int(v, 1, 100_000).ok_or_else(bad)? as u32,
             "--images-doc-max-bytes" => self.doc_max_bytes = bytes(v, 1, 1 << 40).ok_or_else(bad)?,
             "--images-deadline" => self.deadline = Some(Duration::from_secs(int(v, 1, 604_800).ok_or_else(bad)?)),
+            "--scan-pages" => {
+                self.scan_pages = match v {
+                    "image" => ScanPages::Image,
+                    "skip" => ScanPages::Skip,
+                    "render" => ScanPages::Render,
+                    _ => return Err(format!("{name} takes image, skip or render, not {v:?}")),
+                }
+            }
+            "--scan-dpi" => self.scan_dpi = int(v, 36, 300).ok_or_else(bad)? as u32,
+            "--scan-max-dpi" => self.scan_max_dpi = int(v, 36, 1200).ok_or_else(bad)? as u32,
+            "--scan-max" => self.scan_max = int(v, 0, 100_000).ok_or_else(bad)? as usize,
+            "--scan-max-bytes" => self.scan_max_bytes = bytes(v, 1, 64 << 30).ok_or_else(bad)?,
             _ => return Err(format!("unknown option {name}")),
         }
         Ok(())
@@ -239,9 +296,9 @@ impl Settings {
     /// need markers).
     pub fn check(&self) -> Result<(), String> {
         if self.other_flags && self.dir.is_none() {
-            return Err("the --images-*, --raster-*, --lossless-*, --vector-* and --svg-* options need --images-dir \
-                 (except --images-link-prefix, --images-repeats, --raster-format and --vector-format, \
-                 which need --markers)"
+            return Err("the --images-*, --raster-*, --lossless-*, --vector-*, --svg-* and --scan-* options need \
+                 --images-dir (except --images-link-prefix, --images-repeats, --raster-format, --vector-format \
+                 and --scan-pages, which need --markers)"
                 .into());
         }
         Ok(())
@@ -259,6 +316,7 @@ impl Settings {
             raster: self.raster_format,
             vector: self.vector_format,
             repeats: self.repeats,
+            scans: self.scan_pages,
         }
     }
 
@@ -342,6 +400,10 @@ mod tests {
             (s.link_prefix.as_str(), s.batch_pages, s.doc_max_bytes, s.deadline),
             ("images/", 64, 4 << 30, None)
         );
+        assert_eq!(
+            (s.scan_pages, s.scan_dpi, s.scan_max_dpi, s.scan_max, s.scan_max_bytes),
+            (ScanPages::Image, 150, 300, 1000, 1 << 30)
+        );
     }
 
     #[test]
@@ -370,8 +432,18 @@ mod tests {
             ("--images-batch-pages", Some("8")),
             ("--images-doc-max-bytes", Some("1G")),
             ("--images-deadline", Some("30")),
+            ("--scan-pages", Some("render")),
+            ("--scan-dpi", Some("200")),
+            ("--scan-max-dpi", Some("400")),
+            ("--scan-max", Some("7")),
+            ("--scan-max-bytes", Some("5M")),
         ])
         .unwrap();
+        assert_eq!(
+            (s.scan_pages, s.scan_dpi, s.scan_max_dpi, s.scan_max, s.scan_max_bytes),
+            (ScanPages::Render, 200, 400, 7, 5 << 20)
+        );
+        assert_eq!(s.link_style().scans, ScanPages::Render);
         assert_eq!((s.link_prefix.as_str(), s.batch_pages, s.doc_max_bytes), ("a/b/", 8, 1 << 30));
         assert_eq!(s.deadline, Some(Duration::from_secs(30)));
         assert_eq!(s.link_style().prefix, "a/b/");
@@ -433,6 +505,11 @@ mod tests {
             ("--images-batch-pages", "0"),
             ("--images-doc-max-bytes", "0"),
             ("--images-deadline", "0"),
+            ("--scan-pages", "copy"),
+            ("--scan-dpi", "301"),
+            ("--scan-dpi", "35"),
+            ("--scan-max-dpi", "0"),
+            ("--scan-max-bytes", "0"),
         ] {
             assert!(with(&[("--images-dir", Some("o")), (k, Some(v))]).is_err(), "{k} {v}");
         }
@@ -442,6 +519,8 @@ mod tests {
         assert!(with(&[("--raster-lossless", None)]).is_err());
         assert!(with(&[("--raster-method", Some("2"))]).is_err());
         assert!(with(&[("--images-batch-pages", Some("2"))]).is_err());
+        assert!(with(&[("--scan-dpi", Some("200"))]).is_err());
+        assert!(with(&[("--scan-pages", Some("skip"))]).unwrap().link_flags());
         // the link flags do not need it (the caller checks for markers)
         let s = with(&[("--images-link-prefix", Some("")), ("--raster-format", Some("png"))]).unwrap();
         assert!(s.link_flags() && s.link_prefix.is_empty());

@@ -98,6 +98,110 @@ fn png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A 1-bit greyscale PNG of packed rows (`ceil(width / 8) * height` bytes, most significant
+/// bit first, 0 black), as a bilevel scan arrives from the renderer.
+pub fn png_gray1(rows: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let row = (width as usize).div_ceil(8);
+    if width == 0 || height == 0 || row.checked_mul(height as usize) != Some(rows.len()) {
+        return Err("pixel buffer does not match its size".into());
+    }
+    let mut out = Vec::with_capacity(rows.len() / 8 + 64);
+    {
+        let mut enc = ::png::Encoder::new(&mut out, width, height);
+        enc.set_color(::png::ColorType::Grayscale);
+        enc.set_depth(::png::BitDepth::One);
+        enc.set_compression(::png::Compression::Fast);
+        let mut w = enc.write_header().map_err(|e| format!("PNG: {e}"))?;
+        w.write_image_data(rows).map_err(|e| format!("PNG: {e}"))?;
+        w.finish().map_err(|e| format!("PNG: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// RGB from 8-bit grey (each sample three times).
+pub fn gray_to_rgb(gray: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(gray.len() * 3);
+    for &g in gray {
+        out.extend_from_slice(&[g, g, g]);
+    }
+    out
+}
+
+/// `pixels` (`width * height * channels` bytes) scaled down by area averaging to
+/// `new_w * new_h` (each at most the old size, at least 1); the same buffer when the size is
+/// unchanged.
+pub fn downscale(pixels: Vec<u8>, width: u32, height: u32, channels: usize, new_w: u32, new_h: u32) -> Vec<u8> {
+    let (w, h, nw, nh) = (
+        width as usize,
+        height as usize,
+        (new_w as usize).clamp(1, width as usize),
+        (new_h as usize).clamp(1, height as usize),
+    );
+    if (nw, nh) == (w, h) || pixels.len() != w * h * channels {
+        return pixels;
+    }
+    // per output column, its source columns [x0, x1)
+    let cols: Vec<(usize, usize)> = (0..nw).map(|x| (x * w / nw, ((x + 1) * w / nw).max(x * w / nw + 1))).collect();
+    let mut out = vec![0u8; nw * nh * channels];
+    let mut acc = vec![0u64; nw * channels];
+    for y in 0..nh {
+        let (y0, y1) = (y * h / nh, ((y + 1) * h / nh).max(y * h / nh + 1));
+        acc.iter_mut().for_each(|a| *a = 0);
+        for sy in y0..y1 {
+            let src = &pixels[sy * w * channels..(sy + 1) * w * channels];
+            for (x, &(x0, x1)) in cols.iter().enumerate() {
+                for sx in x0..x1 {
+                    for c in 0..channels {
+                        acc[x * channels + c] += u64::from(src[sx * channels + c]);
+                    }
+                }
+            }
+        }
+        for (x, &(x0, x1)) in cols.iter().enumerate() {
+            let n = ((x1 - x0) * (y1 - y0)) as u64;
+            for c in 0..channels {
+                out[(y * nw + x) * channels + c] = ((acc[x * channels + c] + n / 2) / n) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Whether `data` looks like a whole JPEG of `width` x `height`: SOI, a frame header (SOF0..2)
+/// of that size before the first scan, and EOI last. Cheap (headers only); the bytes are never
+/// decoded here.
+pub fn jpeg_ok(data: &[u8], width: u32, height: u32) -> bool {
+    let n = data.len();
+    if n < 4 || data[..2] != [0xFF, 0xD8] || data[n - 2..] != [0xFF, 0xD9] {
+        return false;
+    }
+    let mut i = 2;
+    while i + 4 <= n {
+        if data[i] != 0xFF {
+            return false;
+        }
+        let marker = data[i + 1];
+        if marker == 0xFF {
+            i += 1;
+            continue;
+        }
+        let len = usize::from(u16::from_be_bytes([data[i + 2], data[i + 3]]));
+        if len < 2 || i + 2 + len > n {
+            return false;
+        }
+        match marker {
+            0xC0..=0xC2 if len >= 8 => {
+                let h = u32::from(u16::from_be_bytes([data[i + 5], data[i + 6]]));
+                let w = u32::from(u16::from_be_bytes([data[i + 7], data[i + 8]]));
+                return data[i + 4] == 8 && (w, h) == (width, height);
+            }
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDA => return false,
+            _ => i += 2 + len,
+        }
+    }
+    false
+}
+
 /// The chunk types of a RIFF/WebP file, or `None` when it is not one.
 pub fn webp_chunks(data: &[u8]) -> Option<Vec<[u8; 4]>> {
     if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WEBP" {
@@ -136,6 +240,52 @@ pub fn png_chunks(data: &[u8]) -> Option<Vec<[u8; 4]>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gray1_png_decodes_to_its_bits() {
+        let (w, h) = (13u32, 3u32);
+        let rows = vec![0b1010_1010, 0b1111_1000, 0xFF, 0x00, 0x00, 0x0F, 0xF0];
+        assert!(png_gray1(&rows[..5], w, h).is_err());
+        let rows = [0b1010_1010u8, 0b1111_1000, 0xFF, 0x00, 0x00, 0x00];
+        let png = png_gray1(&rows, w, h).unwrap();
+        let mut dec = ::png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut buf = vec![0u8; dec.output_buffer_size().unwrap()];
+        let info = dec.next_frame(&mut buf).unwrap();
+        assert_eq!(
+            (info.width, info.height, info.bit_depth, info.color_type),
+            (13, 3, ::png::BitDepth::One, ::png::ColorType::Grayscale)
+        );
+        // padding bits past the width are not pixels
+        assert_eq!(buf[0], 0b1010_1010);
+        assert_eq!(buf[1] & 0b1111_1000, 0b1111_1000);
+        assert_eq!(buf[2], 0xFF);
+        assert_eq!(&buf[4..6], &[0, 0]);
+    }
+
+    #[test]
+    fn downscale_averages_areas() {
+        // 4x2 grey to 2x1: each output pixel the mean of a 2x2 block
+        let px = vec![0, 10, 100, 200, 20, 30, 50, 50];
+        assert_eq!(downscale(px.clone(), 4, 2, 1, 2, 1), vec![15, 100]);
+        assert_eq!(downscale(px.clone(), 4, 2, 1, 4, 2), px);
+        let rgb = gray_to_rgb(&[7, 9]);
+        assert_eq!(rgb, vec![7, 7, 7, 9, 9, 9]);
+        assert_eq!(downscale(rgb, 2, 1, 3, 1, 1), vec![8, 8, 8]);
+    }
+
+    #[test]
+    fn jpeg_headers_are_checked() {
+        // SOI, SOF0 8-bit 3x2, SOS, data, EOI
+        let mut j = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x02, 0x00, 0x03, 0x01, 0x01, 0x11, 0x00];
+        j.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0x12, 0x34, 0xFF, 0xD9]);
+        assert!(jpeg_ok(&j, 3, 2));
+        assert!(!jpeg_ok(&j, 2, 3));
+        assert!(!jpeg_ok(&j[..j.len() - 1], 3, 2));
+        let mut lossless = j.clone();
+        lossless[3] = 0xC3;
+        assert!(!jpeg_ok(&lossless, 3, 2));
+        assert!(!jpeg_ok(b"\x89PNG\r\n", 3, 2));
+    }
 
     fn crop() -> (Vec<u8>, u32, u32) {
         let (w, h) = (40u32, 30u32);

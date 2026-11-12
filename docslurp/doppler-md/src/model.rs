@@ -300,6 +300,40 @@ pub struct Image {
     /// the image XObject's object and generation numbers (`ref="num gen"`), so repeats of one
     /// object can be found; `None` for an inline image or a producer without it
     pub obj: Option<(u32, u32)>,
+    /// how its pixels can be taken out without rendering (`copy=`, from its dictionary only)
+    pub copy: CopyClass,
+    /// its rows and columns land on the page as stored (no `orient=`)
+    pub upright: bool,
+}
+
+/// An image's copy class, as the producer's `copy=` says it: `jpeg` (a JPEG to copy unchanged),
+/// `bilevel` (1-bit samples), `decode` (other samples decodable at native size), or `render`
+/// (anything else, an inline image, or a producer without the attribute).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CopyClass {
+    #[default]
+    Render,
+    Jpeg,
+    Bilevel,
+    Decode,
+}
+
+/// A full-page scan, as the producer's `scan=` and `scanImage=` on `<page>` say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanInfo {
+    pub kind: ScanKind,
+    /// the covering image's one-based position in the page's image list
+    pub image: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanKind {
+    /// one image covers the page
+    Single,
+    /// several images (strips, tiles) do together
+    Tiled,
+    /// the covering image is masked or carries another page-sized image (mixed raster content)
+    Layered,
 }
 
 /// The most images one page keeps; a page with more is `images_truncated`.
@@ -334,6 +368,8 @@ pub struct Page {
     pub images: Vec<Image>,
     /// the producer or the parser dropped images of this page
     pub images_truncated: bool,
+    /// doppler `-images`: the page is a full-page scan (`scan=`, `scanImage=`)
+    pub scan: Option<ScanInfo>,
     /// doppler `-images`: clusters of drawing that is not axis-aligned
     pub graphics: Vec<Graphic>,
     pub width: f64,
@@ -368,7 +404,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 24] = [
+const KEYS: [&str; 28] = [
     "xMin",
     "yMin",
     "xMax",
@@ -393,6 +429,10 @@ const KEYS: [&str; 24] = [
     "directions",
     "ref",
     "crop",
+    "copy",
+    "orient",
+    "scan",
+    "scanImage",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -422,6 +462,10 @@ fn key_index(name: &str) -> Option<usize> {
         "directions" => 21,
         "ref" => 22,
         "crop" => 23,
+        "copy" => 24,
+        "orient" => 25,
+        "scan" => 26,
+        "scanImage" => 27,
         _ => return None,
     })
 }
@@ -761,6 +805,10 @@ const CURVES: usize = 20;
 const DIRECTIONS: usize = 21;
 const REF: usize = 22;
 const CROP: usize = 23;
+const COPY: usize = 24;
+const ORIENT: usize = 25;
+const SCAN: usize = 26;
+const SCAN_IMAGE: usize = 27;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -882,6 +930,22 @@ impl PageInfo {
             _ => "mixed",
         }
     }
+}
+
+/// `scan="single|tiled|layered"` with `scanImage="K"` (K from 1 to [`MAX_PAGE_IMAGES`]).
+fn scan_of(kind: Option<&str>, image: Option<&str>) -> Option<ScanInfo> {
+    let kind = match kind? {
+        "single" => ScanKind::Single,
+        "tiled" => ScanKind::Tiled,
+        "layered" => ScanKind::Layered,
+        _ => return None,
+    };
+    let image = image?;
+    if image.is_empty() || image.len() > 6 || !image.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let image: usize = image.parse().ok()?;
+    (1..=MAX_PAGE_IMAGES).contains(&image).then_some(ScanInfo { kind, image })
 }
 
 /// A `crop="W H"` value worth passing on: short, and only number characters.
@@ -1201,6 +1265,13 @@ impl ParseState {
                         px_h: px(HEIGHT),
                         mask: a.0[KIND] == Some("mask"),
                         obj: a.0[REF].and_then(object_ref),
+                        copy: match a.0[COPY] {
+                            Some("jpeg") => CopyClass::Jpeg,
+                            Some("bilevel") => CopyClass::Bilevel,
+                            Some("decode") => CopyClass::Decode,
+                            _ => CopyClass::Render,
+                        },
+                        upright: a.0[ORIENT].is_none(),
                     };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {
@@ -1269,6 +1340,7 @@ impl ParseState {
                         number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
                         images: Vec::new(),
                         images_truncated: a.0[IMAGES_TRUNCATED] == Some("1"),
+                        scan: scan_of(a.0[SCAN], a.0[SCAN_IMAGE]),
                         graphics: Vec::new(),
                         glyphs: Vec::new(),
                         fonts: Vec::new(),

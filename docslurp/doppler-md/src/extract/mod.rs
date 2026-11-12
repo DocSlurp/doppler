@@ -9,6 +9,14 @@
 //! valid. Files go where the Markdown links point ([`layout`]: `page-0012/image-003.webp`);
 //! `manifest.json`, written last, lists every image and every file.
 //!
+//! Full-page scans (`page-scan`) are taken out without rendering where the scan image's
+//! dictionary allows: a JPEG is copied byte for byte (`.jpg`), a bilevel image decoded once to
+//! a 1-bit PNG, any other single image decoded once at native size and scaled to
+//! `--scan-max-dpi` at most; tiles, layers, turned images and `--scan-pages render` are
+//! rendered at `--scan-dpi`. A copy that fails its checks is `not-extracted` (reason `copy`),
+//! never rendered into another format. Scans have their own budget per batch (`--scan-max`,
+//! `--scan-max-bytes`), so a scanned book never starves the figures, nor the reverse.
+//!
 //! Extraction runs in batches of `--images-batch-pages` pages, one renderer process each, with
 //! that batch's own budgets (`--images-max`, `--images-max-bytes`, `--images-timeout`). A
 //! batch that hits a budget, times out or whose renderer fails keeps the files it wrote; its
@@ -32,7 +40,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::Report;
-use crate::images::{Fate, Note};
+use crate::images::{Fate, Note, ScanSource};
 use encode::Raster;
 use layout::{RepeatKey, kind, repeat_key};
 use outdir::OutDir;
@@ -180,9 +188,16 @@ struct Run<'a> {
     dir: &'a mut OutDir,
     written: usize,
     total_bytes: u64,
-    /// this batch's files and bytes
+    /// this batch's files and bytes (pictures and figures)
     batch_written: usize,
     batch_bytes: u64,
+    /// page scans: this batch's files and bytes, a scan over that budget in this batch, and
+    /// the document's
+    scan_batch_written: usize,
+    scan_batch_bytes: u64,
+    scan_over: bool,
+    scans_written: usize,
+    scan_bytes: u64,
     /// content repeats: (key, sha256 of the rendered payload) -> entry
     seen_payload: HashMap<(RepeatKey, [u8; 32]), usize>,
     /// repeat keys held by more than one job: only their payloads can repeat one another, so
@@ -223,7 +238,13 @@ pub fn extract(
     let mut promoted: HashSet<&str> = HashSet::new();
     for (i, n) in notes.iter().enumerate() {
         let e = &mut entries[i];
-        if !matches!(n.fate, Fate::Block | Fate::Inline) {
+        let scan = n.fate == Fate::PageScan;
+        if n.scan.is_some() && !scan {
+            // part of a scan placed as a picture (--scan-pages skip): never extracted
+            e.status = if n.fate.marked() { Status::NotExtracted("scan-pages") } else { Status::Unlinked };
+            continue;
+        }
+        if !n.fate.marked() {
             e.status = Status::Unlinked;
             continue;
         }
@@ -243,7 +264,7 @@ pub fn extract(
             e.status = Status::NotExtracted("bbox");
             continue;
         }
-        if (x1 - x0).min(y1 - y0) < min_side {
+        if !scan && (x1 - x0).min(y1 - y0) < min_side {
             e.status = Status::NotExtracted("min_side");
             continue;
         }
@@ -260,14 +281,27 @@ pub fn extract(
             }
             entries[i].repeat_of = Some(first.clone());
         }
-        let mode = if n.vector && s.vector_format == VectorFormat::Svg { Mode::Svg } else { Mode::Raster };
-        jobs.push((Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode, dpi: s.dpi }, i));
+        let job = match (scan, n.scan, n.obj) {
+            (true, Some(ScanSource::Jpeg | ScanSource::Bilevel | ScanSource::Decode), Some(obj)) => {
+                Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Copy, dpi: 0, obj: Some(obj) }
+            }
+            (true, _, _) => {
+                Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Raster, dpi: s.scan_dpi, obj: None }
+            }
+            _ => {
+                let mode = if n.vector && s.vector_format == VectorFormat::Svg { Mode::Svg } else { Mode::Raster };
+                Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode, dpi: s.dpi, obj: None }
+            }
+        };
+        jobs.push((job, i));
     }
     // the renderer takes the jobs by page; the report lists them by page already
     jobs.sort_by_key(|(j, _)| j.page);
     // a fallback raster re-renders a job's own note, so the first pass's keys cover every record
     let mut key_count: HashMap<RepeatKey, usize> = HashMap::new();
-    for (_, i) in &jobs {
+    // (page scans are not compared by payload: each is its page's own, and decoded ones are
+    // megabytes; repeats of one scan object are linked at conversion)
+    for (_, i) in jobs.iter().filter(|(_, i)| notes[*i].fate != Fate::PageScan) {
         *key_count.entry(repeat_key(&notes[*i])).or_default() += 1;
     }
     let shared_keys = key_count.into_iter().filter(|(_, c)| *c > 1).map(|(k, _)| k).collect();
@@ -280,6 +314,11 @@ pub fn extract(
         total_bytes: 0,
         batch_written: 0,
         batch_bytes: 0,
+        scan_batch_written: 0,
+        scan_batch_bytes: 0,
+        scan_over: false,
+        scans_written: 0,
+        scan_bytes: 0,
         seen_payload: HashMap::new(),
         shared_keys,
         fallbacks: Vec::new(),
@@ -364,6 +403,9 @@ impl Run<'_> {
         let s = self.s;
         self.batch_written = 0;
         self.batch_bytes = 0;
+        self.scan_batch_written = 0;
+        self.scan_batch_bytes = 0;
+        self.scan_over = false;
         self.fallbacks.clear();
         self.deadline = Instant::now() + s.timeout + GRACE;
         if let Some(d) = self.doc_deadline {
@@ -375,7 +417,7 @@ impl Run<'_> {
         for (_, i) in over {
             self.entries[*i].status = Status::NotExtracted("budget");
         }
-        if status == "ok" && !over.is_empty() {
+        if status == "ok" && (!over.is_empty() || self.scan_over) {
             status = "budget";
         }
         // figures whose SVG was refused: lossless rasters, in a second pass
@@ -385,7 +427,10 @@ impl Run<'_> {
                 .iter()
                 .map(|(e, _)| {
                     let n = &self.notes[*e];
-                    (Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Raster, dpi: s.dpi }, *e)
+                    (
+                        Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Raster, dpi: s.dpi, obj: None },
+                        *e,
+                    )
                 })
                 .collect();
             if status == "ok" {
@@ -454,6 +499,9 @@ impl Run<'_> {
         if now >= self.deadline {
             return Err(Halt::Stop("timeout"));
         }
+        if n.fate == Fate::PageScan {
+            return self.record_scan(e, outcome);
+        }
         // a marked figure whose rendering is the same as an earlier one's is a repeat
         let payload: &[u8] = match &outcome {
             // the renderer refused an SVG as too large: a raster instead
@@ -472,6 +520,12 @@ impl Run<'_> {
             }
             Outcome::Rgb { data, .. } => data,
             Outcome::Svg(text) => text.as_bytes(),
+            // copy records answer copy jobs only, which pictures and figures never are
+            Outcome::Jpeg { .. } | Outcome::Gray1 { .. } | Outcome::Gray8 { .. } => {
+                self.entries[e].status = Status::NotExtracted("error");
+                self.entries[e].error = Some("mismatch".into());
+                return Ok(());
+            }
         };
         // no other job has this key: no payload can repeat it (nor be compared against it)
         let rk = repeat_key(n);
@@ -485,7 +539,7 @@ impl Run<'_> {
             return Ok(());
         }
         let (data, format, width, height): (Vec<u8>, &'static str, u32, u32) = match outcome {
-            Outcome::Error(_) => return Ok(()),
+            Outcome::Error(_) | Outcome::Jpeg { .. } | Outcome::Gray1 { .. } | Outcome::Gray8 { .. } => return Ok(()),
             Outcome::Rgb { width, height, data } => {
                 // a refused SVG figure: a lossless PNG inside an SVG, so its .svg link holds
                 if n.vector && fallback.is_some() && s.vector_format == VectorFormat::Svg {
@@ -568,6 +622,128 @@ impl Run<'_> {
         entry.width = width;
         entry.height = height;
         Ok(())
+    }
+
+    /// One record for page scan `e`: checked against how its file is made (a JPEG copy, 1-bit
+    /// rows, decoded samples, or a render), encoded, and written against the scan budget.
+    fn record_scan(&mut self, e: usize, outcome: Outcome) -> Result<(), Halt> {
+        let n = &self.notes[e];
+        let s = self.s;
+        let source = n.scan.unwrap_or(ScanSource::Render);
+        let wrong = |run: &mut Self, why: &str| {
+            run.entries[e].status = Status::NotExtracted("copy");
+            run.entries[e].error = Some(why.to_string());
+            Ok(())
+        };
+        let t = Instant::now();
+        let (data, format, width, height, how): (Vec<u8>, &'static str, u32, u32, &'static str) =
+            match (outcome, source) {
+                (Outcome::Error(code), _) => {
+                    self.entries[e].status =
+                        Status::NotExtracted(if source == ScanSource::Render { "error" } else { "copy" });
+                    self.entries[e].error = Some(code);
+                    return Ok(());
+                }
+                (Outcome::Jpeg { width, height, data }, ScanSource::Jpeg) => {
+                    if (width, height) != n.px || !encode::jpeg_ok(&data, width, height) {
+                        return wrong(self, "jpeg");
+                    }
+                    self.timing.copy += t.elapsed();
+                    (data, "jpg", width, height, "copy")
+                }
+                (Outcome::Gray1 { width, height, data }, ScanSource::Bilevel) => {
+                    if (width, height) != n.px {
+                        return wrong(self, "size");
+                    }
+                    let png = encode::png_gray1(&data, width, height);
+                    self.timing.png += t.elapsed();
+                    match png {
+                        Ok(png) => (png, "png", width, height, "decode"),
+                        Err(_) => {
+                            self.entries[e].status = Status::NotExtracted("encode");
+                            return Ok(());
+                        }
+                    }
+                }
+                (Outcome::Gray8 { width, height, data }, ScanSource::Decode)
+                | (Outcome::Rgb { width, height, data }, ScanSource::Decode) => {
+                    if (width, height) != n.px {
+                        return wrong(self, "size");
+                    }
+                    let rgb =
+                        if data.len() == width as usize * height as usize { encode::gray_to_rgb(&data) } else { data };
+                    // at most --scan-max-dpi across the scan's box
+                    let (x0, y0, x1, y1) = n.bbox;
+                    let fit = |px: u32, pt: f64| -> u32 {
+                        let most = (pt / 72.0 * f64::from(s.scan_max_dpi)).round();
+                        if most.is_finite() && most >= 1.0 && most < f64::from(px) { most as u32 } else { px }
+                    };
+                    let (w, h) = (fit(width, x1 - x0), fit(height, y1 - y0));
+                    let rgb = encode::downscale(rgb, width, height, 3, w, h);
+                    self.timing.decode += t.elapsed();
+                    match self.encode_raster(n, &rgb, w, h) {
+                        Some((bytes, ext)) => (bytes, ext, w, h, "decode"),
+                        None => {
+                            self.entries[e].status = Status::NotExtracted("encode");
+                            return Ok(());
+                        }
+                    }
+                }
+                (Outcome::Rgb { width, height, data }, ScanSource::Render) => {
+                    match self.encode_raster(n, &data, width, height) {
+                        Some((bytes, ext)) => (bytes, ext, width, height, "render"),
+                        None => {
+                            self.entries[e].status = Status::NotExtracted("encode");
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => return wrong(self, "kind"),
+            };
+        let len = data.len() as u64;
+        if self.scan_batch_written + 1 > s.scan_max || self.scan_batch_bytes + len > s.scan_max_bytes {
+            // the scan pool of this batch is spent: this scan is not written, the rest of the
+            // batch (figures, and scans that still fit) goes on
+            self.entries[e].status = Status::NotExtracted("budget");
+            self.scan_over = true;
+            return Ok(());
+        }
+        if self.total_bytes + len > s.doc_max_bytes {
+            self.doc_full = true;
+            return Err(Halt::Stop("doc_budget"));
+        }
+        let Some(path) = n.link.clone() else {
+            self.entries[e].status = Status::NotExtracted("id");
+            return Ok(());
+        };
+        if !path.ends_with(&format!(".{format}")) {
+            return wrong(self, "kind");
+        }
+        self.dir.write(&path, &data).map_err(Halt::Fatal)?;
+        self.written += 1;
+        self.scans_written += 1;
+        self.scan_batch_written += 1;
+        self.total_bytes += len;
+        self.scan_bytes += len;
+        self.scan_batch_bytes += len;
+        let entry = &mut self.entries[e];
+        entry.status = Status::Extracted;
+        entry.sha256 = Some(hex(&Sha256::digest(&data)));
+        entry.format = Some(format);
+        entry.source = Some(how);
+        entry.bytes = len;
+        entry.width = width;
+        entry.height = height;
+        Ok(())
+    }
+
+    /// RGB pixels in the raster format a picture `n` gets, timed; with the file extension.
+    fn encode_raster(&mut self, n: &Note, rgb: &[u8], width: u32, height: u32) -> Option<(Vec<u8>, &'static str)> {
+        let fmt = self.raster_format(n);
+        let t = Instant::now();
+        let encoded = encode::encode_with(rgb, width, height, fmt, self.s.effort());
+        *(if fmt == Raster::Png { &mut self.timing.png } else { &mut self.timing.webp }) += t.elapsed();
+        encoded.ok().map(|b| (b, fmt.extension()))
     }
 
     /// The SVG fallback of figure `n`: its crop as a lossless PNG in a minimal SVG of the
@@ -661,7 +837,7 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"batch_pages\":{},\"complete\":{complete},\n\"batches\":[",
+        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"complete\":{complete},\n\"batches\":[",
         js(source_sha256),
         js(&s.link_prefix),
         s.dpi,
@@ -671,6 +847,9 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -
             Repeats::Link => "link",
             Repeats::Keep => "keep",
         }),
+        js(s.scan_pages.as_str()),
+        s.scan_dpi,
+        s.scan_max_dpi,
         s.batch_pages
     );
     for (k, b) in batches.iter().enumerate() {
@@ -746,9 +925,11 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -
     let cut = batches.iter().filter(|b| b.status != "ok").count();
     let _ = write!(
         out,
-        "\n],\n\"totals\":{{\"images\":{},\"linked\":{linked},\"extracted\":{extracted},\"not_extracted\":{not_extracted},\"unlinked\":{unlinked},\"bytes\":{},\"repeats\":{repeats},\"fallbacks\":{fallbacks},\"batches\":{},\"batches_cut\":{cut}}}}}\n",
+        "\n],\n\"totals\":{{\"images\":{},\"linked\":{linked},\"extracted\":{extracted},\"not_extracted\":{not_extracted},\"unlinked\":{unlinked},\"bytes\":{},\"repeats\":{repeats},\"fallbacks\":{fallbacks},\"scans\":{},\"scan_bytes\":{},\"batches\":{},\"batches_cut\":{cut}}}}}\n",
         notes.len(),
         run.total_bytes,
+        run.scans_written,
+        run.scan_bytes,
         batches.len()
     );
     out

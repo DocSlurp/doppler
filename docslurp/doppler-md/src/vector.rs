@@ -102,6 +102,7 @@ pub fn place(
             degraded: false,
             link: None,
             repeat_of: None,
+            scan: None,
         });
     }
     // grow each drawing by the rules that touch it and the short lines around it (gridlines and

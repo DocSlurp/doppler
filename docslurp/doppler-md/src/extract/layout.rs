@@ -9,6 +9,7 @@
 //! |---|---|
 //! | picture `pN.M` | `page-{N:04}/image-{M:03}.{webp,png}` |
 //! | vector figure `pN.gK` | `page-{N:04}/figure-{K:03}.{svg,webp,png}` |
+//! | page scan `pN.M` | `page-{N:04}/image-{M:03}.{jpg,png,webp}`: `.jpg` for a JPEG copied unchanged, `.png` for a bilevel scan, else `--raster-format` |
 //!
 //! Padding is a minimum width: page 12345 is `page-12345`. A link is the prefix
 //! (`--images-link-prefix`, default `images/`) followed by the path.
@@ -19,8 +20,8 @@
 
 use std::collections::HashMap;
 
-use super::settings::{RasterFormat, Repeats, VectorFormat};
-use crate::images::{Fate, Note};
+use super::settings::{RasterFormat, Repeats, ScanPages, VectorFormat};
+use crate::images::{Fate, Note, ScanSource};
 
 /// The default `--images-link-prefix`.
 pub const DEFAULT_PREFIX: &str = "images/";
@@ -60,6 +61,8 @@ pub struct LinkStyle {
     pub raster: RasterFormat,
     pub vector: VectorFormat,
     pub repeats: Repeats,
+    /// `--scan-pages`: whether scans are placed as scans, and copied or rendered
+    pub scans: ScanPages,
 }
 
 impl Default for LinkStyle {
@@ -69,6 +72,7 @@ impl Default for LinkStyle {
             raster: RasterFormat::Webp,
             vector: VectorFormat::Svg,
             repeats: Repeats::Skip,
+            scans: ScanPages::Image,
         }
     }
 }
@@ -77,8 +81,8 @@ impl LinkStyle {
     /// The canonical text of the style, for the images plan's settings digest.
     pub fn canonical(&self) -> String {
         format!(
-            "links prefix={:?} raster={:?} vector={:?} repeats={:?}\n",
-            self.prefix, self.raster, self.vector, self.repeats
+            "links prefix={:?} raster={:?} vector={:?} repeats={:?} scans={:?}\n",
+            self.prefix, self.raster, self.vector, self.repeats, self.scans
         )
     }
 }
@@ -97,8 +101,7 @@ pub fn parse_id(id: &str) -> Option<(u32, bool, u32)> {
     Some((page.parse().ok()?, vector, n.parse().ok()?))
 }
 
-/// The file extension of an image of this kind under `style`. Stage 2 adds page scans
-/// (`jpg`/`png` by their copy class) here.
+/// The file extension of a picture or figure under `style`.
 pub fn extension(vector: bool, style: &LinkStyle) -> &'static str {
     if vector {
         match style.vector {
@@ -114,11 +117,36 @@ pub fn extension(vector: bool, style: &LinkStyle) -> &'static str {
     }
 }
 
+/// The file extension of a note's file: a page scan's by how it is taken out (a JPEG copied
+/// unchanged is `.jpg`, a bilevel scan `.png`, anything decoded or rendered the raster format),
+/// anything else by [`extension`].
+pub fn note_extension(n: &Note, style: &LinkStyle) -> &'static str {
+    if n.fate == Fate::PageScan {
+        match n.scan {
+            Some(ScanSource::Jpeg) => return "jpg",
+            Some(ScanSource::Bilevel) => return "png",
+            _ => {}
+        }
+    }
+    extension(n.vector, style)
+}
+
 /// The path of image `id` relative to the images folder, or `None` for an invalid id.
 pub fn rel_path(id: &str, style: &LinkStyle) -> Option<String> {
+    let (_, vector, _) = parse_id(id)?;
+    rel_path_ext(id, extension(vector, style))
+}
+
+/// The path of image `id` with extension `ext`, or `None` for an invalid id.
+fn rel_path_ext(id: &str, ext: &str) -> Option<String> {
     let (page, vector, n) = parse_id(id)?;
     let what = if vector { "figure" } else { "image" };
-    Some(format!("page-{page:04}/{what}-{n:03}.{}", extension(vector, style)))
+    Some(format!("page-{page:04}/{what}-{n:03}.{ext}"))
+}
+
+/// The path of a note's file relative to the images folder, or `None` for an invalid id.
+pub fn note_path(n: &Note, style: &LinkStyle) -> Option<String> {
+    rel_path_ext(&n.id, note_extension(n, style))
 }
 
 /// Whether `name` is a path [`rel_path`] makes (`page-` 4..=10 digits, `/`, `image-` or
@@ -158,9 +186,10 @@ pub fn repeat_key(n: &Note) -> RepeatKey {
     (((x1 - x0) * 2.0).round() as i64, ((y1 - y0) * 2.0).round() as i64, n.px.0, n.px.1, kind(n))
 }
 
-/// Whether a note gets a link: a marked image (its marker is in the Markdown) with a valid id.
+/// Whether a note gets a link: a marked image or page scan (its marker is in the Markdown) with
+/// a valid id.
 pub fn linked(n: &Note) -> bool {
-    matches!(n.fate, Fate::Block | Fate::Inline) && parse_id(&n.id).is_some()
+    n.fate.marked() && parse_id(&n.id).is_some()
 }
 
 /// Whether a note's box is finite and not empty (only those can repeat one another).
@@ -192,7 +221,7 @@ impl Linker {
             if !linked(n) {
                 continue;
             }
-            let own = rel_path(&n.id, &self.style);
+            let own = note_path(n, &self.style);
             if self.style.repeats != Repeats::Keep
                 && sound_box(n)
                 && let Some(obj) = n.obj
@@ -243,6 +272,7 @@ mod tests {
             degraded: false,
             link: None,
             repeat_of: None,
+            scan: None,
         }
     }
 
@@ -327,5 +357,24 @@ mod tests {
         d[0].fate = Fate::Background;
         l.assign(&mut d);
         assert!(d[0].link.is_none());
+    }
+
+    #[test]
+    fn page_scans_take_their_copy_extension() {
+        let mut l = Linker::new(LinkStyle::default());
+        let mut n = vec![note("p4.1", 4, Some((9, 0))), note("p5.2", 5, Some((10, 0))), note("p6.1", 6, None)];
+        for (k, src) in [ScanSource::Jpeg, ScanSource::Bilevel, ScanSource::Decode].into_iter().enumerate() {
+            n[k].fate = Fate::PageScan;
+            n[k].scan = Some(src);
+        }
+        l.assign(&mut n);
+        assert_eq!(n[0].link.as_deref(), Some("page-0004/image-001.jpg"));
+        assert_eq!(n[1].link.as_deref(), Some("page-0005/image-002.png"));
+        assert_eq!(n[2].link.as_deref(), Some("page-0006/image-001.webp"));
+        // a scan source on a note placed as a picture (--scan-pages skip) does not change it
+        let mut m = vec![note("p7.1", 7, None)];
+        m[0].scan = Some(ScanSource::Jpeg);
+        l.assign(&mut m);
+        assert_eq!(m[0].link.as_deref(), Some("page-0007/image-001.webp"));
     }
 }

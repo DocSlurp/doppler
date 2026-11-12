@@ -10,11 +10,12 @@
 //! plan that differs in any of them.
 //!
 //! Text. The header lines, tab-separated:
-//! `doppler-images-plan 3`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
+//! `doppler-images-plan 4`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
 //! `settings SHA256-HEX`, `version VERSION`; then one line per image:
-//! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj`, where `id-hex` is the id's UTF-8 bytes in
+//! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj scan`, where `id-hex` is the id's UTF-8 bytes in
 //! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is three of `0`/`1`
-//! (mask, vector, text), `fate` the report's word, and `obj` `num.gen` or `-`. Ids are image ids
+//! (mask, vector, text), `fate` the report's word, `obj` `num.gen` or `-`, and `scan` how a
+//! page scan's file is made (`jpeg`, `bilevel`, `decode`, `render`) or `-`. Ids are image ids
 //! (`pN.M`, `pN.gK`), unique, and their page is the line's page, inside the page range.
 
 use std::fmt::Write as _;
@@ -24,9 +25,9 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 
 use crate::extract::outdir::valid_id;
-use crate::images::{Fate, Note};
+use crate::images::{Fate, Note, ScanSource};
 
-const HEADER: &str = "doppler-images-plan\t3";
+const HEADER: &str = "doppler-images-plan\t4";
 
 /// What a plan is bound to: the conversion that wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,7 +61,8 @@ impl Binding {
         } else if self.settings != plan.settings {
             Some(
                 "written with other conversion settings (--params, --strict, --stream/--window, --math, --html, \
-                 --images-link-prefix, --images-repeats, --raster-format, --vector-format)"
+                 --images-link-prefix, --images-repeats, --raster-format, --vector-format, --scan-pages, \
+                 --scan-max-words)"
                     .into(),
             )
         } else if self.version != plan.version {
@@ -108,7 +110,7 @@ fn is_hex64(s: &str) -> bool {
 /// A plan larger than this is refused.
 pub const MAX_PLAN_BYTES: u64 = 64 << 20;
 
-const FATES: [Fate; 10] = [
+const FATES: [Fate; 11] = [
     Fate::Block,
     Fate::Inline,
     Fate::Background,
@@ -119,7 +121,10 @@ const FATES: [Fate; 10] = [
     Fate::Fragment,
     Fate::Grouped,
     Fate::Text,
+    Fate::PageScan,
 ];
+
+const SCAN_SOURCES: [ScanSource; 4] = [ScanSource::Jpeg, ScanSource::Bilevel, ScanSource::Decode, ScanSource::Render];
 
 /// The plan of `notes`, bound to `b`.
 pub fn write(b: &Binding, notes: &[Note]) -> String {
@@ -162,6 +167,8 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
             }
             None => out.push('-'),
         }
+        out.push('\t');
+        out.push_str(n.scan.map_or("-", ScanSource::as_str));
         out.push('\n');
     }
     out
@@ -176,7 +183,7 @@ pub fn read(text: &str) -> Result<(Binding, Vec<Note>), String> {
     }
     let mut lines = text.split('\n');
     if lines.next() != Some(HEADER) {
-        return Err("not an images plan (version 3)".into());
+        return Err("not an images plan (version 4)".into());
     }
     let binding = read_binding(&mut lines).ok_or("images plan: bad header")?;
     let mut notes = Vec::new();
@@ -242,7 +249,7 @@ fn read_binding<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Option<Binding
 
 fn parse_line(line: &str) -> Option<Note> {
     let f: Vec<&str> = line.split('\t').collect();
-    if f.len() != 11 {
+    if f.len() != 12 {
         return None;
     }
     let id = unhex(f[0])?;
@@ -264,6 +271,10 @@ fn parse_line(line: &str) -> Option<Note> {
             Some((num.parse().ok()?, gen_.parse().ok()?))
         }
     };
+    let scan = match f[11] {
+        "-" => None,
+        s => Some(*SCAN_SOURCES.iter().find(|x| x.as_str() == s)?),
+    };
     Some(Note {
         id,
         page,
@@ -280,6 +291,7 @@ fn parse_line(line: &str) -> Option<Note> {
         degraded: false,
         link: None,
         repeat_of: None,
+        scan,
     })
 }
 
@@ -313,6 +325,7 @@ mod tests {
             degraded: false,
             link: None,
             repeat_of: None,
+            scan: None,
         }
     }
 
@@ -329,7 +342,9 @@ mod tests {
 
     #[test]
     fn round_trips_exactly() {
-        let notes = vec![note("p3.1", false, Some((12, 0))), note("p3.g1", true, None), note("p3.2", false, None)];
+        let mut notes = vec![note("p3.1", false, Some((12, 0))), note("p3.g1", true, None), note("p3.2", false, None)];
+        notes[0].fate = Fate::PageScan;
+        notes[0].scan = Some(ScanSource::Jpeg);
         let (b, back) = read(&write(&binding(), &notes)).unwrap();
         assert_eq!(b, binding());
         assert_eq!(back.len(), 3);
@@ -339,8 +354,8 @@ mod tests {
             assert_eq!(a.bbox.0.to_bits(), b.bbox.0.to_bits());
             assert_eq!(a.bbox.3.to_bits(), b.bbox.3.to_bits());
             assert_eq!(
-                (a.px, a.mask, a.vector, a.text, a.fate, a.obj),
-                (b.px, b.mask, b.vector, b.text, b.fate, b.obj)
+                (a.px, a.mask, a.vector, a.text, a.fate, a.obj, a.scan),
+                (b.px, b.mask, b.vector, b.text, b.fate, b.obj, b.scan)
             );
         }
         let open = Binding { first: None, last: None, ..binding() };
@@ -351,11 +366,12 @@ mod tests {
     fn refuses_anything_else() {
         assert!(read("").is_err());
         assert!(read("doppler-images-plan\t1\n").is_err());
-        assert!(read(&write(&binding(), &[note("p3.1", false, None)]).replace("plan\t3", "plan\t2")).is_err());
+        assert!(read(&write(&binding(), &[note("p3.1", false, None)]).replace("plan\t4", "plan\t3")).is_err());
         let good = write(&binding(), &[note("p3.1", false, None)]);
         assert!(read(&good).is_ok());
         assert!(read(&good[..good.len() - 1]).is_err());
         assert!(read(&good.replace("block", "nope")).is_err());
+        assert!(read(&good.replace("\t-\n", "\tcopy\n")).is_err(), "unknown scan source");
         assert!(read(&good.replace("\nversion\t0.1.0\n", "\n")).is_err(), "header line missing");
         assert!(read(&good.replace("pages\t2\t5", "pages\t0\t5")).is_err());
         assert!(read(&good.replace("pages\t2\t5", "pages\t02\t5")).is_err());

@@ -378,7 +378,7 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}{}}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}{}{}}}",
                     n.id,
                     n.page,
                     coord(n.bbox.0),
@@ -395,6 +395,7 @@ impl Report {
                         "picture"
                     },
                     n.fate.as_str(),
+                    n.scan.map(|s| format!(",\"scan\":\"{}\"", s.as_str())).unwrap_or_default(),
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
                     n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default(),
                     if n.degraded { ",\"degraded\":true" } else { "" },
@@ -757,8 +758,23 @@ impl<'p> Converter<'p> {
         let (mut figures, notes) = if page.images.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            images::place(&mut page, &drop, body, p, number, &repeated_pictures, &self.seal, &mut placing)
+            images::place(
+                &mut page,
+                &drop,
+                body,
+                p,
+                number,
+                &repeated_pictures,
+                &self.seal,
+                &mut placing,
+                self.linker.style.scans,
+            )
         };
+        // a page scan's marker opens the page, before its (OCR) text
+        let scan_marker = notes
+            .iter()
+            .find(|n| n.fate == images::Fate::PageScan)
+            .map(|n| images::scan_marker(number, &n.id, &self.seal));
         self.report.images.extend(notes);
         if !page.graphics.is_empty() {
             let raster: Vec<(images::Figure, String)> = figures
@@ -819,7 +835,7 @@ impl<'p> Converter<'p> {
                     md.push_str(&f.marker);
                 }
                 for n in &mut self.report.images[first_note..] {
-                    if matches!(n.fate, images::Fate::Block | images::Fate::Inline) {
+                    if matches!(n.fate, images::Fate::Block | images::Fate::Inline | images::Fate::PageScan) {
                         n.degraded = true;
                     }
                 }
@@ -832,6 +848,11 @@ impl<'p> Converter<'p> {
         }
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
+        let md = match scan_marker {
+            Some(m) if md.is_empty() => m,
+            Some(m) => format!("{m}\n\n{md}"),
+            None => md,
+        };
         out(pi, self.written(marked, first_note, md));
     }
 }

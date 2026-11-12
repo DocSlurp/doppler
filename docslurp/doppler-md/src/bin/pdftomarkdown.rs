@@ -77,6 +77,13 @@ image links (with --markers or --images-dir; they shape the Markdown):
   --images-repeats MODE       skip or link (a repeat of an earlier picture links to its file and
                               gets none; the manifest names it: repeat_of), or keep (its own
                               file) (default skip)
+  --scan-pages MODE           a full-page scan (images cover 85% of the page, at most
+                              --scan-max-words visible words): image (default) starts the page
+                              with ![page N scan](images/page-0012/image-001.jpg), then its OCR
+                              text; the file is the scan's own JPEG (.jpg), a bilevel scan as
+                              1-bit .png, else decoded or rendered (--raster-format). render:
+                              always rendered (--raster-format). skip: placed as any picture,
+                              never extracted
 
 image extraction (implies --markers; files where the links point: DIR/page-0012/image-003.webp,
 DIR/page-0012/figure-001.svg, and DIR/manifest.json, written last, listing every image and
@@ -104,6 +111,11 @@ closed once the Markdown is complete, before extraction):
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
+  --scan-dpi N                rendered scans (tiles, layers, turned, --scan-pages render): 36 to
+                              300 (150)
+  --scan-max-dpi N            a decoded scan finer than this is scaled down to it (300)
+  --scan-max N                most scan files per batch (1000); --scan-max-bytes N (1GiB) per
+                              batch. Scans have their own budget: they never use the figures'
   --images-plan-out FILE      with --markers (or --images-dir): also write the images plan (what
                               extraction needs from this conversion, exactly) to FILE, which must
                               not exist; its folder is reached without following symbolic links.
@@ -114,7 +126,8 @@ closed once the Markdown is complete, before extraction):
                               --report); the same files and manifest as extracting after a
                               conversion. The plan is bound to that run: give the same FILE.pdf
                               (same bytes), -f/-l, --params, --strict, --stream/--window, --math,
-                              --html and image link options, and the same pdftomarkdown version,
+                              --html, image link options and --scan-max-words, and the same
+                              pdftomarkdown version,
                               or it is refused (exit status 2)
   Exit status 5: Markdown written, images in part (DIR and manifest.json kept; manifest:
   complete false, why per image and per batch). 6: Markdown written, extraction failed (DIR
@@ -290,7 +303,8 @@ fn main() -> ExitCode {
     }
     if images.link_flags() && !opts.markers {
         return usage_error(
-            "--images-link-prefix, --images-repeats, --raster-format and --vector-format need --markers or --images-dir",
+            "--images-link-prefix, --images-repeats, --raster-format, --vector-format and --scan-pages need --markers \
+             or --images-dir",
         );
     }
     if plan_in.is_some() && (images.dir.is_none() || want_report || plan_out.is_some()) {
@@ -317,11 +331,12 @@ fn main() -> ExitCode {
     }
     // what an images plan is bound to, besides the PDF's bytes and the page range
     let settings = plan::settings_digest(&format!(
-        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}",
+        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}scan-max-words {:?}\n",
         opts.math,
         opts.tables,
         opts.markers,
-        images.link_style().canonical()
+        images.link_style().canonical(),
+        scan_opts
     ));
     let pages = (first.map(|n| n as u32), last.map(|n| n as u32));
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
@@ -620,8 +635,16 @@ fn renderer(file: &OsString, images: &Settings, passwords: &[OsString]) -> Rende
         file: file.clone(),
         confine: images.confine,
         max_svg_bytes: doppler_md::extract::MAX_SVG_INPUT as u64,
-        // raw RGB is several times the encoded files: 8 times the file cap, 64 MiB..2 GiB
-        max_output_bytes: images.max_bytes.saturating_mul(8).clamp(64 << 20, 2 << 30),
+        // raw RGB is several times the encoded files: 8 times the pictures' byte budget plus 4
+        // times the scans' (decoded scans are raw samples), at least 64 MiB. It counts streamed
+        // bytes; the renderer's memory stays one record
+        max_output_bytes: images
+            .max_bytes
+            .saturating_mul(8)
+            .saturating_add(images.scan_max_bytes.saturating_mul(4))
+            .clamp(64 << 20, 64 << 30),
+        // a copied JPEG is one file: at most 64 MiB, and within the scan budget
+        max_copy_bytes: images.scan_max_bytes.min(64 << 20),
     }
 }
 

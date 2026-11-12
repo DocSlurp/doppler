@@ -24,6 +24,8 @@ const MAX_DIAGNOSTICS: usize = 4096;
 pub enum Mode {
     Raster,
     Svg,
+    /// an image XObject's own pixels (`obj`): a JPEG unchanged, 1-bit rows, or decoded samples
+    Copy,
 }
 
 /// One region to render.
@@ -34,6 +36,8 @@ pub struct Job {
     pub bbox: (f64, f64, f64, f64),
     pub mode: Mode,
     pub dpi: u32,
+    /// the image XObject of a copy job (`num`, `gen`)
+    pub obj: Option<(u32, u32)>,
 }
 
 impl Job {
@@ -47,11 +51,13 @@ impl Job {
 
     fn line(&self) -> String {
         let (x0, y0, x1, y1) = self.bbox;
-        let mode = match self.mode {
-            Mode::Raster => "raster",
-            Mode::Svg => "svg",
+        let (mode, last) = match (self.mode, self.obj) {
+            (Mode::Raster, _) => ("raster", self.dpi.to_string()),
+            (Mode::Svg, _) => ("svg", self.dpi.to_string()),
+            (Mode::Copy, Some((num, gen_))) => ("copy", format!("{num}.{gen_}")),
+            (Mode::Copy, None) => ("copy", "0.0".into()),
         };
-        format!("{}\t{}\t{x0:.3}\t{y0:.3}\t{x1:.3}\t{y1:.3}\t{mode}\t{}\n", self.id, self.page, self.dpi)
+        format!("{}\t{}\t{x0:.3}\t{y0:.3}\t{x1:.3}\t{y1:.3}\t{mode}\t{last}\n", self.id, self.page)
     }
 }
 
@@ -64,6 +70,24 @@ pub enum Outcome {
         data: Vec<u8>,
     },
     Svg(String),
+    /// a copy job's JPEG, unchanged (the image's declared size)
+    Jpeg {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    /// a copy job's 1-bit rows (`ceil(width / 8)` bytes each, 0 black)
+    Gray1 {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    /// a copy job's 8-bit grey samples
+    Gray8 {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
     /// the renderer's `err:<code>`, or `mismatch` / `svg_size` / `utf8` when the record does not
     /// fit the job
     Error(String),
@@ -80,6 +104,8 @@ pub struct Renderer {
     /// `-max-svg-bytes` and `-max-output-bytes`
     pub max_svg_bytes: u64,
     pub max_output_bytes: u64,
+    /// `-max-copy-bytes`: the largest JPEG a copy job returns
+    pub max_copy_bytes: u64,
 }
 
 /// `$PDFREGIONS`, else `pdfregions` beside this executable, else `pdfregions` on `PATH`.
@@ -176,6 +202,8 @@ impl Renderer {
             .arg(self.max_svg_bytes.to_string())
             .arg("-max-output-bytes")
             .arg(self.max_output_bytes.to_string())
+            .arg("-max-copy-bytes")
+            .arg(self.max_copy_bytes.max(1).to_string())
             .arg(&self.file)
             // a group of its own, so the whole group can be killed at the deadline
             .process_group(0)
@@ -358,7 +386,9 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
             Some("mismatch".into())
         } else {
             Some(match code {
-                "pixels" | "render" | "empty" | "page" | "svgsize" => code.to_string(),
+                "pixels" | "render" | "empty" | "page" | "svgsize" | "copy" | "copysize" | "jpeg" | "decode" => {
+                    code.to_string()
+                }
                 _ => "renderer".to_string(),
             })
         }
@@ -374,6 +404,23 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
                     .then(|| "mismatch".to_string())
             }
             ("svg", Mode::Svg) => (bytes > MAX_SVG_INPUT).then(|| "svgsize".to_string()),
+            // a copy: the image's own size, which the caller checks against the image's
+            (kind @ ("jpeg" | "gray1" | "gray8" | "rgb8"), Mode::Copy) => {
+                let (w, h) = (width, height);
+                let need = match kind {
+                    "gray1" => w.div_ceil(8).checked_mul(h),
+                    "gray8" => w.checked_mul(h),
+                    "rgb8" => w.checked_mul(h).and_then(|n| n.checked_mul(3)),
+                    _ => Some(bytes),
+                };
+                (w == 0
+                    || h == 0
+                    || w > u64::from(u32::MAX)
+                    || h > u64::from(u32::MAX)
+                    || need != Some(bytes)
+                    || bytes == 0)
+                    .then(|| "mismatch".to_string())
+            }
             _ => Some("mismatch".into()),
         }
     };
@@ -391,12 +438,16 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
     if data.len() as u64 != bytes {
         return Err("renderer output ended inside a record".into());
     }
-    Ok(match job.mode {
-        Mode::Raster => Outcome::Rgb { width: width as u32, height: height as u32, data },
-        Mode::Svg => match String::from_utf8(data) {
+    let (width, height) = (width as u32, height as u32);
+    Ok(match (job.mode, kind) {
+        (Mode::Svg, _) => match String::from_utf8(data) {
             Ok(s) => Outcome::Svg(s),
             Err(_) => Outcome::Error("utf8".into()),
         },
+        (Mode::Copy, "jpeg") => Outcome::Jpeg { width, height, data },
+        (Mode::Copy, "gray1") => Outcome::Gray1 { width, height, data },
+        (Mode::Copy, "gray8") => Outcome::Gray8 { width, height, data },
+        _ => Outcome::Rgb { width, height, data },
     })
 }
 
@@ -413,7 +464,7 @@ mod tests {
     use super::*;
 
     fn job(mode: Mode) -> Job {
-        Job { id: "p1.2".into(), page: 1, bbox: (10.0, 20.0, 82.0, 56.0), mode, dpi: 150 }
+        Job { id: "p1.2".into(), page: 1, bbox: (10.0, 20.0, 82.0, 56.0), mode, dpi: 150, obj: Some((17, 0)) }
     }
 
     fn parse(bytes: &[u8], job: &Job) -> Result<Outcome, String> {
@@ -450,6 +501,19 @@ mod tests {
         assert!(matches!(parse(b"p1.2\terr:boom\t-\t0\t0\t0\n", &j), Ok(Outcome::Error(e)) if e == "renderer"));
         let s = job(Mode::Svg);
         assert!(matches!(parse(b"p1.2\tok\tsvg\t0\t0\t6\n<svg/>", &s), Ok(Outcome::Svg(x)) if x == "<svg/>"));
+        // copy jobs: the line names the object; records carry the image's own size
+        let c = job(Mode::Copy);
+        assert_eq!(c.line(), "p1.2\t1\t10.000\t20.000\t82.000\t56.000\tcopy\t17.0\n");
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t3000\t4000\t4\nabcd", &c), Ok(Outcome::Jpeg { width: 3000, .. })));
+        assert!(matches!(parse(b"p1.2\tok\tgray1\t9\t2\t4\nabcd", &c), Ok(Outcome::Gray1 { width: 9, height: 2, .. })));
+        assert!(matches!(parse(b"p1.2\tok\tgray1\t9\t2\t3\nabc", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\tok\tgray8\t2\t2\t4\nabcd", &c), Ok(Outcome::Gray8 { .. })));
+        assert!(matches!(parse(b"p1.2\tok\trgb8\t1\t1\t3\nabc", &c), Ok(Outcome::Rgb { .. })));
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t0\t4\t4\nabcd", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\terr:copy\t-\t0\t0\t0\n", &c), Ok(Outcome::Error(e)) if e == "copy"));
+        // a copy kind is never an answer to a raster job, nor the reverse
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t1\t1\t4\nabcd", &j), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\tok\tsvg\t0\t0\t3\n<s>", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
     }
 
     #[test]
