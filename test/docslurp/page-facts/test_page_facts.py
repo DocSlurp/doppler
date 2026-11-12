@@ -278,6 +278,56 @@ with t.TempDir() as d:
     rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", "-scan-max-words", "300", paths["scans"], "-"], capture_output=True).stdout.decode()
     t.check(re.findall(r' scan="(\w+)"', rc)[:2] == ["single", "single"], "-scan-max-words raises the word threshold")
 
+    # --- scan thresholds: each one moves a verdict at its boundary, in both tools ---------------------------------------------------------
+    st = paths["scan_thresholds"]
+
+    def verdicts(*extra):
+        ls = lines(facts(st, "-level", "full", *extra)[1])
+        return [page(ls, n)["images"]["scan"] for n in (1, 2, 3)], doc_line(ls).get("scanThresholds")
+
+    def xhtml_scans(*extra):
+        x = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images"] + list(extra) + [st, "-"], capture_output=True).stdout.decode()
+        return [(re.search(r' scan="(\w+)"', p) or [None, "none"])[1] for p in re.findall(r"<page [^>]*>", x)]
+
+    cases = [
+        ([], ["none", "single", "none"]),
+        (["-scan-min-coverage", "0.82"], ["single", "single", "none"]),
+        (["-scan-min-coverage", "0.83"], ["none", "single", "none"]),
+        (["-scan-layer-overlap", "0.42"], ["none", "single", "none"]),
+        (["-scan-layer-overlap", "0.41"], ["none", "layered", "none"]),
+        (["-scan-max-words", "25"], ["none", "single", "single"]),
+        (["-scan-max-words", "24"], ["none", "single", "none"]),
+    ]
+    for extra, want in cases:
+        got, recorded = verdicts(*extra)
+        t.check(got == want, "scan thresholds %s: verdicts" % (" ".join(extra) or "default"), repr(got))
+        t.check(xhtml_scans(*extra) == want, "scan thresholds %s: pdftotext -images scan= agrees" % (" ".join(extra) or "default"), repr(xhtml_scans(*extra)))
+        if extra:
+            t.check(recorded == {"minCoverage": 0.85, "maxVisibleWords": 20, "layerOverlap": 0.5, {"-scan-min-coverage": "minCoverage", "-scan-layer-overlap": "layerOverlap", "-scan-max-words": "maxVisibleWords"}[extra[0]]: json.loads(extra[1])}, "%s: recorded on the doc line" % " ".join(extra), repr(recorded))
+        else:
+            t.check(recorded is None, "default thresholds: no scanThresholds on the doc line")
+    every = ["-scan-min-coverage", "0.82", "-scan-layer-overlap", "0.41", "-scan-max-words", "25"]
+    for level in ("basic", "full"):
+        rc, ref, _ = facts(st, "-level", level, *every)
+        check_schema(ref, "scan thresholds %s" % level)
+        t.check(pdftotext_facts(st, "-page-facts-level", level, *every, images=True)[2] == ref, "overridden thresholds %s: pdftotext -page-facts-fd == pdfpagefacts" % level)
+        t.check(pdftotext_facts(paths["scans"], "-page-facts-level", level, *every)[2] == facts(paths["scans"], "-level", level, *every)[1], "overridden thresholds on scans %s: same lines" % level)
+    t.check(verdicts(*every)[0] == ["single", "layered", "single"], "all three overrides together")
+    # the defaults spelled out change nothing, byte for byte, in either tool
+    explicit = ["-scan-min-coverage", "0.85", "-scan-layer-overlap", "0.5", "-scan-max-words", "20"]
+    for name in ("scans", "scan_thresholds", "multipage"):
+        t.check(facts(paths[name], "-level", "full", *explicit)[1] == facts(paths[name], "-level", "full")[1], "%s: explicit default thresholds, same lines" % name)
+        t.check(pdftotext_facts(paths[name], "-page-facts-level", "full", *explicit, images=True) == pdftotext_facts(paths[name], "-page-facts-level", "full", images=True), "%s: explicit default thresholds, same XHTML and facts" % name)
+        t.check(b"scanThresholds" not in facts(paths[name])[1], "%s: no scanThresholds by default" % name)
+    # bad values: usage errors in both tools
+    for flag in ("-scan-min-coverage", "-scan-layer-overlap"):
+        for bad in ("0", "-0.1", "1.01", "nan", "inf", "", "0.5x", " 0.5", "1e-1", "0x1p-1"):
+            t.check(facts(st, flag, bad)[0] == 99, "pdfpagefacts %s %r: exit 99" % (flag, bad))
+            p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", flag, bad, st, "-"], capture_output=True)
+            t.check(p.returncode == 99, "pdftotext %s %r: usage error" % (flag, bad), repr(p.returncode))
+        t.check(facts(st, flag, "1")[0] == 0 and facts(st, flag, ".5")[0] == 0, "%s 1 and .5 accepted" % flag)
+    t.check(facts(st, "-scan-max-words", "-1")[0] == 99 and facts(st, "-scan-max-words", "x")[0] == 99, "pdfpagefacts bad -scan-max-words: exit 99")
+
     # --- exit codes, stdin, limits, confinement ------------------------------------------------------------------------------------------
     rc, out, err = facts(os.path.join(d.path, "missing.pdf"))
     t.check(rc == 1 and lines(out)[0].get("error") == "open-failed" and b"missing" not in err and b"missing" not in out, "cannot open: exit 1, error line, no path echoed", repr((rc, out, err)))

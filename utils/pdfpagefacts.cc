@@ -72,6 +72,8 @@ static char userPassword[128] = "\001";
 static char maxPagesArg[32] = "100000";
 static char maxMemoryArg[32] = "4096";
 static char scanMaxWordsArg[32] = "20";
+static char scanMinCoverageArg[32] = "0.85";
+static char scanLayerOverlapArg[32] = "0.5";
 static char confineArg[16] = "require";
 static char timeoutArg[32] = "600";
 static bool timing = false;
@@ -87,6 +89,8 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-max-pages", .kind = argString, .val = maxPagesArg, .size = sizeof(maxPagesArg), .usage = "stop with exit code 3 after this many pages (default 100000)" },
                                    { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 4096)" },
                                    { .arg = "-scan-max-words", .kind = argString, .val = scanMaxWordsArg, .size = sizeof(scanMaxWordsArg), .usage = "a page with more visible words is not a scan (default 20)" },
+                                   { .arg = "-scan-min-coverage", .kind = argString, .val = scanMinCoverageArg, .size = sizeof(scanMinCoverageArg), .usage = "share of the page images must cover for a scan (default 0.85)" },
+                                   { .arg = "-scan-layer-overlap", .kind = argString, .val = scanLayerOverlapArg, .size = sizeof(scanLayerOverlapArg), .usage = "share of the page a layer over a scan must cover (default 0.5)" },
                                    { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write, no-network sandbox before the PDF is parsed: require, auto or off (default require)" },
                                    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 600; exit code 3)" },
                                    { .arg = "-timing", .kind = argFlag, .val = &timing, .size = 0, .usage = "add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
@@ -246,10 +250,12 @@ int main(int argc, char *argv[])
 #endif
     long long maxPages = 0, maxMemory = 0, scanMaxWords = 0, timeout = 0;
     unsigned families = 0;
+    ScanThresholds scanThresholds;
     const bool ok = parseArgs(argDesc, &argc, argv);
     const bool confineOk = !strcmp(confineArg, "require") || !strcmp(confineArg, "auto") || !strcmp(confineArg, "off");
     const bool limitsOk = confineOk && parseLimit(maxPagesArg, 1, 1000000000LL, &maxPages) && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(scanMaxWordsArg, 0, 1000000000LL, &scanMaxWords)
-            && parseLimit(timeoutArg, 0, 86400, &timeout) && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
+            && ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage) && ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap) && parseLimit(timeoutArg, 0, 86400, &timeout)
+            && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfpagefacts version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
@@ -285,7 +291,8 @@ int main(int argc, char *argv[])
     setErrorCallback(factsErrorCallback);
 
     PageFacts facts(families);
-    facts.setScanMaxWords(static_cast<size_t>(scanMaxWords));
+    scanThresholds.maxVisibleWords = static_cast<size_t>(scanMaxWords);
+    facts.setScanThresholds(scanThresholds);
     facts.setTiming(timing);
 
     std::optional<GooString> ownerPW, userPW;

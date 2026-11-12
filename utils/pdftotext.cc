@@ -138,55 +138,66 @@ static int pageFactsFd = -1;
 static char pageFactsLevel[16] = "basic";
 static char pageFactsInclude[128] = "";
 static bool pageFactsTiming = false;
-static int scanMaxWords = static_cast<int>(PageFacts::defaultScanMaxWords);
+static int scanMaxWords = static_cast<int>(ScanThresholds::defaultMaxVisibleWords);
+static char scanMinCoverageArg[32] = "0.85";
+static char scanLayerOverlapArg[32] = "0.5";
+static ScanThresholds scanThresholds; // from the three -scan-* options
 
-static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
-                                   { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
-                                   { .arg = "-r", .kind = argFP, .val = &resolution, .size = 0, .usage = "resolution, in DPI (default is 72)" },
-                                   { .arg = "-x", .kind = argInt, .val = &x, .size = 0, .usage = "x-coordinate of the crop area top left corner" },
-                                   { .arg = "-y", .kind = argInt, .val = &y, .size = 0, .usage = "y-coordinate of the crop area top left corner" },
-                                   { .arg = "-W", .kind = argInt, .val = &w, .size = 0, .usage = "width of crop area in pixels (default is 0)" },
-                                   { .arg = "-H", .kind = argInt, .val = &h, .size = 0, .usage = "height of crop area in pixels (default is 0)" },
-                                   { .arg = "-layout", .kind = argFlag, .val = &physLayout, .size = 0, .usage = "maintain original physical layout" },
-                                   { .arg = "-fixed", .kind = argFP, .val = &fixedPitch, .size = 0, .usage = "assume fixed-pitch (or tabular) text" },
-                                   { .arg = "-raw", .kind = argFlag, .val = &rawOrder, .size = 0, .usage = "keep strings in content stream order" },
-                                   { .arg = "-remove-hyphens", .kind = argString, .val = hyphenModeStr, .size = sizeof(hyphenModeStr), .usage = "end-of-line hyphen handling: none, soft, or all (default: all)" },
-                                   { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
-                                   { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
-                                   { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
-                                   { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
-                                   { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
-                                   { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
-                                   { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
-                                   { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
-                                   { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
-                                   { .arg = "-nopgbrk", .kind = argFlag, .val = &noPageBreaks, .size = 0, .usage = "don't insert page breaks between pages" },
-                                   { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
-                                   { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
-                                   { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
-                                   { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
-                                   { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
-                                   { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
-                                   { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
-                                   { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
-                                   { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
-                                   { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
-                                   { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
-                                   { .arg = "-scan-max-words", .kind = argInt, .val = &scanMaxWords, .size = 0, .usage = "a page with more visible words is not a scan (page facts and -images scan=; default 20)" },
-                                   { .arg = "-colspacing",
-                                     .kind = argFP,
-                                     .val = &colspacing,
-                                     .size = 0,
-                                     .usage = "how much spacing we allow after a word before considering adjacent text to be a new column, as a fraction of the font size (default is 0.7, old releases had a 0.3 default)" },
-                                   { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
-                                   { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
-                                   { .arg = "-q", .kind = argFlag, .val = &quiet, .size = 0, .usage = "don't print any messages or errors" },
-                                   { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
-                                   { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   {} };
+static const ArgDesc argDesc[] = {
+    { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
+    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
+    { .arg = "-r", .kind = argFP, .val = &resolution, .size = 0, .usage = "resolution, in DPI (default is 72)" },
+    { .arg = "-x", .kind = argInt, .val = &x, .size = 0, .usage = "x-coordinate of the crop area top left corner" },
+    { .arg = "-y", .kind = argInt, .val = &y, .size = 0, .usage = "y-coordinate of the crop area top left corner" },
+    { .arg = "-W", .kind = argInt, .val = &w, .size = 0, .usage = "width of crop area in pixels (default is 0)" },
+    { .arg = "-H", .kind = argInt, .val = &h, .size = 0, .usage = "height of crop area in pixels (default is 0)" },
+    { .arg = "-layout", .kind = argFlag, .val = &physLayout, .size = 0, .usage = "maintain original physical layout" },
+    { .arg = "-fixed", .kind = argFP, .val = &fixedPitch, .size = 0, .usage = "assume fixed-pitch (or tabular) text" },
+    { .arg = "-raw", .kind = argFlag, .val = &rawOrder, .size = 0, .usage = "keep strings in content stream order" },
+    { .arg = "-remove-hyphens", .kind = argString, .val = hyphenModeStr, .size = sizeof(hyphenModeStr), .usage = "end-of-line hyphen handling: none, soft, or all (default: all)" },
+    { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
+    { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
+    { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
+    { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
+    { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
+    { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
+    { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
+    { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
+    { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
+    { .arg = "-nopgbrk", .kind = argFlag, .val = &noPageBreaks, .size = 0, .usage = "don't insert page breaks between pages" },
+    { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
+    { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
+    { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
+    { .arg = "-images",
+      .kind = argFlag,
+      .val = &collectImages,
+      .size = 0,
+      .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
+    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
+    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
+    { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
+    { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
+    { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
+    { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
+    { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
+    { .arg = "-scan-max-words", .kind = argInt, .val = &scanMaxWords, .size = 0, .usage = "a page with more visible words is not a scan (page facts and -images scan=; default 20)" },
+    { .arg = "-scan-min-coverage", .kind = argString, .val = scanMinCoverageArg, .size = sizeof(scanMinCoverageArg), .usage = "share of the page images must cover for a scan (default 0.85)" },
+    { .arg = "-scan-layer-overlap", .kind = argString, .val = scanLayerOverlapArg, .size = sizeof(scanLayerOverlapArg), .usage = "share of the page a layer over a scan must cover (default 0.5)" },
+    { .arg = "-colspacing",
+      .kind = argFP,
+      .val = &colspacing,
+      .size = 0,
+      .usage = "how much spacing we allow after a word before considering adjacent text to be a new column, as a fraction of the font size (default is 0.7, old releases had a 0.3 default)" },
+    { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
+    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
+    { .arg = "-q", .kind = argFlag, .val = &quiet, .size = 0, .usage = "don't print any messages or errors" },
+    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
+    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    {}
+};
 
 // Escape text for use in XML element content or attribute values. Besides the
 // five predefined entities, control characters (which are either illegal in
@@ -1029,6 +1040,15 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "Bad '-scan-max-words' value");
         return 99;
     }
+    scanThresholds.maxVisibleWords = static_cast<size_t>(scanMaxWords);
+    if (!ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage)) {
+        error(errCommandLine, -1, "Bad '-scan-min-coverage' value: a number in (0,1]");
+        return 99;
+    }
+    if (!ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap)) {
+        error(errCommandLine, -1, "Bad '-scan-layer-overlap' value: a number in (0,1]");
+        return 99;
+    }
     if (printURLs && (htmlMeta || tsvMode)) {
         error(errCommandLine, -1, "'-urls' is only supported in plain text mode");
         return 99;
@@ -1080,7 +1100,7 @@ int main(int argc, char *argv[])
     const auto runStart = std::chrono::steady_clock::now();
     if (pageFactsFd >= 3) {
         facts.emplace(factsFamilies);
-        facts->setScanMaxWords(static_cast<size_t>(scanMaxWords));
+        facts->setScanThresholds(scanThresholds);
         facts->setTiming(pageFactsTiming);
         pageFacts = &*facts;
         setErrorCallback(factsErrorCallback);
@@ -1494,7 +1514,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if (collectImages) {
             // last: a full-page scan (see classifyScan) and the image that covers it
-            const ScanVerdict scan = textOut->getScan(static_cast<size_t>(scanMaxWords));
+            const ScanVerdict scan = textOut->getScan(scanThresholds);
             if (scan.kind != ScanVerdict::None) {
                 glyphAttrs += std::string(" scan=\"") + scanKindName(scan.kind) + "\" scanImage=\"" + std::to_string(scan.image) + "\"";
             }

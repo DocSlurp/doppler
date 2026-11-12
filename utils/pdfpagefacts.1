@@ -83,6 +83,19 @@ Address-space limit, 0 for none (default 4096). Running out of memory exits with
 .BI \-scan\-max\-words " number"
 A page with more visible words is not a scan (default 20).
 .TP
+.BI \-scan\-min\-coverage " share"
+The share of the page one image, or the images together, must cover for a scan, in (0,1]
+(default 0.85).
+.TP
+.BI \-scan\-layer\-overlap " share"
+The share of the page a second image overlapping the scan must cover to make it layered, in
+(0,1] (default 0.5).
+.IP
+A share is a plain decimal number (0.8, .8, 1); anything else is a usage error. When any of
+the three \-scan options is not its default, the page facts doc line records all three
+.RI ( scanThresholds );
+with the defaults the output does not change.
+.TP
 .BI \-confine " require|auto|off"
 After opening the file and before parsing it, drop the ability to write, create or remove
 files, use the network or run programs (Landlock and seccomp on Linux). require (the

@@ -6077,7 +6077,7 @@ void TextOutputDev::endAnnot(Annot *annot)
     }
 }
 
-ScanVerdict TextOutputDev::getScan(size_t maxWords) const
+ScanVerdict TextOutputDev::getScan(const ScanThresholds &thresholds) const
 {
     // over the images the XHTML lists (scanImage indexes them): those within the document's
     // budget, which come first
@@ -6087,10 +6087,10 @@ ScanVerdict TextOutputDev::getScan(size_t maxWords) const
         ++listed;
     }
     if (listed == all.size()) {
-        return classifyScan(all, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
+        return classifyScan(all, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), thresholds);
     }
     const std::vector<TextImage> shown(all.begin(), all.begin() + listed);
-    return classifyScan(shown, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
+    return classifyScan(shown, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), thresholds);
 }
 
 void TextOutputDev::endPage()

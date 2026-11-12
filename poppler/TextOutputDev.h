@@ -1106,8 +1106,8 @@ public:
     void beginAnnot(Annot *annot) override;
     void endAnnot(Annot *annot) override;
 
-    // The scan verdict of the last page (see classifyScan) with at most <maxWords> visible words.
-    ScanVerdict getScan(size_t maxWords) const;
+    // The scan verdict of the last page (see classifyScan) under <thresholds>.
+    ScanVerdict getScan(const ScanThresholds &thresholds) const;
 
     // Get the head of the linked list of TextFlows for the
     // last rasterized page.

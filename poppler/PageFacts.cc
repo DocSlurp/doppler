@@ -228,13 +228,25 @@ const char *scanKindName(ScanVerdict::Kind kind)
     return "none";
 }
 
-namespace {
-constexpr double scanCover = 0.85; // share of the page the images must cover
-constexpr double scanLayer = 0.5; // a second image at least this large lies on the scan
-} // namespace
-
-ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth, double pageHeight, size_t visibleWords, size_t maxWords)
+bool ScanThresholds::parseShare(const char *text, double *share)
 {
+    if (!text || !*text) {
+        return false;
+    }
+    const char *end = text + strlen(text);
+    double v = 0;
+    const auto r = std::from_chars(text, end, v, std::chars_format::fixed);
+    if (r.ec != std::errc() || r.ptr != end || !std::isfinite(v) || !(v > 0) || v > 1) {
+        return false;
+    }
+    *share = v;
+    return true;
+}
+
+ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth, double pageHeight, size_t visibleWords, const ScanThresholds &thresholds)
+{
+    const double scanCover = thresholds.minCoverage; // share of the page the images must cover
+    const double scanLayer = thresholds.layerOverlap; // a second image at least this large lies on the scan
     ScanVerdict v;
     if (images.empty() || !(pageWidth > 0) || !(pageHeight > 0) || !std::isfinite(pageWidth * pageHeight)) {
         return v;
@@ -263,7 +275,7 @@ ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth,
     }
     v.unionCoverage = grid.share();
     v.fullPageImage = v.largest >= scanCover || v.unionCoverage >= scanCover;
-    if (!v.fullPageImage || visibleWords > maxWords) {
+    if (!v.fullPageImage || visibleWords > thresholds.maxVisibleWords) {
         return v;
     }
     auto overlap = [&](const TextImage &a, const TextImage &b) {
@@ -434,6 +446,19 @@ public:
     {
         key(k);
         number(std::clamp(finite(v), 0.0, 1.0), 4);
+    }
+    // a configured value, exactly: the shortest text that reads back as the same double
+    void kexact(const char *k, double v)
+    {
+        key(k);
+        char buf[64];
+        const auto r = std::to_chars(buf, buf + sizeof(buf), finite(v));
+        if (r.ec == std::errc()) {
+            s.append(buf, r.ptr);
+        } else {
+            s += '0';
+        }
+        first = false;
     }
     // a scale factor (UserUnit, 0.0001..1e6): 4 decimals, so its smallest value is not 0
     void kunit(const char *k, double v)
@@ -1037,6 +1062,19 @@ void writeLevel(Json &j, unsigned fams)
         j.close(']');
     }
 }
+
+// Only when they are not the defaults, so a default run's lines do not change.
+void writeScanThresholds(Json &j, const ScanThresholds &t)
+{
+    if (t.isDefault()) {
+        return;
+    }
+    j.kopen("scanThresholds");
+    j.kexact("minCoverage", t.minCoverage);
+    j.kint("maxVisibleWords", static_cast<uint64_t>(t.maxVisibleWords));
+    j.kexact("layerOverlap", t.layerOverlap);
+    j.close();
+}
 } // namespace
 
 std::string PageFacts::failedDocLine(int errorCode) const
@@ -1044,6 +1082,7 @@ std::string PageFacts::failedDocLine(int errorCode) const
     Json j;
     writeHeader(j, "doc");
     writeLevel(j, fams);
+    writeScanThresholds(j, scanThresholds);
     if (errorCode == errEncrypted) {
         j.kbool("locked", true);
         j.kenum("encryption", "user-password-required");
@@ -1062,6 +1101,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     unsigned features = 0;
     writeHeader(j, "doc");
     writeLevel(j, fams);
+    writeScanThresholds(j, scanThresholds);
     XRef *xref = doc->getXRef();
     Catalog *catalog = doc->getCatalog();
     j.kint("pageCount", static_cast<uint64_t>(std::max(doc->getNumPages(), 0)));
@@ -1664,7 +1704,7 @@ void PageFacts::endPage(const TextPage &text)
     for (const TextImage &im : images) {
         imageGrid.mark(im.xMin, im.yMin, im.xMax, im.yMax, pageW, pageH);
     }
-    const ScanVerdict scan = classifyScan(images, pageW, pageH, text.getVisibleWordCount(), scanMaxWords);
+    const ScanVerdict scan = classifyScan(images, pageW, pageH, text.getVisibleWordCount(), scanThresholds);
 
     // B: text
     const uint64_t words = text.getWordCount(), invisibleWords = text.getInvisibleWordCount();

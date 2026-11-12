@@ -281,8 +281,8 @@ and a page that is a scan gets
 .I scan
 (single, tiled or layered) and
 .I scanImage
-(the 1-based position of the covering image), last: its images cover at least 85% of it and
-at most 20 words are visible (\-scan\-max\-words).
+(the 1-based position of the covering image), last: its images cover at least 85% of it
+(\-scan\-min\-coverage) and at most 20 words are visible (\-scan\-max\-words).
 Only image dictionaries are read: image data is never decoded. Images under 2 points
 are dropped, a page keeps at most 2000 (past that it gets
 .IR imagesTruncated="1" )
@@ -334,6 +334,19 @@ Add factsMs to page lines, totalMs and peakRssKiB to the run line (not determini
 .TP
 .BI \-scan\-max\-words " number"
 A page with more visible words is not a scan, for page facts and \-images (default 20).
+.TP
+.BI \-scan\-min\-coverage " share"
+The share of the page one image, or the images together, must cover for a scan, in (0,1]
+(default 0.85).
+.TP
+.BI \-scan\-layer\-overlap " share"
+The share of the page a second image overlapping the scan must cover to make it layered, in
+(0,1] (default 0.5).
+.IP
+A share is a plain decimal number (0.8, .8, 1); anything else is a usage error. When any of
+the three \-scan options is not its default, the page facts doc line records all three
+.RI ( scanThresholds );
+with the defaults the output does not change.
 .TP
 .B \-cropbox
 Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.

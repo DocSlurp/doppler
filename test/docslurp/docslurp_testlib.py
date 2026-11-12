@@ -191,7 +191,7 @@ def schema_errors(instance, schema, root=None, path="$"):
     """Validate <instance> against the subset of JSON Schema (draft 2020-12) that the DocSlurp
     schemas use: $ref (local), oneOf, type, enum, const, required, properties,
     additionalProperties, propertyNames, items, minItems, maxItems, uniqueItems, minimum,
-    maximum, pattern, maxLength. Returns a list of error strings (empty when valid)."""
+    maximum, exclusiveMinimum, pattern, maxLength. Returns a list of error strings (empty when valid)."""
     root = schema if root is None else root
     if "$ref" in schema:
         node = root
@@ -223,6 +223,8 @@ def schema_errors(instance, schema, root=None, path="$"):
             errors.append("%s: %r < %r" % (path, instance, schema["minimum"]))
         if "maximum" in schema and instance > schema["maximum"]:
             errors.append("%s: %r > %r" % (path, instance, schema["maximum"]))
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            errors.append("%s: %r <= %r" % (path, instance, schema["exclusiveMinimum"]))
     if isinstance(instance, str):
         if "pattern" in schema and not re.search(schema["pattern"], instance):
             errors.append("%s: %r does not match %s" % (path, instance, schema["pattern"]))

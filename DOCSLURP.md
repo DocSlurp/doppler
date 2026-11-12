@@ -147,6 +147,12 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   `pdfregions` copy jobs (a JPEG without its metadata, bilevel as 1-bit PNG) instead of
   rendering; a redaction box, white-out, clip or annotation over a scan makes it rendered;
   see [Page scans](docslurp/doppler-md/README.md#page-scans).
+- The scan test's thresholds are options of all three tools: `-scan-min-coverage F`
+  (0.85), `-scan-max-words N` (20) and `-scan-layer-overlap F` (0.5) in pdfpagefacts and
+  pdftotext, `--scan-min-coverage`, `--scan-max-words`, `--scan-layer-overlap` in
+  pdftomarkdown (passed to pdftotext, and part of the images-plan digest). A changed one is
+  recorded on the doc line (`scanThresholds`); with the defaults the lines are
+  byte-identical to before.
 - Page counts for billing stay with `pdfpagecount`: `pageCount` in the doc line is what
   poppler processes.
 
