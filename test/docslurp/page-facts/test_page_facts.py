@@ -321,7 +321,7 @@ with t.TempDir() as d:
         t.check(b"scanThresholds" not in facts(paths[name])[1], "%s: no scanThresholds by default" % name)
     # bad values: usage errors in both tools
     for flag in ("-scan-min-coverage", "-scan-layer-overlap"):
-        for bad in ("0", "-0.1", "1.01", "nan", "inf", "", "0.5x", " 0.5", "1e-1", "0x1p-1"):
+        for bad in ("0", "-0.1", "1.01", "nan", "inf", "", "0.5x", " 0.5", "1e-1", "0x1p-1", "0." + "0" * 40 + "1", "0.5" + "0" * 40):
             t.check(facts(st, flag, bad)[0] == 99, "pdfpagefacts %s %r: exit 99" % (flag, bad))
             p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", flag, bad, st, "-"], capture_output=True)
             t.check(p.returncode == 99, "pdftotext %s %r: usage error" % (flag, bad), repr(p.returncode))

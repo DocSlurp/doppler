@@ -1041,11 +1041,12 @@ int main(int argc, char *argv[])
         return 99;
     }
     scanThresholds.maxVisibleWords = static_cast<size_t>(scanMaxWords);
-    if (!ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage)) {
+    // a value that fills its buffer may have been cut short by parseArgs: refused
+    if (strlen(scanMinCoverageArg) + 1 >= sizeof(scanMinCoverageArg) || !ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage)) {
         error(errCommandLine, -1, "Bad '-scan-min-coverage' value: a number in (0,1]");
         return 99;
     }
-    if (!ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap)) {
+    if (strlen(scanLayerOverlapArg) + 1 >= sizeof(scanLayerOverlapArg) || !ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap)) {
         error(errCommandLine, -1, "Bad '-scan-layer-overlap' value: a number in (0,1]");
         return 99;
     }
