@@ -402,10 +402,37 @@ papers and reports, `--raster-method 2 --lossless-method 1 --lossless-quality 25
 image pass's CPU by about 15% for about 1% more WebP bytes (lossy SSIM about 0.996 against
 the defaults; lossless output decodes to the same pixels).
 
+## Page facts (`--page-facts`)
+
+    pdftomarkdown --stream --page-facts facts.jsonl [--page-facts-level full] paper.pdf > paper.md
+    pdftomarkdown --stream --page-facts-fd 3 paper.pdf 3>facts.jsonl > paper.md
+
+Page facts (schema `doppler-page-facts/1`: a doc line, one line per page, a run line; every
+field in [docslurp/page-facts/README.md](../page-facts/README.md)) are computed by pdftotext
+on the conversion's own pass (`-page-facts-fd`) and written unchanged: pdftomarkdown never
+reads or rewrites a line, so they are byte-identical to `pdfpagefacts` for the same range and
+level, with or without `--stream`, `--markers` or `--math`. The Markdown is the same with or
+without them. Facts never go to stdout.
+
+| option | |
+|---|---|
+| `--page-facts FILE` | FILE must not exist and its folder is reached without following symbolic links; it is written mode 0600 under a temporary name and appears when pdftotext has finished (also when the conversion failed: its lines say what was read) |
+| `--page-facts-fd N` | write them to descriptor N (3 or more), open for writing and inherited from the caller |
+| `--page-facts-level basic\|full` | `basic` (default) or every family |
+| `--page-facts-include LIST` | families added to basic: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure` |
+| `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
+| `--scan-max-words N` | a page with more visible words is not a scan (20); also changes `scan=` in the XHTML |
+
+With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
+Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor
+of `--page-facts` is inheritable only while pdftotext starts; the renderer never gets it.
+Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
+
 ## Exit status and report
 
-- 5 (`pdftomarkdown --images-dir` or `--images-plan-out`): the Markdown was written but image
-  extraction failed, or the images plan could not be written.
+- 5 (`pdftomarkdown --images-dir`, `--images-plan-out` or `--page-facts`): the Markdown was
+  written but image extraction failed, or the images plan or page facts file could not be
+  written.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

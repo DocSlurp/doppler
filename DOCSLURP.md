@@ -118,6 +118,34 @@ How the count differs from what Poppler processes:
 
 Tests: `test/docslurp/pagecount/`.
 
+## Page facts
+
+Per-page facts for routing pages (text layer, scans, images and their encodings, fonts, odd
+characters, vector drawing and rules, forms, annotations, optional content) and one document
+line, as JSON lines (schema `doppler-page-facts/1`). Every field and value:
+[docslurp/page-facts/README.md](docslurp/page-facts/README.md); JSON Schema beside it;
+benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
+
+- **With a conversion:** `pdftomarkdown --stream --page-facts FILE FILE.pdf` (or
+  `--page-facts-fd N`; `--page-facts-level full`, `--page-facts-include LIST`). pdftotext
+  computes them on the same pass (`-page-facts-fd N`); the Markdown does not change.
+- **Without one:** `pdfpagefacts [-level basic|full] [-f N] [-l N] FILE.pdf|-` writes them to
+  stdout: no text output, no images, no rendering; fixed-string diagnostics, `-max-memory`,
+  `-max-pages`, and a Landlock + seccomp sandbox once the PDF is open (`utils/Confine`, shared
+  with pdfregions). Exit 0 ok, 1 cannot open, 2 needs a password, 3 limit, 99 usage.
+- The three write byte-identical lines for the same input, range and level. Facts are
+  deterministic (timing only with `-timing`) and page-local (`-f p -l p` gives a page the
+  same line as a whole run). They never contain document text, paths, URIs or field values,
+  except the capped, sanitised and untrusted `producer`/`creator`.
+- `pdftotext -images` also writes the scan verdict (`scan=`, `scanImage=` on `<page>`) and
+  each image's dictionary facts (`filter=`, `bpc=`, `cs=`, `smask=`, `decode=`, `inline=`,
+  `copy=` on `<image>`), appended last; the facts and the XHTML use the same classifier.
+- Page counts for billing stay with `pdfpagecount`: `pageCount` in the doc line is what
+  poppler processes.
+
+Tests: `test/docslurp/page-facts/` (one fixture per family, schema, determinism, locality,
+pdftotext == pdfpagefacts, a 320-case mutation fuzz) and `docslurp/doppler-md/tests/page_facts.rs`.
+
 ## DocSlurp regression tests
 
 `test/docslurp/` holds Python tests that build small PDFs in memory
