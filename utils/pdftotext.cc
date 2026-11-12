@@ -83,6 +83,14 @@
 #include <unordered_map>
 #include <set>
 #include <vector>
+#include <cerrno>
+#include <chrono>
+#ifndef _WIN32
+#    include <fcntl.h>
+#    include <unistd.h>
+#endif
+#include "PageFacts.h"
+#include "doppler_commit.h"
 
 static void printInfoString(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2, const UnicodeMap *uMap);
 static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2);
@@ -124,6 +132,11 @@ static bool collectImages = false;
 static bool compactLayout = false;
 static bool glyphRecords = false;
 static char hyphenModeStr[16] = "";
+static int pageFactsFd = -1;
+static char pageFactsLevel[16] = "basic";
+static char pageFactsInclude[128] = "";
+static bool pageFactsTiming = false;
+static int scanMaxWords = static_cast<int>(PageFacts::defaultScanMaxWords);
 
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
                                    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
@@ -153,6 +166,11 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
                                    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
                                    { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
+                                   { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
+                                   { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
+                                   { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
+                                   { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
+                                   { .arg = "-scan-max-words", .kind = argInt, .val = &scanMaxWords, .size = 0, .usage = "a page with more visible words is not a scan (page facts and -images scan=; default 20)" },
                                    { .arg = "-colspacing",
                                      .kind = argFP,
                                      .val = &colspacing,
@@ -864,6 +882,54 @@ GlyphContext *glyphContext = nullptr;
 
 } // namespace
 
+// -page-facts-fd: the sink, the descriptor and whether a write failed
+static PageFacts *pageFacts = nullptr;
+static bool pageFactsWriteFailed = false;
+
+static void writeFactsLine(const std::string &line)
+{
+#ifndef _WIN32
+    size_t done = 0;
+    while (!pageFactsWriteFailed && done < line.size()) {
+        const ssize_t n = write(pageFactsFd, line.data() + done, line.size() - done);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            pageFactsWriteFailed = true;
+            break;
+        }
+        done += static_cast<size_t>(n);
+    }
+#else
+    (void)line;
+    pageFactsWriteFailed = true;
+#endif
+}
+
+// With page facts, poppler's errors are also counted for the page (by category, never the
+// message); they are still printed as without facts unless -q.
+static void factsErrorCallback(ErrorCategory category, Goffset pos, const char *msg)
+{
+    PageFacts::noteError(category, msg);
+    if (quiet) {
+        return;
+    }
+    static const char *const names[] = { "Syntax Warning", "Syntax Error", "Config Error", "Command Line Error", "I/O Error", "Permission Error", "Unimplemented Feature", "Internal Error" };
+    const char *name = static_cast<unsigned>(category) < sizeof(names) / sizeof(names[0]) ? names[category] : "Error";
+    if (pos >= 0) {
+        fprintf(stderr, "%s (%lld): %s\n", name, static_cast<long long>(pos), msg);
+    } else {
+        fprintf(stderr, "%s: %s\n", name, msg);
+    }
+    fflush(stderr);
+}
+
+static double millisecondsSince(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
 static constexpr EndOfLineKind defaultEndOfLine()
 {
 #ifdef _WIN32
@@ -918,6 +984,28 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "'-wordmeta' needs -bbox, -bbox-layout or -tsv");
         return 99;
     }
+    unsigned factsFamilies = 0;
+    if (pageFactsFd >= 0 || strcmp(pageFactsLevel, "basic") != 0 || pageFactsInclude[0] || pageFactsTiming) {
+        if (pageFactsFd < 3 || !bboxLayout) {
+            error(errCommandLine, -1, "'-page-facts-fd' needs -bbox-layout and a descriptor of 3 or more");
+            return 99;
+        }
+        if (!PageFacts::parseLevel(pageFactsLevel, &factsFamilies) || !PageFacts::parseInclude(pageFactsInclude, &factsFamilies)) {
+            error(errCommandLine, -1, "Bad '-page-facts-level' or '-page-facts-include' value");
+            return 99;
+        }
+#ifndef _WIN32
+        const int flags = fcntl(pageFactsFd, F_GETFL);
+        if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY) {
+            error(errCommandLine, -1, "'-page-facts-fd': not a descriptor open for writing");
+            return 99;
+        }
+#endif
+    }
+    if (scanMaxWords < 0) {
+        error(errCommandLine, -1, "Bad '-scan-max-words' value");
+        return 99;
+    }
     if (printURLs && (htmlMeta || tsvMode)) {
         error(errCommandLine, -1, "'-urls' is only supported in plain text mode");
         return 99;
@@ -965,6 +1053,15 @@ int main(int argc, char *argv[])
     if (quiet) {
         globalParams->setErrQuiet(quiet);
     }
+    std::optional<PageFacts> facts;
+    const auto runStart = std::chrono::steady_clock::now();
+    if (pageFactsFd >= 3) {
+        facts.emplace(factsFamilies);
+        facts->setScanMaxWords(static_cast<size_t>(scanMaxWords));
+        facts->setTiming(pageFactsTiming);
+        pageFacts = &*facts;
+        setErrorCallback(factsErrorCallback);
+    }
 
     EndOfLineHyphenMode hyphenMode = EndOfLineHyphenMode::RemoveAll;
     if (hyphenModeStr[0]) {
@@ -1002,6 +1099,10 @@ int main(int argc, char *argv[])
     doc = PDFDocFactory().createPDFDoc(fileName, ownerPW, userPW);
 
     if (!doc->isOk()) {
+        if (pageFacts) {
+            writeFactsLine(pageFacts->failedDocLine(doc->getErrorCode()));
+            writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
+        }
         return 1;
     }
     // pages usually share their fonts: parse each once per document (see GfxFontCache)
@@ -1041,6 +1142,9 @@ int main(int argc, char *argv[])
     if (lastPage < firstPage) {
         error(errCommandLine, -1, "Wrong page range given: the first page ({0:d}) can not be after the last page ({1:d}).", firstPage, lastPage);
         return 99;
+    }
+    if (pageFacts) {
+        writeFactsLine(pageFacts->docLine(doc.get(), ownerPW.has_value() || userPW.has_value()));
     }
     // This process consumes the selected range once and never asks for an earlier page. Avoid
     // constructing and retaining every Page before a late -f; the page-tree walk and its error
@@ -1098,6 +1202,7 @@ int main(int argc, char *argv[])
                 textOut.setTextPageBreaks(false);
             }
             if (bboxLayout) {
+                textOut.setPageFacts(pageFacts);
                 textOut.setCollectRules(collectRules);
                 textOut.setCollectImages(collectImages);
                 textOut.setCollectImageMaskRules(glyphRecords);
@@ -1153,6 +1258,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (pageFacts) {
+        writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
+    }
+
     // write end of HTML file
     if (htmlMeta) {
         if (textFileName->toStr() == "-") {
@@ -1173,6 +1282,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (pageFactsWriteFailed) {
+        error(errIO, -1, "Couldn't write the page facts");
+        return 2;
+    }
     return 0;
 }
 
@@ -1323,7 +1436,14 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     glyphContext = glyphs ? &*glyphs : nullptr;
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
+        const auto pageStart = std::chrono::steady_clock::now();
+        if (pageFacts) {
+            pageFacts->beginPage(page);
+        }
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
+        if (pageFacts) {
+            writeFactsLine(pageFacts->finishPage(page, millisecondsSince(pageStart)));
+        }
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
@@ -1348,6 +1468,13 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));
             glyphAttrs += crop;
         }
+        if (collectImages) {
+            // last: a full-page scan (see classifyScan) and the image that covers it
+            const ScanVerdict scan = textOut->getScan(static_cast<size_t>(scanMaxWords));
+            if (scan.kind != ScanVerdict::None) {
+                glyphAttrs += std::string(" scan=\"") + scanKindName(scan.kind) + "\" scanImage=\"" + std::to_string(scan.image) + "\"";
+            }
+        }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
@@ -1361,8 +1488,22 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             for (const TextImage &image : textOut->getImages()) {
                 // ref: the image XObject, so repeats of one object can be found (none for inline images)
                 const std::string ref = image.ref == Ref::INVALID() ? std::string() : " ref=\"" + std::to_string(image.ref.num) + " " + std::to_string(image.ref.gen) + "\"";
-                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
-                        image.stencil ? " kind=\"mask\"" : "", ref.c_str());
+                // the dictionary's facts, last: codec, bits, colour space, masks, and how the pixels
+                // can be taken out (copy class)
+                const ImageDictInfo &info = image.info;
+                std::string dict = std::string(" filter=\"") + imageFilterName(info.filter) + "\" bpc=\"" + std::to_string(info.bpc) + "\" cs=\"" + imageColorName(info.color) + "\"";
+                if (info.softMask || info.mask) {
+                    dict += " smask=\"1\"";
+                }
+                if (info.decode) {
+                    dict += " decode=\"1\"";
+                }
+                if (info.inlineImg) {
+                    dict += " inline=\"1\"";
+                }
+                dict += std::string(" copy=\"") + imageCopyName(info.copy) + "\"";
+                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
+                        image.stencil ? " kind=\"mask\"" : "", ref.c_str(), dict.c_str());
             }
             for (const TextGraphic &g : graphics) {
                 fprintf(f, "    <graphic xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" paths=\"%zu\" segments=\"%zu\" curves=\"%zu\" directions=\"%d\"/>\n", g.xMin, g.yMin, g.xMax, g.yMax, g.paths, g.segments, g.curves,

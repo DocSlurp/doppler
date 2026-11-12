@@ -46,6 +46,7 @@
 #include "GfxState.h"
 #include "OutputDev.h"
 #include "PDFRectangle.h"
+#include "PageFacts.h"
 
 #include <array>
 #include <vector>
@@ -612,6 +613,8 @@ struct TextImage
     int pixelWidth, pixelHeight; // the image's own size in samples
     bool stencil; // an image mask
     Ref ref = Ref::INVALID(); // the image XObject, or INVALID for an inline image
+    ImageDictInfo info {}; // what its dictionary says (filter, bits, colour space, masks)
+    double dpiX = 0, dpiY = 0; // samples per inch along the image's own axes
 };
 
 // A cluster of painted vector drawing that is not axis-aligned (see
@@ -708,6 +711,14 @@ public:
 
     // Add a hyperlink.
     void addLink(int xMin, int yMin, int xMax, int yMax, AnnotLink *link);
+
+    // DocSlurp page facts: the sink that sees each glyph and word (nullptr: none), and the
+    // words added to this page so far (before coalescing removes duplicated text), with those
+    // drawn invisibly (render mode 3).
+    void setPageFacts(PageFacts *factsA) { facts = factsA; }
+    size_t getWordCount() const { return wordsAdded; }
+    size_t getInvisibleWordCount() const { return invisibleWordsAdded; }
+    size_t getVisibleWordCount() const { return wordsAdded - invisibleWordsAdded; }
 
     // Coalesce strings that look like parts of the same line.
     void coalesce(bool physLayout, double fixedPitch, bool doHTML);
@@ -837,6 +848,8 @@ private:
     std::vector<DroppedGlyph> dropped;
     void recordDropped(const GfxState *state, double x1, double y1, double w1, CharCode c);
     std::vector<std::unique_ptr<TextLink>> links;
+    PageFacts *facts = nullptr;
+    size_t wordsAdded = 0, invisibleWordsAdded = 0;
 
     friend class TextLine;
     friend class TextLineFrag;
@@ -1022,8 +1035,8 @@ public:
     // Record where each visible image and image mask lands on the page (TextImage). Only the
     // image dictionary is read; the image data is never decoded.
     void setCollectImages(bool on) { collectImages = on; }
-    bool needImageGeometry() override { return collectImages; }
-    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref) override;
+    bool needImageGeometry() override { return collectImages || facts; }
+    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref, const ImageDictInfo &info) override;
     const std::vector<TextImage> &getImages() const;
     bool getImagesTruncated() const;
     // With setCollectImages: the clusters of painted drawing that is not axis-aligned on this
@@ -1032,6 +1045,20 @@ public:
     bool getGraphicsTruncated() const { return graphicsTruncated; }
 
     void setInlineLinkURIs(bool inlineLinkURIsA);
+
+    // DocSlurp page facts: compute them for each page into <factsA> (nullptr: off). The sink
+    // must outlive the pages displayed with it. It turns on image geometry, and with vector
+    // facts the rule and drawing summaries, without changing what is written for them.
+    void setPageFacts(PageFacts *factsA);
+    // Words only: endPage skips coalescing into lines, blocks and flows (no reading order, no
+    // text output); for a caller that needs only page facts and word counts.
+    void setWordsOnly(bool on) { wordsOnly = on; }
+    GfxOpTally *getOpTally() override;
+    void beginAnnot(Annot *annot) override;
+    void endAnnot(Annot *annot) override;
+
+    // The scan verdict of the last page (see classifyScan) with at most <maxWords> visible words.
+    ScanVerdict getScan(size_t maxWords) const;
 
     // Get the head of the linked list of TextFlows for the
     // last rasterized page.
@@ -1082,6 +1109,8 @@ private:
     void collectPathRules(const GfxState *state, bool filled);
     void addClippedRule(const GfxState *state, double x0, double y0, double x1, double y1, double r, double g, double b, bool box, bool imageMask = false);
     bool inlineLinkURIs = false;
+    PageFacts *facts = nullptr;
+    bool wordsOnly = false;
     Page *currentPage = nullptr;
     bool ok; // set up ok?
     bool textPageBreaks; // insert end-of-page markers?

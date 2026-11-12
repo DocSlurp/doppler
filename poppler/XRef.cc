@@ -50,6 +50,7 @@
 
 #include <config.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstddef>
@@ -915,6 +916,7 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     if (wasReconstructed) {
         *wasReconstructed = true;
     }
+    ++reconstructions;
 
     if (xrefReconstructedCb) {
         xrefReconstructedCb();
@@ -1832,6 +1834,81 @@ bool XRef::parseEntry(Goffset offset, XRefEntry *entry)
     }
 
     return r;
+}
+
+int XRef::countSections(int maxSections, long long maxTokens)
+{
+    // Walks the /Prev chain from the main section with a parser of its own: entries are skipped
+    // token by token, trailers and xref stream dictionaries are read, nothing is stored.
+    std::vector<Goffset> seen;
+    Goffset pos = mainXRefOffset;
+    long long tokens = 0;
+    while (pos > 0 && static_cast<int>(seen.size()) < maxSections) {
+        if (std::find(seen.begin(), seen.end(), pos) != seen.end()) {
+            return static_cast<int>(seen.size()); // a loop: count what was seen
+        }
+        seen.push_back(pos);
+        Goffset parsePos;
+        if (checkedAdd(start, pos, &parsePos) || parsePos < 0) {
+            return 0;
+        }
+        Parser parser(nullptr, str->makeSubStream(parsePos, false, 0, Object::null()), true);
+        Object obj = parser.getObj(true);
+        Object dictObj;
+        if (obj.isCmd("xref")) {
+            for (;;) {
+                if (++tokens > maxTokens) {
+                    return 0;
+                }
+                obj = parser.getObj(true);
+                if (obj.isCmd("trailer")) {
+                    dictObj = parser.getObj();
+                    break;
+                }
+                if (!obj.isInt()) {
+                    return 0;
+                }
+                Object countObj = parser.getObj(true);
+                if (!countObj.isInt() || countObj.getInt() < 0) {
+                    return 0;
+                }
+                const long long entryTokens = 3LL * countObj.getInt();
+                if (tokens + entryTokens > maxTokens) {
+                    return 0;
+                }
+                for (long long i = 0; i < entryTokens; ++i) {
+                    if (parser.getObj(true).isEOF()) {
+                        return 0;
+                    }
+                }
+                tokens += entryTokens;
+            }
+        } else if (obj.isInt()) {
+            Object gen = parser.getObj(true);
+            Object kw = parser.getObj(true);
+            if (!gen.isInt() || !kw.isCmd("obj")) {
+                return 0;
+            }
+            dictObj = parser.getObj(true);
+            if (dictObj.isStream()) {
+                dictObj = dictObj.getStream()->getDictObject()->copy();
+            }
+        } else {
+            return 0;
+        }
+        if (!dictObj.isDict()) {
+            return 0;
+        }
+        Object prev = dictObj.dictLookupNF("Prev").copy();
+        if (prev.isInt() && prev.getInt() > 0) {
+            pos = prev.getInt();
+        } else if (prev.isInt64() && prev.getInt64() > 0) {
+            pos = prev.getInt64();
+        } else {
+            pos = 0;
+        }
+    }
+    return pos > 0 ? 0 : static_cast<int>(seen.size());
 }
 
 /* Traverse all XRef tables and, if untilEntryNum != -1, stop as soon as

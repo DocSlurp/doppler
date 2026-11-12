@@ -2572,6 +2572,8 @@ void TextPage::clear()
     graphicCells.fill(TextGraphic {});
     dropped.clear();
     links.clear();
+    wordsAdded = 0;
+    invisibleWordsAdded = 0;
 
     diagonal = false;
     curWord = nullptr;
@@ -2870,6 +2872,9 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         }
     }
 
+    if (uLen == 0 && facts) {
+        facts->onUnmappedGlyph(state, curFont, curFontSize);
+    }
     if (uLen != 0) {
         // start a new word if needed
         if (!curWord) {
@@ -2901,6 +2906,9 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
             h1 = -h1;
         }
 
+        if (facts) {
+            facts->onGlyph(state, curFont, curFontSize, x1, y1, w1, h1, u, uLen, curWord->rot, diagonal);
+        }
         // add the characters to the current word
         w1 /= uLen;
         h1 /= uLen;
@@ -2956,6 +2964,11 @@ void TextPage::addWord(TextWord *word)
     if (word->len() == 0) {
         delete word;
         return;
+    }
+    ++wordsAdded;
+    invisibleWordsAdded += word->invisible ? 1 : 0;
+    if (facts) {
+        facts->onWord(word);
     }
 
     if (rawOrder) {
@@ -5975,6 +5988,39 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
 void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
 {
     text->startPage(state);
+    if (facts) {
+        facts->startPage(currentPage, text->getPageWidth(), text->getPageHeight());
+    }
+}
+
+void TextOutputDev::setPageFacts(PageFacts *factsA)
+{
+    facts = factsA;
+    text->setPageFacts(factsA);
+}
+
+GfxOpTally *TextOutputDev::getOpTally()
+{
+    return facts ? facts->opTally() : nullptr;
+}
+
+void TextOutputDev::beginAnnot(Annot *annot)
+{
+    if (facts && facts->wantsAnnots()) {
+        facts->beginAnnot(annot);
+    }
+}
+
+void TextOutputDev::endAnnot(Annot *annot)
+{
+    if (facts && facts->wantsAnnots()) {
+        facts->endAnnot(annot);
+    }
+}
+
+ScanVerdict TextOutputDev::getScan(size_t maxWords) const
+{
+    return classifyScan(text->getImages(), text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
 }
 
 void TextOutputDev::endPage()
@@ -5986,6 +6032,13 @@ void TextOutputDev::endPage()
         }
     }
     text->endPage();
+    if (facts) {
+        facts->endPage(*text);
+    }
+    if (wordsOnly) {
+        currentPage = nullptr;
+        return;
+    }
     text->coalesce(physLayout, fixedPitch, doHTML, minColSpacing1);
     if (outputStream) {
         text->dump(outputStream, outputFunc, physLayout, textEOL, textPageBreaks, false, std::nullopt, hyphenMode);
@@ -6057,7 +6110,7 @@ bool TextOutputDev::getImagesTruncated() const
     return text->getImagesTruncated();
 }
 
-void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref)
+void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref, const ImageDictInfo &info)
 {
     // The image fills the unit square under the CTM. Keep its axis-aligned extent, cut to the
     // clip and the page, as for rules; tiny images (bullets, rule slivers) are not figures.
@@ -6083,7 +6136,15 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     if (x1 - x0 < minExtent || y1 - y0 < minExtent) {
         return;
     }
-    text->addImage({ x0, y0, x1, y1, width, height, stencil, ref }, remainingDocImages);
+    // samples per inch along the image's axes: its unit square's sides in points
+    const double hdpi = state->getHDPI() > 0 ? state->getHDPI() : 72.0, vdpi = state->getVDPI() > 0 ? state->getVDPI() : 72.0;
+    const double sideX = std::hypot((x[1] - x[0]) * 72.0 / hdpi, (y[1] - y[0]) * 72.0 / vdpi);
+    const double sideY = std::hypot((x[2] - x[0]) * 72.0 / hdpi, (y[2] - y[0]) * 72.0 / vdpi);
+    TextImage image { x0, y0, x1, y1, width, height, stencil, ref };
+    image.info = info;
+    image.dpiX = sideX > 0 ? width / (sideX / 72.0) : 0;
+    image.dpiY = sideY > 0 ? height / (sideY / 72.0) : 0;
+    text->addImage(image, remainingDocImages);
 }
 
 std::vector<TextGraphic> TextOutputDev::takeGraphics()
@@ -6310,11 +6371,14 @@ void TextOutputDev::stroke(GfxState *state)
 {
     double x[2], y[2];
 
-    if (collectRules) {
+    if (collectRules || (facts && facts->wantsRules())) {
         collectPathRules(state, false);
     }
-    if (collectImages) {
+    if (collectImages || (facts && facts->wantsGraphics())) {
         collectPathGraphic(state, false);
+    }
+    if (facts && facts->wantsPaths()) {
+        facts->onPath(state, false);
     }
     if (!doHTML) {
         return;
@@ -6342,11 +6406,14 @@ void TextOutputDev::fill(GfxState *state)
     double rx0, ry0, rx1, ry1, t;
     int i;
 
-    if (collectRules) {
+    if (collectRules || (facts && facts->wantsRules())) {
         collectPathRules(state, true);
     }
-    if (collectImages) {
+    if (collectImages || (facts && facts->wantsGraphics())) {
         collectPathGraphic(state, true);
+    }
+    if (facts && facts->wantsPaths()) {
+        facts->onPath(state, true);
     }
     if (!doHTML) {
         return;
@@ -6409,7 +6476,7 @@ void TextOutputDev::fill(GfxState *state)
 
 void TextOutputDev::eoFill(GfxState *state)
 {
-    if (!doHTML && !collectRules && !collectImages) {
+    if (!doHTML && !collectRules && !collectImages && !facts) {
         return;
     }
     fill(state);

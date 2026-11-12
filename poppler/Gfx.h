@@ -42,6 +42,7 @@
 #include "GfxState.h"
 #include "Object.h"
 #include "PopplerCache.h"
+#include "PageFactsHooks.h"
 
 #include <stack>
 #include <vector>
@@ -209,6 +210,13 @@ public:
     void pushResources(Dict *resDict);
     void popResources();
 
+    // DocSlurp page facts: the operator table, by index (GfxOpTally counts by this index).
+    static int opCount();
+    static const char *opName(int index);
+    // Count the operators this Gfx executes into <tally> (nullptr: none, the default for a
+    // sub-page Gfx; a page's Gfx takes the device's OutputDev::getOpTally()).
+    void setOpTally(GfxOpTally *tally) { opTally = tally; }
+
 private:
     PDFDoc *doc;
     XRef *xref; // the xref table for this PDF file
@@ -237,6 +245,8 @@ private:
                   //   disabled
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
+    GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
+    int ocLayerDepth = 0; // open BDC /OC sections
 
     Parser *parser; // parser for page content stream(s)
 
@@ -358,6 +368,7 @@ private:
     void opXObject(Object args[], int numArgs);
     void doImage(Object *ref, Stream *str, bool inlineImg);
     void reportImageGeometry(Dict *dict, Ref ref);
+    ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg);
     void doForm(Object *str);
 
     // in-line image operators

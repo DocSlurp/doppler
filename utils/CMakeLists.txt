@@ -12,6 +12,12 @@ set(common_libs
   utils_common_lib
 )
 
+# DOPPLER_COMMIT (doppler_commit.h) for the page facts run line, refreshed on every build
+add_custom_target(doppler_commit_header
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/doppler_commit.h -P ${CMAKE_CURRENT_SOURCE_DIR}/doppler_commit.cmake
+  BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/doppler_commit.h
+  VERBATIM)
+
 # pdftoppm
 set(pdftoppm_SOURCES
   pdftoppm.cc
@@ -53,6 +59,7 @@ if (HAVE_CAIRO)
   # pdfregions (DocSlurp): renders page regions as RGB (Splash) or SVG (cairo)
   set(pdfregions_SOURCES
     pdfregions.cc
+    Confine.cc
     ${CMAKE_SOURCE_DIR}/poppler/CairoFontEngine.cc
     ${CMAKE_SOURCE_DIR}/poppler/CairoOutputDev.cc
     ${CMAKE_SOURCE_DIR}/poppler/CairoRescaleBox.cc
@@ -118,6 +125,21 @@ target_link_libraries(pdfpagecount ${common_libs})
 install(TARGETS pdfpagecount DESTINATION bin)
 install(FILES pdfpagecount.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 
+# pdfpagefacts (DocSlurp): page facts as JSON lines, without text output
+set(pdfpagefacts_SOURCES
+  pdfpagefacts.cc
+  Confine.cc
+)
+add_executable(pdfpagefacts ${pdfpagefacts_SOURCES})
+target_link_libraries(pdfpagefacts ${common_libs})
+if(TARGET Fontconfig::Fontconfig)
+  target_link_libraries(pdfpagefacts Fontconfig::Fontconfig)
+endif()
+add_dependencies(pdfpagefacts doppler_commit_header)
+target_include_directories(pdfpagefacts PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+install(TARGETS pdfpagefacts DESTINATION bin)
+install(FILES pdfpagefacts.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+
 # pdfinfo
 set(pdfinfo_SOURCES
   pdfinfo.cc printencodings.cc
@@ -170,6 +192,8 @@ set(pdftotext_SOURCES
 )
 add_executable(pdftotext ${pdftotext_SOURCES})
 target_link_libraries(pdftotext ${common_libs})
+add_dependencies(pdftotext doppler_commit_header)
+target_include_directories(pdftotext PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 install(TARGETS pdftotext DESTINATION bin)
 install(FILES pdftotext.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 

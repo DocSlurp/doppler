@@ -632,7 +632,9 @@ void Page::displaySlice(OutputDev *out, double hDPI, double vDPI, int rotate, bo
         }
         for (const std::shared_ptr<Annot> &annot : annots->getAnnots()) {
             if ((annotDisplayDecideCbk && (*annotDisplayDecideCbk)(annot.get(), annotDisplayDecideCbkData)) || !annotDisplayDecideCbk) {
+                out->beginAnnot(annot.get());
                 annot->draw(gfx.get(), printing);
+                out->endAnnot(annot.get());
             }
         }
         out->dump();

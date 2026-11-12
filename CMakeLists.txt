@@ -468,6 +468,7 @@ set(poppler_SRCS
   poppler/XRef.cc
   poppler/PSOutputDev.cc
   poppler/TextOutputDev.cc
+  poppler/PageFacts.cc
   poppler/PageLabelInfo.cc
   poppler/SecurityHandler.cc
   poppler/Sound.cc
@@ -731,6 +732,8 @@ if(ENABLE_UNSTABLE_API_ABI_HEADERS)
     poppler/NameToUnicodeTable.h
     poppler/PSOutputDev.h
     poppler/TextOutputDev.h
+    poppler/PageFacts.h
+    poppler/PageFactsHooks.h
     poppler/BBoxOutputDev.h
     poppler/UTF.h
     poppler/Sound.h

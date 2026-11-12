@@ -90,6 +90,7 @@
 #include "ProfileData.h"
 #include "Catalog.h"
 #include "OptionalContent.h"
+#include <algorithm>
 #if ENABLE_LIBOPENJPEG
 #    include "JPEG2000Stream.h"
 #endif
@@ -477,6 +478,7 @@ Gfx::Gfx(PDFDoc *docA, OutputDev *outA, int pageNum, Dict *resDict, double hDPI,
     clip = clipNone;
     ignoreUndef = 0;
     out->startPage(pageNum, state, xref);
+    opTally = out->getOpTally();
     out->setDefaultCTM(state->getCTM());
     out->updateAll(state);
     baseMatrix = state->getCTM();
@@ -781,8 +783,26 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
         }
     }
 
+    if (opTally) [[unlikely]] {
+        const auto index = static_cast<size_t>(op - opTab);
+        uint64_t &n = ocState ? (ocLayerDepth > 0 ? opTally->inLayer[index] : opTally->visible[index]) : opTally->hidden[index];
+        n += n != UINT64_MAX;
+    }
+
     // do it
     (this->*op->func)(argPtr, numArgs);
+}
+
+int Gfx::opCount()
+{
+    constexpr int numOps = sizeof(opTab) / sizeof(Operator);
+    static_assert(numOps <= GfxOpTally::maxOps);
+    return numOps;
+}
+
+const char *Gfx::opName(int index)
+{
+    return index >= 0 && index < opCount() ? opTab[index].name : "";
 }
 
 const Operator *Gfx::findOp(const char *name)
@@ -1937,6 +1957,11 @@ void Gfx::doPatternFill(bool eoFill)
 {
     GfxPattern *pattern;
 
+    if (opTally && (pattern = state->getFillPattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
+
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
@@ -1964,6 +1989,11 @@ void Gfx::doPatternStroke()
 {
     GfxPattern *pattern;
 
+    if (opTally && (pattern = state->getStrokePattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
+
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
@@ -1990,6 +2020,11 @@ void Gfx::doPatternStroke()
 void Gfx::doPatternText()
 {
     GfxPattern *pattern;
+
+    if (opTally && (pattern = state->getFillPattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
 
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
@@ -4158,6 +4193,13 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
 
     Stream *obj1Stream = obj1.getStream();
     Dict *obj1StreamDict = obj1Stream->getDict();
+    if (opTally && ocState && catalog->getOptContentConfig()) {
+        const Object &oc = obj1StreamDict->lookupNF("OC");
+        if (!oc.isNull()) {
+            uint64_t &n = catalog->getOptContentConfig()->optContentIsVisible(&oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            n += n != UINT64_MAX;
+        }
+    }
     Object opiDict = obj1StreamDict->lookup("OPI");
     if (opiDict.isDict()) {
         out->opiBegin(state, *opiDict.getDict());
@@ -4265,11 +4307,150 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     if (width < 1 || height < 1) {
         return;
     }
-    Object im = dict->lookup("ImageMask");
-    if (im.isNull()) {
-        im = dict->lookup("IM");
+    const ImageDictInfo info = readImageDictInfo(dict, false);
+    out->imageGeometry(state, width, height, info.imageMask, ref, info);
+}
+
+// Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
+// ICC colour space's stream dictionary is fetched for /N), never the image data.
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
+{
+    ImageDictInfo info;
+    info.inlineImg = inlineImg;
+    auto lookup = [dict](const char *key, const char *abbrev) {
+        Object o = dict->lookup(key);
+        if (o.isNull() && abbrev) {
+            o = dict->lookup(abbrev);
+        }
+        return o;
+    };
+    auto filterOf = [](const Object &name) {
+        if (!name.isName()) {
+            return ImageFilter::Other;
+        }
+        const std::string &n = name.getNameString();
+        if (n == "DCTDecode" || n == "DCT") {
+            return ImageFilter::DCT;
+        }
+        if (n == "JPXDecode") {
+            return ImageFilter::JPX;
+        }
+        if (n == "JBIG2Decode") {
+            return ImageFilter::JBIG2;
+        }
+        if (n == "CCITTFaxDecode" || n == "CCF") {
+            return ImageFilter::CCITT;
+        }
+        if (n == "FlateDecode" || n == "Fl") {
+            return ImageFilter::Flate;
+        }
+        if (n == "LZWDecode" || n == "LZW") {
+            return ImageFilter::LZW;
+        }
+        if (n == "RunLengthDecode" || n == "RL") {
+            return ImageFilter::RunLength;
+        }
+        if (n == "ASCIIHexDecode" || n == "AHx" || n == "ASCII85Decode" || n == "A85") {
+            return ImageFilter::None;
+        }
+        return ImageFilter::Other;
+    };
+    Object filter = lookup("Filter", "F");
+    if (filter.isName()) {
+        info.filters = 1;
+        info.filter = filterOf(filter);
+    } else if (filter.isArray()) {
+        const int n = filter.arrayGetLength();
+        info.filters = static_cast<uint8_t>(std::clamp(n, 0, 255));
+        if (n > 0) {
+            info.filter = filterOf(filter.arrayGet(n - 1));
+        }
+    } else if (!filter.isNull()) {
+        info.filters = 1;
+        info.filter = ImageFilter::Other;
     }
-    out->imageGeometry(state, width, height, im.isBool() && im.getBool(), ref);
+    Object bpc = lookup("BitsPerComponent", "BPC");
+    if (bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 32) {
+        info.bpc = static_cast<uint8_t>(bpc.getInt());
+    }
+    Object im = lookup("ImageMask", "IM");
+    info.imageMask = im.isBool() && im.getBool();
+    auto colorOfName = [](const std::string &n) {
+        if (n == "DeviceGray" || n == "G" || n == "CalGray") {
+            return ImageColor::Gray;
+        }
+        if (n == "DeviceRGB" || n == "RGB" || n == "CalRGB") {
+            return ImageColor::RGB;
+        }
+        if (n == "DeviceCMYK" || n == "CMYK") {
+            return ImageColor::CMYK;
+        }
+        if (n == "Indexed" || n == "I") {
+            return ImageColor::Indexed;
+        }
+        if (n == "Lab") {
+            return ImageColor::Lab;
+        }
+        if (n == "Separation") {
+            return ImageColor::Separation;
+        }
+        if (n == "DeviceN") {
+            return ImageColor::DeviceN;
+        }
+        return ImageColor::Other;
+    };
+    auto colorOf = [&](const Object &cs) {
+        if (cs.isName()) {
+            return colorOfName(cs.getNameString());
+        }
+        if (cs.isArray() && cs.arrayGetLength() >= 1) {
+            Object family = cs.arrayGet(0);
+            if (!family.isName()) {
+                return ImageColor::Other;
+            }
+            if (family.isName("ICCBased") && cs.arrayGetLength() >= 2) {
+                Object icc = cs.arrayGet(1);
+                if (icc.isStream()) {
+                    Object n = icc.getStream()->getDict()->lookup("N");
+                    if (n.isInt()) {
+                        switch (n.getInt()) {
+                        case 1:
+                            return ImageColor::ICC1;
+                        case 3:
+                            return ImageColor::ICC3;
+                        case 4:
+                            return ImageColor::ICC4;
+                        default:
+                            break;
+                        }
+                    }
+                }
+                return ImageColor::Other;
+            }
+            return colorOfName(family.getNameString());
+        }
+        return ImageColor::Other;
+    };
+    Object cs = lookup("ColorSpace", "CS");
+    if (!cs.isNull()) {
+        info.color = colorOf(cs);
+        // an inline image may name a colour space of the resources (one level)
+        if (inlineImg && cs.isName() && info.color == ImageColor::Other) {
+            Object named = res->lookupColorSpace(cs.getNameString());
+            info.color = named.isNull() ? ImageColor::Other : colorOf(named);
+        }
+    } else if (info.imageMask) {
+        info.color = ImageColor::None;
+    }
+    Object smask = dict->lookup("SMask");
+    Object smaskInData = dict->lookup("SMaskInData");
+    info.softMask = smask.isStream() || (smaskInData.isInt() && smaskInData.getInt() > 0);
+    Object mask = dict->lookup("Mask");
+    info.mask = mask.isArray() || mask.isStream();
+    Object decode = lookup("Decode", "D");
+    info.decode = !decode.isNull();
+    info.copy = classifyImageCopy(info);
+    return info;
 }
 
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
@@ -4349,11 +4530,8 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 
     // an inline image is read from the content stream either way; tell a geometry-only device
     if (inlineImg && ocState && !out->needNonText() && out->needImageGeometry() && !singular_matrix) {
-        Object imObj = dict->lookup("ImageMask");
-        if (imObj.isNull()) {
-            imObj = dict->lookup("IM");
-        }
-        out->imageGeometry(state, width, height, imObj.isBool() && imObj.getBool(), Ref::INVALID());
+        const ImageDictInfo info = readImageDictInfo(dict, true);
+        out->imageGeometry(state, width, height, info.imageMask, Ref::INVALID(), info);
     }
 
     // image interpolation
@@ -5214,6 +5392,7 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
                 const std::string &name1 = args[1].getNameString();
                 MarkedContentStack *mc = mcStack;
                 mc->kind = gfxMCOptionalContent;
+                ++ocLayerDepth;
                 Object markedContent = res->lookupMarkedContentNF(name1);
                 if (!markedContent.isNull()) {
                     bool visible = contentConfig->optContentIsVisible(&markedContent);
@@ -5283,6 +5462,9 @@ void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
 
     // pop the stack
     popMarkedContent();
+    if (mcKind == gfxMCOptionalContent && ocLayerDepth > 0) {
+        --ocLayerDepth;
+    }
 
     if (mcKind == gfxMCActualText) {
         out->endActualText(state);
