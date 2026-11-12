@@ -276,7 +276,7 @@ fn book(rng: &mut Rng) -> Vec<String> {
             } else if rng.below(15) != 0 {
                 let ch = (i - covers) / chapter_len;
                 s += &line(40.0, body, &format!("Chapter {ch} running head"));
-                if (i - covers) % chapter_len == 0 {
+                if (i - covers).is_multiple_of(chapter_len) {
                     s += &line(120.0, body * 1.6, &format!("Heading of chapter {ch}"));
                 }
                 for k in 0..(4 + rng.below(8)) {
@@ -395,8 +395,7 @@ fn the_document_work_budget_is_where_a_range_can_still_differ() {
     let w = 4;
     let whole_win = Window { furniture: Some(w), ..Window::default() };
     let full = converted(&doc, whole_win.clone(), Options::default(), &Params::default()).1;
-    let mut p = Params::default();
-    p.max_doc_work = full.doc_work as f64 / 2.0;
+    let p = Params { max_doc_work: full.doc_work as f64 / 2.0, ..Params::default() };
     let (want, whole) = converted(&doc, whole_win.clone(), Options::default(), &p);
     assert!(whole.degraded.iter().any(|(_, d)| *d == doppler_md::Degraded::DocWork));
     let (f, l) = (n - 6, n - 1);

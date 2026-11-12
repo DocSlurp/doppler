@@ -250,3 +250,108 @@ fn a_failing_pdftotext_fails_the_run_and_only_a_window_writes_early_pages() {
     assert_eq!(streamed.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&streamed.stdout), "first\x0csecond");
 }
+
+/// An `n`-page Helvetica PDF: three cover pages in large print, then chapters of six pages,
+/// each with its own running header, a document-wide footer, a page number and body lines.
+fn book_pdf(n: usize) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {n} >>",
+            (0..n).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" ")
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for i in 0..n {
+        let mut c = String::new();
+        if i < 3 {
+            c += &format!("BT /F1 26 Tf 72 500 Td (Cover page {i} of a generated volume) Tj ET\n");
+        } else {
+            let ch = (i - 3) / 6;
+            c += &format!("BT /F1 10 Tf 72 760 Td (Chapter {ch} running head) Tj ET\n");
+            if (i - 3) % 6 == 0 {
+                c += &format!("BT /F1 16 Tf 72 700 Td (Heading of chapter {ch}) Tj ET\n");
+            }
+            for k in 0..6 {
+                c += &format!(
+                    "BT /F1 10 Tf 72 {} Td (Body line {k} of page {i}, with words enough to read as prose.) Tj ET\n",
+                    660 - 14 * k
+                );
+            }
+            c += "BT /F1 8 Tf 72 40 Td (Generated Press Confidential) Tj ET\n";
+            c += &format!("BT /F1 8 Tf 300 28 Td ({}) Tj ET\n", i + 1);
+        }
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            5 + 2 * i
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{c}endstream", c.len()));
+    }
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, obj) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    let mut tail = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for o in offsets {
+        tail += &format!("{o:010} 00000 n \n");
+    }
+    tail += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+    pdf.extend_from_slice(tail.as_bytes());
+    pdf
+}
+
+#[test]
+fn ranges_with_context_and_the_estimated_body_match_a_whole_run() {
+    let Some(pdftotext) = pdftotext() else {
+        eprintln!("skipped: set PDFTOTEXT to the DocSlurp pdftotext (or build it in ../../build)");
+        return;
+    };
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-context-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let pdf = scratch.0.join("book.pdf");
+    // six whole chapters: every running header repeats
+    let n = 39;
+    std::fs::write(&pdf, book_pdf(n)).unwrap();
+    let pdf = pdf.to_str().unwrap();
+    for window in [&["--window", "4", "--body-pages", "32"][..], &["--window", "2", "--body-pages", "8"]] {
+        let whole = run(&pdftotext, &[window, &[pdf]].concat());
+        assert!(whole.status.success());
+        let whole = String::from_utf8(whole.stdout).unwrap();
+        let pages: Vec<&str> = whole.split('\x0c').collect();
+        assert_eq!(pages.len(), n);
+        // running headers and the footer are gone, the covers did not set the body size
+        assert!(!whole.contains("running head") && !whole.contains("Confidential"), "{window:?}");
+        assert!(whole.contains("# Heading of chapter 1"), "{window:?}");
+        let est = run(&pdftotext, &[window, &["--estimate-body", pdf]].concat());
+        assert!(est.status.success());
+        let est: serde_json::Value = serde_json::from_slice(&est.stdout).unwrap();
+        let (size, color) = (est["body_size"].to_string(), est["body_color"].as_str().unwrap().to_string());
+        assert_eq!(size, "10");
+        let mut shards = Vec::new();
+        for (f, l) in [(1, 7), (8, 21), (22, 22), (23, 39)] {
+            let (fs, ls) = (f.to_string(), l.to_string());
+            let args =
+                ["--report", "--body-size", &size, "--body-color", &color, "-f", &fs, "-l", &ls, "--context", "16"];
+            let r = run(&pdftotext, &[window, &args, &[pdf]].concat());
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+            let report: serde_json::Value =
+                serde_json::from_str(String::from_utf8_lossy(&r.stderr).lines().next().unwrap()).unwrap();
+            let range = &report["range"];
+            assert_eq!(range["first_page"], f);
+            assert_eq!(range["context_before"], (f - 1).min(16));
+            assert_eq!(range["context_after"], (n - l).min(16));
+            assert_eq!(report["pages"], l - f + 1);
+            let why: Vec<&str> = range["identity"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(why, if f > 1 { vec!["doc_work"] } else { vec![] }, "{f}-{l}");
+            shards.push(String::from_utf8(r.stdout).unwrap());
+        }
+        assert_eq!(shards.join("\x0c"), whole, "{window:?}");
+    }
+    // without the body and the context, a range says what may differ
+    let r = run(&pdftotext, &["--window", "4", "--report", "-f", "20", "-l", "25", pdf]);
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(err.contains("\"identity\":[\"body\",\"context\",\"doc_work\"]"), "{err}");
+}
