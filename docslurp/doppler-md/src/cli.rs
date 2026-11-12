@@ -185,19 +185,19 @@ pub struct WindowArgs {
 }
 
 /// Help text for [`WindowArgs`].
-pub const WINDOW_HELP: &str = "\
-  --stream         write pages as they are converted: --window 4 (body from 32 text pages)
-  --window N       furniture window: running headers/footers, repeated watermark words and
-                   pictures are judged over the N pages either side of each page (not the whole
-                   document); each page is written once the next N are complete and the body
-                   sample is taken. 4 is the measured best; 2 removes some content, 0 removes
-                   no repeated content at all
-  --body-pages N   estimate the body font size and colour from the pages up to the N-th with
-                   text; no page is written before then (default with a window: 32; without
-                   one, the whole document)
-  --body-size PT   use this body font size instead of an estimate (the report's body_size)
-  --body-color C   use this body colour instead of an estimate (the report's body_color)
-";
+pub const WINDOW_HELP: &str = concat!(
+    "  --stream       write pages as they are converted: --window 4, body from 32 pages with text\n",
+    "  --window N     furniture window: running headers/footers, repeated watermark words and\n",
+    "                 pictures are judged over the N pages either side of each page (not the\n",
+    "                 whole document); each page is written once the next N are complete and\n",
+    "                 the body sample is taken. 4 measured best; 2 removes some content; 0\n",
+    "                 removes no repeated content at all\n",
+    "  --body-pages N estimate the body font size and colour from the pages up to the N-th with\n",
+    "                 text (at most 2N pages); none is written before then (default with a\n",
+    "                 window: 32; without one, the whole document)\n",
+    "  --body-size PT use this body font size, not an estimate (the report's body_size)\n",
+    "  --body-color C use this body colour, not an estimate (the report's body_color)\n",
+);
 
 impl WindowArgs {
     /// Takes `flag` (and its value from `next`) when it is one of these options.
