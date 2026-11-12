@@ -229,6 +229,18 @@ a scanned book never starves the figures nor the reverse. The document ceiling
 8 x `--images-max-bytes` + 4 x `--scan-max-bytes` (64 MiB..64 GiB): decoded scans arrive as raw
 samples. `--scan-pages` and `--scan-max-words` join the images plan's settings digest.
 
+**Performance** (synthetic 500-page books, 2550 x 3300 at 300 dpi, one image object per page,
+whole-document `--images-dir`, this 8-core machine under other load; wall, CPU of the process
+tree, peak RSS):
+
+| Book | `--scan-pages image` (copy) | `--scan-pages render` (150 dpi WebP) | before (scans rendered as pictures) |
+|---|---|---|---|
+| grey DCT, 0.94 MB a page | 4.2 s, 4.8 CPU-s, 23 MiB: 500 `.jpg` (the stored bytes), about 7,200 pages a minute | 94.5 s, 124.5 CPU-s, 114 MiB: 500 `.webp` | failed after 21.9 s (`output limit`), 0 files |
+| CCITT G4, 0.11 MB a page | 8.3 s, 9.6 CPU-s, 23 MiB: 500 1-bit `.png` (decode 7.7 CPU-s, PNG 1.1 s), about 3,600 pages a minute | 91.9 s, 122.6 CPU-s, 115 MiB: 500 `.webp` | failed after 24.8 s (`output limit`), 0 files |
+
+("Before" is the previous release with `--params '{"watermarks": false}'`, since it otherwise
+called a text-less scan repeated at one size a watermark and extracted nothing.)
+
 ## Watermarks
 
 Large pale or diagonal text and repeated backdrops are not content (parameter `watermarks`, on by
