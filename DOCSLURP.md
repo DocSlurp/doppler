@@ -141,6 +141,10 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
 - `pdftotext -images` also writes the scan verdict (`scan=`, `scanImage=` on `<page>`) and
   each image's dictionary facts (`filter=`, `bpc=`, `cs=`, `smask=`, `decode=`, `inline=`,
   `copy=` on `<image>`), appended last; the facts and the XHTML use the same classifier.
+- The scan test's thresholds are options of all three tools: `-scan-min-coverage F`
+  (0.85), `-scan-max-words N` (20) and `-scan-layer-overlap F` (0.5) in pdfpagefacts and
+  pdftotext (`pdftomarkdown --scan-max-words N`). A changed one is recorded on the doc line (`scanThresholds`); with the
+  defaults the lines are byte-identical to before.
 - Page counts for billing stay with `pdfpagecount`: `pageCount` in the doc line is what
   poppler processes.
 

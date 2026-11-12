@@ -112,6 +112,24 @@ def scans_pdf():
     )
 
 
+def scan_thresholds_pdf():
+    """One page at each scan threshold's boundary (-scan-min-coverage, -scan-layer-overlap,
+    -scan-max-words); with the defaults none of them is layered or a scan beyond page 2's single."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Im1 {0} 0 R /Im2 {1} 0 R >> >>"
+    full = "q 612 0 0 792 0 0 cm /Im1 Do Q\n"
+    return doc(
+        [
+            # one image over 650/792 = 0.8207 of the page (grid union 53/64 = 0.828)
+            {"content": "q 612 0 0 650 0 0 cm /Im1 Do Q\n", "resources": res},
+            # a full-page image and a second over 330/792 = 0.4167 of the page, on top of it
+            {"content": full + "q 612 0 0 330 0 0 cm /Im2 Do Q\n", "resources": res},
+            # a full-page image under 25 visible words
+            {"content": full + words(25), "resources": res},
+        ],
+        extras=[image("/DCTDecode"), image("/FlateDecode", 2550, 1100, "/DeviceGray", 8)],
+    )
+
+
 CMAP = b"""/CIDInit /ProcSet findresource begin 12 dict begin begincmap
 /CMapName /Odd def 1 begincodespacerange <00> <FF> endcodespacerange
 4 beginbfchar <41> <E000> <42> <FFFD> <43> <2211> <44> <0001> endbfchar
@@ -541,6 +559,7 @@ def multipage_pdf():
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
+    "scan_thresholds": scan_thresholds_pdf,
     "fonts": fonts_pdf,
     "images": images_pdf,
     "vectors": vectors_pdf,

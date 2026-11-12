@@ -52,6 +52,16 @@
         "type": { "const": "doc" },
         "level": { "enum": ["basic", "full"] },
         "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 8, "uniqueItems": true },
+        "scanThresholds": {
+          "description": "Present only when a scan threshold is not its default (minCoverage 0.85, maxVisibleWords 20, layerOverlap 0.5): the thresholds every page's scan verdict used.",
+          "type": "object",
+          "required": ["minCoverage", "maxVisibleWords", "layerOverlap"],
+          "properties": {
+            "minCoverage": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "maxVisibleWords": { "$ref": "#/$defs/count" },
+            "layerOverlap": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          }
+        },
         "error": { "enum": ["open-failed", "damaged"] },
         "locked": { "type": "boolean" },
         "pageCount": { "$ref": "#/$defs/count" },

@@ -79,8 +79,25 @@ struct GlyphVisibility
 };
 POPPLER_PRIVATE_EXPORT GlyphVisibility glyphVisibility(const GfxState *state, double x, double y, double dx, double dy, double fontSize, int rot);
 
+// The thresholds of the scan test (classifyScan): the share of the page one image, or the
+// union of the images, must cover; the most visible words a scan may carry; and the share of
+// the page a second image must cover to count as a layer on the scan (when it overlaps it).
+struct POPPLER_PRIVATE_EXPORT ScanThresholds
+{
+    static constexpr double defaultMinCoverage = 0.85;
+    static constexpr size_t defaultMaxVisibleWords = 20;
+    static constexpr double defaultLayerOverlap = 0.5;
+    double minCoverage = defaultMinCoverage;
+    size_t maxVisibleWords = defaultMaxVisibleWords;
+    double layerOverlap = defaultLayerOverlap;
+    bool isDefault() const { return minCoverage == defaultMinCoverage && maxVisibleWords == defaultMaxVisibleWords && layerOverlap == defaultLayerOverlap; }
+    // Parses a share of the page in (0, 1]: the whole string a finite decimal number
+    // (locale-independent). false otherwise, and <share> is left alone.
+    static bool parseShare(const char *text, double *share);
+};
+
 POPPLER_PRIVATE_EXPORT const char *scanKindName(ScanVerdict::Kind kind);
-POPPLER_PRIVATE_EXPORT ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth, double pageHeight, size_t visibleWords, size_t maxWords);
+POPPLER_PRIVATE_EXPORT ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth, double pageHeight, size_t visibleWords, const ScanThresholds &thresholds = {});
 
 // A 64x64 occupancy grid over the page: a box marks the cells whose centres it contains, so
 // coverage is quantised to 1/64 of a side and a box costs one OR per row it spans.
@@ -114,7 +131,6 @@ public:
         AllFamilies = (1u << 8) - 1
     };
     static constexpr const char *schemaName = "doppler-page-facts/1";
-    static constexpr size_t defaultScanMaxWords = 20;
 
     // Parses "basic" or "full" into families (0 or AllFamilies).
     static bool parseLevel(const char *text, unsigned *families);
@@ -129,7 +145,8 @@ public:
 
     unsigned families() const { return fams; }
     bool wants(unsigned family) const { return (fams & family) != 0; }
-    void setScanMaxWords(size_t n) { scanMaxWords = n; }
+    // Not the defaults: the doc line records them (scanThresholds).
+    void setScanThresholds(const ScanThresholds &t) { scanThresholds = t; }
     void setTiming(bool on) { timing = on; }
 
     //----- driver (pdftotext, pdfpagefacts)
@@ -188,7 +205,7 @@ private:
     unsigned fams;
     bool needTally;
     bool timing = false;
-    size_t scanMaxWords = defaultScanMaxWords;
+    ScanThresholds scanThresholds;
     GfxOpTally tally;
     int emitted = 0, failed = 0;
     XRef *docXref = nullptr; // the document's, for xref-repaired

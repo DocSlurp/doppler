@@ -67,6 +67,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | field | meaning |
 |---|---|
 | `level`, `include` | what was computed |
+| `scanThresholds` | only when a scan threshold is not its default: `minCoverage` (0.85), `maxVisibleWords` (20) and `layerOverlap` (0.5) as every page's scan test used them (below); on error lines too |
 | `error` | `open-failed` (cannot read the file) or `damaged` (not a PDF poppler can repair): the run ends, exit 1 |
 | `locked` | `true`: encrypted and the password is needed; the line holds only `locked`, `encryption` and `unusualFeatures`; exit 2 |
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
@@ -169,7 +170,7 @@ and the scan test of a page never depend on the pages before it.
 | `imageCount` | images |
 | `imageCoverage` | grid union of their visible boxes |
 | `largestImageCoverage` | the largest one's box over the page |
-| `fullPageImage` | one image, or the union of several, covers at least 0.85 of the page, whatever the words |
+| `fullPageImage` | one image, or the union of several, covers at least 0.85 of the page (`-scan-min-coverage`), whatever the words |
 | `scan` | `none`, `single`, `tiled` or `layered` (below) |
 | `scanImage` | with a scan: the 1-based position of the covering image in the page's list (the `M` of pdftomarkdown's `pN.M` ids) |
 | `maskCount`, `inlineCount` | stencil masks; inline images |
@@ -194,12 +195,26 @@ whose component count matches the colour space and whose size matches `/Width` a
 `/Height`), since a hostile dictionary can say anything.
 
 **Scan detection** (shared with `pdftotext -images`, which writes `scan="..." scanImage="K"`
-on `<page>`): `fullPageImage`, and at most 20 visible words (`-scan-max-words N`;
-`pdftomarkdown --scan-max-words N`). Then `single` when one image covers at least 0.85 of
-the page by itself; `layered` when that image has a `/SMask` or `/Mask`, or another image
-(a stencil text layer, say) covering at least half the page overlaps it by at least a
-quarter of the page (mixed raster content); `tiled` when only the union reaches 0.85
-(strips, tiles), `layered` again if two half-page images of the union overlap.
+on `<page>`): `fullPageImage`, and at most 20 visible words. Then `single` when one image
+covers at least 0.85 of the page by itself; `layered` when that image has a `/SMask` or
+`/Mask`, or another image (a stencil text layer, say) covering at least half the page
+overlaps it by at least a quarter of the page (mixed raster content); `tiled` when only the
+union reaches 0.85 (strips, tiles), `layered` again if two half-page images of the union
+overlap.
+
+Three thresholds can be changed, in `pdfpagefacts` and `pdftotext` (both the facts and
+`scan=`; `pdftomarkdown --scan-max-words N` passes the word threshold on). A changed threshold
+is recorded on the doc line (`scanThresholds`, all three values); with the defaults the
+output is unchanged, byte for byte.
+
+| option | default | meaning |
+|---|---|---|
+| `-scan-min-coverage F` | 0.85 | the share of the page one image, or the union, must cover (also `fullPageImage`); in (0, 1] |
+| `-scan-max-words N` | 20 | a page with more visible words is not a scan |
+| `-scan-layer-overlap F` | 0.5 | the share of the page a second image must cover to count as a layer (it must still overlap the scan by a quarter of the page); in (0, 1] |
+
+A share is a plain decimal (`0.8`, `.8`, `1`; no exponent, sign, `inf` or `nan`); anything
+else, or a value outside (0, 1], is a usage error (exit 99).
 
 ### `vectors` (`vectors`)
 
