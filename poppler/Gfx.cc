@@ -4307,13 +4307,13 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     if (width < 1 || height < 1) {
         return;
     }
-    const ImageDictInfo info = readImageDictInfo(dict, false);
+    const ImageDictInfo info = readImageDictInfo(dict, false, res);
     out->imageGeometry(state, width, height, info.imageMask, ref, info);
 }
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
 // ICC colour space's stream dictionary is fetched for /N), never the image data.
-ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources)
 {
     ImageDictInfo info;
     info.inlineImg = inlineImg;
@@ -4437,8 +4437,8 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
     if (!cs.isNull()) {
         info.color = colorOf(cs);
         // an inline image may name a colour space of the resources (one level)
-        if (inlineImg && cs.isName() && info.color == ImageColor::Other) {
-            Object named = res->lookupColorSpace(cs.getNameString());
+        if (inlineImg && resources && cs.isName() && info.color == ImageColor::Other) {
+            Object named = resources->lookupColorSpace(cs.getNameString());
             info.color = named.isNull() ? ImageColor::Other : colorOf(named);
         }
     } else if (info.imageMask) {
@@ -4539,7 +4539,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 
     // an inline image is read from the content stream either way; tell a geometry-only device
     if (inlineImg && ocState && !out->needNonText() && out->needImageGeometry() && !singular_matrix) {
-        const ImageDictInfo info = readImageDictInfo(dict, true);
+        const ImageDictInfo info = readImageDictInfo(dict, true, res);
         out->imageGeometry(state, width, height, info.imageMask, Ref::INVALID(), info);
     }
 

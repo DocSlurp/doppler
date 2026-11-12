@@ -6187,6 +6187,23 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     const double sideY = std::hypot((x[2] - x[0]) * 72.0 / hdpi, (y[2] - y[0]) * 72.0 / vdpi);
     TextImage image { x0, y0, x1, y1, width, height, stencil, ref };
     image.info = info;
+    // the image's column direction (unit x) and row direction (from its first row, at unit
+    // y = 1, down to its last) in device space, which is y down
+    {
+        const double cx = x[1] - x[0], cy = y[1] - y[0], rx = x[0] - x[2], ry = y[0] - y[2];
+        auto along = [](double major, double minor) { return std::fabs(minor) <= 1e-3 * std::fabs(major); };
+        if (cx > 0 && ry > 0 && along(cx, cy) && along(ry, rx)) {
+            image.orientation = TextImage::Upright;
+        } else if (cy > 0 && rx < 0 && along(cy, cx) && along(rx, ry)) {
+            image.orientation = TextImage::Turned90;
+        } else if (cx < 0 && ry < 0 && along(cx, cy) && along(ry, rx)) {
+            image.orientation = TextImage::Turned180;
+        } else if (cy < 0 && rx > 0 && along(cy, cx) && along(rx, ry)) {
+            image.orientation = TextImage::Turned270;
+        } else {
+            image.orientation = TextImage::OtherOrientation;
+        }
+    }
     image.dpiX = sideX > 0 ? width / (sideX / 72.0) : 0;
     image.dpiY = sideY > 0 ? height / (sideY / 72.0) : 0;
     text->addImage(image, remainingDocImages);

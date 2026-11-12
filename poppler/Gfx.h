@@ -173,6 +173,11 @@ public:
 
     XRef *getXRef() { return xref; }
 
+    // Image dictionary facts (page facts, pdftotext -images, pdfregions copy jobs): dictionary
+    // lookups only, never the image data. <res> resolves an inline image's named colour space
+    // (may be null).
+    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources);
+
     // Interpret a stream or array of streams.
     enum class DisplayType
     {
@@ -368,7 +373,6 @@ private:
     void opXObject(Object args[], int numArgs);
     void doImage(Object *ref, Stream *str, bool inlineImg);
     void reportImageGeometry(Dict *dict, Ref ref);
-    ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg);
     void doForm(Object *str);
 
     // in-line image operators

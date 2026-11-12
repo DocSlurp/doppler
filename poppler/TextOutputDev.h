@@ -618,6 +618,19 @@ struct TextImage
     ImageDictInfo info {}; // what its dictionary says (filter, bits, colour space, masks)
     double dpiX = 0, dpiY = 0; // samples per inch along the image's own axes
     bool pastDocumentCap = false; // kept for page facts and scans only: the document's budget was spent
+    // how the image's rows and columns land on the page (page rotation applied): its first row
+    // at the top and its columns left to right (Upright), turned clockwise by 90, 180 or 270
+    // degrees, or anything else (mirrored, skewed). A copy of the image's own pixels shows the
+    // page only when Upright.
+    enum Orientation : uint8_t
+    {
+        Upright,
+        Turned90,
+        Turned180,
+        Turned270,
+        OtherOrientation
+    };
+    Orientation orientation = Upright;
 };
 
 // A cluster of painted vector drawing that is not axis-aligned (see
