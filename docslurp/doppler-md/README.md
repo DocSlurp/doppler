@@ -80,14 +80,16 @@ byte-identical.
   `N`, the PDF page number, and `M`, the picture's position in pdftotext's list for that page,
   so the id does not change with the layout around it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
   one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
-  body sizes, transitively) are one figure with one marker, at its first image. No marker for
+  body sizes, transitively) are one figure with one marker, at its first image. A full-page
+  scan is a `page-scan` (see [Page scans](#page-scans)). No marker for
   a page background under a text layer (one picture, or a figure of pieces such as the strips
   or tiles of a scan, covering 85% of the page), an image in the header or footer band, a sliver, a
   duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
   12 inside its lines). The report's `images` lists every image the producer reported with
   `id`, `page`, `bbox` (page points, y down, as the words' coordinates), `px`, `kind`
-  (`picture` or `mask`), `placed` (`block`, `inline`, `grouped`, `background`, `furniture`,
-  `small`, `duplicate`, `fragment`), and `members` (the union `bbox` of a figure) or `group`
+  (`picture` or `mask`), `placed` (`block`, `inline`, `page-scan`, `grouped`, `background`,
+  `furniture`, `small`, `duplicate`, `fragment`), `scan` (how a scan's file is made: `jpeg`,
+  `bilevel`, `decode`, `render`) on the images of a scanned page, and `members` (the union `bbox` of a figure) or `group`
   (the figure a grouped image belongs to). A caller crops the page at `bbox` and swaps the
   marker for it. A page that runs out of layout work is written as plain lines with its block
   markers after the text, top to bottom, and those images' entries gain `"degraded": true`.
@@ -148,21 +150,24 @@ A link is the image's path relative to the images folder, after a prefix:
 |---|---|---|
 | picture `p12.3` | `page-0012/image-003.webp` (`.png` with `--raster-format png`) | `images/page-0012/image-003.webp` |
 | vector figure `p12.g1` | `page-0012/figure-001.svg` (`.webp`/`.png` with `--vector-format`) | `images/page-0012/figure-001.svg` |
+| page scan `p12.1` | `page-0012/image-001.jpg` (a JPEG copied unchanged), `.png` (bilevel), else as a picture | `images/page-0012/image-001.jpg` |
 
 Numbers are 1-based and zero-padded to at least 4 digits for the page and 3 for the index
 (page 12345 is `page-12345`). Only `src/extract/layout.rs` maps ids to paths. The link depends
-only on the id and on options known when the Markdown is written (`--images-link-prefix`,
-`--raster-format`, `--vector-format`, `--images-repeats`), never on what extraction later does,
+only on the id, on the producer's attributes and on options known when the Markdown is written
+(`--images-link-prefix`, `--raster-format`, `--vector-format`, `--images-repeats`,
+`--scan-pages`), never on what extraction later does,
 so the Markdown is final before any image exists and is byte-identical with or without
 `--images-dir`: a caller can index the text first and extract the images later (or never).
 `--images-link-prefix P` (default `images/`) may be empty, or up to 128 bytes of
 `A-Z a-z 0-9 . _ ~ / -`, relative (no leading `/`), with no empty or `..` segment, ending in
-`/`; anything else exits 2. These four options are valid with `--markers` alone.
+`/`; anything else exits 2. These five options are valid with `--markers` alone.
 
 A picture that draws the same image object (`ref`) at the same size as an earlier marked one
 (`--images-repeats skip` or `link`, the default `skip`) links to the earlier one's path and gets
 no file of its own (manifest: `reason: repeat`, `repeat_of`), so a repeat never dangles. With
-`keep` every placement has its own path. The report's images give `path` (and `repeat_of`).
+`keep` every placement has its own path (a page scan repeats another only with the same
+extension, and a rendered scan never does). The report's images give `path` (and `repeat_of`).
 Whether a linked file was written is the manifest's to say: a link whose image was not extracted
 (too small, over a budget, outside `--images-pages`) is listed `not-extracted` with the reason,
 so the caller can drop the link or keep only its alt text.
@@ -178,6 +183,51 @@ their links, and the seal is removed. Only the converter can therefore put an im
 `doppler:` comment into the Markdown. A caller should parse markers only from runs made with
 `--markers`, match them case-sensitively, and still trust only ids and paths that the report or
 manifest lists.
+
+### Page scans
+
+A page is a scan when pdftotext says so (`scan="single|tiled|layered" scanImage="K"` on
+`<page>`, from the classifier it shares with page facts: images cover at least 85% of the page
+on a 64 x 64 grid and at most `--scan-max-words` (20) words are visible; render mode 3 OCR text
+is invisible). Its scan image `pN.K` is placed `page-scan` before anything else (no
+`background`, `watermark` or `block` for it), and the page's Markdown starts with
+
+    ![page 12 scan](images/page-0012/image-001.jpg)
+
+followed by a blank line and the page's text as usual (an invisible OCR layer included, so the
+page stays searchable). A tiled scan (strips, tiles) or a layered one (a masked image, or a
+page-sized layer on it: mixed raster content) groups the page's other images of at least 1% of
+the page with the scan image (`grouped`), and its box is their union. Other pictures on a
+scanned page keep their own placement.
+
+The link's extension is decided at conversion from the image's dictionary (pdftotext's
+`copy=`, `orient=`; the data is never read): a single upright scan whose stream is a JPEG to
+copy (sole `DCTDecode`, 8 bits, grey or RGB, no `/Decode`, masks or colour transform) is `.jpg`;
+a bilevel one (CCITT, JBIG2, 1 bpc, no `/Decode`) `.png`; any other single upright image with a
+reference the raster format; a tiled, layered, turned (`orient=`) or inline scan the raster
+format. `--scan-pages` says what to do with scans:
+
+| `--scan-pages` | Markdown | File |
+|---|---|---|
+| `image` (default) | `![page N scan](...)` first | the JPEG stream byte for byte (`source: copy`); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered and turned scans rendered at `--scan-dpi` (`render`) |
+| `render` | the same, always the raster format | rendered at `--scan-dpi` (150, 36..300) |
+| `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
+
+A copy is checked twice: pdfregions answers a copy job only for an image named in that page's
+resources (directly or through forms at most 4 deep) whose dictionary still gives the same
+class, and only a JPEG whose frame (SOF0..2, 8-bit) has the declared size and components and
+which ends in EOI (at most 64 MiB, `-max-copy-bytes`); pdftomarkdown checks the size and the
+markers again. A copy that fails is `not-extracted` with `reason: copy` (and `error`): it is
+never rendered into a file of another extension. A copied JPEG is attacker bytes, as any file
+here: serve it as `image/jpeg` with `nosniff`.
+
+Scans have their own budget per batch, apart from the pictures' and figures': `--scan-max`
+(1000 files) and `--scan-max-bytes` (1 GiB). A scan over it is `not-extracted`
+(`reason: budget`, the batch's `status: budget`, exit 5) and the rest of the batch goes on, so
+a scanned book never starves the figures nor the reverse. The document ceiling
+(`--images-doc-max-bytes`) counts both. The renderer's per-batch output cap is
+8 x `--images-max-bytes` + 4 x `--scan-max-bytes` (64 MiB..64 GiB): decoded scans arrive as raw
+samples. `--scan-pages` and `--scan-max-words` join the images plan's settings digest.
 
 ## Watermarks
 
@@ -369,6 +419,11 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`) |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
+| `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
+| `--scan-dpi N` | `150` | rendered scans (tiled, layered, turned, `--scan-pages render`), 36..300 |
+| `--scan-max-dpi N` | `300` | a decoded scan finer than this is scaled down to it |
+| `--scan-max N` | `1000` | most scan files per batch; past it a scan is `not-extracted` (`budget`) and the batch goes on |
+| `--scan-max-bytes N` | `1GiB` | most scan bytes per batch, likewise |
 
 **Two passes with an images plan.** A run that converts can also write the images plan
 (`--images-plan-out FILE`, with `--markers` or `--images-dir`; FILE must be new and its folder
@@ -376,9 +431,10 @@ is reached without following symbolic links), and a later `--images-dir` run ext
 (`--images-plan FILE`) without running pdftotext or converting again: the same files and
 manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
 and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
-`--stream`/`--window`, `--math`, `--html`) and the version; the extracting run must be given the
-same PDF and options (and the link options above: `--images-link-prefix`, `--images-repeats`,
-`--raster-format`, `--vector-format`; the plan format is version 3), and refuses any difference, or a malformed plan (non-finite coordinates,
+`--stream`/`--window`, `--math`, `--html`, `--scan-max-words`) and the version; the extracting
+run must be given the same PDF and options (and the link options above: `--images-link-prefix`,
+`--images-repeats`, `--raster-format`, `--vector-format`, `--scan-pages`; the plan format is
+version 4, which adds each image's scan source), and refuses any difference, or a malformed plan (non-finite coordinates,
 invalid or repeated ids, an id on another page than its line or outside the range), with exit 2.
 A plan that cannot be written gives exit 6 after the Markdown.
 
@@ -395,7 +451,7 @@ Sizes take `K`/`KiB`, `M`/`MiB`, `G`/`GiB` suffixes. Bad values, an existing DIR
 link anywhere in its path, or `-` (stdin) as input exit 2 before pdftotext runs.
 
 **What gets a file.** Only marked images (`placed` `block` or `inline`) at least the minimum
-side. No file for `watermark`, `furniture`, `duplicate`, `background`, `fragment`, `small`,
+side, and page scans (`page-scan`, whatever their size). No file for `watermark`, `furniture`, `duplicate`, `background`, `fragment`, `small`,
 `text` and `grouped` (grouped images are inside their figure's file: the figure is rendered
 at its union box). A repeat is a marked figure with the same box size (to half a point), pixel
 size and kind as an earlier one and either the same image object (`ref`: known at conversion,
@@ -432,7 +488,7 @@ temporary name in a directory opened without following links, then renamed with
 input gives the same bytes; a DIR without a manifest is garbage). It is the source of truth:
 every link of the Markdown has an entry, and every file in DIR is listed. First line:
 `version` (2), `source_sha256` (the PDF), `link_prefix`, `dpi`, `min_side_pt`, `repeats`,
-`batch_pages`, `complete` (every batch finished); then `batches`, one per line:
+`scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`, `complete` (every batch finished); then `batches`, one per line:
 `{"pages":[A,B],"status":S,"cut_page":N}`, `status` `ok`, `budget`, `doc_budget`, `timeout`,
 `deadline`, `renderer` or `aborted`, and `cut_page` the first page with an image the batch did
 not get to. Then `images`, sorted by page, pictures before figures, by index, one per line:
@@ -440,21 +496,26 @@ not get to. Then `images`, sorted by page, pictures before figures, by index, on
 (`[num,gen]` of the image object, or null: with `sha256`, a key for deduplicating across runs),
 `path` and `link` (null when unlinked; a repeat's are its first placement's), `status`
 (`extracted`, `not-extracted`, `unlinked` for a fate without a link), `reason` for
-`not-extracted` (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`, `error`
+`not-extracted` (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`,
+`scan-pages` (`--scan-pages skip`), `copy` (a scan copy that failed its checks: `error` `jpeg`,
+`size`, `kind`, or the renderer's `copy`, `copysize`, `pixels`, `decode`), `error`
 for a per-image renderer or record error, and the batch stops `budget`, `doc_budget`,
 `timeout`, `deadline`, `renderer`, `aborted`), `error` with `reason: error` (renderer `pixels`,
 `render`, `empty`, `page`, `svgsize`, `renderer`; `mismatch` when a record does not match its
 request in id, size within 1 px of box × dpi, or byte count; `utf8`), `repeat_of`, `format`
-(the link's extension), `source` (`render`, or null without a file), `bytes`, `sha256`, `width`,
+(the link's extension), `source` (`render`; for page scans also `copy`, a JPEG written
+unchanged, and `decode`, samples decoded once; null without a file), `bytes`, `sha256`, `width`,
 `height` (pixels; for SVG the box in points, rounded up; 0 without a file), and `fallback`
 (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB) when it applies. pdfregions
-gets `-max-svg-bytes 8MiB` (larger: `err:svgsize`, raster fallback) and, per batch,
-`-max-output-bytes` of 8 × `--images-max-bytes` (64 MiB..2 GiB). Then `totals` (`images`,
-`linked`, `extracted`, `not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `batches`,
+gets `-max-svg-bytes 8MiB` (larger: `err:svgsize`, raster fallback), `-max-copy-bytes` of
+`--scan-max-bytes` up to 64 MiB, and, per batch, `-max-output-bytes` of 8 × `--images-max-bytes`
++ 4 × `--scan-max-bytes` (64 MiB..64 GiB). Then `totals` (`images`, `linked`, `extracted`,
+`not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `scans`, `scan_bytes`, `batches`,
 `batches_cut`). `--report` gains `path` and `file` per image, `images_written`,
 `images_complete`, `images_confined`, `images_ms` (`render`: the renderer processes' CPU;
 `webp`, `png`, `svg`: encoding and compaction on this thread; `wait`: blocked on the renderer;
-`copy`, `decode`: page scans, 0 for now) and `images_cpu_ms` (the renderers' user and system
+`copy`: checking and writing copied JPEGs; `decode`: converting and scaling decoded scans) and
+`images_cpu_ms` (the renderers' user and system
 CPU from `/proc/self/stat`), and `images_error` on a hard failure.
 
 **Work bounds.** An SVG with more than 200,000 elements or references is not compacted (raster

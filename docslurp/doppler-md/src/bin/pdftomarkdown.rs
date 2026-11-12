@@ -115,7 +115,9 @@ closed once the Markdown is complete, before extraction):
                               300 (150)
   --scan-max-dpi N            a decoded scan finer than this is scaled down to it (300)
   --scan-max N                most scan files per batch (1000); --scan-max-bytes N (1GiB) per
-                              batch. Scans have their own budget: they never use the figures'
+                              batch. Scans have their own budget, apart from --images-max and
+                              --images-max-bytes; a scan over it is not-extracted (budget) and the
+                              batch goes on
   --images-plan-out FILE      with --markers (or --images-dir): also write the images plan (what
                               extraction needs from this conversion, exactly) to FILE, which must
                               not exist; its folder is reached without following symbolic links.
