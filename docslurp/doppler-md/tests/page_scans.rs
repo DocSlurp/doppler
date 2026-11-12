@@ -1,0 +1,358 @@
+//! Full-page scans (`page-scan`): placement from the producer's `scan=`/`scanImage=` and
+//! `copy=`/`orient=` attributes, the `![page N scan](...)` first line, `--scan-pages`, and (with
+//! the real pdftotext and pdfregions) extraction that copies instead of rendering: a JPEG byte
+//! for byte, a bilevel scan as a 1-bit PNG, other samples decoded once, and a scan budget of
+//! its own.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use doppler_md::extract::layout::LinkStyle;
+use doppler_md::extract::settings::ScanPages;
+use doppler_md::images::Fate;
+use doppler_md::{Converter, Options, Params, ParseReport, Report};
+
+fn word(x0: f64, y: f64, text: &str, invisible: bool) -> String {
+    let x1 = x0 + 6.0 * text.len() as f64;
+    format!(
+        "<word xMin=\"{x0}\" xMax=\"{x1}\" yMin=\"{y}\" yMax=\"{}\" fontSize=\"10\" fontName=\"Serif\" baseline=\"{}\"{}>{text}</word>",
+        y + 10.0,
+        y + 8.0,
+        if invisible { " invisible=\"1\"" } else { "" }
+    )
+}
+
+/// `n` lines of five words each.
+fn lines(n: usize, invisible: bool) -> String {
+    (0..n)
+        .map(|k| {
+            let y = 80.0 + 14.0 * k as f64;
+            let words: String =
+                (0..5).map(|i| word(72.0 + 60.0 * i as f64, y, &format!("w{k}x{i}"), invisible)).collect();
+            format!("<block><line>{words}</line></block>")
+        })
+        .collect()
+}
+
+/// An image record as pdftotext -images writes it (`extra`: copy=, orient=, kind=).
+fn image(b: (f64, f64, f64, f64), px: (u32, u32), obj: u32, extra: &str) -> String {
+    format!(
+        "<image xMin=\"{}\" yMin=\"{}\" xMax=\"{}\" yMax=\"{}\" width=\"{}\" height=\"{}\" ref=\"{obj} 0\"{extra}/>",
+        b.0, b.1, b.2, b.3, px.0, px.1
+    )
+}
+
+const FULL: (f64, f64, f64, f64) = (0.0, 0.0, 612.0, 792.0);
+const DCT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\"";
+
+fn page(number: u32, scan: Option<(&str, usize)>, body: &str) -> String {
+    let scan = scan.map(|(k, i)| format!(" scan=\"{k}\" scanImage=\"{i}\"")).unwrap_or_default();
+    format!("<page width=\"612\" height=\"792\" number=\"{number}\"{scan}><flow>{body}</flow></page>")
+}
+
+fn convert(xhtml: &str, scans: ScanPages) -> (Vec<String>, Report) {
+    let p = Params::default();
+    let o = Options { markers: true, ..Options::default() };
+    let mut parse = ParseReport::default();
+    let pages = doppler_md::model::parse_with(xhtml, &mut parse, false);
+    let mut out = Vec::new();
+    let mut c = Converter::new(&p, o, None);
+    c.set_link_style(LinkStyle { scans, ..LinkStyle::default() });
+    for pg in pages {
+        c.push(pg, &mut |_, md| out.push(md));
+    }
+    let report = c.finish(parse, &mut |_, md| out.push(md));
+    (out, report)
+}
+
+fn doc(pages: &[String]) -> String {
+    format!("<doc>{}</doc>", pages.concat())
+}
+
+#[test]
+fn a_scan_without_text_is_a_page_scan_on_every_page() {
+    // the same scan image on three pages used to be a watermark (repeated backdrop) or a block
+    let pages: Vec<String> =
+        (1..=3).map(|n| page(n, Some(("single", 1)), &image(FULL, (2550, 3300), 7 + n, DCT))).collect();
+    let (md, report) = convert(&doc(&pages), ScanPages::Image);
+    for (k, m) in md.iter().enumerate() {
+        let n = k + 1;
+        assert_eq!(m, &format!("![page {n} scan](images/page-{n:04}/image-001.jpg)"));
+    }
+    assert!(report.images.iter().all(|n| n.fate == Fate::PageScan), "{:?}", report.images);
+    assert!(report.to_json().contains("\"placed\":\"page-scan\",\"scan\":\"jpeg\""), "{}", report.to_json());
+}
+
+#[test]
+fn an_ocr_layer_follows_the_scan_marker() {
+    let body = image(FULL, (2550, 3300), 9, DCT) + &lines(6, true);
+    let (md, report) = convert(&doc(&[page(4, Some(("single", 1)), &body)]), ScanPages::Image);
+    let first = md[0].lines().next().unwrap();
+    assert_eq!(first, "![page 4 scan](images/page-0004/image-001.jpg)", "{}", md[0]);
+    assert!(md[0].contains("w0x0"), "the OCR text stays: {}", md[0]);
+    assert!(md[0].find("w0x0").unwrap() > first.len());
+    // before, an image under kept text was a background
+    assert_eq!(report.images[0].fate, Fate::PageScan);
+}
+
+#[test]
+fn a_backdrop_under_two_hundred_words_stays_a_background() {
+    // the producer says no scan (more than 20 visible words): today's placement
+    let body = image(FULL, (2550, 3300), 9, DCT) + &lines(40, false);
+    let (md, report) = convert(&doc(&[page(1, None, &body)]), ScanPages::Image);
+    assert_eq!(report.images[0].fate, Fate::Background);
+    assert!(!md[0].contains("scan]("), "{}", md[0]);
+    assert!(!md[0].contains("](images/"), "{}", md[0]);
+}
+
+#[test]
+fn a_layered_scan_groups_its_layers_and_is_rendered() {
+    // a JPX background with a full-page JBIG2 stencil text layer on it (MRC)
+    let body = image(FULL, (2550, 3300), 5, " filter=\"jpx\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"")
+        + &image(FULL, (2550, 3300), 6, " kind=\"mask\" filter=\"jbig2\" bpc=\"1\" cs=\"none\" copy=\"bilevel\"");
+    let (md, report) = convert(&doc(&[page(2, Some(("layered", 1)), &body)]), ScanPages::Image);
+    assert_eq!(md[0], "![page 2 scan](images/page-0002/image-001.webp)");
+    let n = &report.images;
+    assert_eq!((n[0].fate, n[0].members), (Fate::PageScan, 2));
+    assert_eq!((n[1].fate, n[1].group.as_deref()), (Fate::Grouped, Some("p2.1")));
+    assert_eq!(n[0].scan.map(|s| s.as_str()), Some("render"));
+}
+
+#[test]
+fn tiled_strips_are_one_scan_of_their_union() {
+    let body: String = (0..4)
+        .map(|k| image((0.0, 198.0 * k as f64, 612.0, 198.0 * (k + 1) as f64), (2550, 825), 20 + k, DCT))
+        .collect();
+    let (md, report) = convert(&doc(&[page(6, Some(("tiled", 1)), &body)]), ScanPages::Image);
+    assert_eq!(md[0], "![page 6 scan](images/page-0006/image-001.webp)");
+    let n = &report.images;
+    assert_eq!((n[0].fate, n[0].members, n[0].bbox), (Fate::PageScan, 4, FULL));
+    assert!(n[1..].iter().all(|x| x.fate == Fate::Grouped && x.group.as_deref() == Some("p6.1")));
+}
+
+#[test]
+fn turned_or_unreferenced_scans_are_rendered() {
+    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT} orient=\"90\""));
+    let (md, _) = convert(&doc(&[page(1, Some(("single", 1)), &turned)]), ScanPages::Image);
+    assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)");
+    // bilevel and decodable scans: .png and the raster format
+    let ccitt = image(FULL, (2550, 3300), 9, " filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"");
+    let flate = image(FULL, (2550, 3300), 10, " filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"");
+    let (md, report) =
+        convert(&doc(&[page(1, Some(("single", 1)), &ccitt), page(2, Some(("single", 1)), &flate)]), ScanPages::Image);
+    assert_eq!(
+        md,
+        ["![page 1 scan](images/page-0001/image-001.png)", "![page 2 scan](images/page-0002/image-001.webp)"]
+    );
+    assert_eq!(report.images[1].scan.map(|s| s.as_str()), Some("decode"));
+}
+
+#[test]
+fn scan_pages_skip_and_render() {
+    let body = image(FULL, (2550, 3300), 9, DCT);
+    let xhtml =
+        doc(&[page(1, Some(("single", 1)), &body), page(2, Some(("single", 1)), &(body.clone() + &lines(3, true)))]);
+    // skip: today's placement (a background under text; without text a block marker, or a
+    // watermark when it repeats on enough pages)
+    let (md, report) = convert(&xhtml, ScanPages::Skip);
+    assert!(!md[1].contains("](images/"), "{}", md[1]);
+    assert_eq!((report.images[0].fate, report.images[1].fate), (Fate::Watermark, Fate::Background));
+    assert!(report.images.iter().all(|n| n.scan.is_some()), "still known as scans: not extracted");
+    let (md, report) = convert(&doc(&[page(1, Some(("single", 1)), &body)]), ScanPages::Skip);
+    assert_eq!(md[0], "![image](images/page-0001/image-001.webp)");
+    assert_eq!(report.images[0].fate, Fate::Block);
+    // render: a page scan, always the raster format
+    let (md, report) = convert(&xhtml, ScanPages::Render);
+    assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)");
+    assert!(md[1].starts_with("![page 2 scan](images/page-0002/image-001.webp)\n\n"), "{}", md[1]);
+    assert!(report.images.iter().all(|n| n.fate == Fate::PageScan));
+}
+
+#[test]
+fn hostile_scan_attributes_are_ignored() {
+    // a scanImage past the list, zero, not a number, on a stencil mask, or an unknown kind
+    for (kind, k, extra) in [
+        ("single", "2", ""),
+        ("single", "0", ""),
+        ("single", "1x", ""),
+        ("single", "99999999", ""),
+        ("whole", "1", ""),
+        ("single", "1", " kind=\"mask\""),
+    ] {
+        let body = image(FULL, (2550, 3300), 9, &format!("{DCT}{extra}"));
+        let xhtml = format!(
+            "<doc><page width=\"612\" height=\"792\" number=\"1\" scan=\"{kind}\" scanImage=\"{k}\"><flow>{body}</flow></page></doc>"
+        );
+        let (md, report) = convert(&xhtml, ScanPages::Image);
+        assert!(!md[0].contains("scan]("), "{kind} {k} {extra}: {}", md[0]);
+        assert!(report.images.iter().all(|n| n.fate != Fate::PageScan && n.scan.is_none()));
+    }
+}
+
+// --- the real tools ---------------------------------------------------------------------------
+
+const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
+
+/// pdftotext and pdfregions of this tree (`$PDFTOTEXT`, `$PDFREGIONS` or ../../build/utils)
+/// and python3 for the fixture writer; `None` (the test passes, skipped) without them.
+fn tools() -> Option<(PathBuf, PathBuf)> {
+    let find = |var: &str, name: &str| match std::env::var_os(var).filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/utils").join(name),
+    };
+    let (t, r) = (find("PDFTOTEXT", "pdftotext"), find("PDFREGIONS", "pdfregions"));
+    let usage = Command::new(&r).arg("-h").output().ok()?;
+    let copy = String::from_utf8_lossy(&usage.stderr).contains("-max-copy-bytes");
+    let python = Command::new("python3").arg("-c").arg("pass").status().is_ok_and(|s| s.success());
+    (t.is_file() && copy && python).then_some((t, r))
+}
+
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fixtures(tag: &str) -> Option<(PathBuf, PathBuf, Scratch)> {
+    let Some((t, r)) = tools() else {
+        eprintln!("skipped: needs this tree's pdftotext and pdfregions (copy jobs) and python3");
+        return None;
+    };
+    let d = std::env::temp_dir().join(format!("page-scans-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scan_pdfs.py");
+    let ok = Command::new("python3").arg("-I").arg(script).arg(&d).status().unwrap().success();
+    assert!(ok, "fixture writer failed");
+    Some((t, r, Scratch(d)))
+}
+
+fn run(t: &Path, r: &Path, args: &[&str]) -> Output {
+    Command::new(PDFTOMARKDOWN).args(args).env("PDFTOTEXT", t).env("PDFREGIONS", r).output().unwrap()
+}
+
+fn manifest(dir: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap()
+}
+
+fn entry<'a>(m: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
+    m["images"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("{id} missing: {m}"))
+}
+
+#[test]
+fn whole_scanned_documents_are_copied_not_rendered() {
+    let Some((t, r, s)) = fixtures("copy") else { return };
+    let pdf = s.0.join("scans.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-max-dpi", "72", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout.clone()).unwrap();
+    let pages: Vec<&str> = md.split('\u{c}').collect();
+    assert_eq!(pages.len(), 7, "{md}");
+    assert_eq!(pages[0], "![page 1 scan](images/page-0001/image-001.jpg)");
+    assert!(pages[1].starts_with("![page 2 scan](images/page-0001/image-001.jpg)\n\nScanned line 0"), "{}", pages[1]);
+    assert_eq!(pages[2], "![page 3 scan](images/page-0003/image-001.png)");
+    assert_eq!(pages[3], "![page 4 scan](images/page-0004/image-001.webp)");
+    assert_eq!(pages[4], "![page 5 scan](images/page-0005/image-001.webp)", "turned: rendered");
+    assert_eq!(pages[5], "![page 6 scan](images/page-0006/image-001.webp)", "tiled: rendered");
+    assert!(pages[6].contains("![image](images/page-0007/image-001.webp)"), "{}", pages[6]);
+    // the same Markdown without extraction
+    let plain = run(&t, &r, &["--markers", pdf.to_str().unwrap()]);
+    assert_eq!(plain.stdout, res.stdout);
+    // the JPEG is the embedded stream, byte for byte
+    let jpg = std::fs::read(out.join("page-0001/image-001.jpg")).unwrap();
+    assert_eq!(jpg, std::fs::read(s.0.join("scan.jpg")).unwrap());
+    // the CCITT scan: a 1-bit PNG at its own size
+    let png = std::fs::read(out.join("page-0003/image-001.png")).unwrap();
+    let dec = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+    let info = dec.info();
+    assert_eq!((info.width, info.height, info.bit_depth), (800, 1000, png::BitDepth::One));
+    let m = manifest(&out);
+    assert_eq!(m["complete"], true);
+    assert_eq!(m["scan_pages"], "image");
+    for (id, source, format) in [
+        ("p1.1", "copy", "jpg"),
+        ("p3.1", "decode", "png"),
+        ("p4.1", "decode", "webp"),
+        ("p5.1", "render", "webp"),
+        ("p6.1", "render", "webp"),
+        ("p7.1", "render", "webp"),
+    ] {
+        let e = entry(&m, id);
+        assert_eq!(
+            (e["status"].as_str(), e["source"].as_str(), e["format"].as_str()),
+            (Some("extracted"), Some(source), Some(format)),
+            "{e}"
+        );
+    }
+    assert_eq!(entry(&m, "p1.1")["fate"], "page-scan");
+    // the decoded RGB scan was scaled to --scan-max-dpi (72: one pixel a point)
+    assert_eq!((entry(&m, "p4.1")["width"].as_u64(), entry(&m, "p4.1")["height"].as_u64()), (Some(612), Some(792)));
+    // a rendered scan at --scan-dpi (150)
+    assert_eq!(entry(&m, "p5.1")["width"], 1275);
+    // page 2 repeats page 1's object: its link is page 1's file
+    assert_eq!(
+        (entry(&m, "p2.1")["reason"].as_str(), entry(&m, "p2.1")["repeat_of"].as_str()),
+        (Some("repeat"), Some("p1.1"))
+    );
+    assert_eq!(m["totals"]["scans"], 5);
+}
+
+#[test]
+fn scans_have_their_own_budget() {
+    let Some((t, r, s)) = fixtures("budget") else { return };
+    let pdf = s.0.join("scans.pdf");
+    // the pictures' budget of one file does not touch the scans
+    let out = s.0.join("a");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--images-max", "1", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    assert_eq!((m["totals"]["scans"].as_u64(), m["totals"]["extracted"].as_u64()), (Some(5), Some(6)), "{m}");
+    // two scans per batch: the rest of the scans are not extracted (budget), the picture is
+    let out = s.0.join("b");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-max", "2", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    assert_eq!(m["complete"], false);
+    assert_eq!(m["totals"]["scans"], 2);
+    assert_eq!(entry(&m, "p7.1")["status"], "extracted");
+    let budget = m["images"].as_array().unwrap().iter().filter(|e| e["reason"] == "budget").count();
+    assert_eq!(budget, 3, "{m}");
+    assert_eq!(m["batches"][0]["status"], "budget");
+}
+
+#[test]
+fn scan_pages_skip_extracts_no_scan_and_render_renders_them() {
+    let Some((t, r, s)) = fixtures("modes") else { return };
+    let pdf = s.0.join("scans.pdf");
+    let out = s.0.join("skip");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "skip", pdf.to_str().unwrap()]);
+    let m = manifest(&out);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    assert_eq!(m["totals"]["scans"], 0);
+    assert!(
+        m["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["fate"] != "page-scan" && (e["id"] == "p7.1" || e["status"] != "extracted")),
+        "{m}"
+    );
+    // a scan placed as a block picture keeps its link but gets no file
+    assert_eq!(
+        (entry(&m, "p3.1")["fate"].as_str(), entry(&m, "p3.1")["reason"].as_str()),
+        (Some("block"), Some("scan-pages"))
+    );
+    let out = s.0.join("render");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "render", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout).unwrap();
+    assert!(md.starts_with("![page 1 scan](images/page-0001/image-001.webp)"), "{md}");
+    let m = manifest(&out);
+    let scans: Vec<&serde_json::Value> =
+        m["images"].as_array().unwrap().iter().filter(|e| e["fate"] == "page-scan").collect();
+    assert_eq!(scans.len(), 6);
+    assert!(scans.iter().all(|e| e["source"] == "render" && e["status"] == "extracted"), "{m}");
+}

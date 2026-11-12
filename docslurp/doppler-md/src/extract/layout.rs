@@ -198,14 +198,18 @@ fn sound_box(n: &Note) -> bool {
     [x0, y0, x1, y1].iter().all(|v| v.is_finite()) && x1 > x0 && y1 > y0
 }
 
+/// A placement's repeat key, image object and file extension.
+type FirstKey = (RepeatKey, (u32, u32), &'static str);
+
 /// Assigns links to notes in document order, remembering first placements of image objects
 /// across pages. The converter runs one over each page's notes as it writes the page;
 /// extraction from an images plan runs one over the plan's notes, with the same result.
 #[derive(Debug, Default)]
 pub struct Linker {
     pub style: LinkStyle,
-    /// first marked placement of each (repeat key, image object): its id and path
-    first: HashMap<(RepeatKey, (u32, u32)), (String, String)>,
+    /// first marked placement of each (repeat key, image object, file extension): its id and
+    /// path
+    first: HashMap<FirstKey, (String, String)>,
 }
 
 impl Linker {
@@ -222,11 +226,14 @@ impl Linker {
                 continue;
             }
             let own = note_path(n, &self.style);
+            // a rendered page scan is its page's region, not its image object's pixels alone
+            let rendered_scan = n.fate == Fate::PageScan && n.scan.is_none_or(|s| s == ScanSource::Render);
             if self.style.repeats != Repeats::Keep
                 && sound_box(n)
+                && !rendered_scan
                 && let Some(obj) = n.obj
             {
-                let key = (repeat_key(n), obj);
+                let key = (repeat_key(n), obj, note_extension(n, &self.style));
                 if let Some((id, path)) = self.first.get(&key) {
                     n.repeat_of = Some(id.clone());
                     n.link = Some(path.clone());
@@ -371,6 +378,21 @@ mod tests {
         assert_eq!(n[0].link.as_deref(), Some("page-0004/image-001.jpg"));
         assert_eq!(n[1].link.as_deref(), Some("page-0005/image-002.png"));
         assert_eq!(n[2].link.as_deref(), Some("page-0006/image-001.webp"));
+        // the same object again: a copied scan links to the first copy; a rendered scan of it
+        // (turned, tiled, --scan-pages render) and a picture of another extension do not
+        let mut again =
+            vec![note("p8.1", 8, Some((9, 0))), note("p9.1", 9, Some((9, 0))), note("p10.1", 10, Some((9, 0)))];
+        again[0].fate = Fate::PageScan;
+        again[0].scan = Some(ScanSource::Jpeg);
+        again[1].fate = Fate::PageScan;
+        again[1].scan = Some(ScanSource::Render);
+        l.assign(&mut again);
+        assert_eq!(again[0].link.as_deref(), Some("page-0004/image-001.jpg"));
+        assert_eq!(again[0].repeat_of.as_deref(), Some("p4.1"));
+        assert_eq!(again[1].link.as_deref(), Some("page-0009/image-001.webp"));
+        assert!(again[1].repeat_of.is_none());
+        assert_eq!(again[2].link.as_deref(), Some("page-0010/image-001.webp"));
+        assert!(again[2].repeat_of.is_none());
         // a scan source on a note placed as a picture (--scan-pages skip) does not change it
         let mut m = vec![note("p7.1", 7, None)];
         m[0].scan = Some(ScanSource::Jpeg);
