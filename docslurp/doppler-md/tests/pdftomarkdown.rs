@@ -246,7 +246,7 @@ fn a_failing_pdftotext_fails_the_run_and_only_a_window_writes_early_pages() {
     assert_eq!(whole.status.code(), Some(1));
     assert!(whole.stdout.is_empty(), "{}", String::from_utf8_lossy(&whole.stdout));
     // --window 0 writes a page once the next one opens: "third" waits for the end, which fails
-    let streamed = run(&fake, &["--window", "0", "x.pdf"]);
+    let streamed = run(&fake, &["--window", "0", "--body-pages", "1", "x.pdf"]);
     assert_eq!(streamed.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&streamed.stdout), "first\x0csecond");
 }

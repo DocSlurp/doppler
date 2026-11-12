@@ -172,12 +172,7 @@ fn write_page(
     }
 }
 
-/// `--stream`'s furniture window, in pages either side.
-pub const STREAM_WINDOW: usize = 16;
-/// `--stream`'s body estimate.
-pub const STREAM_BODY: Option<BodySample> = None;
-/// The body estimate of `--window N` without `--body-pages` (`None`: the first N + 1 pages).
-pub const WINDOW_BODY: Option<BodySample> = None;
+use doppler_md::STREAM_WINDOW;
 
 /// The window and body options shared by both binaries.
 #[derive(Default)]
@@ -191,14 +186,15 @@ pub struct WindowArgs {
 
 /// Help text for [`WindowArgs`].
 pub const WINDOW_HELP: &str = "\
-  --stream         write pages as they are converted: --window 16 (and its body estimate)
+  --stream         write pages as they are converted: --window 4 (body from 32 text pages)
   --window N       furniture window: running headers/footers, repeated watermark words and
                    pictures are judged over the N pages either side of each page (not the whole
-                   document); each page is written once the next N are complete. 2 to 4 pages
-                   already find headers and footers; 0 finds none
+                   document); each page is written once the next N are complete and the body
+                   sample is taken. 4 is the measured best; 2 removes some content, 0 removes
+                   no repeated content at all
   --body-pages N   estimate the body font size and colour from the pages up to the N-th with
-                   text; no page is written before then (default: the first window + 1 pages
-                   with --window, the whole document without)
+                   text; no page is written before then (default with a window: 32; without
+                   one, the whole document)
   --body-size PT   use this body font size instead of an estimate (the report's body_size)
   --body-color C   use this body colour instead of an estimate (the report's body_color)
 ";
@@ -243,17 +239,11 @@ impl WindowArgs {
 
     /// The converter window these options ask for.
     pub fn window(&self) -> Window {
-        let furniture = self.window.or(self.stream.then_some(STREAM_WINDOW));
-        let preset = if self.stream && self.window.is_none() {
-            STREAM_BODY
-        } else if furniture.is_some() {
-            WINDOW_BODY
-        } else {
-            None
-        };
         Window {
-            furniture,
-            body: self.body_pages.map(BodySample::TextPages).or(preset),
+            furniture: self.window.or(self.stream.then_some(STREAM_WINDOW)),
+            // None: the library's default (DEFAULT_BODY_PAGES with a window, else the whole
+            // document)
+            body: self.body_pages.map(BodySample::TextPages),
             body_size: self.body_size,
             body_color: self.body_color.clone(),
             ..Window::default()

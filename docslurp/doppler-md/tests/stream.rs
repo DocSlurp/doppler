@@ -146,7 +146,9 @@ fn a_window_covering_the_document_is_exact() {
 fn window_holds_exactly_window_pages_after_each_push() {
     let p = Params::default();
     let w = 3;
-    let mut conv = Converter::new(&p, Options::default(), Some(w));
+    // a body sample no longer than the window: the window alone decides when pages go out
+    let win = Window { furniture: Some(w), body: Some(BodySample::Pages(1)), ..Window::default() };
+    let mut conv = Converter::with(&p, Options::default(), win);
     let mut parser = Parser::new();
     let text = String::from_utf8(pages(20, |_| "Header".into())).unwrap();
     let (mut parsed, mut written) = (0usize, Vec::new());
@@ -210,17 +212,19 @@ fn an_unclosed_word_does_not_hold_back_later_pages() {
     // no `</word>` ever follows (the later pages hold only rules), but the newline after the
     // tag already decides it
     let mut s = String::from("<page><line><word xMin=\"1\" yMin=\"2\" xMax=\"3\" yMax=\"4\">a\n");
-    for _ in 0..30 {
+    for _ in 0..90 {
         s.push_str("<page width=\"612\" height=\"792\"><rule xMin=\"1\" yMin=\"2\" xMax=\"300\" yMax=\"3\"/></page>\n");
     }
     let p = Params::default();
+    // pages without text: the body sample (32 pages with text) stops at 64 pages read, so a
+    // scan without a text layer is held only that long
     let mut conv = Converter::new(&p, Options::default(), Some(2));
     let mut parser = Parser::new();
     let mut written = 0;
     for piece in s.as_bytes().chunks(64) {
         parser.push(std::str::from_utf8(piece).unwrap(), &mut |pg| conv.push(pg, &mut |_, _| written += 1));
     }
-    assert!(written >= 25, "only {written} pages written before the end of the input");
+    assert!(written >= 85, "only {written} pages written before the end of the input");
 }
 
 /// Converts whole pages (each a `<page>` element) with `win`: (pages, report).

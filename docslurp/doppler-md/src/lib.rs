@@ -590,12 +590,23 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
 pub enum BodySample {
     /// over every page of the document (every page waits for the last one)
     Document,
-    /// over the first N pages, blank ones included (the old windowed rule: N = window + 1)
+    /// over the first N pages, blank ones included (the windowed rule before 2026-11:
+    /// N = window + 1, which takes front matter for the body on small windows)
     Pages(usize),
-    /// over the pages up to and including the N-th that has text: pages are held, and none is
-    /// written, until that page arrives (or the input ends)
+    /// over the pages up to and including the N-th that has text, or the first 2N pages when
+    /// fewer have text (scans without a text layer): pages are held, and none is written, until
+    /// then (or the end of the input)
     TextPages(usize),
 }
+
+/// The body sample of a furniture window by default: pages up to the 32nd with text. Measured
+/// on long PDFs (FURNITURE.md), 32 pages give the whole document's body size on 14 of 15 where
+/// the first window + 1 pages gave it on 4 to 13, and 64 pages do no better.
+pub const DEFAULT_BODY_PAGES: usize = 32;
+
+/// The furniture window of `pdftomarkdown --stream` (pages either side): the measured best
+/// balance of running headers removed and content kept (FURNITURE.md).
+pub const STREAM_WINDOW: usize = 4;
 
 /// What a [`Converter`] looks at beyond the page it writes, and which pages it writes.
 #[derive(Clone, Debug, PartialEq)]
@@ -604,8 +615,8 @@ pub struct Window {
     /// pictures are judged over this many pages either side of each page. `None`: over the
     /// whole document (every page waits for the last one).
     pub furniture: Option<usize>,
-    /// Pages the body size and colour are estimated from. `None`: `Pages(furniture + 1)` with
-    /// a furniture window, else `Document`.
+    /// Pages the body size and colour are estimated from. `None`:
+    /// `TextPages(DEFAULT_BODY_PAGES)` with a furniture window, else `Document`.
     pub body: Option<BodySample>,
     /// Body font size given by the caller (no estimate).
     pub body_size: Option<f64>,
@@ -649,7 +660,7 @@ impl Window {
     /// The body sample this window uses.
     pub fn body_sample(&self) -> BodySample {
         self.body.unwrap_or(match self.furniture {
-            Some(w) => BodySample::Pages(w.saturating_add(1)),
+            Some(_) => BodySample::TextPages(DEFAULT_BODY_PAGES),
             None => BodySample::Document,
         })
     }
@@ -801,7 +812,7 @@ impl<'p> Converter<'p> {
             || match self.sample {
                 BodySample::Document => false,
                 BodySample::Pages(n) => self.received >= n,
-                BodySample::TextPages(n) => self.text_pages >= n,
+                BodySample::TextPages(n) => self.text_pages >= n || self.received >= n.saturating_mul(2),
             };
         if !ready {
             return;
@@ -912,7 +923,9 @@ impl<'p> Converter<'p> {
         let sample_cut = match self.sample {
             // the range ended before the sample did
             BodySample::Pages(n) => self.body_info.sample_pages < n,
-            BodySample::TextPages(n) => self.body_info.sample_text_pages < n,
+            BodySample::TextPages(n) => {
+                self.body_info.sample_text_pages < n && self.body_info.sample_pages < n.saturating_mul(2)
+            }
             BodySample::Document => true,
         };
         if !given && (w.first_page > 1 || (w.emit.is_some() && sample_cut)) {
