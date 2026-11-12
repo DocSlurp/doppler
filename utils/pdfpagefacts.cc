@@ -270,7 +270,8 @@ int main(int argc, char *argv[])
     const int last = (lastPage < 1 || lastPage > numPages) ? numPages : lastPage;
     if (last < first) {
         writeOut(facts.runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
-        return fail(exitUsage, "empty page range");
+        // a document without pages is broken; a first page past the last is a usage error
+        return numPages < 1 ? fail(exitOpenError, "document has no pages") : fail(exitUsage, "empty page range");
     }
     doc->skipPageCacheBefore(first);
 
