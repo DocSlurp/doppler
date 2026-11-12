@@ -855,8 +855,20 @@ struct PageFacts::State
 
     void reset(int num)
     {
+        // keep the buffers' memory: they are refilled for every page
+        std::vector<uint64_t> cells = std::move(charCells), inv = std::move(invisibleCells);
+        std::vector<FontSeen> fontBuffer = std::move(fonts);
+        std::vector<AnnotDraw> drawBuffer = std::move(draws);
         *this = State();
         pageNum = num;
+        cells.clear();
+        inv.clear();
+        fontBuffer.clear();
+        drawBuffer.clear();
+        charCells = std::move(cells);
+        invisibleCells = std::move(inv);
+        fonts = std::move(fontBuffer);
+        draws = std::move(drawBuffer);
     }
 };
 
@@ -1195,6 +1207,9 @@ const PageFacts::FontSeen *PageFacts::fontOf(const TextFontInfo *info)
             return &f;
         }
     }
+    if (st->fonts.capacity() < maxFonts) {
+        st->fonts.reserve(maxFonts); // FontSeen pointers stay valid while the page lasts
+    }
     if (st->fonts.size() >= maxFonts) {
         st->fontsTruncated = true;
         return nullptr;
@@ -1299,7 +1314,8 @@ void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double 
     }
     s.vertical += vertical ? n : 0;
     s.rotated += turned ? n : 0;
-    const double col = std::floor(cx * s.cellsPerX), row = std::floor(cy * s.cellsPerY);
+    // truncation is floor for the non-negative values kept (NaN fails the tests)
+    const double col = cx * s.cellsPerX, row = cy * s.cellsPerY;
     if (col >= 0 && col < CoverageGrid::size && row >= 0 && row < CoverageGrid::size) {
         const int cell = static_cast<int>(row) * CoverageGrid::size + static_cast<int>(col);
         s.charCells[cell] += n;
@@ -1710,17 +1726,24 @@ void PageFacts::endPage(const TextPage &text)
             std::sort(xs.begin(), xs.end());
             xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
             if (ys.size() >= 2 && xs.size() >= 2) {
-                std::set<std::pair<double, double>> crossings;
+                // at most 512 x 512 distinct (row, column) pairs: a bitmap
+                std::vector<bool> crossed(ys.size() * xs.size());
+                size_t crossings = 0;
                 for (const TextRule *h : hs) {
                     const double y = std::round(0.5 * (h->yMin + h->yMax));
+                    const size_t yi = std::lower_bound(ys.begin(), ys.end(), y) - ys.begin();
                     for (const TextRule *v : vs) {
                         const double x = std::round(0.5 * (v->xMin + v->xMax));
                         if (x >= h->xMin - 1.5 && x <= h->xMax + 1.5 && y >= v->yMin - 1.5 && y <= v->yMax + 1.5) {
-                            crossings.emplace(y, x);
+                            const size_t xi = std::lower_bound(xs.begin(), xs.end(), x) - xs.begin();
+                            if (yi < ys.size() && xi < xs.size() && !crossed[yi * xs.size() + xi]) {
+                                crossed[yi * xs.size() + xi] = true;
+                                ++crossings;
+                            }
                         }
                     }
                 }
-                gridScore = double(crossings.size()) / (double(ys.size()) * double(xs.size()));
+                gridScore = double(crossings) / (double(ys.size()) * double(xs.size()));
             }
         }
         const std::vector<TextGraphic> clusters = text.getGraphics(3.0);
@@ -1773,6 +1796,7 @@ void PageFacts::endPage(const TextPage &text)
         uint64_t total = 0, visible = 0, linkUri = 0, linkInternal = 0, linkOther = 0;
         uint64_t fText = 0, fCheck = 0, fRadio = 0, fChoice = 0, fSig = 0, fPush = 0, filledN = 0, emptyN = 0, mismatch = 0, signedN = 0, unsignedN = 0;
         bool truncatedAnnots = false;
+        size_t drawCursor = 0;
         if (annots) {
             for (const std::shared_ptr<Annot> &a : annots->getAnnots()) {
                 if (total >= maxAnnots) {
@@ -1782,12 +1806,10 @@ void PageFacts::endPage(const TextPage &text)
                 ++total;
                 const int type = static_cast<int>(a->getType());
                 ++bySubtype[type >= 0 && type <= 26 ? type : 0];
+                // Page::displaySlice draws the annotations in this order: walk the records along
                 const AnnotDraw *draw = nullptr;
-                for (const AnnotDraw &d : s.draws) {
-                    if (d.annot == a.get()) {
-                        draw = &d;
-                        break;
-                    }
+                if (drawCursor < s.draws.size() && s.draws[drawCursor].annot == a.get()) {
+                    draw = &s.draws[drawCursor++];
                 }
                 if (draw && draw->marks > 0) {
                     ++visible;
