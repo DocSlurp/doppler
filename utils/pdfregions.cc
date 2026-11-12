@@ -1119,8 +1119,7 @@ private:
 class Renderer
 {
 public:
-    Renderer(PDFDoc *docA, long long maxPixelsA, size_t maxSvgBytesA, size_t maxCopyBytesA, long long maxCopyPixelsA)
-        : doc(docA), maxPixels(maxPixelsA), maxSvgBytes(maxSvgBytesA), maxCopyBytes(maxCopyBytesA), maxCopyPixels(maxCopyPixelsA)
+    Renderer(PDFDoc *docA, long long maxPixelsA, size_t maxSvgBytesA, size_t maxCopyBytesA, long long maxCopyPixelsA) : doc(docA), maxPixels(maxPixelsA), maxSvgBytes(maxSvgBytesA), maxCopyBytes(maxCopyBytesA), maxCopyPixels(maxCopyPixelsA)
     {
         SplashColor white;
         white[0] = white[1] = white[2] = 255;
@@ -1798,8 +1797,9 @@ int main(int argc, char *argv[])
     long long maxMemory = 0, maxPixels = 0, timeout = 0, maxSvgBytes = 0, maxOutput = 0, maxCopyBytes = 0, maxCopyPixels = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);
     const bool confineOk = strcmp(confineArg, "require") == 0 || strcmp(confineArg, "auto") == 0 || strcmp(confineArg, "off") == 0;
-    const bool limitsOk = confineOk && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout) && parseLimit(maxSvgBytesArg, 1, 1LL << 40, &maxSvgBytes) && parseLimit(maxOutputBytesArg, 1, 1LL << 50, &maxOutput)
-            && parseLimit(maxCopyBytesArg, 1, 1LL << 32, &maxCopyBytes) && parseLimit(maxCopyPixelsArg, 1, 1LL << 32, &maxCopyPixels);
+    const bool limitsOk = confineOk && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout)
+            && parseLimit(maxSvgBytesArg, 1, 1LL << 40, &maxSvgBytes) && parseLimit(maxOutputBytesArg, 1, 1LL << 50, &maxOutput) && parseLimit(maxCopyBytesArg, 1, 1LL << 32, &maxCopyBytes)
+            && parseLimit(maxCopyPixelsArg, 1, 1LL << 32, &maxCopyPixels);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfregions version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
