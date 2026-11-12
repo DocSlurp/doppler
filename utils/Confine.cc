@@ -141,14 +141,18 @@ static bool applySeccomp()
 }
 #endif
 
-Confinement confine()
+Confinement confine(bool loadFontconfig)
 {
     Confinement c;
 #ifdef __linux__
 #    if WITH_FONTCONFIGURATION_FONTCONFIG
     // load fontconfig's configuration and caches now; it may want to write a
     // cache, which is not possible afterwards
-    FcInit();
+    if (loadFontconfig) {
+        FcInit();
+    }
+#    else
+    (void)loadFontconfig;
 #    endif
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         return c;

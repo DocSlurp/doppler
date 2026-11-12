@@ -255,7 +255,8 @@ int main(int argc, char *argv[])
     doc->getXRef()->setFontCache(std::make_shared<GfxFontCache>());
 
     if (strcmp(confineArg, "off") != 0) {
-        const Confinement c = confine();
+        // text extraction loads no system fonts: fontconfig is not initialised first
+        const Confinement c = confine(false);
         if (!c.confined() && !strcmp(confineArg, "require")) {
             return fail(exitUnconfined, "confinement required but not available");
         }

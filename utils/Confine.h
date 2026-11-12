@@ -35,6 +35,9 @@ struct Confinement
     bool confined() const { return landlockAbi > 0 && seccomp; }
 };
 
-Confinement confine();
+// <loadFontconfig>: load fontconfig's configuration and caches first (it may want to write a
+// cache, which is not possible afterwards); a tool that renders text needs it, one that only
+// reads the document (pdfpagefacts) saves the ~8 ms and ~2.5 MiB it costs.
+Confinement confine(bool loadFontconfig = true);
 
 #endif

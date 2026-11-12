@@ -720,6 +720,10 @@ public:
     size_t getInvisibleWordCount() const { return invisibleWordsAdded; }
     size_t getVisibleWordCount() const { return wordsAdded - invisibleWordsAdded; }
 
+    // Free the words not laid out (TextOutputDev::setWordsOnly): coalesce moves them out of
+    // the pools; without it they are deleted here.
+    void discardWords();
+
     // Coalesce strings that look like parts of the same line.
     void coalesce(bool physLayout, double fixedPitch, bool doHTML);
     void coalesce(bool physLayout, double fixedPitch, bool doHTML, double minColSpacing1);

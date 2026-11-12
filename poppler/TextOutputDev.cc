@@ -2536,6 +2536,24 @@ void TextPage::endPage()
     }
 }
 
+void TextPage::discardWords()
+{
+    for (std::unique_ptr<TextPool> &pool : pools) {
+        if (!pool) {
+            continue;
+        }
+        for (TextPool::WordList &list : pool->pool) {
+            TextWord *word = list.head;
+            while (word) {
+                TextWord *next = word->next;
+                delete word;
+                word = next;
+            }
+            list.head = list.tail = nullptr;
+        }
+    }
+}
+
 void TextPage::clear()
 {
     int rot;
@@ -6036,6 +6054,7 @@ void TextOutputDev::endPage()
         facts->endPage(*text);
     }
     if (wordsOnly) {
+        text->discardWords();
         currentPage = nullptr;
         return;
     }

@@ -832,7 +832,8 @@ struct PageFacts::State
     uint64_t control = 0, privateUse = 0, replacement = 0, math = 0, vertical = 0, rotated = 0;
     double smallestFont = INFINITY;
     CoverageGrid textGrid;
-    std::vector<uint32_t> charCells, invisibleCells; // per grid cell (oddtext)
+    std::vector<uint64_t> charCells, invisibleCells; // per grid cell (oddtext)
+    double cellsPerX = 0, cellsPerY = 0; // grid cells per point (0 for an empty page)
     std::vector<FontSeen> fonts;
     bool fontsTruncated = false;
     const TextFontInfo *lastInfo = nullptr;
@@ -1172,6 +1173,9 @@ void PageFacts::startPage(Page *page, double pageWidth, double pageHeight)
         st->charCells.assign(CoverageGrid::size * CoverageGrid::size, 0);
         st->invisibleCells.assign(CoverageGrid::size * CoverageGrid::size, 0);
     }
+    const bool usable = pageWidth > 0 && pageHeight > 0 && std::isfinite(pageWidth) && std::isfinite(pageHeight);
+    st->cellsPerX = usable ? CoverageGrid::size / pageWidth : 0;
+    st->cellsPerY = usable ? CoverageGrid::size / pageHeight : 0;
 }
 
 const PageFacts::FontSeen *PageFacts::fontOf(const TextFontInfo *info)
@@ -1232,9 +1236,12 @@ void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *
 
 void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double fontSize, double x, double y, double dx, double dy, const Unicode *u, int uLen, int rot, bool diagonal)
 {
+    // hot: once per glyph drawn. Counts are bounded by the content stream's size, far below
+    // 2^64, so they are plain increments here.
     State &s = *st;
-    add(s.glyphs, 1);
-    add(s.chars, static_cast<uint64_t>(uLen));
+    const auto n = static_cast<uint64_t>(uLen);
+    ++s.glyphs;
+    s.chars += n;
     // the glyph's centre: half its advance along the baseline, a third of the size up
     double cx = x + 0.5 * dx, cy = y + 0.5 * dy;
     const double up = 0.3 * fontSize;
@@ -1256,56 +1263,47 @@ void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double 
     double clipX0, clipY0, clipX1, clipY1;
     state->getClipBBox(&clipX0, &clipY0, &clipX1, &clipY1);
     const bool clipped = !(cx >= clipX0 && cx <= clipX1 && cy >= clipY0 && cy <= clipY1);
-    if (clipped) {
-        add(s.clippedChars, static_cast<uint64_t>(uLen));
-    }
-    if (invisible || clipped) {
-        add(s.invisibleChars, static_cast<uint64_t>(uLen));
-    }
-    const bool wantFonts = wants(Fonts), wantOdd = wants(OddText);
-    if (!wantFonts && !wantOdd) {
+    s.clippedChars += clipped ? n : 0;
+    s.invisibleChars += (invisible || clipped) ? n : 0;
+    if (!(fams & (Fonts | OddText))) {
         return;
     }
     const FontSeen *f = fontOf(font);
-    if (wantFonts && fontSize > 0 && std::isfinite(fontSize)) {
-        s.smallestFont = std::min(s.smallestFont, fontSize);
+    if (fontSize > 0 && fontSize < s.smallestFont) {
+        s.smallestFont = fontSize;
     }
-    if (!wantOdd) {
+    if (!(fams & OddText)) {
         return;
     }
     const bool vertical = f && f->vertical;
     // vertical writing turns lines a quarter (TextPage::beginWord): that is their upright
     const bool turned = diagonal || rot != (vertical ? 1 : 0);
+    if (f && f->math) {
+        s.math += n;
+    }
     for (int i = 0; i < uLen; ++i) {
         const Unicode c = u[i];
+        if (c >= 0x20 && c < 0x7f) {
+            continue; // printable ASCII: none of the classes below
+        }
         if (c < 0x20 || (c >= 0x7f && c <= 0x9f)) {
-            add(s.control, 1);
+            ++s.control;
         } else if ((c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd)) {
-            add(s.privateUse, 1);
+            ++s.privateUse;
         } else if (c == 0xfffd) {
-            add(s.replacement, 1);
+            ++s.replacement;
         }
-        if ((f && f->math) || (c >= 0x2200 && c <= 0x22ff) || (c >= 0x2a00 && c <= 0x2aff) || (c >= 0x27c0 && c <= 0x27ef) || (c >= 0x2980 && c <= 0x29ff) || (c >= 0x1d400 && c <= 0x1d7ff)) {
-            add(s.math, 1);
+        if (!(f && f->math) && ((c >= 0x2200 && c <= 0x22ff) || (c >= 0x2a00 && c <= 0x2aff) || (c >= 0x27c0 && c <= 0x27ef) || (c >= 0x2980 && c <= 0x29ff) || (c >= 0x1d400 && c <= 0x1d7ff))) {
+            ++s.math;
         }
     }
-    if (vertical) {
-        add(s.vertical, static_cast<uint64_t>(uLen));
-    }
-    if (turned) {
-        add(s.rotated, static_cast<uint64_t>(uLen));
-    }
-    if (s.pageW > 0 && s.pageH > 0 && std::isfinite(cx) && std::isfinite(cy)) {
-        const int col = static_cast<int>(std::floor(cx / s.pageW * CoverageGrid::size));
-        const int row = static_cast<int>(std::floor(cy / s.pageH * CoverageGrid::size));
-        if (col >= 0 && col < CoverageGrid::size && row >= 0 && row < CoverageGrid::size && !s.charCells.empty()) {
-            uint32_t &cell = s.charCells[row * CoverageGrid::size + col];
-            cell += cell != UINT32_MAX ? 1 : 0;
-            if (invisible) {
-                uint32_t &inv = s.invisibleCells[row * CoverageGrid::size + col];
-                inv += inv != UINT32_MAX ? 1 : 0;
-            }
-        }
+    s.vertical += vertical ? n : 0;
+    s.rotated += turned ? n : 0;
+    const double col = std::floor(cx * s.cellsPerX), row = std::floor(cy * s.cellsPerY);
+    if (col >= 0 && col < CoverageGrid::size && row >= 0 && row < CoverageGrid::size) {
+        const int cell = static_cast<int>(row) * CoverageGrid::size + static_cast<int>(col);
+        s.charCells[cell] += n;
+        s.invisibleCells[cell] += invisible ? n : 0;
     }
 }
 
@@ -1540,8 +1538,8 @@ void PageFacts::endPage(const TextPage &text)
             uint64_t overImage = 0, invisibleOverImage = 0, invisibleTotal = 0;
             for (int r = 0; r < CoverageGrid::size; ++r) {
                 for (int c = 0; c < CoverageGrid::size; ++c) {
-                    const uint32_t n = s.charCells[r * CoverageGrid::size + c];
-                    const uint32_t inv = s.invisibleCells[r * CoverageGrid::size + c];
+                    const uint64_t n = s.charCells[r * CoverageGrid::size + c];
+                    const uint64_t inv = s.invisibleCells[r * CoverageGrid::size + c];
                     add(invisibleTotal, inv);
                     if ((imageGrid.rows[r] >> c) & 1) {
                         add(overImage, n);
