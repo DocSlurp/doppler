@@ -1463,6 +1463,7 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
 int main(int argc, char *argv[])
 {
     Win32Console win32Console(&argc, &argv);
+    closeInheritedDescriptors();
 
     long long maxMemory = 0, maxPixels = 0, timeout = 0, maxSvgBytes = 0, maxOutput = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);

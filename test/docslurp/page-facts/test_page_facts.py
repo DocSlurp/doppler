@@ -298,6 +298,74 @@ with t.TempDir() as d:
     p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-page-facts-fd", "3", paths["geometry"], "-"], capture_output=True, pass_fds=())
     t.check(p.returncode == 99, "pdftotext -page-facts-fd without -bbox-layout: usage error")
 
+    # --- council regressions: hostile structure costs, xref streams, clipped text, locality ----------------------------------------------
+    import time
+
+    def timed(path, *extra):
+        start = time.monotonic()
+        rc, out, err = facts(path, *extra)
+        return rc, out, time.monotonic() - start
+
+    # widgets sharing one large indirect /V: fetched once, not once per widget (was 43 s)
+    rc, out, secs = timed(d.write("widgets.pdf", fx.shared_widget_value_pdf()), "-include", "forms")
+    fm = page(lines(out), 1)["forms"] if rc == 0 else {}
+    t.check(rc == 0 and secs < 10 and fm.get("text") == 2000 and fm.get("empty") == 2000, "2000 widgets sharing a large /V: fast, all counted", repr((rc, secs, fm)))
+    check_schema(out, "shared widget value")
+    # name-tree nodes sharing one large /Names array: read once (was 37 s), counted once
+    rc, out, secs = timed(d.write("names.pdf", fx.shared_names_pdf()), "-include", "structure")
+    dl = doc_line(lines(out)) if rc == 0 else {}
+    t.check(rc == 0 and secs < 10 and dl.get("embeddedFiles") == 300000, "1000 name-tree nodes sharing one /Names: fast, counted once", repr((rc, secs, dl.get("embeddedFiles"))))
+    # more than 10^6 entries: capped, flagged, never an overflowed count
+    rc, out, secs = timed(d.write("many-names.pdf", fx.many_names_pdf()), "-include", "structure")
+    dl = doc_line(lines(out)) if rc == 0 else {}
+    t.check(dl.get("embeddedFiles") == 1000000 and "embeddedFiles" in dl.get("truncated", []) and "embedded-files" in dl.get("unusualFeatures", []), "name tree over 10^6 entries: capped at 10^6 and truncated", repr(dl))
+    check_schema(out, "many names")
+    # overlapping /Prev sections: the walk reads a bounded number of bytes (was 10 s)
+    rc, out, secs = timed(d.write("nested-prev.pdf", fx.nested_prev_pdf()), "-include", "structure")
+    t.check(rc == 0 and secs < 6, "nested-string /Prev chain: bounded walk", repr((rc, secs)))
+    check_schema(out, "nested prev")
+    # cross-reference streams: incremental updates are counted
+    for name, want in (("xref_stream", 0), ("xref_stream_update", 1), ("table_then_stream", 1)):
+        dl = doc_line(lines(facts(paths[name], "-include", "structure")[1]))
+        t.check(dl.get("incrementalUpdates") == want and dl.get("xref") != "repaired", "%s: incrementalUpdates %d" % (name, want), repr(dl))
+    t.check("incrementalUpdates" not in doc_line(lines(facts(paths["damaged"], "-include", "structure")[1])), "a rebuilt xref: no incrementalUpdates")
+    # clipped-out text is invisible text: the word counts, text layer and scan test agree
+    ls = lines(facts(paths["clipped_text"], "-level", "full")[1])
+    c1, c2 = page(ls, 1), page(ls, 2)
+    t.check(c1["text"]["visibleWordCount"] == 0 and c1["text"]["invisibleWordCount"] == 50 and c1["text"]["textLayer"] == "invisible" and c1["text"]["visibleCharCount"] == 0, "clipped text: invisible words and layer", repr(c1["text"]))
+    t.check(c2["images"]["scan"] == "single" and c2["text"]["textLayer"] == "invisible" and c2["text"]["invisibleOverFullPageImage"], "clipped OCR layer over a full-page image: a scan", repr((c2["images"].get("scan"), c2["text"])))
+    xc = pdftotext_plain(paths["clipped_text"], images=True).decode()
+    t.check(re.findall(r' scan="(\w+)"', xc) == ["single"], "-images: the clipped OCR page is a scan", repr(re.findall(r"<page [^>]*>", xc)))
+    # the run-wide image budget does not change a later page's facts (page locality)
+    budget = d.write("budget.pdf", fx.image_budget_pdf())
+    whole = lines(facts(budget, "-level", "full")[1])
+    alone = lines(facts(budget, "-level", "full", "-f", "52", "-l", "52")[1])
+    t.check(page(whole, 52) == page(alone, 52) and page(whole, 52)["images"]["scan"] == "single" and not page(whole, 52)["images"]["truncated"], "image budget spent by earlier pages: page 52 unchanged, still a scan", repr(page(whole, 52)["images"]))
+    t.check(pdftotext_facts(budget, "-page-facts-level", "full", images=True)[2] == facts(budget, "-level", "full")[1], "image budget: pdftotext -images facts == pdfpagefacts")
+    # small UserUnit keeps its value (schema minimum 0.0001)
+    uu = d.write("userunit.pdf", fx.doc([{"content": fx.words(5), "extra": "/UserUnit 0.001"}, {"content": fx.words(5), "extra": "/UserUnit 0.00001"}]))
+    out = facts(uu, "-level", "full")[1]
+    check_schema(out, "small UserUnit")
+    t.check([page(lines(out), n)["geometry"]["userUnit"] for n in (1, 2)] == [0.001, 0.0001], "UserUnit 0.001 and a clamped 0.00001", out.decode()[:400])
+    # /Lang: control characters are not dropped into a valid-looking tag; UTF-16 ASCII is read
+    t.check("lang" not in doc_line(lines(facts(d.write("lang2.pdf", fx.structure_pdf("(en-US\\nx)")), "-include", "structure")[1])), "a /Lang with a control character is absent")
+    t.check(doc_line(lines(facts(d.write("lang3.pdf", fx.structure_pdf("<FEFF0065006E002D00470042>")), "-include", "structure")[1])).get("lang") == "en-GB", "a UTF-16 /Lang is read")
+    # copy classes: /DecodeParms on DCT, /Decode on 1-bit, external data
+    items = page(lines(facts(paths["copy_class"], "-level", "full")[1]), 1)["images"]["items"]
+    t.check([i["copy"] for i in items] == ["decode", "decode", "render", "render"], "copy class: DCT with DecodeParms, inverted CCITT, external /F", repr([(i["filter"], i["copy"]) for i in items]))
+    # XFA through an image codec is not decoded
+    t.check(doc_line(lines(facts(d.write("xfa-codec.pdf", fx.forms_pdf("dynamic-codec")), "-include", "forms")[1]))["xfa"] == "static", "an XFA packet behind an image codec is not decoded")
+    # a facts reader that closed its end: pdftotext finishes the XHTML and exits 4
+    r, w = os.pipe()
+    os.close(r)
+    p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", "-page-facts-fd", str(w), paths["multipage"], "-"], capture_output=True, pass_fds=(w,))
+    os.close(w)
+    t.check(p.returncode == 4 and p.stdout == pdftotext_plain(paths["multipage"]), "closed facts reader: no SIGPIPE death, XHTML complete, exit 4", repr(p.returncode))
+    # pdfpagefacts: confinement is required by default
+    rc, out, err = facts(paths["geometry"])
+    t.check(rc == 0 and facts(paths["geometry"], "-confine", "require")[1] == out, "default -confine is require (confined here)", repr((rc, err)))
+    t.check(facts(paths["geometry"], "-timeout", "x")[0] == 99 and facts(paths["geometry"], "-timeout", "30")[0] == 0, "-timeout is checked")
+
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------
     td = os.path.join(args.testdata, "unittestcases") if args.testdata else ""
     if td and os.path.isdir(td):

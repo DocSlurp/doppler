@@ -46,7 +46,7 @@ struct TextImage;
 
 // Scan detection, shared by page facts and pdftotext -images (scan= on <page>): the page's
 // images cover at least scanCover of it (a 64x64 occupancy grid of their visible boxes) and at
-// most maxWords words are visible (not render mode 3).
+// most maxWords words are visible (some glyph not render mode 3 and inside the clip).
 //  Single   one image covers at least scanCover of the page by itself;
 //  Tiled    several images do together (strips, tiles);
 //  Layered  Single, but the covering image has a /SMask or /Mask, or another image (a stencil
@@ -67,6 +67,17 @@ struct ScanVerdict
     double largest = 0; // the largest single image's share of the page, 0..1
     bool fullPageImage = false; // the geometric half of the test, whatever the words
 };
+
+// How a glyph the text pass adds is drawn: in render mode 3 (invisible), and whether its centre
+// (half its advance along the baseline, 0.3 of the font size up) lies outside the clip. A word
+// is invisible when none of its glyphs is visible (TextPage::getInvisibleWordCount).
+struct GlyphVisibility
+{
+    bool invisible = false;
+    bool clipped = false;
+    double cx = 0, cy = 0; // the centre
+};
+POPPLER_PRIVATE_EXPORT GlyphVisibility glyphVisibility(const GfxState *state, double x, double y, double dx, double dy, double fontSize, int rot);
 
 POPPLER_PRIVATE_EXPORT const char *scanKindName(ScanVerdict::Kind kind);
 POPPLER_PRIVATE_EXPORT ScanVerdict classifyScan(const std::vector<TextImage> &images, double pageWidth, double pageHeight, size_t visibleWords, size_t maxWords);
@@ -146,7 +157,7 @@ public:
 
     GfxOpTally *opTally() { return needTally ? &tally : nullptr; }
     void startPage(Page *page, double pageWidth, double pageHeight);
-    void onGlyph(const GfxState *state, const TextFontInfo *font, double fontSize, double x, double y, double dx, double dy, const Unicode *u, int uLen, int rot, bool diagonal);
+    void onGlyph(const TextFontInfo *font, double fontSize, const Unicode *u, int uLen, int rot, bool diagonal, GlyphVisibility visibility);
     void onUnmappedGlyph(const GfxState *state, const TextFontInfo *font, double fontSize);
     void onWord(const TextWord *word);
     void onPath(const GfxState *state, bool filled);

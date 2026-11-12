@@ -4355,7 +4355,9 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
         }
         return ImageFilter::Other;
     };
-    Object filter = lookup("Filter", "F");
+    // /F abbreviates /Filter only in an inline image; in an XObject it names an external file
+    Object filter = lookup("Filter", inlineImg ? "F" : nullptr);
+    info.external = !inlineImg && (!dict->lookupNF("F").isNull() || !dict->lookupNF("FFilter").isNull() || !dict->lookupNF("FDecodeParms").isNull());
     if (filter.isName()) {
         info.filters = 1;
         info.filter = filterOf(filter);
@@ -4449,6 +4451,13 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
     info.mask = mask.isArray() || mask.isStream();
     Object decode = lookup("Decode", "D");
     info.decode = !decode.isNull();
+    // decode parameters that change a DCT stream's colours (/ColorTransform), or any that
+    // cannot be read as a dictionary (or a one-entry array of one)
+    Object parms = lookup("DecodeParms", "DP");
+    if (parms.isArray() && parms.arrayGetLength() == 1) {
+        parms = parms.arrayGet(0);
+    }
+    info.colorTransform = !parms.isNull() && !(parms.isDict() && parms.dictLookupNF("ColorTransform").isNull());
     info.copy = classifyImageCopy(info);
     return info;
 }

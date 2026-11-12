@@ -275,6 +275,7 @@ private:
                      //   word and the next word on the line
     bool underlined;
     bool invisible; // whether we are invisible (glyphless)
+    bool shown = false; // a glyph of it is not render mode 3 and has its centre inside the clip
     TextWord *next; // next word in line
 
     double colorR, // word color
@@ -603,6 +604,7 @@ struct TextRule
     double r, g, b; // stroke or fill colour, 0..1
     bool box; // a filled rectangle that is not thin enough to be a rule
     bool imageMask = false; // a thin stencil image mask (TextOutputDev::setCollectImageMaskRules)
+    bool pastDocumentCap = false; // kept for page facts only: the document's budget was spent
 };
 
 // A visible image (or stencil mask) in the same coordinate space as the page's words (see
@@ -615,6 +617,7 @@ struct TextImage
     Ref ref = Ref::INVALID(); // the image XObject, or INVALID for an inline image
     ImageDictInfo info {}; // what its dictionary says (filter, bits, colour space, masks)
     double dpiX = 0, dpiY = 0; // samples per inch along the image's own axes
+    bool pastDocumentCap = false; // kept for page facts and scans only: the document's budget was spent
 };
 
 // A cluster of painted vector drawing that is not axis-aligned (see
@@ -686,16 +689,23 @@ public:
 
     // Add a visible rule (TextOutputDev::setCollectRules); at most maxRules per
     // page are kept. Consume the caller's document budget even when this page
-    // is full, and mark this page incomplete only if a rule is rejected.
+    // is full. Rules past the document budget are kept, marked pastDocumentCap
+    // (page facts are page-local; the XHTML leaves them out), and make the page
+    // incomplete (getRulesTruncated) as rules the page cap rejects do;
+    // getRulesPageTruncated is only the page cap.
     void addRule(const TextRule &rule, size_t &remainingDocumentRules);
     const std::vector<TextRule> &getRules() const { return rules; }
     bool getRulesTruncated() const { return rulesTruncated; }
+    bool getRulesPageTruncated() const { return rulesPageTruncated; }
     static constexpr size_t maxRules = 20000;
 
     // Add a visible image (TextOutputDev::setCollectImages); at most maxImages per page.
+    // Images past the document budget are kept, marked pastDocumentCap, as for rules; they
+    // follow every image within it on the page.
     void addImage(const TextImage &image, size_t &remainingDocumentImages);
     const std::vector<TextImage> &getImages() const { return images; }
     bool getImagesTruncated() const { return imagesTruncated; }
+    bool getImagesPageTruncated() const { return imagesPageTruncated; }
     static constexpr size_t maxImages = 2000;
 
     // Add one painted path that is not axis-aligned (TextOutputDev::setCollectImages). The page
@@ -843,9 +853,9 @@ private:
 
     std::vector<std::unique_ptr<TextUnderline>> underlines;
     std::vector<TextRule> rules;
-    bool rulesTruncated = false;
+    bool rulesTruncated = false, rulesPageTruncated = false;
     std::vector<TextImage> images;
-    bool imagesTruncated = false;
+    bool imagesTruncated = false, imagesPageTruncated = false;
     std::array<TextGraphic, graphicGrid * graphicGrid> graphicCells {};
     bool actualTextChars = false;
     bool collectDropped = false;

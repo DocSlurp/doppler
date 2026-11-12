@@ -239,9 +239,11 @@ def forms_pdf(xfa=None):
     refs += ["{%d} 0 R" % (radio_parent + 1), "{%d} 0 R" % (radio_parent + 2)]
     xfa_part = " /XFA {1} 0 R" if xfa else ""
     acro = "<< /Fields [%s {%d} 0 R] /NeedAppearances false%s >>" % (" ".join(refs[:-2]), radio_parent, xfa_part)
-    if xfa == "dynamic":
+    if xfa in ("dynamic", "dynamic-codec"):
+        # dynamic-codec: the config packet behind an image codec, which is never run to read it
         xfa_obj = "[(preamble) {%d} 0 R (config) {%d} 0 R]" % (len(extras) + n_fixed, len(extras) + n_fixed + 1)
-        tail = [stream("", "<xdp:xdp>"), stream("", "<config><acrobat><acrobat7><dynamicRender>\n required </dynamicRender></acrobat7></acrobat></config>")]
+        codec = "/Filter /JPXDecode" if xfa == "dynamic-codec" else ""
+        tail = [stream("", "<xdp:xdp>"), stream(codec, "<config><acrobat><acrobat7><dynamicRender>\n required </dynamicRender></acrobat7></acrobat></config>")]
     elif xfa == "static":
         xfa_obj = stream("", "<xdp:xdp><config><present><pdf/></present></config></xdp:xdp>")
         tail = []
@@ -357,6 +359,165 @@ def incremental_pdf():
     return base + upd
 
 
+def _objects_of(pdf):
+    """The object bodies before a classic xref table, and each object's offset."""
+    import re
+
+    body = pdf[: pdf.rindex(b"xref\n")]
+    return body, {int(m.group(1)): m.start() for m in re.finditer(rb"(?m)^(\d+) 0 obj", body)}
+
+
+def _xref_stream(num, entries, index, trailer):
+    """An xref stream object <num>: entries (type, field 2, field 3) for the subsections <index>."""
+    data = b"".join(bytes([k]) + a.to_bytes(4, "big") + b.to_bytes(2, "big") for k, a, b in entries)
+    head = b"%d 0 obj\n<< /Type /XRef /W [1 4 2] /Index [%s] %s /Length %d >>\nstream\n" % (num, b" ".join(b"%d %d" % i for i in index), trailer, len(data))
+    return head + data + b"\nendstream\nendobj\n"
+
+
+def xref_stream_pdf(update=None):
+    """One page with a cross-reference stream instead of a table. <update>: None, "stream" (an
+    incremental update whose section is another xref stream) or "table-then-stream" (a classic
+    file updated with an xref stream section)."""
+    base = doc([{"content": words(10)}])
+    body, offs = _objects_of(base)
+    n = max(offs) + 1
+    out = bytearray(body)
+    if update == "table-then-stream":
+        out = bytearray(base)
+        prev = int(base.rsplit(b"startxref\n", 1)[1].split(b"\n")[0])
+    else:
+        prev = len(out)
+        entries = [(0, 0, 65535)] + [(1, offs[i], 0) for i in range(1, n)] + [(1, prev, 0)]
+        out += _xref_stream(n, entries, [(0, n + 1)], b"/Size %d /Root 1 0 R" % (n + 1))
+        if update is None:
+            out += b"startxref\n%d\n%%%%EOF\n" % prev
+            return bytes(out)
+        out += b"startxref\n%d\n%%%%EOF\n" % prev
+    info = n + 1
+    info_off = len(out)
+    out += b"%d 0 obj\n<< /Producer (updated) >>\nendobj\n" % info
+    x2 = len(out)
+    out += _xref_stream(info + 1, [(1, info_off, 0), (1, x2, 0)], [(info, 2)], b"/Size %d /Root 1 0 R /Info %d 0 R /Prev %d" % (info + 2, info, prev))
+    out += b"startxref\n%d\n%%%%EOF\n" % x2
+    return bytes(out)
+
+
+def objstm_pdf(plain, packed):
+    """A PDF whose objects <packed> ({number: body}) sit in one Flate object stream, with an xref
+    stream; <plain> ({number: body}) are ordinary objects. Object 1 must be the catalog."""
+    import zlib
+
+    out = bytearray(b"%PDF-1.7\n")
+    offs = {}
+    for num in sorted(plain):
+        offs[num] = len(out)
+        out += b"%d 0 obj\n" % num + t._b(plain[num]) + b"\nendobj\n"
+    nums = sorted(packed)
+    stm = max(list(plain) + nums) + 1
+    bodies, header, pos = b"", b"", 0
+    for num in nums:
+        header += b"%d %d " % (num, pos)
+        body = t._b(packed[num]) + b"\n"
+        bodies += body
+        pos += len(body)
+    data = zlib.compress(header + bodies, 9)
+    offs[stm] = len(out)
+    out += b"%d 0 obj\n<< /Type /ObjStm /N %d /First %d /Filter /FlateDecode /Length %d >>\nstream\n" % (stm, len(nums), len(header), len(data)) + data + b"\nendstream\nendobj\n"
+    xs = stm + 1
+    entries = [(0, 0, 65535)]
+    for num in range(1, xs + 1):
+        if num == xs:
+            entries.append((1, len(out), 0))
+        elif num in offs:
+            entries.append((1, offs[num], 0))
+        else:
+            entries.append((2, stm, nums.index(num)))
+    x = len(out)
+    out += _xref_stream(xs, entries, [(0, xs + 1)], b"/Size %d /Root 1 0 R" % (xs + 1))
+    out += b"startxref\n%d\n%%%%EOF\n" % x
+    return bytes(out)
+
+
+def shared_widget_value_pdf(widgets=2000, items=300000):
+    """One page whose widgets all name one large indirect /V (each re-fetch would re-parse it)."""
+    w = "<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /FT /Tx /V {1} 0 R >>"
+    return doc([{"extra": "/Annots {0} 0 R"}], extras=["[" + w * widgets + "]", "[" + "1 " * items + "]"])
+
+
+def shared_names_pdf(nodes=1000, items=600000):
+    """An embedded-files name tree whose leaf nodes (direct, in one indirect /Kids array) all name
+    one large /Names array."""
+    return doc(
+        [{"content": words(5)}],
+        extras=["<< /Kids {1} 0 R >>", "[" + "<< /Names {2} 0 R >>" * nodes + "]", "[" + "1 " * items + "]"],
+        catalog_extra="/Names << /EmbeddedFiles {0} 0 R >>",
+    )
+
+
+def many_names_pdf(leaves=3, items=800000):
+    """An embedded-files name tree with more than 10^6 entries, small on disk (object stream)."""
+    plain = {1: b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 4 0 R >> >>", 2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>", 3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"}
+    packed = {4: b"<< /Kids [" + b" ".join(b"%d 0 R" % (5 + i) for i in range(leaves)) + b"] >>"}
+    for i in range(leaves):
+        packed[5 + i] = b"<< /Names [" + b"1 " * items + b"] >>"
+    return objstm_pdf(plain, packed)
+
+
+def nested_prev_pdf(sections=999, pad=2000000):
+    """A /Prev chain whose sections overlap: each section's first entry token is a string holding
+    every deeper section, so following the chain naively lexes the file once per section."""
+    buf = bytearray(b"%PDF-1.4\n")
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>", b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"]
+    for i, o in enumerate(objs, 1):
+        buf += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    base = len(buf)
+    head = b"xref\n0 1\n("
+    offs = [base + k * len(head) for k in range(sections + 1)]
+    s = b"xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 4 /Root 1 0 R >>\n" + b"A" * pad
+    for k in range(sections - 1, -1, -1):
+        s = head + s + b") 0 n\ntrailer\n<< /Size 4 /Root 1 0 R /Prev %d >>\n" % offs[k + 1]
+    buf += s + b"startxref\n%d\n%%%%EOF\n" % base
+    return bytes(buf)
+
+
+def clipped_text_pdf():
+    """Text drawn outside the clip: alone, and over a full-page image (an OCR layer hidden by a
+    clip instead of render mode 3)."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Im1 {0} 0 R >> >>"
+    clip = "0 0 1 1 re W n\n"
+    return doc(
+        [
+            {"content": "q " + clip + words(50) + "Q\n"},
+            {"content": "q 612 0 0 792 0 0 cm /Im1 Do Q\nq " + clip + words(50) + "Q\n", "resources": res},
+        ],
+        extras=[image("/DCTDecode")],
+    )
+
+
+def image_budget_pdf(busy_pages=51, draws=1990):
+    """Pages that together draw more images than pdftotext's run-wide budget (100000), then a
+    scan page: its image facts must not depend on the pages before it."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Im1 {0} 0 R >> >>"
+    busy = "q 10 0 0 10 100 100 cm /Im1 Do Q\n" * draws
+    scan = "q 612 0 0 792 0 0 cm /Im1 Do Q\n" + words(30, invisible=True)
+    return doc([{"content": busy, "resources": res}] * busy_pages + [{"content": scan, "resources": res}], extras=[image("/DCTDecode")])
+
+
+def copy_class_pdf():
+    """Images whose dictionaries must not be copied as they are."""
+    res = "<< /XObject << %s >> >>" % " ".join("/I%d {%d} 0 R" % (i, i) for i in range(4))
+    content = "".join("q 100 0 0 100 %d 400 cm /I%d Do Q\n" % (72 + 110 * i, i) for i in range(4))
+    return doc(
+        [{"content": content, "resources": res}],
+        extras=[
+            image("/DCTDecode", w=300, h=300, extra="/DecodeParms << /ColorTransform 0 >>"),
+            image("/CCITTFaxDecode", w=300, h=300, cs="/DeviceGray", bpc=1, extra="/Decode [1 0]"),
+            image(None, w=300, h=300, extra="/F (external.jpg) /FFilter /DCTDecode"),
+            image(None, w=300, h=300, extra="/F /DCTDecode"),
+        ],
+    )
+
+
 def warnings_pdf():
     return doc([{"content": words(5) + "1 2 foo\nBT /Nope 10 Tf 72 72 Td (x) Tj ET\n"}, {"content": words(5)}])
 
@@ -393,4 +554,9 @@ ALL = {
     "incremental": incremental_pdf,
     "warnings": warnings_pdf,
     "multipage": multipage_pdf,
+    "xref_stream": xref_stream_pdf,
+    "xref_stream_update": lambda: xref_stream_pdf("stream"),
+    "table_then_stream": lambda: xref_stream_pdf("table-then-stream"),
+    "clipped_text": clipped_text_pdf,
+    "copy_class": copy_class_pdf,
 }

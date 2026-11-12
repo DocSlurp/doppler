@@ -40,4 +40,11 @@ struct Confinement
 // reads the document (pdfpagefacts) saves the ~8 ms and ~2.5 MiB it costs.
 Confinement confine(bool loadFontconfig = true);
 
+// Closes every descriptor above 2, first thing in main: these tools take their input on the
+// command line or stdin and write only stdout and stderr, so a descriptor a parent leaked to
+// them (a writable facts or output file, say) would only be a way for an exploited parser to
+// write where it must not; confinement does not stop writes to descriptors already open.
+// Linux only.
+void closeInheritedDescriptors();
+
 #endif

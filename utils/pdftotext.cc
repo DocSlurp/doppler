@@ -87,6 +87,8 @@
 #include <chrono>
 #ifndef _WIN32
 #    include <fcntl.h>
+#    include <csignal>
+#    include <pthread.h>
 #    include <unistd.h>
 #endif
 #include "PageFacts.h"
@@ -889,17 +891,38 @@ static bool pageFactsWriteFailed = false;
 static void writeFactsLine(const std::string &line)
 {
 #ifndef _WIN32
+    // A reader that closed the facts pipe must not kill the text pass with SIGPIPE: the facts
+    // are a sidecar. SIGPIPE is blocked around the write, a pending one taken back, and EPIPE is
+    // a failed facts write like any other (exit code 4 once the XHTML is complete).
+    sigset_t pipeSet, oldSet;
+    sigemptyset(&pipeSet);
+    sigaddset(&pipeSet, SIGPIPE);
+    const bool blocked = !pageFactsWriteFailed && pthread_sigmask(SIG_BLOCK, &pipeSet, &oldSet) == 0;
     size_t done = 0;
+    bool brokenPipe = false;
     while (!pageFactsWriteFailed && done < line.size()) {
         const ssize_t n = write(pageFactsFd, line.data() + done, line.size() - done);
         if (n < 0 && errno == EINTR) {
             continue;
         }
         if (n <= 0) {
+            brokenPipe = n < 0 && errno == EPIPE;
             pageFactsWriteFailed = true;
             break;
         }
         done += static_cast<size_t>(n);
+    }
+    if (blocked) {
+        if (brokenPipe) {
+            // take back the SIGPIPE this write raised (when SIGPIPE was not blocked already, a
+            // pending one can only be this write's)
+            sigset_t pending;
+            if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) && !sigismember(&oldSet, SIGPIPE)) {
+                const struct timespec zero = { 0, 0 };
+                sigtimedwait(&pipeSet, nullptr, &zero);
+            }
+        }
+        pthread_sigmask(SIG_SETMASK, &oldSet, nullptr);
     }
 #else
     (void)line;
@@ -1283,8 +1306,9 @@ int main(int argc, char *argv[])
     }
 
     if (pageFactsWriteFailed) {
+        // the text output is complete: its own exit code, so a caller can keep it
         error(errIO, -1, "Couldn't write the page facts");
-        return 2;
+        return 4;
     }
     return 0;
 }
@@ -1478,6 +1502,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
+                if (rule.pastDocumentCap) {
+                    break; // kept for page facts only; they come last
+                }
                 fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"%s/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str(),
                         rule.imageMask ? " src=\"mask\"" : "");
             }
@@ -1486,6 +1513,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if (collectImages) {
             for (const TextImage &image : textOut->getImages()) {
+                if (image.pastDocumentCap) {
+                    break; // kept for page facts and scans only; they come last
+                }
                 // ref: the image XObject, so repeats of one object can be found (none for inline images)
                 const std::string ref = image.ref == Ref::INVALID() ? std::string() : " ref=\"" + std::to_string(image.ref.num) + " " + std::to_string(image.ref.gen) + "\"";
                 // the dictionary's facts, last: codec, bits, colour space, masks, and how the pixels

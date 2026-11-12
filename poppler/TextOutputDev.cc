@@ -2585,8 +2585,10 @@ void TextPage::clear()
     underlines.clear();
     rules.clear();
     rulesTruncated = false;
+    rulesPageTruncated = false;
     images.clear();
     imagesTruncated = false;
+    imagesPageTruncated = false;
     graphicCells.fill(TextGraphic {});
     dropped.clear();
     links.clear();
@@ -2924,8 +2926,11 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
             h1 = -h1;
         }
 
+        // a word whose glyphs are all hidden (render mode 3 or clipped out) is an invisible word
+        const GlyphVisibility visibility = glyphVisibility(state, x1, y1, w1, h1, curFontSize, curWord->rot);
+        curWord->shown = curWord->shown || (!visibility.invisible && !visibility.clipped);
         if (facts) {
-            facts->onGlyph(state, curFont, curFontSize, x1, y1, w1, h1, u, uLen, curWord->rot, diagonal);
+            facts->onGlyph(curFont, curFontSize, u, uLen, curWord->rot, diagonal, visibility);
         }
         // add the characters to the current word
         w1 /= uLen;
@@ -2984,7 +2989,7 @@ void TextPage::addWord(TextWord *word)
         return;
     }
     ++wordsAdded;
-    invisibleWordsAdded += word->invisible ? 1 : 0;
+    invisibleWordsAdded += (word->invisible || !word->shown) ? 1 : 0;
     if (facts) {
         facts->onWord(word);
     }
@@ -3012,11 +3017,16 @@ void TextPage::addRule(const TextRule &rule, size_t &remainingDocumentRules)
     if (!documentFull) {
         --remainingDocumentRules;
     }
-    if (documentFull || rules.size() >= maxRules) {
+    if (rules.size() >= maxRules) {
         rulesTruncated = true;
+        rulesPageTruncated = true;
         return;
     }
     rules.push_back(rule);
+    if (documentFull) {
+        rules.back().pastDocumentCap = true;
+        rulesTruncated = true;
+    }
 }
 
 void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
@@ -3025,11 +3035,16 @@ void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
     if (!documentFull) {
         --remainingDocumentImages;
     }
-    if (documentFull || images.size() >= maxImages) {
+    if (images.size() >= maxImages) {
         imagesTruncated = true;
+        imagesPageTruncated = true;
         return;
     }
     images.push_back(image);
+    if (documentFull) {
+        images.back().pastDocumentCap = true;
+        imagesTruncated = true;
+    }
 }
 
 void TextPage::addGraphic(const TextGraphic &graphic)
@@ -6038,7 +6053,18 @@ void TextOutputDev::endAnnot(Annot *annot)
 
 ScanVerdict TextOutputDev::getScan(size_t maxWords) const
 {
-    return classifyScan(text->getImages(), text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
+    // over the images the XHTML lists (scanImage indexes them): those within the document's
+    // budget, which come first
+    const std::vector<TextImage> &all = text->getImages();
+    size_t listed = 0;
+    while (listed < all.size() && !all[listed].pastDocumentCap) {
+        ++listed;
+    }
+    if (listed == all.size()) {
+        return classifyScan(all, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
+    }
+    const std::vector<TextImage> shown(all.begin(), all.begin() + listed);
+    return classifyScan(shown, text->getPageWidth(), text->getPageHeight(), text->getVisibleWordCount(), maxWords);
 }
 
 void TextOutputDev::endPage()

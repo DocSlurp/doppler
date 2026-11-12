@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <set>
 #include <string_view>
 #ifndef _WIN32
@@ -119,16 +120,16 @@ const char *imageCopyName(ImageCopy c)
 
 ImageCopy classifyImageCopy(const ImageDictInfo &info)
 {
-    if (info.inlineImg || info.softMask || info.mask) {
+    if (info.inlineImg || info.softMask || info.mask || info.external) {
         return ImageCopy::Render;
     }
     const bool grayOrRgb = info.color == ImageColor::Gray || info.color == ImageColor::RGB || info.color == ImageColor::ICC1 || info.color == ImageColor::ICC3;
-    if (info.filter == ImageFilter::DCT && info.filters == 1 && info.bpc == 8 && grayOrRgb && !info.decode && !info.imageMask) {
+    if (info.filter == ImageFilter::DCT && info.filters == 1 && info.bpc == 8 && grayOrRgb && !info.decode && !info.colorTransform && !info.imageMask) {
         return ImageCopy::Jpeg;
     }
     const bool oneBit = info.bpc == 1 || info.imageMask || info.filter == ImageFilter::CCITT || info.filter == ImageFilter::JBIG2;
     const bool grayish = info.imageMask || info.color == ImageColor::Gray || info.color == ImageColor::ICC1 || info.color == ImageColor::None;
-    if (oneBit && grayish && (info.bpc == 1 || info.bpc == 0)) {
+    if (oneBit && grayish && (info.bpc == 1 || info.bpc == 0) && !info.decode) {
         return ImageCopy::Bilevel;
     }
     if (info.filter == ImageFilter::Other || info.imageMask) {
@@ -357,7 +358,9 @@ constexpr size_t maxItems = 32; // images and figure clusters listed per page
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
 constexpr size_t maxAnnots = 10000; // annotations examined per page
+constexpr size_t maxFormObjects = 65536; // indirect form objects kept fetched per document
 constexpr int maxTreeNodes = 10000; // outline items and name-tree nodes walked
+constexpr uint64_t maxTreeEntries = 1000000; // name-tree entries counted (embeddedFiles)
 constexpr size_t maxStringPoints = 128; // producer and creator code points
 constexpr size_t maxXfaBytes = 1 << 20;
 
@@ -431,6 +434,12 @@ public:
     {
         key(k);
         number(std::clamp(finite(v), 0.0, 1.0), 4);
+    }
+    // a scale factor (UserUnit, 0.0001..1e6): 4 decimals, so its smallest value is not 0
+    void kunit(const char *k, double v)
+    {
+        key(k);
+        number(std::clamp(finite(v), 0.0001, 1e6), 4);
     }
     // page points and other measures: 2 decimals, |v| <= maxPoint
     void kpt(const char *k, double v)
@@ -625,17 +634,32 @@ std::optional<std::string> langTag(const Object &lang)
     if (!lang.isString()) {
         return std::nullopt;
     }
-    bool truncated = false;
-    const std::vector<Unicode> u = sanitize(lang.getString(), &truncated);
-    if (truncated || u.empty() || u.size() > 48) {
-        return std::nullopt;
-    }
+    // the raw bytes are checked, not a sanitised copy: dropping a control character could turn
+    // a malformed tag into a valid-looking one the document never had. ASCII, or UTF-16BE whose
+    // code units are all ASCII.
+    const std::string &raw = lang.getString();
     std::string s;
-    for (Unicode c : u) {
-        if (c >= 0x80) {
+    const bool utf16 = raw.size() >= 2 && static_cast<unsigned char>(raw[0]) == 0xfe && static_cast<unsigned char>(raw[1]) == 0xff;
+    if (utf16) {
+        if (raw.size() % 2 != 0) {
             return std::nullopt;
         }
-        s += static_cast<char>(c);
+        for (size_t i = 2; i + 1 < raw.size(); i += 2) {
+            if (raw[i] != 0) {
+                return std::nullopt;
+            }
+            s += raw[i + 1];
+        }
+    } else {
+        s = raw;
+    }
+    if (s.empty() || s.size() > 48) {
+        return std::nullopt;
+    }
+    for (char c : s) {
+        if (!isalnum(static_cast<unsigned char>(c)) && c != '-') {
+            return std::nullopt;
+        }
     }
     size_t pos = 0, len = 0;
     while (pos < s.size() && isalpha(static_cast<unsigned char>(s[pos]))) {
@@ -672,10 +696,13 @@ std::string actionKind(const Object &action)
     return s.isName() ? s.getNameString() : std::string();
 }
 
-// entries of a name tree (Names pairs), walking at most maxTreeNodes nodes
-int countNameTree(Object root, bool *truncated)
+// entries of a name tree (Names pairs), walking at most maxTreeNodes nodes and counting at most
+// maxTreeEntries. An indirect /Kids or /Names array is read once however many nodes name it
+// (a hostile tree can share one large array among thousands of nodes).
+uint64_t countNameTree(Object root, bool *truncated)
 {
-    int entries = 0, nodes = 0;
+    uint64_t entries = 0;
+    int nodes = 0;
     std::vector<Object> stack;
     std::set<Ref> seen;
     stack.push_back(std::move(root));
@@ -689,9 +716,20 @@ int countNameTree(Object root, bool *truncated)
             *truncated = true;
             break;
         }
-        Object names = node.dictLookup("Names");
-        if (names.isArray()) {
-            entries += names.arrayGetLength() / 2;
+        const Object &namesRef = node.dictLookupNF("Names");
+        if (!namesRef.isRef() || seen.insert(namesRef.getRef()).second) {
+            Object names = node.dictLookup("Names");
+            if (names.isArray()) {
+                entries += static_cast<uint64_t>(names.arrayGetLength() / 2);
+                if (entries >= maxTreeEntries) {
+                    *truncated = true;
+                    return maxTreeEntries;
+                }
+            }
+        }
+        const Object &kidsRef = node.dictLookupNF("Kids");
+        if (kidsRef.isRef() && !seen.insert(kidsRef.getRef()).second) {
+            continue;
         }
         Object kids = node.dictLookup("Kids");
         if (kids.isArray()) {
@@ -740,11 +778,52 @@ int countOutline(const Object &outlines, bool *truncated)
     return items;
 }
 
-// reads at most <cap> decoded bytes of a stream
+// whether a stream's filters are all cheap, streaming text filters (Flate, LZW, ASCIIHex,
+// ASCII85, RunLength), so that reading a capped prefix costs no more than the cap: an image
+// codec (JPX, JBIG2, DCT, CCITT) decodes far more than it is asked for, and has no business in
+// an XML packet
+bool textFiltersOnly(Stream *str)
+{
+    Dict *dict = str->getDict();
+    if (!dict) {
+        return false;
+    }
+    Object filter = dict->lookup("Filter");
+    if (filter.isNull()) {
+        return dict->lookupNF("F").isNull(); // no data in an external file either
+    }
+    auto ok = [](const Object &name) {
+        static constexpr const char *names[] = { "FlateDecode", "Fl", "LZWDecode", "LZW", "ASCIIHexDecode", "AHx", "ASCII85Decode", "A85", "RunLengthDecode", "RL" };
+        if (!name.isName()) {
+            return false;
+        }
+        for (const char *n : names) {
+            if (name.isName(n)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (filter.isName()) {
+        return ok(filter);
+    }
+    if (!filter.isArray() || filter.arrayGetLength() > 4) {
+        return false;
+    }
+    for (int i = 0; i < filter.arrayGetLength(); ++i) {
+        if (!ok(filter.arrayGet(i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// reads at most <cap> decoded bytes of a stream whose filters are textFiltersOnly (nothing
+// otherwise)
 std::string readCapped(Object &obj, size_t cap)
 {
     std::string out;
-    if (!obj.isStream()) {
+    if (!obj.isStream() || !textFiltersOnly(obj.getStream())) {
         return out;
     }
     Stream *str = obj.getStream();
@@ -854,13 +933,22 @@ struct PageFacts::State
     std::string body;
     unsigned features = 0;
 
+    // kept across pages: indirect objects named by widgets (FormObjects), for the xref
+    // generation they were fetched under
+    std::map<Ref, Object> formObjects;
+    unsigned formObjectsGeneration = 0;
+
     void reset(int num)
     {
         // keep the buffers' memory: they are refilled for every page
         std::vector<uint64_t> cells = std::move(charCells), inv = std::move(invisibleCells);
         std::vector<FontSeen> fontBuffer = std::move(fonts);
         std::vector<AnnotDraw> drawBuffer = std::move(draws);
+        std::map<Ref, Object> formCache = std::move(formObjects);
+        const unsigned formGeneration = formObjectsGeneration;
         *this = State();
+        formObjects = std::move(formCache);
+        formObjectsGeneration = formGeneration;
         pageNum = num;
         cells.clear();
         inv.clear();
@@ -1033,8 +1121,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kbool("pageLabels", !catLookup("PageLabels").isNull());
         Object names = catLookup("Names");
         bool filesTruncated = false;
-        const int files = names.isDict() ? countNameTree(names.dictLookup("EmbeddedFiles"), &filesTruncated) : 0;
-        j.kint("embeddedFiles", static_cast<uint64_t>(files));
+        const uint64_t files = names.isDict() ? countNameTree(names.dictLookup("EmbeddedFiles"), &filesTruncated) : 0;
+        j.kint("embeddedFiles", files);
         if (files > 0) {
             features |= 1u << fEmbeddedFiles;
         }
@@ -1253,14 +1341,8 @@ void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *
     }
 }
 
-void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double fontSize, double x, double y, double dx, double dy, const Unicode *u, int uLen, int rot, bool diagonal)
+GlyphVisibility glyphVisibility(const GfxState *state, double x, double y, double dx, double dy, double fontSize, int rot)
 {
-    // hot: once per glyph drawn. Counts are bounded by the content stream's size, far below
-    // 2^64, so they are plain increments here.
-    State &s = *st;
-    const auto n = static_cast<uint64_t>(uLen);
-    ++s.glyphs;
-    s.chars += n;
     // the glyph's centre: half its advance along the baseline, a third of the size up
     double cx = x + 0.5 * dx, cy = y + 0.5 * dy;
     const double up = 0.3 * fontSize;
@@ -1278,10 +1360,26 @@ void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double 
         cx -= up;
         break;
     }
-    const bool invisible = state->getRender() == 3;
     double clipX0, clipY0, clipX1, clipY1;
     state->getClipBBox(&clipX0, &clipY0, &clipX1, &clipY1);
-    const bool clipped = !(cx >= clipX0 && cx <= clipX1 && cy >= clipY0 && cy <= clipY1);
+    GlyphVisibility v;
+    v.invisible = state->getRender() == 3;
+    v.clipped = !(cx >= clipX0 && cx <= clipX1 && cy >= clipY0 && cy <= clipY1);
+    v.cx = cx;
+    v.cy = cy;
+    return v;
+}
+
+void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode *u, int uLen, int rot, bool diagonal, GlyphVisibility visibility)
+{
+    // hot: once per glyph drawn. Counts are bounded by the content stream's size, far below
+    // 2^64, so they are plain increments here.
+    State &s = *st;
+    const auto n = static_cast<uint64_t>(uLen);
+    ++s.glyphs;
+    s.chars += n;
+    const bool invisible = visibility.invisible, clipped = visibility.clipped;
+    const double cx = visibility.cx, cy = visibility.cy;
     s.clippedChars += clipped ? n : 0;
     s.invisibleChars += (invisible || clipped) ? n : 0;
     if (!(fams & (Fonts | OddText))) {
@@ -1323,7 +1421,7 @@ void PageFacts::onGlyph(const GfxState *state, const TextFontInfo *font, double 
     if (col >= 0 && col < CoverageGrid::size && row >= 0 && row < CoverageGrid::size) {
         const int cell = static_cast<int>(row) * CoverageGrid::size + static_cast<int>(col);
         s.charCells[cell] += n;
-        s.invisibleCells[cell] += invisible ? n : 0;
+        s.invisibleCells[cell] += (invisible || clipped) ? n : 0;
     }
 }
 
@@ -1423,7 +1521,40 @@ struct WidgetField
     bool appearanceOn = false; // a button's /AS is not Off
 };
 
-WidgetField widgetField(const Object &widget)
+// Indirect objects that widgets name (/Parent, /V, /FT, /Ff, /AP), each fetched once per
+// document: thousands of widgets (on every page sharing one /Annots array) can name one field or
+// one large /V, and XRef::fetch parses an object again on every call.
+class FormObjects
+{
+public:
+    FormObjects(std::map<Ref, Object> &cacheA, XRef *xrefA) : cache(cacheA), xref(xrefA) { }
+    Object get(const Object &dict, const char *key)
+    {
+        const Object &nf = dict.dictLookupNF(key);
+        if (!nf.isRef()) {
+            return nf.copy();
+        }
+        if (!xref) {
+            return dict.dictLookup(key);
+        }
+        const Ref ref = nf.getRef();
+        const auto it = cache.find(ref);
+        if (it != cache.end()) {
+            return it->second.copy();
+        }
+        Object obj = xref->fetch(ref);
+        if (cache.size() < maxFormObjects) {
+            cache.emplace(ref, obj.copy());
+        }
+        return obj;
+    }
+
+private:
+    std::map<Ref, Object> &cache;
+    XRef *xref;
+};
+
+WidgetField widgetField(const Object &widget, FormObjects &objects)
 {
     WidgetField w;
     Object ft = Object::null(), ff = Object::null(), v = Object::null();
@@ -1431,19 +1562,19 @@ WidgetField widgetField(const Object &widget)
     std::set<Ref> seen;
     for (int depth = 0; depth < 32 && node.isDict(); ++depth) {
         if (ft.isNull()) {
-            ft = node.dictLookup("FT");
+            ft = objects.get(node, "FT");
         }
         if (ff.isNull()) {
-            ff = node.dictLookup("Ff");
+            ff = objects.get(node, "Ff");
         }
         if (v.isNull()) {
-            v = node.dictLookup("V");
+            v = objects.get(node, "V");
         }
         const Object &parentRef = node.dictLookupNF("Parent");
         if (parentRef.isRef() && !seen.insert(parentRef.getRef()).second) {
             break;
         }
-        node = node.dictLookup("Parent");
+        node = objects.get(node, "Parent");
     }
     const int flags = ff.isInt() ? ff.getInt() : 0;
     if (ft.isName("Tx")) {
@@ -1461,8 +1592,8 @@ WidgetField widgetField(const Object &widget)
         // than Off: each radio button of a group has its own), or any state other than Off
         // when the widget has no appearances to name it
         std::string onState;
-        Object ap = widget.dictLookup("AP");
-        Object normal = ap.isDict() ? ap.dictLookup("N") : Object::null();
+        Object ap = objects.get(widget, "AP");
+        Object normal = ap.isDict() ? objects.get(ap, "N") : Object::null();
         if (normal.isDict()) {
             for (int i = 0; i < std::min(normal.dictGetLength(), 16) && onState.empty(); ++i) {
                 const char *key = normal.getDict()->getKey(i).c_str();
@@ -1472,7 +1603,7 @@ WidgetField widgetField(const Object &widget)
             }
         }
         w.filled = v.isName() && !v.isName("Off") && (onState.empty() || v.getNameString() == onState);
-        Object as = widget.dictLookup("AS");
+        Object as = objects.get(widget, "AS");
         w.appearanceOn = as.isName() && !as.isName("Off");
     }
     return w;
@@ -1513,7 +1644,7 @@ void PageFacts::endPage(const TextPage &text)
         j.kpt("widthPt", w);
         j.kpt("heightPt", h);
         j.kint("rotation", static_cast<uint64_t>(rotation));
-        j.kpt("userUnit", userUnit);
+        j.kunit("userUnit", userUnit);
         if (pointsDiffer(media, crop)) {
             j.kbox("mediaBox", media.x1, media.y1, media.x2, media.y2);
             j.kbox("cropBox", crop.x1, crop.y1, crop.x2, crop.y2);
@@ -1671,9 +1802,9 @@ void PageFacts::endPage(const TextPage &text)
         j.close(']');
         j.kbool("itemsTruncated", images.size() > maxItems);
     }
-    j.kbool("truncated", text.getImagesTruncated());
+    j.kbool("truncated", text.getImagesPageTruncated());
     j.close();
-    if (text.getImagesTruncated()) {
+    if (text.getImagesPageTruncated()) {
         s.warnings |= 1u << wLimit;
     }
 
@@ -1782,7 +1913,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         j.close(']');
         j.kbool("clustersTruncated", clusters.size() > maxItems);
-        const bool limit = s.pathLimit || text.getRulesTruncated();
+        const bool limit = s.pathLimit || text.getRulesPageTruncated();
         j.kbool("limitHit", limit);
         j.close();
         if (limit) {
@@ -1801,6 +1932,11 @@ void PageFacts::endPage(const TextPage &text)
         uint64_t fText = 0, fCheck = 0, fRadio = 0, fChoice = 0, fSig = 0, fPush = 0, filledN = 0, emptyN = 0, mismatch = 0, signedN = 0, unsignedN = 0;
         bool truncatedAnnots = false;
         size_t drawCursor = 0;
+        if (docXref && s.formObjectsGeneration != docXref->getGeneration()) {
+            s.formObjects.clear();
+            s.formObjectsGeneration = docXref->getGeneration();
+        }
+        FormObjects formObjects(s.formObjects, docXref);
         if (annots) {
             for (const std::shared_ptr<Annot> &a : annots->getAnnots()) {
                 if (total >= maxAnnots) {
@@ -1830,7 +1966,7 @@ void PageFacts::endPage(const TextPage &text)
                     }
                 }
                 if (a->getType() == Annot::typeWidget && wants(Forms)) {
-                    const WidgetField w = widgetField(a->getAnnotObj());
+                    const WidgetField w = widgetField(a->getAnnotObj(), formObjects);
                     const bool shows = draw && draw->glyphs > 0;
                     switch (w.kind) {
                     case WidgetField::Text:

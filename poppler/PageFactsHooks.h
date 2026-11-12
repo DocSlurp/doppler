@@ -51,11 +51,15 @@ enum class ImageColor : uint8_t
 };
 
 // How an image's pixels can be taken out of the PDF without rendering the page:
-//  Jpeg     the stream is a baseline JPEG to copy unchanged (sole DCT filter, 8 bits, gray or
-//           RGB, no /Decode, no mask);
-//  Bilevel  1-bit samples (CCITT, JBIG2, 1 bpc gray or a stencil mask), no soft mask;
+//  Jpeg     the stream is a JPEG to copy unchanged (sole DCT filter, 8 bits, gray or RGB, no
+//           /Decode, no /DecodeParms that could set /ColorTransform, no mask). Only the
+//           dictionary says so: a copier must still check the JPEG itself (SOF baseline, its
+//           component count against the colour space, its size against /Width, /Height);
+//  Bilevel  1-bit samples (CCITT, JBIG2, 1 bpc gray or a stencil mask), no /Decode (an
+//           inverted map) and no soft mask;
 //  Decode   another single image whose samples can be decoded at native size;
-//  Render   anything else (inline images, masked or soft-masked images): render the region.
+//  Render   anything else (inline images, masked or soft-masked images, an XObject whose data
+//           is an external file, /F): render the region.
 enum class ImageCopy : uint8_t
 {
     Render,
@@ -75,6 +79,8 @@ struct ImageDictInfo
     bool softMask = false; // /SMask stream or /SMaskInData > 0
     bool mask = false; // /Mask (colour key array or stencil stream)
     bool decode = false; // /Decode present
+    bool colorTransform = false; // /DecodeParms present and possibly setting /ColorTransform
+    bool external = false; // an XObject with /F, /FFilter or /FDecodeParms (data in another file)
     bool inlineImg = false;
     ImageCopy copy = ImageCopy::Render;
 };

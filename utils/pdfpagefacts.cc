@@ -14,8 +14,10 @@
 
 // The tool reads a hostile document: it writes nothing but stdout, never puts document data
 // on stderr (every diagnostic is a fixed string; Poppler's own messages are dropped and fd 2
-// points at /dev/null while the document is processed), caps its address space, and confines
-// itself (no writes, no network, no exec) once the document is open.
+// points at /dev/null while the document is processed), caps its address space and run time,
+// closes descriptors it did not open, and confines itself (no writes, no network, no exec)
+// once the file is open and before a byte of it is parsed. Confinement is required unless
+// -confine says otherwise.
 
 #include "config.h"
 #include <poppler-config.h>
@@ -30,11 +32,14 @@
 #include <optional>
 #include <string>
 #ifndef _WIN32
+#    include <csignal>
 #    include <sys/resource.h>
 #    include <unistd.h>
 #endif
 #include "parseargs.h"
 #include "goo/GooString.h"
+#include "goo/gfile.h"
+#include "Stream.h"
 #include "GlobalParams.h"
 #include "GfxFont.h"
 #include "PDFDoc.h"
@@ -67,7 +72,8 @@ static char userPassword[128] = "\001";
 static char maxPagesArg[32] = "100000";
 static char maxMemoryArg[32] = "4096";
 static char scanMaxWordsArg[32] = "20";
-static char confineArg[16] = "auto";
+static char confineArg[16] = "require";
+static char timeoutArg[32] = "600";
 static bool timing = false;
 static bool printVersion = false;
 static bool printHelp = false;
@@ -81,7 +87,8 @@ static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstP
                                    { .arg = "-max-pages", .kind = argString, .val = maxPagesArg, .size = sizeof(maxPagesArg), .usage = "stop with exit code 3 after this many pages (default 100000)" },
                                    { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 4096)" },
                                    { .arg = "-scan-max-words", .kind = argString, .val = scanMaxWordsArg, .size = sizeof(scanMaxWordsArg), .usage = "a page with more visible words is not a scan (default 20)" },
-                                   { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write, no-network sandbox after opening the PDF: require, auto or off (default auto)" },
+                                   { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write, no-network sandbox before the PDF is parsed: require, auto or off (default require)" },
+                                   { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 600; exit code 3)" },
                                    { .arg = "-timing", .kind = argFlag, .val = &timing, .size = 0, .usage = "add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
                                    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
                                    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
@@ -161,11 +168,47 @@ static void outOfMemory()
 #endif
 }
 
+#ifndef _WIN32
+// -timeout: SIGALRM ends the run with exit code 3. A line being written gets 2 more seconds,
+// so the lines on stdout stay whole; the run then stops after it.
+static volatile sig_atomic_t writingLine = 0;
+static volatile sig_atomic_t deadlinePassed = 0;
+
+static void timeoutExit()
+{
+    static const char msg[] = "pdfpagefacts: timeout\n";
+    ssize_t ignored = write(diagnosticsFd, msg, sizeof(msg) - 1);
+    (void)ignored;
+    _exit(exitLimit);
+}
+
+static void onTimeout(int /*sig*/)
+{
+    if (writingLine && !deadlinePassed) {
+        deadlinePassed = 1;
+        alarm(2);
+        return;
+    }
+    timeoutExit();
+}
+#endif
+
 // One line per write(2), whole or not at all as far as the reader sees: a killed run leaves
 // complete lines only.
 static bool writeOut(const std::string &line)
 {
 #ifndef _WIN32
+    writingLine = 1;
+    struct Done
+    {
+        ~Done()
+        {
+            writingLine = 0;
+            if (deadlinePassed) {
+                timeoutExit();
+            }
+        }
+    } done_;
     size_t done = 0;
     while (done < line.size()) {
         const ssize_t n = write(1, line.data() + done, line.size() - done);
@@ -198,12 +241,15 @@ int main(int argc, char *argv[])
     Win32Console win32Console(&argc, &argv);
     const auto runStart = std::chrono::steady_clock::now();
 
-    long long maxPages = 0, maxMemory = 0, scanMaxWords = 0;
+#ifndef _WIN32
+    closeInheritedDescriptors();
+#endif
+    long long maxPages = 0, maxMemory = 0, scanMaxWords = 0, timeout = 0;
     unsigned families = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);
     const bool confineOk = !strcmp(confineArg, "require") || !strcmp(confineArg, "auto") || !strcmp(confineArg, "off");
     const bool limitsOk = confineOk && parseLimit(maxPagesArg, 1, 1000000000LL, &maxPages) && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(scanMaxWordsArg, 0, 1000000000LL, &scanMaxWords)
-            && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
+            && parseLimit(timeoutArg, 0, 86400, &timeout) && PageFacts::parseLevel(levelArg, &families) && PageFacts::parseInclude(includeArg, &families);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfpagefacts version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
@@ -211,7 +257,8 @@ int main(int argc, char *argv[])
         if (!printVersion) {
             printUsage("pdfpagefacts", "<PDF-file | ->", argDesc);
             fprintf(stderr,
-                    "JSON lines on stdout (schema doppler-page-facts/1). Exit codes: 0 ok, 1 cannot open (or stdout cannot be written), 2 encrypted and needs a password, 3 limit (pages, memory), 5 -confine require could not confine, 99 "
+                    "JSON lines on stdout (schema doppler-page-facts/1). Exit codes: 0 ok, 1 cannot open (or stdout cannot be written), 2 encrypted and needs a password, 3 limit (pages, memory, timeout), 5 -confine require could not "
+                    "confine, 99 "
                     "usage.\n");
         }
         if ((printVersion || printHelp) && ok && limitsOk) {
@@ -221,6 +268,16 @@ int main(int argc, char *argv[])
     }
 
     silenceStderr();
+#ifndef _WIN32
+    if (timeout > 0) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = onTimeout;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGALRM, &sa, nullptr);
+        alarm(static_cast<unsigned>(timeout));
+    }
+#endif
     limitMemory(maxMemory);
     std::set_new_handler(outOfMemory);
     globalParams = std::make_unique<GlobalParams>();
@@ -238,11 +295,31 @@ int main(int argc, char *argv[])
     if (userPassword[0] != '\001') {
         userPW = GooString(userPassword);
     }
-    GooString fileName(argv[1]);
-    if (fileName.toStr() == "-") {
-        fileName = GooString("fd://0");
+    const bool fromStdin = !strcmp(argv[1], "-");
+    // open the file, then confine, then parse: nothing of the document is read before the
+    // sandbox is in place (the file outlives the document, which reads through it)
+    std::unique_ptr<GooFile> inputFile;
+    if (!fromStdin) {
+        inputFile = GooFile::open(std::string(argv[1]));
+        if (!inputFile) {
+            if (!writeOut(facts.failedDocLine(errOpenFile)) || !writeOut(facts.runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr))) {
+                return fail(exitOpenError, "cannot write output");
+            }
+            return fail(exitOpenError, "cannot open document");
+        }
     }
-    std::unique_ptr<PDFDoc> doc = PDFDocFactory().createPDFDoc(fileName, ownerPW, userPW);
+    if (strcmp(confineArg, "off") != 0) {
+        // text extraction loads no system fonts: fontconfig is not initialised first
+        const Confinement c = confine(false);
+        if (!c.confined()) {
+            if (!strcmp(confineArg, "require")) {
+                return fail(exitUnconfined, "confinement required but not available");
+            }
+            writeDiagnostic("warning: confinement not available, running unconfined");
+        }
+    }
+    std::unique_ptr<PDFDoc> doc =
+            fromStdin ? PDFDocFactory().createPDFDoc(GooString("fd://0"), ownerPW, userPW) : std::make_unique<PDFDoc>(std::make_unique<FileStream>(inputFile.get(), 0, false, inputFile->size(), Object::null()), ownerPW, userPW);
     if (!doc->isOk()) {
         const int code = doc->getErrorCode();
         if (!writeOut(facts.failedDocLine(code)) || !writeOut(facts.runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr))) {
@@ -255,14 +332,6 @@ int main(int argc, char *argv[])
     }
     // pages usually share their fonts: parse each once per document
     doc->getXRef()->setFontCache(std::make_shared<GfxFontCache>());
-
-    if (strcmp(confineArg, "off") != 0) {
-        // text extraction loads no system fonts: fontconfig is not initialised first
-        const Confinement c = confine(false);
-        if (!c.confined() && !strcmp(confineArg, "require")) {
-            return fail(exitUnconfined, "confinement required but not available");
-        }
-    }
 
     if (!writeOut(facts.docLine(doc.get(), ownerPW.has_value() || userPW.has_value()))) {
         return fail(exitOpenError, "cannot write output");

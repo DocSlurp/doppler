@@ -1839,7 +1839,16 @@ bool XRef::parseEntry(Goffset offset, XRefEntry *entry)
 int XRef::countSections(int maxSections, long long maxTokens)
 {
     // Walks the /Prev chain from the main section with a parser of its own: entries are skipped
-    // token by token, trailers and xref stream dictionaries are read, nothing is stored.
+    // token by token, trailers and xref stream dictionaries are read, nothing is stored. A
+    // rebuilt table has no chain to trust. Every section is read through a substream cut to the
+    // bytes left of a budget of twice the file plus 64 KiB, so a chain whose sections overlap
+    // (an entry token that is a string spanning the deeper sections, say) cannot make the walk
+    // re-read the file once per section.
+    if (reconstructions > 0 || !str) {
+        return 0;
+    }
+    const Goffset fileLength = str->getLength();
+    Goffset bytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
     std::vector<Goffset> seen;
     Goffset pos = mainXRefOffset;
     long long tokens = 0;
@@ -1849,10 +1858,10 @@ int XRef::countSections(int maxSections, long long maxTokens)
         }
         seen.push_back(pos);
         Goffset parsePos;
-        if (checkedAdd(start, pos, &parsePos) || parsePos < 0) {
+        if (checkedAdd(start, pos, &parsePos) || parsePos < 0 || bytesLeft <= 0) {
             return 0;
         }
-        Parser parser(nullptr, str->makeSubStream(parsePos, false, 0, Object::null()), true);
+        Parser parser(nullptr, str->makeSubStream(parsePos, true, bytesLeft, Object::null()), true);
         Object obj = parser.getObj(true);
         Object dictObj;
         if (obj.isCmd("xref")) {
@@ -1889,7 +1898,10 @@ int XRef::countSections(int maxSections, long long maxTokens)
             if (!gen.isInt() || !kw.isCmd("obj")) {
                 return 0;
             }
-            dictObj = parser.getObj(true);
+            // a cross-reference stream: its dictionary (simpleOnly would stop at "<<"). The
+            // parser has no xref, so an indirect /Length stays a reference and the stream's data
+            // is skipped, not read.
+            dictObj = parser.getObj(false);
             if (dictObj.isStream()) {
                 dictObj = dictObj.getStream()->getDictObject()->copy();
             }
@@ -1899,6 +1911,8 @@ int XRef::countSections(int maxSections, long long maxTokens)
         if (!dictObj.isDict()) {
             return 0;
         }
+        const Goffset after = parser.getPos();
+        bytesLeft -= after > parsePos ? after - parsePos : bytesLeft;
         Object prev = dictObj.dictLookupNF("Prev").copy();
         if (prev.isInt() && prev.getInt() > 0) {
             pos = prev.getInt();

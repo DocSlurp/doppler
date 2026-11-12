@@ -161,3 +161,21 @@ Confinement confine(bool loadFontconfig)
 #endif
     return c;
 }
+
+void closeInheritedDescriptors()
+{
+#ifdef __linux__
+#    ifdef SYS_close_range
+    if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) {
+        return;
+    }
+#    endif
+    long maxFd = sysconf(_SC_OPEN_MAX);
+    if (maxFd < 0 || maxFd > 65536) {
+        maxFd = 65536;
+    }
+    for (int fd = 3; fd < maxFd; ++fd) {
+        close(fd);
+    }
+#endif
+}
