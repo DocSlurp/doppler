@@ -209,6 +209,15 @@ public:
 
     // Was the XRef modified?
     bool isModified() const { return modified; }
+    // DocSlurp page facts: how many times the table was rebuilt from a scan of the file (at open or
+    // later, when a fetch found a broken entry).
+    unsigned int getReconstructionCount() const { return reconstructions; }
+    // DocSlurp page facts: the number of cross-reference sections chained by /Prev from the
+    // main one (1 for a file never updated), read without changing this table. At most
+    // maxSections sections, maxTokens lexer tokens and twice the file's bytes (plus 64 KiB) are
+    // read; 0 when the chain could not be followed within them, or the table was rebuilt from a
+    // scan.
+    int countSections(int maxSections, long long maxTokens);
     // Changes whenever an object's reference can resolve to something else (reconstruction, edits); caches
     // keyed by Ref compare it before reusing an entry.
     unsigned int getGeneration() const { return generation; }
@@ -276,6 +285,7 @@ private:
     mutable std::recursive_mutex mutex;
     std::function<void()> xrefReconstructedCb;
     unsigned int generation = 0;
+    unsigned int reconstructions = 0;
     std::shared_ptr<GfxFontCache> fontCache;
 
     RefRecursionChecker refsBeingFetched;

@@ -46,6 +46,7 @@
 #include "PopplerCache.h"
 #include "ProfileData.h"
 #include "GfxState.h"
+#include "PageFactsHooks.h"
 #include <memory>
 #include <unordered_map>
 #include <string>
@@ -322,8 +323,17 @@ public:
     // though it does not draw non-text content? If so, Gfx calls imageGeometry() with the
     // image's CTM in <state> and its pixel size, and never reads the image data. <ref> is the
     // image XObject's indirect reference, or Ref::INVALID() for an inline image (or a direct one).
+    // <info> holds what the image dictionary says (filter, bits, colour space, masks); the
+    // image data is never read for it.
     virtual bool needImageGeometry() { return false; }
-    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/, Ref /*ref*/) { }
+    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/, Ref /*ref*/, const ImageDictInfo & /*info*/) { }
+
+    // DocSlurp page facts: a tally Gfx keeps of the operators it executes on a page (asked
+    // once, when a page's Gfx is created; nullptr for none), and calls around the drawing of
+    // each annotation's appearance on a page.
+    virtual GfxOpTally *getOpTally() { return nullptr; }
+    virtual void beginAnnot(Annot * /*annot*/) { }
+    virtual void endAnnot(Annot * /*annot*/) { }
 
     virtual void endMarkedContent(GfxState *state);
     virtual void beginMarkedContent(const std::string &name, Dict *properties);

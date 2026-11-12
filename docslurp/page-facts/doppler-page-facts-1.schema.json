@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DocSlurp/doppler/docslurp/page-facts/doppler-page-facts-1.schema.json",
+  "title": "doppler-page-facts/1",
+  "description": "One JSON object per line: a doc line, one page line per page in ascending order, a run line. Written by pdfpagefacts, pdftotext -page-facts-fd and pdftomarkdown --page-facts. Fields are added within /1, never repurposed or removed; consumers must ignore unknown fields and enum values. A field that was not computed (its level or family was not asked for, or its denominator is zero) is absent, never 0. See README.md in this folder for every field.",
+  "oneOf": [
+    { "$ref": "#/$defs/docLine" },
+    { "$ref": "#/$defs/pageLine" },
+    { "$ref": "#/$defs/runLine" }
+  ],
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+    "points": { "type": "number", "minimum": -1000000000, "maximum": 1000000000 },
+    "box": { "type": "array", "items": { "$ref": "#/$defs/points" }, "minItems": 4, "maxItems": 4 },
+    "family": { "enum": ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure"] },
+    "untrustedString": {
+      "description": "A string from the document (producer, creator): untrusted and informational only, at most 128 code points, control characters dropped, never used to derive another field. ASCII on the wire (\\uXXXX escapes, < > & always escaped).",
+      "type": "string",
+      "maxLength": 128
+    },
+    "feature": {
+      "description": "unusualFeatures vocabulary (sorted, unique). Removing a name is a schema change; new names may be added.",
+      "enum": [
+        "acroform-empty", "acroform-filled", "annotation-freetext", "annotation-highlight", "annotation-other", "annotation-text",
+        "drawing-limit", "embedded-files", "encrypted-empty-password", "encrypted-user-password", "huge-page", "javascript-present",
+        "layered-scan", "link-internal", "link-uri", "no-tounicode", "ocg-hidden", "ocg-visible", "rotated-content", "rotated-page",
+        "scan-page", "type3-font", "xfa-present"
+      ]
+    },
+    "warning": {
+      "description": "parseWarnings vocabulary (sorted, unique): poppler error categories and stages seen while the page was processed, never message text.",
+      "enum": [
+        "bad-content-stream", "broken-image", "internal-error", "io-error", "limit-hit", "missing-font", "non-finite", "out-of-range",
+        "page-failed", "syntax-error", "syntax-warning", "unimplemented", "xref-repaired"
+      ]
+    },
+    "header": {
+      "type": "object",
+      "required": ["schema", "type"],
+      "properties": {
+        "schema": { "const": "doppler-page-facts/1" },
+        "type": { "enum": ["doc", "page", "run"] }
+      }
+    },
+    "docLine": {
+      "type": "object",
+      "required": ["schema", "type"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "const": "doppler-page-facts/1" },
+        "type": { "const": "doc" },
+        "level": { "enum": ["basic", "full"] },
+        "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 8, "uniqueItems": true },
+        "error": { "enum": ["open-failed", "damaged"] },
+        "locked": { "type": "boolean" },
+        "pageCount": { "$ref": "#/$defs/count" },
+        "pdfVersion": { "type": "string", "pattern": "^[12]\\.[0-9]$" },
+        "linearized": { "type": "boolean" },
+        "xref": { "enum": ["ok", "repaired"] },
+        "encryption": { "enum": ["none", "empty-user-password", "user-password-required"] },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "print": { "type": "boolean" }, "printHighRes": { "type": "boolean" }, "modify": { "type": "boolean" }, "copy": { "type": "boolean" },
+            "annotate": { "type": "boolean" }, "fillForms": { "type": "boolean" }, "accessibility": { "type": "boolean" }, "assemble": { "type": "boolean" }
+          }
+        },
+        "incrementalUpdates": { "$ref": "#/$defs/count" },
+        "tagged": { "type": "boolean" },
+        "markedContent": { "type": "boolean" },
+        "lang": { "type": "string", "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8}){0,4}$" },
+        "outlineCount": { "$ref": "#/$defs/count" },
+        "pageLabels": { "type": "boolean" },
+        "embeddedFiles": { "$ref": "#/$defs/count" },
+        "javascript": { "type": "boolean" },
+        "openAction": { "type": "boolean" },
+        "launchAction": { "type": "boolean" },
+        "producer": { "$ref": "#/$defs/untrustedString" },
+        "creator": { "$ref": "#/$defs/untrustedString" },
+        "truncated": { "type": "array", "items": { "enum": ["embeddedFiles", "outlineCount", "strings"] }, "maxItems": 3 },
+        "acroForm": { "enum": ["none", "present"] },
+        "needAppearances": { "type": "boolean" },
+        "xfa": { "enum": ["none", "static", "dynamic"] },
+        "ocgCount": { "$ref": "#/$defs/count" },
+        "ocgOffByDefault": { "$ref": "#/$defs/count" },
+        "unusualFeatures": { "type": "array", "items": { "$ref": "#/$defs/feature" }, "uniqueItems": true, "maxItems": 64 }
+      }
+    },
+    "pageLine": {
+      "type": "object",
+      "required": ["schema", "type", "page", "parseWarnings", "unusualFeatures"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "const": "doppler-page-facts/1" },
+        "type": { "const": "page" },
+        "page": { "type": "integer", "minimum": 1 },
+        "error": { "enum": ["failed"] },
+        "geometry": {
+          "type": "object",
+          "required": ["widthPt", "heightPt", "rotation", "userUnit"],
+          "properties": {
+            "widthPt": { "$ref": "#/$defs/points" },
+            "heightPt": { "$ref": "#/$defs/points" },
+            "rotation": { "enum": [0, 90, 180, 270] },
+            "userUnit": { "type": "number", "minimum": 0.0001, "maximum": 1000000 },
+            "mediaBox": { "$ref": "#/$defs/box" },
+            "cropBox": { "$ref": "#/$defs/box" }
+          }
+        },
+        "text": {
+          "type": "object",
+          "required": ["charCount", "visibleCharCount", "invisibleCharCount", "wordCount", "visibleWordCount", "invisibleWordCount", "textLayer", "textCoverage"],
+          "properties": {
+            "charCount": { "$ref": "#/$defs/count" },
+            "visibleCharCount": { "$ref": "#/$defs/count" },
+            "invisibleCharCount": { "$ref": "#/$defs/count" },
+            "wordCount": { "$ref": "#/$defs/count" },
+            "visibleWordCount": { "$ref": "#/$defs/count" },
+            "invisibleWordCount": { "$ref": "#/$defs/count" },
+            "textLayer": { "enum": ["none", "invisible", "visible", "mixed"] },
+            "textCoverage": { "$ref": "#/$defs/ratio" },
+            "clippedCharCount": { "$ref": "#/$defs/count" },
+            "controlCharRatio": { "$ref": "#/$defs/ratio" },
+            "privateUseRatio": { "$ref": "#/$defs/ratio" },
+            "replacementCharRatio": { "$ref": "#/$defs/ratio" },
+            "mathGlyphRatio": { "$ref": "#/$defs/ratio" },
+            "verticalCharRatio": { "$ref": "#/$defs/ratio" },
+            "rotatedTextRatio": { "$ref": "#/$defs/ratio" },
+            "textOverImageRatio": { "$ref": "#/$defs/ratio" },
+            "invisibleOverFullPageImage": { "type": "boolean" }
+          }
+        },
+        "fonts": {
+          "type": "object",
+          "required": ["count", "type3", "nonEmbedded", "cid", "noToUnicode", "glyphCount", "ocrFontHint", "truncated"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0, "maximum": 256 },
+            "smallestPt": { "$ref": "#/$defs/points" },
+            "type3": { "$ref": "#/$defs/count" },
+            "nonEmbedded": { "$ref": "#/$defs/count" },
+            "cid": { "$ref": "#/$defs/count" },
+            "noToUnicode": { "$ref": "#/$defs/count" },
+            "glyphCount": { "$ref": "#/$defs/count" },
+            "unmappedGlyphRatio": { "$ref": "#/$defs/ratio" },
+            "ocrFontHint": { "type": "boolean" },
+            "truncated": { "type": "boolean" }
+          }
+        },
+        "images": {
+          "type": "object",
+          "required": ["imageCount", "imageCoverage", "largestImageCoverage", "fullPageImage", "scan", "truncated"],
+          "properties": {
+            "imageCount": { "$ref": "#/$defs/count" },
+            "imageCoverage": { "$ref": "#/$defs/ratio" },
+            "largestImageCoverage": { "$ref": "#/$defs/ratio" },
+            "fullPageImage": { "type": "boolean" },
+            "scan": { "enum": ["none", "single", "tiled", "layered"] },
+            "scanImage": { "type": "integer", "minimum": 1 },
+            "maskCount": { "$ref": "#/$defs/count" },
+            "inlineCount": { "$ref": "#/$defs/count" },
+            "items": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "required": ["index", "bbox", "coverage", "px", "dpi", "filter", "colorSpace", "imageMask", "softMask", "mask", "decode", "inline", "copy"],
+                "properties": {
+                  "index": { "type": "integer", "minimum": 1 },
+                  "bbox": { "$ref": "#/$defs/box" },
+                  "coverage": { "$ref": "#/$defs/ratio" },
+                  "px": { "type": "array", "items": { "$ref": "#/$defs/count" }, "minItems": 2, "maxItems": 2 },
+                  "dpi": { "type": "array", "items": { "$ref": "#/$defs/points" }, "minItems": 2, "maxItems": 2 },
+                  "filter": { "enum": ["none", "dct", "jpx", "jbig2", "ccitt", "flate", "lzw", "rl", "other"] },
+                  "bpc": { "type": "integer", "minimum": 1, "maximum": 32 },
+                  "colorSpace": { "enum": ["none", "gray", "rgb", "cmyk", "indexed", "lab", "icc1", "icc3", "icc4", "sep", "devn", "other"] },
+                  "imageMask": { "type": "boolean" },
+                  "softMask": { "type": "boolean" },
+                  "mask": { "type": "boolean" },
+                  "decode": { "type": "boolean" },
+                  "inline": { "type": "boolean" },
+                  "obj": { "type": "integer", "minimum": 1 },
+                  "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] }
+                }
+              }
+            },
+            "itemsTruncated": { "type": "boolean" },
+            "truncated": { "type": "boolean" }
+          }
+        },
+        "vectors": {
+          "type": "object",
+          "required": ["paths", "filled", "stroked", "coverage", "hRules", "vRules", "ruleGridScore", "shadings", "patterns", "clips", "figureClusters", "clusters", "clustersTruncated", "limitHit"],
+          "properties": {
+            "paths": { "type": "integer", "minimum": 0, "maximum": 100000 },
+            "filled": { "$ref": "#/$defs/count" },
+            "stroked": { "$ref": "#/$defs/count" },
+            "coverage": { "$ref": "#/$defs/ratio" },
+            "uncoveredRatio": { "$ref": "#/$defs/ratio" },
+            "hRules": { "$ref": "#/$defs/count" },
+            "vRules": { "$ref": "#/$defs/count" },
+            "ruleGridScore": { "$ref": "#/$defs/ratio" },
+            "shadings": { "$ref": "#/$defs/count" },
+            "patterns": { "$ref": "#/$defs/count" },
+            "clips": { "$ref": "#/$defs/count" },
+            "figureClusters": { "$ref": "#/$defs/count" },
+            "clusters": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "object",
+                "required": ["bbox", "paths", "curves", "segments"],
+                "properties": { "bbox": { "$ref": "#/$defs/box" }, "paths": { "$ref": "#/$defs/count" }, "curves": { "$ref": "#/$defs/count" }, "segments": { "$ref": "#/$defs/count" } }
+              }
+            },
+            "clustersTruncated": { "type": "boolean" },
+            "limitHit": { "type": "boolean" }
+          }
+        },
+        "forms": {
+          "type": "object",
+          "required": ["fields", "text", "checkbox", "radio", "choice", "signature", "pushButton", "filled", "empty", "valueAppearanceMismatch", "signed", "unsigned"],
+          "properties": {
+            "fields": { "$ref": "#/$defs/count" }, "text": { "$ref": "#/$defs/count" }, "checkbox": { "$ref": "#/$defs/count" }, "radio": { "$ref": "#/$defs/count" },
+            "choice": { "$ref": "#/$defs/count" }, "signature": { "$ref": "#/$defs/count" }, "pushButton": { "$ref": "#/$defs/count" }, "filled": { "$ref": "#/$defs/count" },
+            "empty": { "$ref": "#/$defs/count" }, "valueAppearanceMismatch": { "$ref": "#/$defs/count" }, "signed": { "$ref": "#/$defs/count" }, "unsigned": { "$ref": "#/$defs/count" }
+          }
+        },
+        "annots": {
+          "type": "object",
+          "required": ["count", "bySubtype", "linkUri", "linkInternal", "linkOther", "visibleAppearance", "truncated"],
+          "properties": {
+            "count": { "type": "integer", "minimum": 0, "maximum": 10000 },
+            "bySubtype": {
+              "type": "object",
+              "propertyNames": {
+                "enum": ["text", "link", "freeText", "line", "square", "circle", "polygon", "polyLine", "highlight", "underline", "squiggly", "strikeOut", "stamp", "caret", "ink", "popup",
+                         "fileAttachment", "sound", "movie", "widget", "screen", "printerMark", "trapNet", "watermark", "threeD", "richMedia", "other"]
+              },
+              "additionalProperties": { "$ref": "#/$defs/count" }
+            },
+            "linkUri": { "$ref": "#/$defs/count" },
+            "linkInternal": { "$ref": "#/$defs/count" },
+            "linkOther": { "$ref": "#/$defs/count" },
+            "visibleAppearance": { "$ref": "#/$defs/count" },
+            "truncated": { "type": "boolean" }
+          }
+        },
+        "layers": {
+          "type": "object",
+          "required": ["hiddenContent", "visibleContent", "hiddenOps", "visibleOps"],
+          "properties": {
+            "hiddenContent": { "type": "boolean" },
+            "visibleContent": { "type": "boolean" },
+            "hiddenOps": { "$ref": "#/$defs/count" },
+            "visibleOps": { "$ref": "#/$defs/count" }
+          }
+        },
+        "parseWarnings": { "type": "array", "items": { "$ref": "#/$defs/warning" }, "uniqueItems": true, "maxItems": 64 },
+        "unusualFeatures": { "type": "array", "items": { "$ref": "#/$defs/feature" }, "uniqueItems": true, "maxItems": 64 },
+        "factsMs": { "type": "number", "minimum": 0 }
+      }
+    },
+    "runLine": {
+      "type": "object",
+      "required": ["schema", "type", "pagesEmitted", "pagesFailed", "version", "commit"],
+      "additionalProperties": true,
+      "properties": {
+        "schema": { "const": "doppler-page-facts/1" },
+        "type": { "const": "run" },
+        "pagesEmitted": { "$ref": "#/$defs/count" },
+        "pagesFailed": { "$ref": "#/$defs/count" },
+        "stop": { "enum": ["max-pages"] },
+        "version": { "type": "string", "pattern": "^[A-Za-z0-9._+-]{0,64}$" },
+        "commit": { "type": "string", "pattern": "^[A-Za-z0-9._+-]{0,64}$" },
+        "totalMs": { "type": "number", "minimum": 0 },
+        "peakRssKiB": { "$ref": "#/$defs/count" }
+      }
+    }
+  }
+}
