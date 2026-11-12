@@ -59,18 +59,47 @@ pub(crate) fn seal() -> String {
 /// rebuilt from glyphs; any case): every `doppler:` and `doppler-image:` that does not carry
 /// `seal` gets a zero-width space after its `doppler`, and every `page-` followed by four or
 /// more digits and `/image-` or `/figure-` (an image path, whatever the link prefix) gets one
-/// after its `page`. Then the converter's own sealed picture markers are expanded: `expand`
-/// maps a marker's id (`pN.M`, `pN.gK`) to its link (`None` keeps `doppler-image:<id>`). Last,
-/// the seal goes, leaving the converter's other markers exactly as documented. Only expansion
-/// can therefore put an image path into the Markdown.
+/// after its `page`. Because a Markdown renderer decodes escapes, entities and percent signs in
+/// a link (`page&#45;0001`, `page\-0001`, `page%2D0001`, `./`), no spelling of a path can be
+/// matched reliably; so the syntax that makes a link is broken too: a zero-width space goes
+/// between `]` and `(` (an inline link or image) and between `]` and `:` (a reference
+/// definition), and after the `<` of an HTML tag that can load or link a URL (`<img`, `<a`,
+/// `<source`, `<svg`, ...). Then the converter's own sealed picture markers are expanded:
+/// `expand` maps a marker's id (`pN.M`, `pN.gK`) to its link (`None` keeps
+/// `doppler-image:<id>`). Last, the seal goes, leaving the converter's other markers exactly as
+/// documented. Only expansion can therefore put a link, and an image path, into the Markdown.
 pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<String>) -> String {
     let bytes = md.as_bytes();
     let mut out = String::with_capacity(md.len());
     let mut from = 0;
     let at = |i: usize, s: &str| bytes.len() >= i + s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s.as_bytes());
+    // the converter's own markers open with `](doppler<seal>-image:`
+    let own = format!("](doppler{seal}");
     let mut i = 0;
-    while i + 5 <= bytes.len() {
-        // only a `d` or a `p` (any case) can start either pattern
+    while i + 1 < bytes.len() {
+        // a link of the PDF's text: `](` or `]:`, unless it is a sealed marker of the converter
+        if bytes[i] == b']' && (bytes[i + 1] == b'(' || bytes[i + 1] == b':') {
+            if seal.is_empty() || !md[i..].starts_with(&own) {
+                out.push_str(&md[from..i + 1]);
+                out.push('\u{200b}');
+                from = i + 1;
+            }
+            i += 1;
+            continue;
+        }
+        // an HTML tag that loads or links a URL
+        if bytes[i] == b'<' && url_tag_at(bytes, i + 1) {
+            out.push_str(&md[from..i + 1]);
+            out.push('\u{200b}');
+            from = i + 1;
+            i += 1;
+            continue;
+        }
+        if i + 5 > bytes.len() {
+            i += 1;
+            continue;
+        }
+        // only a `d` or a `p` (any case) can start the other patterns
         let lead = bytes[i] | 0x20;
         if lead != b'd' && lead != b'p' {
             i += 1;
@@ -118,6 +147,25 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
         out
     };
     out.replace(seal, "")
+}
+
+/// HTML elements whose attributes can load or link a URL (`src`, `href`, `srcset`, `data`,
+/// `poster`, `action`, ...).
+const URL_TAGS: [&str; 22] = [
+    "a", "area", "audio", "base", "embed", "form", "frame", "iframe", "image", "img", "input", "link", "meta",
+    "object", "picture", "script", "source", "style", "svg", "track", "use", "video",
+];
+
+/// Whether `b[i..]` is the name of one of [`URL_TAGS`] (any case, optionally after a `/`) ended
+/// by something that is not a letter, digit or `-` (or the end).
+fn url_tag_at(b: &[u8], i: usize) -> bool {
+    let start = if b.get(i) == Some(&b'/') { i + 1 } else { i };
+    let name_len = b[start.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'-').count();
+    if name_len == 0 || name_len > 8 {
+        return false;
+    }
+    let name = &b[start..start + name_len];
+    URL_TAGS.iter().any(|t| t.as_bytes().eq_ignore_ascii_case(name))
 }
 
 /// Whether `b[i..]` is four or more ASCII digits, then `/image-` or `/figure-` (any case).

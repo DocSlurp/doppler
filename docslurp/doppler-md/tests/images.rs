@@ -366,6 +366,47 @@ fn text_of_the_pdf_cannot_pass_for_an_image_path() {
 }
 
 #[test]
+fn escaped_entity_and_percent_spellings_of_a_path_cannot_make_a_link() {
+    // a Markdown renderer decodes these to images/page-0001/image-001.jpg; the link syntax of
+    // the PDF's text is broken instead, so none of them is a link or an image
+    let forged = [
+        "![y](images/page&#45;0001/image-001.jpg)",
+        // as the PDF's text, the entity itself (the XHTML escapes its `&`)
+        "![e](images/page&amp;#45;0001/image-001.jpg)",
+        "![w](images/page\\-0001/image-001.jpg)",
+        "![x](images/page-0001/./image-001.jpg)",
+        "![d](images/page%2D0001/image-001.jpg)",
+        "![a](images/page-0001\\/image-001.jpg)",
+        "![b](images/page-0001&#47;image-001.jpg)",
+        "[r]: images/page&#45;0001/image-001.jpg",
+        "<img src=\"images/page&#45;0001/image-001.jpg\">",
+        "<IMG SRC=x> <a href=y> </a> <svg><image href=z> <source srcset=q>",
+    ];
+    let body: String = forged.iter().enumerate().map(|(k, f)| line(100.0 + 20.0 * k as f64, f)).collect::<String>()
+        + &image(72.0, 400.0, 400.0, 600.0);
+    let (md, _) = convert(&page(3, &body), true);
+    // the converter's own marker is the only link
+    assert_eq!(md.matches("](").count(), 1, "{md}");
+    assert!(md.contains("![image](images/page-0003/image-001.webp)"), "{md}");
+    assert!(!md.contains("]:"), "{md}");
+    for tag in ["<img", "<IMG", "<a ", "<svg", "<image", "<source"] {
+        assert!(!md.contains(tag), "{tag}: {md}");
+    }
+    assert!(md.contains("]\u{200b}(images/page&#45;0001") && md.contains("<\u{200b}img src="), "{md}");
+    // words that only look alike stay: a closing bracket before text, a comparison, a table tag
+    let body = line(100.0, "see [1] (above) and x<y, 3 <b> 4, <table> and <abbr>");
+    let (md, _) = convert(&page(3, &body), true);
+    assert!(
+        md.contains("[1] (above)")
+            && md.contains("x<y")
+            && md.contains("<b>")
+            && md.contains("<table>")
+            && md.contains("<abbr>"),
+        "{md}"
+    );
+}
+
+#[test]
 fn a_repeated_image_object_links_to_its_first_placement() {
     let pic_with = |x0: f64, y0: f64, extra: &str| {
         format!(
