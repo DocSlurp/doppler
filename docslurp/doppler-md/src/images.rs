@@ -47,28 +47,75 @@ pub(crate) fn seal() -> String {
         .collect()
 }
 
-/// A page's Markdown as written: every `doppler:` and `doppler-image:` that does not carry
-/// `seal` (text of the PDF, however it was joined: glued words, a hyphen across lines, cells,
-/// math rebuilt from glyphs; any case) gets a zero-width space after its `doppler`, then the
-/// seal goes, leaving the converter's own markers exactly as documented.
-pub(crate) fn unseal(md: &str, seal: &str) -> String {
+/// A page's Markdown as written. First, text of the PDF that could pass for the converter's
+/// output is neutralised, however it was joined (glued words, a hyphen across lines, cells, math
+/// rebuilt from glyphs; any case): every `doppler:` and `doppler-image:` that does not carry
+/// `seal` gets a zero-width space after its `doppler`, and every `page-` followed by four or
+/// more digits and `/image-` or `/figure-` (an image path, whatever the link prefix) gets one
+/// after its `page`. Then the converter's own sealed picture markers are expanded: `expand`
+/// maps a marker's id (`pN.M`, `pN.gK`) to its link (`None` keeps `doppler-image:<id>`). Last,
+/// the seal goes, leaving the converter's other markers exactly as documented. Only expansion
+/// can therefore put an image path into the Markdown.
+pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<String>) -> String {
     let bytes = md.as_bytes();
     let mut out = String::with_capacity(md.len());
     let mut from = 0;
     let at = |i: usize, s: &str| bytes.len() >= i + s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s.as_bytes());
     let mut i = 0;
-    while i + 7 <= bytes.len() {
+    while i + 5 <= bytes.len() {
         if at(i, "doppler") && (at(i + 7, ":") || at(i + 7, "-image:")) {
             out.push_str(&md[from..i + 7]);
             out.push('\u{200b}');
             from = i + 7;
             i += 7;
+        } else if at(i, "page-") && image_path_at(bytes, i + 5) {
+            out.push_str(&md[from..i + 4]);
+            out.push('\u{200b}');
+            from = i + 4;
+            i += 5;
         } else {
             i += 1;
         }
     }
     out.push_str(&md[from..]);
-    if seal.is_empty() { out } else { out.replace(seal, "") }
+    if seal.is_empty() {
+        return out;
+    }
+    let sealed = format!("doppler{seal}-image:");
+    let out = if out.contains(&sealed) {
+        let mut x = String::with_capacity(out.len() + 64);
+        let mut rest = out.as_str();
+        while let Some(k) = rest.find(&sealed) {
+            x.push_str(&rest[..k]);
+            let after = &rest[k + sealed.len()..];
+            let end = after.find(')').unwrap_or(after.len());
+            let id = &after[..end];
+            match expand(id) {
+                Some(link) => x.push_str(&link),
+                None => {
+                    x.push_str(SCHEME);
+                    x.push_str(id);
+                }
+            }
+            rest = &after[end..];
+        }
+        x.push_str(rest);
+        x
+    } else {
+        out
+    };
+    out.replace(seal, "")
+}
+
+/// Whether `b[i..]` is four or more ASCII digits, then `/image-` or `/figure-` (any case).
+fn image_path_at(b: &[u8], i: usize) -> bool {
+    let digits = b[i.min(b.len())..].iter().take_while(|c| c.is_ascii_digit()).count();
+    if digits < 4 {
+        return false;
+    }
+    let rest = &b[i + digits..];
+    let starts = |s: &[u8]| rest.len() >= s.len() && rest[..s.len()].eq_ignore_ascii_case(s);
+    starts(b"/image-") || starts(b"/figure-")
 }
 
 /// What became of an image.
@@ -132,8 +179,15 @@ pub struct Note {
     pub obj: Option<(u32, u32)>,
     /// lines of text lie inside the box (a crop of it holds labels: encode it losslessly)
     pub text: bool,
-    /// the file written for it by image extraction (`pdftomarkdown --images-dir`)
+    /// the file written for it by image extraction (`pdftomarkdown --images-dir`): its path
+    /// relative to the images folder
     pub file: Option<String>,
+    /// its link's path relative to the images folder (see [`crate::extract::layout`]): set for
+    /// marked images when the page is written; a repeat's is its first placement's path
+    pub link: Option<String>,
+    /// a repeat of an earlier marked image (same image object, same size), known at conversion:
+    /// that image's id
+    pub repeat_of: Option<String>,
     /// its page ran out of layout work and was written as plain lines: a block marker then
     /// follows the page's text instead of sitting in reading order
     pub degraded: bool,
@@ -214,6 +268,8 @@ pub fn place(
             text: false,
             file: None,
             degraded: false,
+            link: None,
+            repeat_of: None,
         });
     }
     let boxes: Vec<(f64, f64, f64, f64)> = images.iter().map(|im| (im.x0, im.y0, im.x1, im.y1)).collect();

@@ -106,7 +106,7 @@ fn a_backdrop_picture_repeated_on_several_pages_gets_no_marker() {
     let xhtml = page(&backdrop) + &page(&backdrop) + &page(&(backdrop.clone() + &image(100.0, 600.0, 300.0, 700.0)));
     let o = Options { markers: true, ..Options::default() };
     let (pages, report) = to_markdown_report_with(&xhtml, &Params::default(), &o);
-    assert_eq!(pages.join("").matches("doppler-image").count(), 1, "{pages:?}");
+    assert_eq!(pages.join("").matches("](images/page-").count(), 1, "{pages:?}");
     let fates: Vec<&str> = report.images.iter().map(|n| n.fate.as_str()).collect();
     assert_eq!(fates, ["watermark", "watermark", "watermark", "block"]);
 }
@@ -117,7 +117,7 @@ fn a_scan_repeating_its_page_image_is_a_background_not_a_watermark() {
     let xhtml = page(&scan) + &page(&scan) + &page(&scan);
     let o = Options { markers: true, ..Options::default() };
     let (pages, report) = to_markdown_report_with(&xhtml, &Params::default(), &o);
-    assert!(!pages.join("").contains("doppler-image"), "{pages:?}");
+    assert!(!pages.join("").contains("](images/page-"), "{pages:?}");
     assert!(report.images.iter().all(|n| n.fate.as_str() == "background"), "{:?}", report.images);
 }
 

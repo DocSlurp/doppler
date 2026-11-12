@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 
 use doppler_md::{Options, Params, TableFormat, to_markdown_report_with};
 
-const MATH: Options = Options { tables: TableFormat::Gfm, math: true, markers: false };
-const PLAIN: Options = Options { tables: TableFormat::Gfm, math: false, markers: false };
+const MATH: Options =
+    Options { tables: TableFormat::Gfm, math: true, markers: false, page_markers: false, first_page: None };
+const PLAIN: Options =
+    Options { tables: TableFormat::Gfm, math: false, markers: false, page_markers: false, first_page: None };
 
 /// One glyph: x, advance, font id, text, glyph name, optional baseline and size overrides.
 #[derive(Clone)]

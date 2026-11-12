@@ -4,14 +4,21 @@
 //! figure. The marked ones (`block`, `inline`) that are large enough and do not repeat an
 //! earlier one are rendered by `pdfregions` (docslurp/extraction/PROTOCOL.md): pictures as
 //! RGB crops at the extraction dpi, vector figures as SVG. Crops are encoded as WebP (lossy,
-//! or lossless when they hold text) or PNG; SVG is checked against an allowlist and compacted,
-//! and becomes a lossless raster when it fails or is too large. Files are named from the ids
-//! only (`p3.1.webp`, `p3.g1.svg`); `manifest.json`, written last, lists every image.
+//! or lossless when they hold text) or PNG; SVG is checked against an allowlist and compacted.
+//! A refused SVG figure becomes a lossless PNG wrapped in an SVG, so its `.svg` link stays
+//! valid. Files go where the Markdown links point ([`layout`]: `page-0012/image-003.webp`);
+//! `manifest.json`, written last, lists every image and every file.
 //!
-//! One image failing is recorded in the manifest. A document limit, the renderer failing, or
-//! a write error fails the extraction: the caller removes the folder.
+//! Extraction runs in batches of `--images-batch-pages` pages, one renderer process each, with
+//! that batch's own budgets (`--images-max`, `--images-max-bytes`, `--images-timeout`). A
+//! batch that hits a budget, times out or whose renderer fails keeps the files it wrote; its
+//! other images are `not-extracted` with the reason, the batch records the page it was cut at,
+//! and the next batch goes on. Two failed batches in a row stop the rest (`aborted`), as do the
+//! document ceilings (`--images-doc-max-bytes`, `--images-deadline`). Only a write failure or
+//! a renderer that cannot be started fails the extraction: the caller removes the folder.
 
 pub mod encode;
+pub mod layout;
 pub mod outdir;
 pub mod plan;
 pub mod regions;
@@ -27,8 +34,9 @@ use sha2::{Digest, Sha256};
 use crate::Report;
 use crate::images::{Fate, Note};
 use encode::Raster;
+use layout::{RepeatKey, kind, repeat_key};
 use outdir::OutDir;
-use regions::{Job, Mode, Outcome, Renderer};
+use regions::{Halt, Job, Mode, Outcome, Renderer, RunError};
 use settings::{RasterFormat, Repeats, Settings, VectorFormat};
 
 /// Extra time past `--images-timeout` before the renderer is killed (it stops itself at the
@@ -36,38 +44,125 @@ use settings::{RasterFormat, Repeats, Settings, VectorFormat};
 const GRACE: Duration = Duration::from_secs(2);
 /// Raw SVG larger than this is not compacted: the figure is rendered as a raster.
 pub const MAX_SVG_INPUT: usize = 8 << 20;
+/// Failed batches in a row that stop the rest of the extraction.
+const MAX_FAILED_IN_A_ROW: usize = 2;
+
+/// Why a batch stopped before its end, as the manifest says it (the batch's `status` and the
+/// `reason` of the images it did not get to).
+const STOPS: [&str; 6] = ["budget", "doc_budget", "timeout", "deadline", "renderer", "aborted"];
+
+/// What became of one image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    /// no link in the Markdown (its fate)
+    Unlinked,
+    /// waiting for its batch
+    Pending,
+    Extracted,
+    NotExtracted(&'static str),
+}
 
 /// One image of the manifest.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Entry {
-    file: Option<String>,
+    status: Status,
+    /// the renderer's error code or a record problem, with `NotExtracted("error")`
+    error: Option<String>,
     format: Option<&'static str>,
+    source: Option<&'static str>,
     bytes: u64,
     sha256: Option<String>,
     width: u32,
     height: u32,
     repeat_of: Option<String>,
     fallback: Option<String>,
-    error: Option<String>,
-    skipped: Option<&'static str>,
 }
 
-/// What makes two marked figures the same: box size (half points), pixel size and kind.
-type RepeatKey = (i64, i64, u32, u32, &'static str);
-
-fn kind(n: &Note) -> &'static str {
-    if n.vector {
-        "vector"
-    } else if n.mask {
-        "mask"
-    } else {
-        "picture"
+impl Default for Entry {
+    fn default() -> Self {
+        Entry {
+            status: Status::Pending,
+            error: None,
+            format: None,
+            source: None,
+            bytes: 0,
+            sha256: None,
+            width: 0,
+            height: 0,
+            repeat_of: None,
+            fallback: None,
+        }
     }
 }
 
-fn repeat_key(n: &Note) -> RepeatKey {
-    let (x0, y0, x1, y1) = n.bbox;
-    (((x1 - x0) * 2.0).round() as i64, ((y1 - y0) * 2.0).round() as i64, n.px.0, n.px.1, kind(n))
+impl Entry {
+    /// Not extracted because its batch stopped (not for a reason of its own).
+    fn stopped(&self) -> bool {
+        matches!(self.status, Status::NotExtracted(r) if STOPS.contains(&r))
+    }
+}
+
+/// One batch of the manifest: its pages, how it ended and where it was cut.
+#[derive(Clone, Debug)]
+struct Batch {
+    pages: (u32, u32),
+    status: &'static str,
+    cut_page: Option<u32>,
+}
+
+/// Where extraction spent its time, for the report (`images_ms`, `images_cpu_ms`). The
+/// encoders run on this thread, so their wall time is their CPU time; `wait` is time blocked
+/// on the renderer's records; `render` is the renderer processes' CPU (user + system, from
+/// `/proc/self/stat`'s waited-for children). `copy` and `decode` are for copied page scans.
+#[derive(Clone, Debug, Default)]
+pub struct Timing {
+    pub wait: Duration,
+    pub webp: Duration,
+    pub png: Duration,
+    pub svg: Duration,
+    pub copy: Duration,
+    pub decode: Duration,
+    /// children's user and system CPU in milliseconds, when `/proc` says
+    pub children_ms: Option<(u64, u64)>,
+}
+
+impl Timing {
+    /// `"images_ms":{...},"images_cpu_ms":{...}`.
+    pub fn to_json(&self) -> String {
+        let ms = |d: Duration| format!("{:.1}", d.as_secs_f64() * 1000.0);
+        let (user, sys) = self.children_ms.unwrap_or((0, 0));
+        format!(
+            "\"images_ms\":{{\"render\":{},\"copy\":{},\"decode\":{},\"webp\":{},\"png\":{},\"svg\":{},\"wait\":{}}},\"images_cpu_ms\":{{\"children_user\":{user},\"children_sys\":{sys},\"known\":{}}}",
+            user + sys,
+            ms(self.copy),
+            ms(self.decode),
+            ms(self.webp),
+            ms(self.png),
+            ms(self.svg),
+            ms(self.wait),
+            self.children_ms.is_some()
+        )
+    }
+}
+
+/// User and system CPU (ms) of this process's waited-for children, from `/proc/self/stat`.
+fn children_cpu_ms() -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // the fields after the command name, which is in parentheses and may hold anything
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    // f[0] is field 3 (state); cutime and cstime are fields 16 and 17
+    let (cu, cs): (u64, u64) = (f.get(13)?.parse().ok()?, f.get(14)?.parse().ok()?);
+    let hz = rustix::param::clock_ticks_per_second().max(1);
+    Some((cu.saturating_mul(1000) / hz, cs.saturating_mul(1000) / hz))
+}
+
+/// The outcome of an extraction that wrote its manifest.
+#[derive(Clone, Copy, Debug)]
+pub struct Summary {
+    pub written: usize,
+    /// every batch finished (manifest `complete`)
+    pub complete: bool,
 }
 
 /// The page, vector flag and index of an id, for sorting.
@@ -85,63 +180,85 @@ struct Run<'a> {
     dir: &'a mut OutDir,
     written: usize,
     total_bytes: u64,
+    /// this batch's files and bytes
+    batch_written: usize,
+    batch_bytes: u64,
     /// content repeats: (key, sha256 of the rendered payload) -> entry
     seen_payload: HashMap<(RepeatKey, [u8; 32]), usize>,
     /// repeat keys held by more than one job: only their payloads can repeat one another, so
     /// only they are hashed (a raw crop is megabytes; hashing every one was ~4% of the pass)
     shared_keys: HashSet<RepeatKey>,
-    /// figures whose SVG failed: rendered again as rasters
+    /// this batch's figures whose SVG failed: rendered again as rasters
     fallbacks: Vec<(usize, String)>,
-    /// past it, records are not encoded or compacted any more (`error: timeout`)
+    /// this batch's deadline: past it, records are not encoded or compacted any more
     deadline: Instant,
+    /// the document's deadline (`--images-deadline`), when given
+    doc_deadline: Option<Instant>,
+    /// set when `--images-doc-max-bytes` was reached
+    doc_full: bool,
+    timing: Timing,
 }
 
-/// Extracts the images of `report` into `dir`, sets each note's `file` and the report's
-/// `images_written`. `Err` is a document failure: the caller removes the folder.
-pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut OutDir) -> Result<usize, String> {
+/// Extracts the images of `report` into `dir` and writes `manifest.json` last: sets each note's
+/// link (from `s`, as the Markdown has them) and `file`, and the report's `images_written`,
+/// `images_complete`, `images_confined` and `images_timing`. `source_sha256` names the PDF in
+/// the manifest. `Err` is a hard failure (a write failure, or a renderer that cannot be
+/// started): the caller removes the folder.
+pub fn extract(
+    report: &mut Report,
+    s: &Settings,
+    source_sha256: &str,
+    renderer: &Renderer,
+    dir: &mut OutDir,
+) -> Result<Summary, String> {
     let start = Instant::now();
-    let deadline = start + s.timeout + GRACE;
+    let cpu_before = children_cpu_ms();
+    // the links the Markdown has (an images plan's notes get them here)
+    layout::Linker::new(s.link_style()).assign(&mut report.images);
     let notes = &report.images;
     let mut entries: Vec<Entry> = vec![Entry::default(); notes.len()];
     let min_side = s.min_side_pt();
-    // first marked figure for each (key, object): later ones are repeats without rendering
-    let mut seen_obj: HashMap<(RepeatKey, (u32, u32)), usize> = HashMap::new();
     let mut jobs: Vec<(Job, usize)> = Vec::new();
+    let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    let mut promoted: HashSet<&str> = HashSet::new();
     for (i, n) in notes.iter().enumerate() {
-        if !outdir::valid_id(&n.id) {
-            entries[i].error = Some("id".into());
+        let e = &mut entries[i];
+        if !matches!(n.fate, Fate::Block | Fate::Inline) {
+            e.status = Status::Unlinked;
+            continue;
+        }
+        if n.link.is_none() {
+            e.status = Status::NotExtracted("id");
             continue;
         }
         if let Some((a, b)) = s.pages
             && !(a..=b).contains(&n.page)
         {
-            entries[i].skipped = Some("pages");
-            continue;
-        }
-        if !matches!(n.fate, Fate::Block | Fate::Inline) {
-            entries[i].skipped = Some("fate");
+            e.status = Status::NotExtracted("pages");
             continue;
         }
         let (x0, y0, x1, y1) = n.bbox;
         let finite = [x0, y0, x1, y1].iter().all(|v| v.is_finite());
         if !finite || x1 <= x0 || y1 <= y0 {
-            entries[i].error = Some("bbox".into());
+            e.status = Status::NotExtracted("bbox");
             continue;
         }
         if (x1 - x0).min(y1 - y0) < min_side {
-            entries[i].skipped = Some("min_side");
+            e.status = Status::NotExtracted("min_side");
             continue;
         }
-        if s.repeats != Repeats::Keep
-            && let Some(obj) = n.obj
-        {
-            let key = (repeat_key(n), obj);
-            if let Some(&first) = seen_obj.get(&key) {
-                entries[i].repeat_of = Some(notes[first].id.clone());
-                entries[i].skipped = Some("repeat");
+        if let Some(first) = &n.repeat_of {
+            // the first placement's file is this one's link; when that placement lies outside
+            // --images-pages, the first repeat inside them writes it
+            let target = index.get(first.as_str()).copied();
+            let outside = target.is_some_and(|t| entries[t].status == Status::NotExtracted("pages"));
+            if !(outside && promoted.insert(first.as_str())) {
+                let e = &mut entries[i];
+                e.status = Status::NotExtracted("repeat");
+                e.repeat_of = Some(first.clone());
                 continue;
             }
-            seen_obj.insert(key, i);
+            entries[i].repeat_of = Some(first.clone());
         }
         let mode = if n.vector && s.vector_format == VectorFormat::Svg { Mode::Svg } else { Mode::Raster };
         jobs.push((Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode, dpi: s.dpi }, i));
@@ -161,85 +278,181 @@ pub fn extract(report: &mut Report, s: &Settings, renderer: &Renderer, dir: &mut
         dir,
         written: 0,
         total_bytes: 0,
+        batch_written: 0,
+        batch_bytes: 0,
         seen_payload: HashMap::new(),
         shared_keys,
         fallbacks: Vec::new(),
-        deadline,
+        deadline: start,
+        doc_deadline: s.deadline.map(|d| start + d),
+        doc_full: false,
+        timing: Timing::default(),
     };
-    let (job_list, owners): (Vec<Job>, Vec<usize>) = jobs.into_iter().unzip();
-    let timeout_arg = s.timeout.as_secs().max(1);
-    let mut confined =
-        renderer.run(&job_list, deadline, timeout_arg, &mut |k, outcome| run.record(owners[k], outcome))?;
-    // figures whose SVG was refused: lossless rasters, in a second pass
-    if !run.fallbacks.is_empty() {
-        let fb: Vec<(Job, usize)> = run
-            .fallbacks
-            .iter()
-            .map(|(e, _)| {
-                let n = &notes[*e];
-                (Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Raster, dpi: s.dpi }, *e)
-            })
-            .collect();
-        let (job_list, owners): (Vec<Job>, Vec<usize>) = fb.into_iter().unzip();
-        let left = deadline.saturating_duration_since(Instant::now()).saturating_sub(GRACE).as_secs().max(1);
-        let again = renderer.run(&job_list, deadline, left, &mut |k, outcome| run.record(owners[k], outcome))?;
-        confined = match (confined, again) {
+    let batch_pages = s.batch_pages.max(1);
+    let mut batches: Vec<Batch> = Vec::new();
+    let mut failed_in_a_row = 0;
+    let mut confined: Option<bool> = None;
+    let mut k = 0;
+    while k < jobs.len() {
+        let index = jobs[k].0.page.saturating_sub(1) / batch_pages;
+        let end = k + jobs[k..].iter().take_while(|(j, _)| j.page.saturating_sub(1) / batch_pages == index).count();
+        let first_page = index * batch_pages + 1;
+        let pages = (first_page, first_page.saturating_add(batch_pages - 1));
+        let batch = &jobs[k..end];
+        k = end;
+        let skip = if failed_in_a_row >= MAX_FAILED_IN_A_ROW {
+            Some("aborted")
+        } else if run.doc_full {
+            Some("doc_budget")
+        } else if run.doc_deadline.is_some_and(|d| Instant::now() >= d) {
+            Some("deadline")
+        } else {
+            None
+        };
+        if let Some(why) = skip {
+            for (_, i) in batch {
+                run.entries[*i].status = Status::NotExtracted(why);
+            }
+            batches.push(Batch { pages, status: why, cut_page: Some(batch[0].0.page) });
+            continue;
+        }
+        let (status, c) = run.batch(batch, renderer)?;
+        confined = match (confined, c) {
             (Some(a), Some(b)) => Some(a && b),
             (a, b) => a.or(b),
         };
+        let cut_page = batch.iter().filter(|(_, i)| run.entries[*i].stopped()).map(|(j, _)| j.page).min();
+        if matches!(status, "timeout" | "renderer") {
+            failed_in_a_row += 1;
+        } else {
+            failed_in_a_row = 0;
+        }
+        batches.push(Batch { pages, status, cut_page: if status == "ok" { None } else { cut_page } });
     }
-    resolve_repeats(&mut run.entries, notes);
-    let manifest = manifest(&run);
-    run.dir.write("manifest.json", manifest.as_bytes())?;
+    let complete = batches.iter().all(|b| b.status == "ok");
+    if let (Some(b), Some(a)) = (cpu_before, children_cpu_ms()) {
+        run.timing.children_ms = Some((a.0.saturating_sub(b.0), a.1.saturating_sub(b.1)));
+    }
+    // the files first, then the manifest that lists them
     run.dir.sync()?;
+    let manifest = manifest(&run, source_sha256, &batches, complete);
+    run.dir.write("manifest.json", manifest.as_bytes())?;
+    run.dir.sync_top()?;
     let written = run.written;
-    let files: Vec<Option<String>> = run.entries.iter().map(|e| e.file.clone()).collect();
+    let files: Vec<Option<String>> = run
+        .entries
+        .iter()
+        .zip(notes)
+        .map(|(e, n)| if e.status == Status::Extracted { n.link.clone() } else { None })
+        .collect();
+    let timing = run.timing;
     for (n, f) in report.images.iter_mut().zip(files) {
         n.file = f;
     }
     report.images_written = Some(written);
     report.images_confined = confined;
-    Ok(written)
-}
-
-/// Every `repeat_of` names an entry with a file: a repeat whose first placement got none
-/// (an error, a cap, itself a repeat) points to another repeat of it that has one, or else
-/// loses `repeat_of` and gets `error: repeat_target`.
-fn resolve_repeats(entries: &mut [Entry], notes: &[Note]) {
-    let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
-    for i in 0..entries.len() {
-        let Some(target) = entries[i].repeat_of.clone() else { continue };
-        let t = index.get(target.as_str()).copied();
-        if t.is_some_and(|t| entries[t].file.is_some()) {
-            continue;
-        }
-        // another placement of the same image with a file
-        let other = (0..entries.len()).find(|&k| {
-            k != i && entries[k].file.is_some() && (entries[k].repeat_of.as_deref() == Some(&target) || t == Some(k))
-        });
-        match other {
-            Some(k) => entries[i].repeat_of = Some(notes[k].id.clone()),
-            None => {
-                entries[i].repeat_of = None;
-                entries[i].skipped = None;
-                entries[i].error = Some("repeat_target".into());
-            }
-        }
-    }
+    report.images_complete = Some(complete);
+    report.images_timing = Some(timing);
+    Ok(Summary { written, complete })
 }
 
 impl Run<'_> {
-    /// One record of the renderer for entry `e`. `Err` only for document failures.
-    fn record(&mut self, e: usize, outcome: Outcome) -> Result<(), String> {
+    /// Renders and writes one batch (its jobs sorted by page), then its SVG fallbacks. Returns
+    /// how the batch ended (`ok` or one of [`STOPS`]) and whether the renderer said it was
+    /// confined. `Err` only for hard failures.
+    fn batch(&mut self, jobs: &[(Job, usize)], renderer: &Renderer) -> Result<(&'static str, Option<bool>), String> {
+        let s = self.s;
+        self.batch_written = 0;
+        self.batch_bytes = 0;
+        self.fallbacks.clear();
+        self.deadline = Instant::now() + s.timeout + GRACE;
+        if let Some(d) = self.doc_deadline {
+            self.deadline = self.deadline.min(d + GRACE);
+        }
+        // the protocol's limit: the rest of a huge batch is over its budget
+        let (sent, over) = jobs.split_at(jobs.len().min(regions::MAX_JOBS));
+        let (mut status, mut confined) = self.render(sent, renderer, false)?;
+        for (_, i) in over {
+            self.entries[*i].status = Status::NotExtracted("budget");
+        }
+        if status == "ok" && !over.is_empty() {
+            status = "budget";
+        }
+        // figures whose SVG was refused: lossless rasters, in a second pass
+        if !self.fallbacks.is_empty() {
+            let fb: Vec<(Job, usize)> = self
+                .fallbacks
+                .iter()
+                .map(|(e, _)| {
+                    let n = &self.notes[*e];
+                    (Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Raster, dpi: s.dpi }, *e)
+                })
+                .collect();
+            if status == "ok" {
+                let (again, c) = self.render(&fb, renderer, true)?;
+                status = again;
+                confined = match (confined, c) {
+                    (Some(a), Some(b)) => Some(a && b),
+                    (a, b) => a.or(b),
+                };
+            } else {
+                for (_, i) in &fb {
+                    if self.entries[*i].status == Status::Pending {
+                        self.entries[*i].status = Status::NotExtracted(status);
+                    }
+                }
+            }
+        }
+        Ok((status, confined))
+    }
+
+    /// One renderer run over `jobs` (`fallbacks`: the raster pass of refused SVG figures); every
+    /// job it leaves pending (and, in the first pass, not waiting for a raster fallback) gets
+    /// the reason it stopped. `Err` only for hard failures.
+    fn render(
+        &mut self,
+        jobs: &[(Job, usize)],
+        renderer: &Renderer,
+        fallbacks: bool,
+    ) -> Result<(&'static str, Option<bool>), String> {
+        let (job_list, owners): (Vec<Job>, Vec<usize>) = jobs.iter().cloned().unzip();
+        let left = self.deadline.saturating_duration_since(Instant::now()).saturating_sub(GRACE);
+        let timeout_arg = left.as_secs().clamp(1, self.s.timeout.as_secs().max(1));
+        let r = renderer.run(&job_list, self.deadline, timeout_arg, &mut |k, outcome| self.record(owners[k], outcome));
+        self.timing.wait += r.wait;
+        let status = match r.result {
+            Ok(()) => "ok",
+            Err(RunError::Spawn(e)) | Err(RunError::Halted(Halt::Fatal(e))) => return Err(e),
+            Err(RunError::Halted(Halt::Stop(why))) => why,
+            Err(RunError::Timeout(_)) if self.doc_deadline.is_some_and(|d| Instant::now() >= d) => "deadline",
+            Err(RunError::Timeout(_)) => "timeout",
+            Err(RunError::Failed(_)) => "renderer",
+        };
+        for i in owners {
+            if self.entries[i].status == Status::Pending && (fallbacks || !self.fallbacks.iter().any(|(f, _)| *f == i))
+            {
+                // a run that ended well answered every job
+                self.entries[i].status = Status::NotExtracted(if status == "ok" { "renderer" } else { status });
+            }
+        }
+        Ok((status, r.confined))
+    }
+
+    /// One record of the renderer for entry `e`. `Halt::Stop` ends the batch (a budget or a
+    /// deadline: `e` stays pending and gets that reason); `Halt::Fatal` is a write failure.
+    fn record(&mut self, e: usize, outcome: Outcome) -> Result<(), Halt> {
         let n = &self.notes[e];
         let s = self.s;
         let fallback = self.fallbacks.iter().find(|(f, _)| *f == e).map(|(_, why)| why.clone());
         if fallback.is_some() {
             self.entries[e].fallback = fallback.clone();
         }
-        if Instant::now() >= self.deadline {
-            self.entries[e].error = Some("timeout".into());
-            return Ok(());
+        let now = Instant::now();
+        if self.doc_deadline.is_some_and(|d| now >= d) {
+            return Err(Halt::Stop("deadline"));
+        }
+        if now >= self.deadline {
+            return Err(Halt::Stop("timeout"));
         }
         // a marked figure whose rendering is the same as an earlier one's is a repeat
         let payload: &[u8] = match &outcome {
@@ -249,6 +462,7 @@ impl Run<'_> {
                 return Ok(());
             }
             Outcome::Error(code) => {
+                self.entries[e].status = Status::NotExtracted("error");
                 self.entries[e].error = Some(code.clone());
                 return Ok(());
             }
@@ -267,71 +481,119 @@ impl Run<'_> {
             && let Some(&first) = self.seen_payload.get(key)
         {
             self.entries[e].repeat_of = Some(self.notes[first].id.clone());
-            self.entries[e].skipped = Some("repeat");
+            self.entries[e].status = Status::NotExtracted("repeat");
             return Ok(());
         }
         let (data, format, width, height): (Vec<u8>, &'static str, u32, u32) = match outcome {
             Outcome::Error(_) => return Ok(()),
             Outcome::Rgb { width, height, data } => {
-                let fmt = self.raster_format(n, fallback.is_some());
-                match encode::encode_with(&data, width, height, fmt, s.effort()) {
-                    Ok(bytes) => (bytes, fmt.extension(), width, height),
+                // a refused SVG figure: a lossless PNG inside an SVG, so its .svg link holds
+                if n.vector && fallback.is_some() && s.vector_format == VectorFormat::Svg {
+                    match self.wrapped_png(n, &data, width, height) {
+                        Some(svg) => (svg.into_bytes(), "svg", width, height),
+                        None => {
+                            self.entries[e].status = Status::NotExtracted("encode");
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    let fmt = self.raster_format(n);
+                    let t = Instant::now();
+                    let encoded = encode::encode_with(&data, width, height, fmt, s.effort());
+                    *(if fmt == Raster::Png { &mut self.timing.png } else { &mut self.timing.webp }) += t.elapsed();
+                    match encoded {
+                        Ok(bytes) => (bytes, fmt.extension(), width, height),
+                        Err(_) => {
+                            self.entries[e].status = Status::NotExtracted("encode");
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Outcome::Svg(text) => {
+                let t = Instant::now();
+                let small = svg::compact_until(&text, s.svg_precision, Some(self.deadline));
+                self.timing.svg += t.elapsed();
+                match small {
+                    Ok(small) if small.len() as u64 <= s.svg_max_bytes.min(s.max_file_bytes) => {
+                        let (x0, y0, x1, y1) = n.bbox;
+                        let (w, h) = ((x1 - x0).ceil() as u32, (y1 - y0).ceil() as u32);
+                        (small.into_bytes(), "svg", w, h)
+                    }
+                    Ok(_) => {
+                        self.fallbacks.push((e, "svg_size".into()));
+                        return Ok(());
+                    }
                     Err(_) => {
-                        self.entries[e].error = Some("encode".into());
+                        self.fallbacks.push((e, "svg_allowlist".into()));
                         return Ok(());
                     }
                 }
             }
-            Outcome::Svg(text) => match svg::compact_until(&text, s.svg_precision, Some(self.deadline)) {
-                Ok(small) if small.len() as u64 <= s.svg_max_bytes.min(s.max_file_bytes) => {
-                    let (x0, y0, x1, y1) = n.bbox;
-                    let (w, h) = ((x1 - x0).ceil() as u32, (y1 - y0).ceil() as u32);
-                    (small.into_bytes(), "svg", w, h)
-                }
-                Ok(_) => {
-                    self.fallbacks.push((e, "svg_size".into()));
-                    return Ok(());
-                }
-                Err(_) => {
-                    self.fallbacks.push((e, "svg_allowlist".into()));
-                    return Ok(());
-                }
-            },
         };
         if data.len() as u64 > s.max_file_bytes {
-            self.entries[e].error = Some("file_bytes".into());
+            self.entries[e].status = Status::NotExtracted("file_bytes");
             return Ok(());
         }
-        if self.written + 1 > s.max_images {
-            return Err(format!("more than {} images to write (--images-max)", s.max_images));
+        if self.batch_written + 1 > s.max_images || self.batch_bytes + data.len() as u64 > s.max_bytes {
+            return Err(Halt::Stop("budget"));
         }
-        if self.total_bytes + data.len() as u64 > s.max_bytes {
-            return Err(format!("images over {} bytes (--images-max-bytes)", s.max_bytes));
+        if self.total_bytes + data.len() as u64 > s.doc_max_bytes {
+            self.doc_full = true;
+            return Err(Halt::Stop("doc_budget"));
         }
-        let name = format!("{}.{format}", n.id);
-        self.dir.write(&name, &data)?;
+        let Some(path) = n.link.clone() else {
+            self.entries[e].status = Status::NotExtracted("id");
+            return Ok(());
+        };
+        // the file is what its link's extension says
+        if !path.ends_with(&format!(".{format}")) {
+            self.entries[e].status = Status::NotExtracted("encode");
+            return Ok(());
+        }
+        self.dir.write(&path, &data).map_err(Halt::Fatal)?;
         self.written += 1;
+        self.batch_written += 1;
         self.total_bytes += data.len() as u64;
+        self.batch_bytes += data.len() as u64;
         if let Some(key) = key {
             self.seen_payload.insert(key, e);
         }
         let entry = &mut self.entries[e];
+        entry.status = Status::Extracted;
         entry.sha256 = Some(hex(&Sha256::digest(&data)));
-        entry.file = Some(name);
         entry.format = Some(format);
+        entry.source = Some("render");
         entry.bytes = data.len() as u64;
         entry.width = width;
         entry.height = height;
         Ok(())
     }
 
-    fn raster_format(&self, n: &Note, svg_fallback: bool) -> Raster {
+    /// The SVG fallback of figure `n`: its crop as a lossless PNG in a minimal SVG of the
+    /// figure's box, checked and rewritten by the same allowlist as any SVG.
+    fn wrapped_png(&mut self, n: &Note, rgb: &[u8], width: u32, height: u32) -> Option<String> {
+        let t = Instant::now();
+        let png = encode::encode_with(rgb, width, height, Raster::Png, self.s.effort());
+        self.timing.png += t.elapsed();
+        let png = png.ok()?;
+        let (x0, y0, x1, y1) = n.bbox;
+        let (w, h) = (x1 - x0, y1 - y0);
+        let raw = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w:.3}pt\" height=\"{h:.3}pt\" viewBox=\"0 0 {w:.3} {h:.3}\"><image width=\"{w:.3}\" height=\"{h:.3}\" href=\"data:image/png;base64,{}\"/></svg>",
+            base64(&png)
+        );
+        let t = Instant::now();
+        let svg = svg::compact_until(&raw, self.s.svg_precision, Some(self.deadline)).ok();
+        self.timing.svg += t.elapsed();
+        svg
+    }
+
+    fn raster_format(&self, n: &Note) -> Raster {
         let s = self.s;
         if n.vector {
             // a figure drawn with paths holds labels: lossless
-            let png =
-                if svg_fallback { s.raster_format == RasterFormat::Png } else { s.vector_format == VectorFormat::Png };
-            return if png { Raster::Png } else { Raster::WebpLossless };
+            return if s.vector_format == VectorFormat::Png { Raster::Png } else { Raster::WebpLossless };
         }
         if s.raster_format == RasterFormat::Png {
             Raster::Png
@@ -341,6 +603,24 @@ impl Run<'_> {
             Raster::WebpLossy(s.raster_quality)
         }
     }
+}
+
+/// Standard base64 with padding.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+        let v = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for (k, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if k <= c.len() {
+                out.push(T[((v >> shift) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -369,38 +649,63 @@ fn js(s: &str) -> String {
     out
 }
 
-/// `manifest.json`: one image per line, sorted by page, then pictures before vector figures,
-/// by index; then the totals. The same input gives the same bytes.
-fn manifest(run: &Run) -> String {
+/// `manifest.json` (version 2): the run's settings and batches, then one image per line,
+/// sorted by page, then pictures before vector figures, by index; then the totals. The same
+/// input gives the same bytes.
+fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -> String {
     let notes = run.notes;
+    let s = run.s;
     let mut order: Vec<usize> = (0..run.entries.len()).collect();
     order.sort_by_key(|&i| id_order(&notes[i].id));
     let opt = |v: &Option<String>| v.as_deref().map(js).unwrap_or_else(|| "null".into());
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\"version\":1,\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\n\"images\":[",
-        run.s.dpi,
-        run.s.min_side_pt(),
-        js(match run.s.repeats {
+        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"batch_pages\":{},\"complete\":{complete},\n\"batches\":[",
+        js(source_sha256),
+        js(&s.link_prefix),
+        s.dpi,
+        s.min_side_pt(),
+        js(match s.repeats {
             Repeats::Skip => "skip",
             Repeats::Link => "link",
             Repeats::Keep => "keep",
-        })
+        }),
+        s.batch_pages
     );
-    let (mut repeats, mut errors, mut fallbacks, mut marked, mut small) = (0, 0, 0, 0, 0);
+    for (k, b) in batches.iter().enumerate() {
+        out.push_str(if k == 0 { "\n" } else { ",\n" });
+        let _ = write!(out, "{{\"pages\":[{},{}],\"status\":{}", b.pages.0, b.pages.1, js(b.status));
+        if let Some(c) = b.cut_page {
+            let _ = write!(out, ",\"cut_page\":{c}");
+        }
+        out.push('}');
+    }
+    out.push_str("\n],\n\"images\":[");
+    let (mut repeats, mut fallbacks, mut linked, mut extracted, mut not_extracted, mut unlinked) = (0, 0, 0, 0, 0, 0);
     for (k, &i) in order.iter().enumerate() {
         let n = &notes[i];
         let e = &run.entries[i];
-        repeats += usize::from(e.skipped == Some("repeat"));
-        errors += usize::from(e.error.is_some());
+        let (status, reason) = match e.status {
+            Status::Unlinked => ("unlinked", None),
+            Status::Extracted => ("extracted", None),
+            Status::NotExtracted(r) => ("not-extracted", Some(r)),
+            // a job no batch settled (every batch settles its jobs)
+            Status::Pending => ("not-extracted", Some("renderer")),
+        };
+        let path = if e.status == Status::Unlinked { None } else { n.link.clone() };
+        repeats += usize::from(reason == Some("repeat"));
         fallbacks += usize::from(e.fallback.is_some());
-        marked += usize::from(matches!(n.fate, Fate::Block | Fate::Inline));
-        small += usize::from(e.skipped == Some("min_side"));
+        linked += usize::from(path.is_some());
+        extracted += usize::from(status == "extracted");
+        not_extracted += usize::from(status == "not-extracted");
+        unlinked += usize::from(status == "unlinked");
+        let link = path.as_ref().map(|p| format!("{}{p}", s.link_prefix));
+        let format = path.as_deref().and_then(|p| p.rsplit_once('.')).map(|(_, x)| x);
         out.push_str(if k == 0 { "\n" } else { ",\n" });
         let _ = write!(
             out,
-            "{{\"id\":{},\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"kind\":{},\"fate\":{},\"file\":{},\"format\":{},\"bytes\":{},\"sha256\":{},\"width\":{},\"height\":{}",
+            "{{\"id\":{},\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"kind\":{},\"fate\":{},\"obj\":{},\"path\":{},\"link\":{},\"status\":{}",
             js(&n.id),
             n.page,
             n.bbox.0,
@@ -409,33 +714,64 @@ fn manifest(run: &Run) -> String {
             n.bbox.3,
             js(kind(n)),
             js(n.fate.as_str()),
-            opt(&e.file),
-            e.format.map(js).unwrap_or_else(|| "null".into()),
+            n.obj.map(|(a, b)| format!("[{a},{b}]")).unwrap_or_else(|| "null".into()),
+            opt(&path),
+            opt(&link),
+            js(status)
+        );
+        if let Some(r) = reason {
+            let _ = write!(out, ",\"reason\":{}", js(r));
+        }
+        if let Some(err) = &e.error {
+            let _ = write!(out, ",\"error\":{}", js(err));
+        }
+        if let Some(r) = &e.repeat_of {
+            let _ = write!(out, ",\"repeat_of\":{}", js(r));
+        }
+        let _ = write!(
+            out,
+            ",\"format\":{},\"source\":{},\"bytes\":{},\"sha256\":{},\"width\":{},\"height\":{}",
+            e.format.or(format).map(js).unwrap_or_else(|| "null".into()),
+            e.source.map(js).unwrap_or_else(|| "null".into()),
             e.bytes,
             opt(&e.sha256),
             e.width,
             e.height
         );
-        if let Some(r) = e.repeat_of.as_ref().filter(|_| run.s.repeats == Repeats::Link) {
-            let _ = write!(out, ",\"repeat_of\":{}", js(r));
-        }
         if let Some(f) = &e.fallback {
             let _ = write!(out, ",\"fallback\":{}", js(f));
         }
-        if let Some(s) = e.skipped {
-            let _ = write!(out, ",\"skipped\":{}", js(s));
-        }
-        if let Some(err) = &e.error {
-            let _ = write!(out, ",\"error\":{}", js(err));
-        }
         out.push('}');
     }
+    let cut = batches.iter().filter(|b| b.status != "ok").count();
     let _ = write!(
         out,
-        "\n],\n\"totals\":{{\"images\":{},\"marked\":{marked},\"written\":{},\"bytes\":{},\"repeats\":{repeats},\"small\":{small},\"fallbacks\":{fallbacks},\"errors\":{errors}}}}}\n",
+        "\n],\n\"totals\":{{\"images\":{},\"linked\":{linked},\"extracted\":{extracted},\"not_extracted\":{not_extracted},\"unlinked\":{unlinked},\"bytes\":{},\"repeats\":{repeats},\"fallbacks\":{fallbacks},\"batches\":{},\"batches_cut\":{cut}}}}}\n",
         notes.len(),
-        run.written,
-        run.total_bytes
+        run.total_bytes,
+        batches.len()
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_is_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(&[0xff, 0xfe]), "//4=");
+    }
+
+    #[test]
+    fn children_cpu_reads_proc() {
+        if std::path::Path::new("/proc/self/stat").exists() {
+            assert!(children_cpu_ms().is_some());
+        }
+    }
 }

@@ -81,7 +81,7 @@ fn chart_body() -> String {
 #[test]
 fn graphics_are_ignored_without_markers() {
     let (with, report) = convert(&chart(), false);
-    assert!(!with.contains("doppler-image"), "{with}");
+    assert!(!with.contains("](images/page-"), "{with}");
     assert!(report.images.is_empty());
     // the same page without its graphic records converts the same
     let plain: String = chart()
@@ -97,11 +97,12 @@ fn graphics_are_ignored_without_markers() {
 fn a_chart_gets_one_marker_with_its_labels_after_it() {
     let (md, report) = convert(&chart(), true);
     let at = |s: &str| md.find(s).unwrap_or_else(|| panic!("{s:?} missing from {md}"));
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
-    assert!(md.contains("\n\n![image](doppler-image:p3.g1)\n\n"), "{md}");
-    assert!(at("A paragraph above") < at("![image](doppler-image:p3.g1)"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
+    assert!(md.contains("\n\n![image](images/page-0003/figure-001.svg)\n\n"), "{md}");
+    assert!(at("A paragraph above") < at("![image](images/page-0003/figure-001.svg)"), "{md}");
     // labels follow the marker, once, top to bottom; the caption stays outside the figure
-    let labels = at("![image](doppler-image:p3.g1)") + "![image](doppler-image:p3.g1)\n\n".len();
+    let labels =
+        at("![image](images/page-0003/figure-001.svg)") + "![image](images/page-0003/figure-001.svg)\n\n".len();
     assert!(md[labels..].starts_with("20 56-layer 0 0 6 iter. (1e4)"), "{md}");
     assert_eq!(md.matches("56-layer").count(), 1, "{md}");
     assert!(at("iter. (1e4)") < at("Figure 1: Training error"), "{md}");
@@ -130,7 +131,7 @@ fn a_ruled_table_with_shaded_rows_is_no_figure() {
     }
     body += "<box xMin=\"72\" yMin=\"150\" xMax=\"400\" yMax=\"170\" color=\"#dddddd\"/>";
     let (md, report) = convert(&page(1, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     assert!(vector_fates(&report).is_empty());
 }
 
@@ -146,7 +147,7 @@ fn hatching_leaders_braces_and_small_marks_get_no_marker() {
         // a check mark: rich but tiny
         + &graphic(100.0, 500.0, 108.0, 508.0, 2, 30, 0, 4);
     let (md, report) = convert(&page(2, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     let fates: Vec<&str> = vector_fates(&report).iter().map(|f| f.1).collect();
     assert_eq!(fates, ["small", "small", "small", "small"]);
 }
@@ -162,7 +163,7 @@ fn drawing_among_prose_and_in_the_header_gets_no_marker() {
         body += &line(310.0 + 20.0 * k as f64, "These are long lines of running prose that sit in the panel area.");
     }
     let (md, report) = convert(&page(4, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     let fates: Vec<&str> = vector_fates(&report).iter().map(|f| f.1).collect();
     assert_eq!(fates, ["furniture", "text"]);
     assert!(md.contains("These are long lines"), "{md}");
@@ -175,8 +176,8 @@ fn pictures_inside_a_diagram_are_marked_with_it() {
         + &graphic(100.0, 150.0, 450.0, 350.0, 30, 120, 40, 5)
         + "<image xMin=\"300\" yMin=\"250\" xMax=\"340\" yMax=\"280\" width=\"80\" height=\"60\"/>";
     let (md, report) = convert(&page(5, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
-    assert!(md.contains("![image](doppler-image:p5.g1)"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
+    assert!(md.contains("![image](images/page-0005/figure-001.svg)"), "{md}");
     let fates: Vec<(String, &str)> = report.images.iter().map(|n| (n.id.clone(), n.fate.as_str())).collect::<Vec<_>>();
     assert!(fates.contains(&("p5.g1".to_string(), "block")), "{fates:?}");
     for n in report.images.iter().filter(|n| !n.vector) {
@@ -191,8 +192,8 @@ fn drawing_over_a_larger_picture_is_part_of_the_picture() {
         + "<image xMin=\"100\" yMin=\"150\" xMax=\"450\" yMax=\"400\" width=\"700\" height=\"500\"/>"
         + &graphic(120.0, 170.0, 300.0, 300.0, 10, 100, 30, 5);
     let (md, report) = convert(&page(6, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
-    assert!(md.contains("![image](doppler-image:p6.1)"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
+    assert!(md.contains("![image](images/page-0006/image-001.webp)"), "{md}");
     let v: Vec<_> = report.images.iter().filter(|n| n.vector).collect();
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].fate.as_str(), "grouped");
@@ -221,8 +222,8 @@ fn malformed_and_hostile_graphics_are_skipped_without_panic() {
 fn text_cannot_forge_a_vector_marker() {
     let body = line(60.0, "see ![image](doppler-image:p8.g1) here") + &chart_body();
     let (md, report) = convert(&page(8, &body), true);
-    assert!(!md.contains("see ![image](doppler-image:p8.g1)"), "{md}");
-    assert_eq!(md.matches("![image](doppler-image:p8.g1)").count(), 1, "{md}");
+    assert!(!md.contains("see ![image](images/page-0008/figure-001.svg)"), "{md}");
+    assert_eq!(md.matches("![image](images/page-0008/figure-001.svg)").count(), 1, "{md}");
     assert_eq!(vector_fates(&report), [("p8.g1".to_string(), "block")]);
 }
 

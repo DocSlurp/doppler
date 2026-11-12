@@ -10,7 +10,7 @@
 //! plan that differs in any of them.
 //!
 //! Text. The header lines, tab-separated:
-//! `doppler-images-plan 2`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
+//! `doppler-images-plan 3`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
 //! `settings SHA256-HEX`, `version VERSION`; then one line per image:
 //! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj`, where `id-hex` is the id's UTF-8 bytes in
 //! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is three of `0`/`1`
@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use crate::extract::outdir::valid_id;
 use crate::images::{Fate, Note};
 
-const HEADER: &str = "doppler-images-plan\t2";
+const HEADER: &str = "doppler-images-plan\t3";
 
 /// What a plan is bound to: the conversion that wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +59,9 @@ impl Binding {
             ))
         } else if self.settings != plan.settings {
             Some(
-                "written with other conversion settings (--params, --strict, --stream/--window, --math, --html)".into(),
+                "written with other conversion settings (--params, --strict, --stream/--window, --math, --html, \
+                 --images-link-prefix, --images-repeats, --raster-format, --vector-format)"
+                    .into(),
             )
         } else if self.version != plan.version {
             Some(format!("written by version {}, this is {}", plan.version, self.version))
@@ -174,7 +176,7 @@ pub fn read(text: &str) -> Result<(Binding, Vec<Note>), String> {
     }
     let mut lines = text.split('\n');
     if lines.next() != Some(HEADER) {
-        return Err("not an images plan (version 2)".into());
+        return Err("not an images plan (version 3)".into());
     }
     let binding = read_binding(&mut lines).ok_or("images plan: bad header")?;
     let mut notes = Vec::new();
@@ -276,6 +278,8 @@ fn parse_line(line: &str) -> Option<Note> {
         text: flags[2] == b'1',
         file: None,
         degraded: false,
+        link: None,
+        repeat_of: None,
     })
 }
 
@@ -307,6 +311,8 @@ mod tests {
             text: true,
             file: None,
             degraded: false,
+            link: None,
+            repeat_of: None,
         }
     }
 
@@ -345,6 +351,7 @@ mod tests {
     fn refuses_anything_else() {
         assert!(read("").is_err());
         assert!(read("doppler-images-plan\t1\n").is_err());
+        assert!(read(&write(&binding(), &[note("p3.1", false, None)]).replace("plan\t3", "plan\t2")).is_err());
         let good = write(&binding(), &[note("p3.1", false, None)]);
         assert!(read(&good).is_ok());
         assert!(read(&good[..good.len() - 1]).is_err());

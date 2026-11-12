@@ -8,7 +8,9 @@
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
 //! `--images-dir DIR` also writes the marked pictures and figures (rendered by `pdfregions`)
-//! to DIR; exit status 5 when the Markdown was written but image extraction failed.
+//! to DIR where the Markdown's links point; stdout is closed once the Markdown is complete,
+//! before extraction. Exit status 5 when the Markdown was written and the images only in part
+//! (DIR and its manifest kept), 6 when extraction failed (DIR removed).
 //!
 //! pdftotext is `$PDFTOTEXT` if set, else a `pdftotext` next to this executable, else
 //! `pdftotext` on `PATH`. Exit status 2 for bad arguments or output without a `<page>` (a
@@ -39,9 +41,12 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
                  $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
-  --markers      mark where pictures sit in the text for restitching: ![image](doppler-image:pN.M)
+  --markers      mark where pictures sit in the text: ![image](images/page-0012/image-003.webp)
                  between paragraphs or inside a line, and charts and diagrams drawn with paths:
-                 ![image](doppler-image:pN.gK) (pdftotext -images); report: images
+                 ![image](images/page-0012/figure-001.svg) (pdftotext -images); report: images.
+                 The link is the image's path under --images-dir, the same with or without it
+  --page-markers start each page with <!-- doppler:page N --> (its PDF page number); report:
+                 page_numbers. Pages are also joined by form feeds: chunk k is page first+k
   --page-info    report: page_info, per page its crop box size as pdfinfo prints it, its word and
                  invisible-word counts, and its text layer (none, invisible, visible or mixed)
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
@@ -59,43 +64,57 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
                  visible in the process list
 
 
-image extraction (implies --markers; files named from the ids: DIR/p3.1.webp, DIR/p3.g1.svg,
-and DIR/manifest.json listing every image):
+image links (with --markers or --images-dir; they shape the Markdown):
+  --images-link-prefix P      put before each image path in the links (images/); empty, or up to
+                              128 bytes of A-Z a-z 0-9 . _ ~ / - ending in /, relative, no ..
+  --raster-format webp|png    pictures (webp: lossy, lossless where the crop holds text)
+  --vector-format svg|webp|png  vector figures (svg; a refused or too large SVG becomes a
+                              lossless PNG inside an SVG, so the link stays valid)
+  --images-repeats MODE       skip or link (a repeat of an earlier picture links to its file and
+                              gets none; the manifest names it: repeat_of), or keep (its own
+                              file) (default skip)
+
+image extraction (implies --markers; files where the links point: DIR/page-0012/image-003.webp,
+DIR/page-0012/figure-001.svg, and DIR/manifest.json, written last, listing every image and
+file; DIR and its page folders are created 0700 and files 0600 whatever the umask; stdout is
+closed once the Markdown is complete, before extraction):
   --images-dir DIR            write the marked pictures and figures to DIR, which must not exist
   --images-min-side N[px|pt]  no file under this smallest side (24px: pixels at the dpi)
-  --images-repeats MODE       skip (no file for a repeat of an earlier figure), link (manifest
-                              points to the first file) or keep (default skip)
-  --raster-format webp|png    pictures (webp: lossy, lossless where the crop holds text)
   --raster-quality N          lossy WebP quality (90)
   --raster-lossless           lossless WebP for every picture
   --raster-method N           lossy WebP encoder effort, 0 (fastest) to 6 (4)
   --lossless-method N         lossless WebP encoder effort, 0 to 6 (4); with
   --lossless-quality N        lossless effort 0 to 100 (50): lower is faster, a little larger,
                               and decodes to the same pixels
-  --vector-format svg|webp|png  vector figures (svg; a refused or too large SVG becomes
-                              lossless WebP)
   --svg-precision 1|2         decimals of a point in SVG coordinates (1)
   --svg-max-bytes N           largest SVG kept (512KiB)
   --images-dpi N              raster resolution, 36 to 600 (150)
-  --images-max N              most files (500); --images-max-bytes N (256MiB); both fail
-                              the extraction; --images-max-file-bytes N (8MiB): that file only
-  --images-timeout S          renderer time for the document (120)
+  --images-batch-pages N      pages per extraction batch (64): one pdfregions each, with the
+                              budgets below; a batch over budget keeps its files, the rest of
+                              it is not-extracted (manifest: reason, cut_page) and the next goes on
+  --images-max N              most files per batch (500); --images-max-bytes N (256MiB) per
+                              batch; --images-max-file-bytes N (8MiB): that file only
+  --images-timeout S          renderer time per batch (120)
+  --images-doc-max-bytes N    most bytes for the document (4GiB); then the rest is not extracted
+  --images-deadline S         time for the whole extraction (none); then the rest is not extracted
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
   --images-plan-out FILE      with --markers (or --images-dir): also write the images plan (what
                               extraction needs from this conversion, exactly) to FILE, which must
                               not exist; its folder is reached without following symbolic links.
-                              The Markdown and report are unchanged; exit status 5 when the plan
+                              The Markdown and report are unchanged; exit status 6 when the plan
                               could not be written
   --images-plan FILE          with --images-dir: extract from a plan written by an earlier run,
                               without running pdftotext or converting again (no Markdown, no
                               --report); the same files and manifest as extracting after a
                               conversion. The plan is bound to that run: give the same FILE.pdf
-                              (same bytes), -f/-l, --params, --strict, --stream/--window, --math
-                              and --html, and the same pdftomarkdown version, or it is refused
-                              (exit status 2)
-  Exit status 5: Markdown written, image extraction failed (DIR removed).
+                              (same bytes), -f/-l, --params, --strict, --stream/--window, --math,
+                              --html and image link options, and the same pdftomarkdown version,
+                              or it is refused (exit status 2)
+  Exit status 5: Markdown written, images in part (DIR and manifest.json kept; manifest:
+  complete false, why per image and per batch). 6: Markdown written, extraction failed (DIR
+  removed), or the images plan could not be written.
 
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
 It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pdfregions
@@ -138,6 +157,7 @@ fn main() -> ExitCode {
             "--math" => opts.math = true,
             "--markers" => opts.markers = true,
             "--page-info" => page_sizes = true,
+            "--page-markers" => opts.page_markers = true,
             "--strict" => strict = true,
             "--stream" => window = Some(STREAM_WINDOW),
             "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
@@ -204,12 +224,18 @@ fn main() -> ExitCode {
     if let Err(e) = images.check() {
         return usage_error(&e);
     }
+    opts.first_page = first.map(|n| n as u32);
     if images.dir.is_some() {
         if input == "-" {
             return usage_error("--images-dir needs a FILE, not standard input");
         }
         // pictures and figures are found through the markers
         opts.markers = true;
+    }
+    if images.link_flags() && !opts.markers {
+        return usage_error(
+            "--images-link-prefix, --images-repeats, --raster-format and --vector-format need --markers or --images-dir",
+        );
     }
     if plan_in.is_some() && (images.dir.is_none() || want_report || plan_out.is_some()) {
         return usage_error("--images-plan needs --images-dir, and takes no --report or --images-plan-out");
@@ -223,8 +249,11 @@ fn main() -> ExitCode {
     }
     // what an images plan is bound to, besides the PDF's bytes and the page range
     let settings = plan::settings_digest(&format!(
-        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n",
-        opts.math, opts.tables, opts.markers
+        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}",
+        opts.math,
+        opts.tables,
+        opts.markers,
+        images.link_style().canonical()
     ));
     let pages = (first.map(|n| n as u32), last.map(|n| n as u32));
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
@@ -333,6 +362,7 @@ fn convert(
         exe.display()
     );
     let mut run = cli::Run::new(params, opts, window);
+    run.set_link_style(images.link_style());
     let read = match child.stdout.take() {
         Some(mut out) => run.read_from(&mut out),
         None => Ok(()),
@@ -379,23 +409,34 @@ fn convert(
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
-    let mut failed = false;
+    let mut code = None;
     if let Some((f, b)) = plan_out
         && written.is_ok()
         && report.page_found()
         && let Err(e) = f.write(plan::write(&b, &report.images).as_bytes())
     {
-        // the Markdown and report stand; the plan asked for is missing: exit status 5
+        // the Markdown and report stand; the plan asked for is missing: exit status 6
         eprintln!("pdftomarkdown: --images-plan-out: {e}");
-        failed = true;
+        code = Some(6);
     }
     if let Some(dir) = out_dir.as_mut()
         && written.is_ok()
         && report.page_found()
     {
-        let renderer = renderer(file, images, passwords);
-        match doppler_md::extract::extract(&mut report, images, &renderer, dir) {
-            Ok(_) => *out_dir = None,
+        // the Markdown is complete and its links final: EOF on stdout says so, before the
+        // images are extracted (the report and exit status still come after)
+        close_stdout();
+        let r = source_sha256(file).and_then(|sha| {
+            doppler_md::extract::extract(&mut report, images, &sha, &renderer(file, images, passwords), dir)
+        });
+        match r {
+            Ok(summary) => {
+                // the folder stays, complete or not: its manifest says what it holds
+                *out_dir = None;
+                if !summary.complete && code.is_none() {
+                    code = Some(5);
+                }
+            }
             Err(e) => {
                 eprintln!("pdftomarkdown: image extraction failed: {e}");
                 for n in report.images.iter_mut() {
@@ -403,15 +444,38 @@ fn convert(
                 }
                 report.images_written = Some(0);
                 report.images_error = Some(e);
-                failed = true;
+                code = Some(6);
             }
         }
     }
-    let code = cli::conclude("pdftomarkdown", &report, written, want_report, &no_page);
-    if failed && code == ExitCode::SUCCESS {
-        return ExitCode::from(5);
+    let conclusion = cli::conclude("pdftomarkdown", &report, written, want_report, &no_page);
+    match code {
+        Some(c) if conclusion == ExitCode::SUCCESS => ExitCode::from(c),
+        _ => conclusion,
     }
-    code
+}
+
+/// Points stdout at /dev/null (the pages are flushed): a reader sees EOF while the process
+/// goes on. Nothing is written to stdout afterwards; children never inherit it.
+fn close_stdout() {
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
+    match std::fs::OpenOptions::new().write(true).open("/dev/null") {
+        Ok(null) => {
+            if let Err(e) = rustix::stdio::dup2_stdout(&null) {
+                eprintln!("pdftomarkdown: cannot close stdout: {e}");
+            }
+        }
+        Err(e) => eprintln!("pdftomarkdown: cannot close stdout: {e}"),
+    }
+}
+
+/// SHA-256 (hex) of the PDF, for the manifest.
+fn source_sha256(file: &OsString) -> Result<String, String> {
+    std::fs::File::open(file)
+        .and_then(|mut f| plan::source_digest(&mut f))
+        .map(|(h, _)| h)
+        .map_err(|e| format!("reading {}: {e}", Path::new(file).display()))
 }
 
 fn renderer(file: &OsString, images: &Settings, passwords: &[OsString]) -> Renderer {
@@ -440,8 +504,9 @@ fn binding(
 }
 
 /// `--images-plan`: extraction from a plan, without pdftotext or a conversion. Exit status as
-/// after a conversion: 0, or 5 when extraction failed (DIR removed); 2 for an unreadable plan
-/// or one bound to another PDF, page range, settings or version.
+/// after a conversion: 0, 5 when the images were extracted in part (DIR kept), 6 when
+/// extraction failed (DIR removed); 2 for an unreadable plan or one bound to another PDF, page
+/// range, settings or version.
 fn extract_from_plan(
     plan_path: &OsString,
     file: &OsString,
@@ -474,14 +539,17 @@ fn extract_from_plan(
     };
     let mut report = doppler_md::Report { images: notes, ..Default::default() };
     let Some(dir) = out_dir.as_mut() else { return ExitCode::from(2) };
-    match doppler_md::extract::extract(&mut report, images, &renderer(file, images, passwords), dir) {
-        Ok(_) => {
+    let r = source_sha256(file).and_then(|sha| {
+        doppler_md::extract::extract(&mut report, images, &sha, &renderer(file, images, passwords), dir)
+    });
+    match r {
+        Ok(summary) => {
             *out_dir = None;
-            ExitCode::SUCCESS
+            if summary.complete { ExitCode::SUCCESS } else { ExitCode::from(5) }
         }
         Err(e) => {
             eprintln!("pdftomarkdown: image extraction failed: {e}");
-            ExitCode::from(5)
+            ExitCode::from(6)
         }
     }
 }

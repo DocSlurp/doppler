@@ -62,8 +62,19 @@ pub struct Settings {
     pub confine: &'static str,
     /// only figures on these pages (1-based, inclusive) are extracted
     pub pages: Option<(u32, u32)>,
-    /// an `--images-*` flag other than `--images-dir` was given
+    /// `--images-link-prefix`: put before each image path in the Markdown links
+    pub link_prefix: String,
+    /// `--images-batch-pages`: pages per extraction batch (one renderer each, its own budgets)
+    pub batch_pages: u32,
+    /// `--images-doc-max-bytes`: most bytes written for the whole document
+    pub doc_max_bytes: u64,
+    /// `--images-deadline`: time for the whole extraction (none: only the per-batch timeout)
+    pub deadline: Option<Duration>,
+    /// an extraction flag (one that needs `--images-dir`) was given
     other_flags: bool,
+    /// a flag that shapes the Markdown links (`--images-link-prefix`, `--images-repeats`,
+    /// `--raster-format`, `--vector-format`) was given
+    link_flags: bool,
 }
 
 impl Default for Settings {
@@ -88,7 +99,12 @@ impl Default for Settings {
             timeout: Duration::from_secs(120),
             confine: "auto",
             pages: None,
+            link_prefix: super::layout::DEFAULT_PREFIX.into(),
+            batch_pages: 64,
+            doc_max_bytes: 4 << 30,
+            deadline: None,
             other_flags: false,
+            link_flags: false,
         }
     }
 }
@@ -113,7 +129,15 @@ const WITH_VALUE: &[&str] = &[
     "--images-timeout",
     "--images-confine",
     "--images-pages",
+    // links (also without --images-dir) and batches
+    "--images-link-prefix",
+    "--images-batch-pages",
+    "--images-doc-max-bytes",
+    "--images-deadline",
 ];
+
+/// The flags that shape the Markdown links: valid with `--markers` alone.
+const LINK_FLAGS: &[&str] = &["--images-link-prefix", "--images-repeats", "--raster-format", "--vector-format"];
 
 impl Settings {
     /// Whether `name` is one of these flags, and whether it takes a value.
@@ -136,7 +160,9 @@ impl Settings {
         }
         let v = value.ok_or_else(|| format!("{name} needs a value"))?;
         let bad = || format!("{name}: bad value {v:?}");
-        if name != "--images-dir" {
+        if LINK_FLAGS.contains(&name) {
+            self.link_flags = true;
+        } else if name != "--images-dir" {
             self.other_flags = true;
         }
         match name {
@@ -197,19 +223,43 @@ impl Settings {
                 self.pages = Some((a as u32, b as u32));
             }
             "--images-timeout" => self.timeout = Duration::from_secs(int(v, 1, 86400).ok_or_else(bad)?),
+            "--images-link-prefix" => {
+                super::layout::check_prefix(v)?;
+                self.link_prefix = v.to_string();
+            }
+            "--images-batch-pages" => self.batch_pages = int(v, 1, 100_000).ok_or_else(bad)? as u32,
+            "--images-doc-max-bytes" => self.doc_max_bytes = bytes(v, 1, 1 << 40).ok_or_else(bad)?,
+            "--images-deadline" => self.deadline = Some(Duration::from_secs(int(v, 1, 604_800).ok_or_else(bad)?)),
             _ => return Err(format!("unknown option {name}")),
         }
         Ok(())
     }
 
-    /// The flags given make sense together.
+    /// The flags given make sense together. The link flags are checked by the caller (they
+    /// need markers).
     pub fn check(&self) -> Result<(), String> {
         if self.other_flags && self.dir.is_none() {
-            return Err(
-                "the --images-*, --raster-*, --lossless-*, --vector-* and --svg-* options need --images-dir".into()
-            );
+            return Err("the --images-*, --raster-*, --lossless-*, --vector-* and --svg-* options need --images-dir \
+                 (except --images-link-prefix, --images-repeats, --raster-format and --vector-format, \
+                 which need --markers)"
+                .into());
         }
         Ok(())
+    }
+
+    /// Whether a flag that shapes the links was given.
+    pub fn link_flags(&self) -> bool {
+        self.link_flags
+    }
+
+    /// The links these settings give the Markdown.
+    pub fn link_style(&self) -> super::layout::LinkStyle {
+        super::layout::LinkStyle {
+            prefix: self.link_prefix.clone(),
+            raster: self.raster_format,
+            vector: self.vector_format,
+            repeats: self.repeats,
+        }
     }
 
     /// The WebP encoder effort.
@@ -288,6 +338,10 @@ mod tests {
         assert_eq!((s.svg_max_bytes, s.max_bytes, s.timeout.as_secs()), (512 << 10, 256 << 20, 120));
         assert_eq!(s.max_file_bytes, 8 << 20);
         assert_eq!(s.effort(), super::super::encode::Effort::default());
+        assert_eq!(
+            (s.link_prefix.as_str(), s.batch_pages, s.doc_max_bytes, s.deadline),
+            ("images/", 64, 4 << 30, None)
+        );
     }
 
     #[test]
@@ -312,8 +366,15 @@ mod tests {
             ("--raster-method", Some("2")),
             ("--lossless-method", Some("1")),
             ("--lossless-quality", Some("25")),
+            ("--images-link-prefix", Some("a/b/")),
+            ("--images-batch-pages", Some("8")),
+            ("--images-doc-max-bytes", Some("1G")),
+            ("--images-deadline", Some("30")),
         ])
         .unwrap();
+        assert_eq!((s.link_prefix.as_str(), s.batch_pages, s.doc_max_bytes), ("a/b/", 8, 1 << 30));
+        assert_eq!(s.deadline, Some(Duration::from_secs(30)));
+        assert_eq!(s.link_style().prefix, "a/b/");
         assert_eq!(s.min_side, MinSide::Pt(10.5));
         assert_eq!(s.min_side_pt(), 10.5);
         assert_eq!(
@@ -366,6 +427,12 @@ mod tests {
             ("--images-pages", "0-2"),
             ("--images-pages", "1-"),
             ("--images-dir", ""),
+            ("--images-link-prefix", "../x/"),
+            ("--images-link-prefix", "x"),
+            ("--images-link-prefix", "a b/"),
+            ("--images-batch-pages", "0"),
+            ("--images-doc-max-bytes", "0"),
+            ("--images-deadline", "0"),
         ] {
             assert!(with(&[("--images-dir", Some("o")), (k, Some(v))]).is_err(), "{k} {v}");
         }
@@ -374,5 +441,9 @@ mod tests {
         assert!(with(&[("--images-dpi", Some("100"))]).is_err());
         assert!(with(&[("--raster-lossless", None)]).is_err());
         assert!(with(&[("--raster-method", Some("2"))]).is_err());
+        assert!(with(&[("--images-batch-pages", Some("2"))]).is_err());
+        // the link flags do not need it (the caller checks for markers)
+        let s = with(&[("--images-link-prefix", Some("")), ("--raster-format", Some("png"))]).unwrap();
+        assert!(s.link_flags() && s.link_prefix.is_empty());
     }
 }

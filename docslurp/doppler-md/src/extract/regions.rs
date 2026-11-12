@@ -103,27 +103,70 @@ enum Msg {
     Done,
 }
 
+/// Why the caller stopped a run from its record callback.
+#[derive(Debug)]
+pub enum Halt {
+    /// a budget of the batch: stop rendering, keep what was written (the reason, for the
+    /// manifest)
+    Stop(&'static str),
+    /// a write failure: the extraction fails
+    Fatal(String),
+}
+
+/// Why a run ended before every job was answered and checked, or the renderer failed.
+#[derive(Debug)]
+pub enum RunError {
+    /// the renderer could not be started
+    Spawn(String),
+    /// the deadline passed
+    Timeout(String),
+    /// it crashed, exited non-zero, or broke the framing
+    Failed(String),
+    /// the record callback stopped the run
+    Halted(Halt),
+}
+
+impl RunError {
+    pub fn message(&self) -> String {
+        match self {
+            RunError::Spawn(m) | RunError::Timeout(m) | RunError::Failed(m) => m.clone(),
+            RunError::Halted(Halt::Stop(r)) => format!("stopped: {r}"),
+            RunError::Halted(Halt::Fatal(m)) => m.clone(),
+        }
+    }
+}
+
+/// How a run went: the result, whether the renderer said it was confined, and the time spent
+/// waiting for its records.
+pub struct RunResult {
+    pub result: Result<(), RunError>,
+    pub confined: Option<bool>,
+    pub wait: Duration,
+}
+
 impl Renderer {
-    /// Renders `jobs` (sorted by page), calling `each` with every record in job order. Fails
-    /// (killing the renderer) when it cannot run, breaks the framing, ends early, exits
-    /// non-zero, passes `deadline`, or when `each` fails.
+    /// Renders `jobs` (sorted by page), calling `each` with every record in job order. Records
+    /// passed to `each` before a failure stay the caller's: a run that breaks keeps them. Fails
+    /// (killing the renderer's process group) when it cannot run, breaks the framing, ends
+    /// early, exits non-zero, passes `deadline`, or when `each` halts.
     pub fn run(
         &self,
         jobs: &[Job],
         deadline: Instant,
         timeout_arg: u64,
-        each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<Option<bool>, String> {
+        each: &mut dyn FnMut(usize, Outcome) -> Result<(), Halt>,
+    ) -> RunResult {
+        let fail = |e: RunError| RunResult { result: Err(e), confined: None, wait: Duration::ZERO };
         if jobs.is_empty() {
-            return Ok(None);
+            return RunResult { result: Ok(()), confined: None, wait: Duration::ZERO };
         }
         if jobs.len() > MAX_JOBS {
-            return Err(format!("more than {MAX_JOBS} regions to render"));
+            return fail(RunError::Failed(format!("more than {MAX_JOBS} regions to render")));
         }
         if jobs.windows(2).any(|w| w[1].page < w[0].page) {
-            return Err("regions are not sorted by page".into());
+            return fail(RunError::Failed("regions are not sorted by page".into()));
         }
-        let mut child = Command::new(&self.exe)
+        let child = Command::new(&self.exe)
             .args(&self.passwords)
             .arg("-timeout")
             .arg(timeout_arg.to_string())
@@ -139,9 +182,18 @@ impl Renderer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot run {}: {e}", self.exe.display()))?;
-        let result = self.drive(&mut child, jobs, deadline, each);
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return fail(RunError::Spawn(format!("cannot run {}: {e}", self.exe.display()))),
+        };
+        let name = self.exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let diagnostics = child.stderr.take().map(|stderr| {
+            let n = name.clone();
+            std::thread::spawn(move || forward_diagnostics(stderr, &n))
+        });
+        let mut wait = Duration::ZERO;
+        let result = drive(&mut child, &name, jobs, deadline, each, &mut wait);
         if result.is_err() {
             if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
                 let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
@@ -149,63 +201,63 @@ impl Renderer {
             let _ = child.kill();
             let _ = child.wait();
         }
-        result
+        // stderr closes when the renderer is gone
+        let confined = diagnostics.and_then(|d| d.join().ok().flatten());
+        RunResult { result, confined, wait }
     }
+}
 
-    fn drive(
-        &self,
-        child: &mut Child,
-        jobs: &[Job],
-        deadline: Instant,
-        each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<Option<bool>, String> {
-        let name = self.exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (Some(mut stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            return Err("renderer pipes".into());
-        };
-        let lines: String = jobs.iter().map(Job::line).collect();
-        // writes may block until the renderer reads: a thread of their own; a renderer that
-        // exits early closes the pipe and the write fails, which is fine
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(lines.as_bytes());
-        });
-        let diag_name = name.clone();
-        let diagnostics = std::thread::spawn(move || forward_diagnostics(stderr, &diag_name));
-        let (tx, rx) = mpsc::sync_channel::<Msg>(2);
-        let expect: Vec<Job> = jobs.to_vec();
-        std::thread::spawn(move || read_records(stdout, &expect, &tx));
-        let mut answered = 0;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
-                Ok(Msg::Record(k, outcome)) => {
-                    answered += 1;
-                    each(k, outcome)?;
-                }
-                Ok(Msg::Fatal(e)) => return Err(e),
-                Ok(Msg::Done) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(format!("{name} timed out")),
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{name} output ended")),
+fn drive(
+    child: &mut Child,
+    name: &str,
+    jobs: &[Job],
+    deadline: Instant,
+    each: &mut dyn FnMut(usize, Outcome) -> Result<(), Halt>,
+    wait: &mut Duration,
+) -> Result<(), RunError> {
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(RunError::Failed("renderer pipes".into()));
+    };
+    let lines: String = jobs.iter().map(Job::line).collect();
+    // writes may block until the renderer reads: a thread of their own; a renderer that
+    // exits early closes the pipe and the write fails, which is fine
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(lines.as_bytes());
+    });
+    let (tx, rx) = mpsc::sync_channel::<Msg>(2);
+    let expect: Vec<Job> = jobs.to_vec();
+    std::thread::spawn(move || read_records(stdout, &expect, &tx));
+    let mut answered = 0;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let t = Instant::now();
+        let msg = rx.recv_timeout(left);
+        *wait += t.elapsed();
+        match msg {
+            Ok(Msg::Record(k, outcome)) => {
+                answered += 1;
+                each(k, outcome).map_err(RunError::Halted)?;
             }
+            Ok(Msg::Fatal(e)) => return Err(RunError::Failed(e)),
+            Ok(Msg::Done) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err(RunError::Timeout(format!("{name} timed out"))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(RunError::Failed(format!("{name} output ended"))),
         }
-        debug_assert_eq!(answered, jobs.len());
-        // every job answered: the exit status must still be 0
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let confined = diagnostics.join().ok().flatten();
-                    return match status.code() {
-                        Some(0) => Ok(confined),
-                        Some(n) => Err(format!("{name} exited with status {n}")),
-                        None => Err(format!("{name} was killed by a signal")),
-                    };
-                }
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
-                Ok(None) => return Err(format!("{name} timed out")),
-                Err(e) => return Err(format!("waiting for {name}: {e}")),
+    }
+    debug_assert_eq!(answered, jobs.len());
+    // every job answered: the exit status must still be 0
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return match status.code() {
+                    Some(0) => Ok(()),
+                    Some(n) => Err(RunError::Failed(format!("{name} exited with status {n}"))),
+                    None => Err(RunError::Failed(format!("{name} was killed by a signal"))),
+                };
             }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Ok(None) => return Err(RunError::Timeout(format!("{name} timed out"))),
+            Err(e) => return Err(RunError::Failed(format!("waiting for {name}: {e}"))),
         }
     }
 }

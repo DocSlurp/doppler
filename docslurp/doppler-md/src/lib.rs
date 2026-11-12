@@ -307,6 +307,12 @@ pub struct Report {
     pub images_budget_pages: Vec<usize>,
     /// images past [`MAX_DOC_IMAGES`] that have no entry in `images` (their markers stand)
     pub images_notes_dropped: usize,
+    /// whether image extraction finished every batch (`manifest.json` `complete`)
+    pub images_complete: Option<bool>,
+    /// where image extraction spent its time (`pdftomarkdown --images-dir`)
+    pub images_timing: Option<extract::Timing>,
+    /// the PDF page number of each page written, in order (only with [`Options::page_markers`])
+    pub page_numbers: Option<Vec<u32>>,
 }
 
 /// The most image entries a report keeps for a document (the producer's own document cap).
@@ -372,7 +378,7 @@ impl Report {
         } else {
             let one = |n: &images::Note| {
                 format!(
-                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}}}",
+                    "{{\"id\":\"{}\",\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"px\":[{},{}],\"kind\":\"{}\",\"placed\":\"{}\"{}{}{}{}{}}}",
                     n.id,
                     n.page,
                     coord(n.bbox.0),
@@ -392,6 +398,8 @@ impl Report {
                     if n.members > 1 { format!(",\"members\":{}", n.members) } else { String::new() },
                     n.group.as_ref().map(|g| format!(",\"group\":\"{g}\"")).unwrap_or_default(),
                     if n.degraded { ",\"degraded\":true" } else { "" },
+                    n.link.as_ref().map(|l| format!(",\"path\":\"{l}\"")).unwrap_or_default()
+                        + &n.repeat_of.as_ref().map(|r| format!(",\"repeat_of\":\"{r}\"")).unwrap_or_default(),
                     match (&n.file, self.images_written) {
                         (Some(f), Some(_)) => format!(",\"file\":\"{f}\""),
                         (None, Some(_)) => ",\"file\":null".to_string(),
@@ -437,6 +445,16 @@ impl Report {
             watermark,
             self.images_written.map(|n| format!(",\"images_written\":{n}")).unwrap_or_default()
                 + &self.images_confined.map(|c| format!(",\"images_confined\":{c}")).unwrap_or_default()
+                + &self.images_complete.map(|c| format!(",\"images_complete\":{c}")).unwrap_or_default()
+                + &self.images_timing.as_ref().map(|t| format!(",{}", t.to_json())).unwrap_or_default()
+                + &self
+                    .page_numbers
+                    .as_ref()
+                    .map(|v| {
+                        let v: Vec<String> = v.iter().map(|n| n.to_string()).collect();
+                        format!(",\"page_numbers\":[{}]", v.join(","))
+                    })
+                    .unwrap_or_default()
                 + &self
                     .images_error
                     .as_ref()
@@ -515,6 +533,12 @@ pub struct Options {
     /// [`images`]). Needs `pdftotext -images`; off, image records are ignored and the output
     /// is unchanged.
     pub markers: bool,
+    /// Start each page with a sealed `<!-- doppler:page N -->` line (its PDF page number); the
+    /// report lists the pages written (`page_numbers`).
+    pub page_markers: bool,
+    /// The PDF page number of the first page, for pages whose producer did not write
+    /// `number="N"` (`-f`; default 1).
+    pub first_page: Option<u32>,
 }
 
 /// One Markdown string per page, and a [`Report`] of what was skipped or simplified.
@@ -567,6 +591,8 @@ pub struct Converter<'p> {
     carry: stitch::Carry,
     /// this conversion's seal on its own markers (see [`images::seal`])
     seal: String,
+    /// the links of marked images (see [`extract::layout`])
+    linker: extract::layout::Linker,
 }
 
 impl<'p> Converter<'p> {
@@ -584,8 +610,38 @@ impl<'p> Converter<'p> {
             spent: 0,
             report: Report::default(),
             carry: stitch::Carry::default(),
-            seal: if o.markers { images::seal() } else { String::new() },
+            seal: if o.markers || o.page_markers { images::seal() } else { String::new() },
+            linker: extract::layout::Linker::default(),
         }
+    }
+
+    /// The links of marked images (default: `images/` prefix, `.webp` pictures, `.svg`
+    /// figures, repeats linked to their first placement). Set before the first page.
+    pub fn set_link_style(&mut self, style: extract::layout::LinkStyle) {
+        self.linker = extract::layout::Linker::new(style);
+    }
+
+    /// A page's Markdown as written: its page marker, then (with markers or page markers)
+    /// neutralised PDF text and the converter's markers expanded (see [`images::unseal`]). The
+    /// notes of the page (from `first_note`) get their links.
+    fn written(&mut self, number: u32, first_note: usize, md: String) -> String {
+        let md = if self.o.page_markers {
+            self.report.page_numbers.get_or_insert_with(Vec::new).push(number);
+            let m = format!("<!-- doppler{}:page {number} -->", self.seal);
+            if md.is_empty() { m } else { format!("{m}\n\n{md}") }
+        } else {
+            md
+        };
+        if !self.o.markers && !self.o.page_markers {
+            return md;
+        }
+        let first = first_note.min(self.report.images.len());
+        self.linker.assign(&mut self.report.images[first..]);
+        let notes = &self.report.images[first..];
+        let links: std::collections::HashMap<&str, &str> =
+            notes.iter().filter_map(|n| Some((n.id.as_str(), n.link.as_deref()?))).collect();
+        let linker = &self.linker;
+        images::unseal(&md, &self.seal, &|id| linker.target(id, links.get(id).copied()))
     }
 
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
@@ -682,15 +738,18 @@ impl<'p> Converter<'p> {
         } else {
             None
         };
+        let number = page.number.unwrap_or(pi as u32 + 1);
+        // the page marker's number: the producer's, else counted from -f
+        let marked = page.number.unwrap_or(self.o.first_page.unwrap_or(1).saturating_add(pi as u32));
         if let Some(why) = early {
             self.report.degraded.push((pi, why));
             self.carry = stitch::Carry::default();
             let md = plain_lines(&page, &drop);
-            out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
+            let first = self.report.images.len();
+            out(pi, self.written(marked, first, md));
             return;
         }
         self.spent += n as u64;
-        let number = page.number.unwrap_or(pi as u32 + 1);
         // placing pictures and drawings has a page budget of its own (so that markers do not
         // take the layout's), charged to the document's
         let mut placing = Budget::new(pyc::pmin(p.max_page_work, doc_left));
@@ -773,6 +832,6 @@ impl<'p> Converter<'p> {
         }
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
-        out(pi, if self.o.markers { images::unseal(&md, &self.seal) } else { md });
+        out(pi, self.written(marked, first_note, md));
     }
 }
