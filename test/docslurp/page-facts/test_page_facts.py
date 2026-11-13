@@ -22,6 +22,7 @@ import argparse  # noqa: E402
 parser = argparse.ArgumentParser()
 parser.add_argument("--bindir", required=True)
 parser.add_argument("--testdata", default="")
+parser.add_argument("--oc-probe", default="")
 args, _ = parser.parse_known_args()
 BIN = args.bindir
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -432,6 +433,22 @@ with t.TempDir() as d:
     t.check([i["copy"] for i in items] == ["decode", "decode", "render", "render"], "copy class: DCT with DecodeParms, inverted CCITT, external /F", repr([(i["filter"], i["copy"]) for i in items]))
     # XFA through an image codec is not decoded
     t.check(doc_line(lines(facts(d.write("xfa-codec.pdf", fx.forms_pdf("dynamic-codec")), "-include", "forms")[1]))["xfa"] == "static", "an XFA packet behind an image codec is not decoded")
+    # optional content: a /VE sub-expression cut short by the recursion limit (counted visible) is
+    # not remembered and reused where it is reached shallowly. An OFF group, a 10-level chain R
+    # ending at it, and /VE [/Or P R] where P reaches R at depth 43 as [/And R off]: R is hidden
+    # at depth 1, so the section is hidden (as in upstream poppler)
+    chain = ["<< /Type /OCG /Name (off) >>"] + ["[/And %d 0 R]" % (8 + i) for i in range(9)] + ["[/And 6 0 R]"]
+    chain += ["[/And %d 0 R]" % (18 + i) for i in range(42)] + ["[/And 7 0 R 6 0 R]", "<< /Type /OCMD /VE [/Or 17 0 R 7 0 R] >>"]
+    ocmd = 5 + len(chain)
+    path = d.write("oc-truncated.pdf", t.simple_page_pdf(b"BT /F1 12 Tf 72 700 Td (shown) Tj ET /OC /L BDC BT /F1 12 Tf 72 600 Td (layertext) Tj ET EMC", resources="<< /Font << /F1 4 0 R >> /Properties << /L %d 0 R >> >>" % ocmd, extra_objects=chain, catalog_extra="/OCProperties << /OCGs [6 0 R] /D << /OFF [6 0 R] >> >>"))
+    text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
+    _, xhtml, fl = pdftotext_facts(path)
+    t.check(text.split() == ["shown"] and b"layertext" not in xhtml, "a truncated /VE sub-expression is not reused at shallow depth: the hidden layer stays hidden", repr(text))
+    t.check(page(lines(fl), 1)["text"]["charCount"] == 5, "truncated /VE: facts count only the shown text", repr(page(lines(fl), 1)["text"]))
+    # cached visibility (OCMDs, /VE sub-expressions) follows group state changes
+    if args.oc_probe:
+        out = subprocess.run([args.oc_probe, path], capture_output=True, timeout=60).stdout.decode().strip()
+        t.check(out == "0 1 0", "optional-content visibility follows setState through the caches", repr(out))
     # a facts reader that closed its end: pdftotext finishes the XHTML and exits 4
     r, w = os.pipe()
     os.close(r)

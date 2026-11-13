@@ -43,6 +43,7 @@
 #include "Object.h"
 #include "PopplerCache.h"
 #include "PageFactsHooks.h"
+#include "OptionalContent.h"
 
 #include <stack>
 #include <unordered_map>
@@ -249,6 +250,9 @@ private:
     int mcDepth = 0; // DocSlurp: entries on mcStack
     int mcOverflow = 0; // DocSlurp: open sections past maxMarkedContentDepth (not on mcStack)
     bool mcDepthWarned = false; // DocSlurp: the nesting warning was given on this page
+    // DocSlurp: optional-content operands this page may evaluate, for drawing and (apart, so that
+    // facts never change what is drawn) for the facts paths
+    OCVisibilityBudget ocBudget, factsOcBudget;
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     int ocLayerDepth = 0; // open BDC /OC sections
     // DocSlurp page facts: the visibility of the /OC entries the facts paths (operator tally,

@@ -162,6 +162,37 @@ def rule_grid(pages=500, n=512):
 
 FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
 
+
+def oc_marked(kind, sections, operands=9990):
+    """A page that shows "shown" and draws "hidden" in <sections> optional-content sections,
+    each naming one OCMD over an OFF group with <operands> operands:
+      ve      BDC /OC naming an indirect OCMD whose /VE is a flat /Or of <operands> references
+      ocgs    BDC /OC naming an indirect OCMD whose /OCGs array has <operands> entries (/AnyOn)
+      direct  BDC /OC naming a direct OCMD in /Properties (/VE flat /Or): never cached, so the
+              page's operand budget runs out and later sections count as visible, limit-hit
+      xobject Do of a form whose /OC is the indirect /VE OCMD"""
+    d = Doc()
+    off = d.add("<< /Type /OCG /Name (off) >>")
+    font = d.add(FONT)
+    refs = " ".join(["%d 0 R" % off] * operands)
+    res = "/Font << /F1 %d 0 R >>" % font
+    if kind == "ocgs":
+        oc = "%d 0 R" % d.add("<< /Type /OCMD /OCGs [%s] /P /AnyOn >>" % refs)
+    elif kind == "direct":
+        oc = "<< /Type /OCMD /VE [/Or %s] >>" % refs
+    else:
+        oc = "%d 0 R" % d.add("<< /Type /OCMD /VE %d 0 R >>" % d.add("[/Or %s]" % refs))
+    if kind == "xobject":
+        x = d.stream("BT /F1 12 Tf 0 0 Td (hidden) Tj ET", "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << %s >> /OC %s" % (res, oc))
+        res += " /XObject << /X %d 0 R >>" % x
+        body = "/X Do\n" * sections
+    else:
+        res += " /Properties << /P0 %s >>" % oc
+        body = "/OC /P0 BDC BT /F1 12 Tf 72 600 Td (hidden) Tj ET EMC\n" * sections
+    content = d.stream("BT /F1 12 Tf 72 700 Td (shown) Tj ET\n" + body, compress=True)
+    return d.pages([content], resources=res, catalog_extra="/OCProperties << /OCGs [%d 0 R] /D << /OFF [%d 0 R] >> >>" % (off, off))
+
+
 def nested_marked(depth):
     """<depth> nested BMC sections around one word, between two others (a few KB compressed)."""
     d = Doc()
@@ -265,6 +296,29 @@ with t.TempDir() as d:
     ls = [json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "vectors", d.write("grid-small.pdf", rule_grid(pages=1, n=3))])[1].decode().splitlines()]
     t.check(page(ls, 1)["vectors"]["ruleGridScore"] == 1, "3 x 3 crossing rules score 1", repr(page(ls, 1)["vectors"]))
 
+
+    # 9. optional content: an OCMD named by many BDC /OC (or XObject /OC) entries is evaluated
+    #    once, not once per section (4000 BDCs over a 9,990-operand /VE took 19 s, 20,000 over a
+    #    9,990-entry /OCGs 51 s); a direct OCMD, which is not cached, is charged to a per-page
+    #    operand budget, past which sections count as visible with limit-hit. Plain pdftotext too.
+    for kind, sections in (("ve", 8000), ("ocgs", 5000), ("direct", 60000), ("xobject", 5000)):
+        path = d.write("oc-%s.pdf" % kind, oc_marked(kind, sections))
+        start = time.monotonic()
+        try:
+            text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
+        except subprocess.TimeoutExpired:
+            text = "(timed out)"
+        secs = time.monotonic() - start
+        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 s" % (sections, kind), "%.2f s" % secs)
+        print("  oc %s x %d: pdftotext %.2f s" % (kind, sections, secs))
+        if secs >= 3:
+            continue
+        ls = bounded("%d sections over one %s OCMD" % (sections, kind), path)
+        warn = page(ls, 1)["parseWarnings"]
+        if kind == "direct":
+            t.check("shown" in text and "hidden" in text and "limit-hit" in warn, "direct OCMD past the page budget: visible, limit-hit", repr((text[:80], warn)))
+        else:
+            t.check("shown" in text and "hidden" not in text and "limit-hit" not in warn, "%s OCMD over an OFF group: hidden, no limit-hit" % kind, repr((text[:80], warn)))
 
     # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
     #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit

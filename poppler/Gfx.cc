@@ -4288,13 +4288,13 @@ bool Gfx::factsOcIsVisible(const Object &oc)
         return true;
     }
     if (!oc.isRef()) {
-        return ocgs->optContentIsVisible(&oc);
+        return ocgs->optContentIsVisible(&oc, &factsOcBudget);
     }
     const auto it = factsOcVisible.find(oc.getRef());
     if (it != factsOcVisible.end()) {
         return it->second;
     }
-    const bool visible = ocgs->optContentIsVisible(&oc);
+    const bool visible = ocgs->optContentIsVisible(&oc, &factsOcBudget);
     if (factsOcVisible.size() < 4096) {
         factsOcVisible.emplace(oc.getRef(), visible);
     }
@@ -4491,7 +4491,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
     // check for optional content key
     if (ref) {
         const Object &objOC = dict->lookupNF("OC");
-        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC, &ocBudget)) {
             return;
         }
     }
@@ -5064,7 +5064,7 @@ void Gfx::doForm(Object *str)
     // check for optional content key
     ocSaved = ocState;
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC, &ocBudget)) {
         if (out->needCharCount()) {
             ocState = false;
         } else {
@@ -5412,7 +5412,7 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
                 ++ocLayerDepth;
                 Object markedContent = res->lookupMarkedContentNF(name1);
                 if (!markedContent.isNull()) {
-                    bool visible = contentConfig->optContentIsVisible(&markedContent);
+                    bool visible = contentConfig->optContentIsVisible(&markedContent, &ocBudget);
                     mc->ocSuppressed = !visible;
                     mc->hidden = mc->hidden || mc->ocSuppressed;
                 } else {
