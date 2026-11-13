@@ -531,7 +531,8 @@ first, as the lazy read did (an entry is taken from the newest section that list
   - decoding: older xref streams' decoded entries (one row of `/W` widths each) and predictor rows
     cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
     refused before it is allocated, and the section counts as past a bound. The main section reads
-    as upstream (no decode budget).
+    as upstream (no decode budget). Filter work (inflating, say) is bounded by the parse and
+    decode budgets, not counted on its own.
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are
@@ -572,11 +573,11 @@ first, as the lazy read did (an entry is taken from the newest section that list
 - **Writers** (`pdfseparate`, `pdfunite`, saving) keep upstream's behaviour:
   - once they have drained the chain, a missing entry is free;
   - once the document has edits, a missing entry continues the chain where the walk stopped, as
-    the lazy read did;
-  - a rebuild that would lose edits is otherwise refused.
+    the lazy read did, or, when the walk read it all, rebuilds the table, as the lazy read did.
 - **Caches shared with drawing**, filled under a guard:
-  - object streams parsed under one go to a separate cache that only guarded reads use, since a
-    parse can depend on where it was reached from;
+  - object streams parsed under one go to a separate cache that only guarded reads in the same
+    guarded scope use (the doc line, the header, one page's facts, one image lookup). It is
+    dropped when the scope ends, since a parse can depend on where it was reached from;
   - stream parameters are not stored at all.
 
 ## Hostile input

@@ -618,6 +618,13 @@ err1:
     return false;
 }
 
+XRef::RepairGuard::~RepairGuard()
+{
+    if (--xref->repairSuppressed == 0) {
+        xref->objStrsGuarded.clear();
+    }
+}
+
 void XRef::noteChainBudget(const char *what)
 {
     if (!chainBudgetHit) {
@@ -2352,10 +2359,8 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                     prevXRefOffset = chainResumeOffset;
                     chainResumeOffset = 0;
                     readXRefUntil(i);
-                } else if (hasChanges) {
-                    // as fetch: a rebuild would lose the edits
-                    error(errInternal, -1, "XRef entry {0:d} is in no section, document has changes, reconstruct aborted", i);
                 } else {
+                    // as the lazy read on its first missing entry (it did not check for edits)
                     error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
                     if (!(ok = constructXRef(nullptr))) {
                         errCode = errDamaged;

@@ -94,9 +94,12 @@ with t.TempDir() as d:
         "streamparam_depth": ("sp_depth_inv.py", ["497"]),
         "xrefstm_reuse": ("stmreuse.py", ["999", "65536", "3"]),
         "paeth_chain": ("wide30m_paeth.py", ["999", "30000", "3"]),
+        "lenstack": ("lenstack.py", []),
+        "missing_single": ("missing.py", ["single"]),
+        "missing_prev": ("missing.py", ["prev"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -138,12 +141,16 @@ with t.TempDir() as d:
         if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest", "wide_pred", "widepred_old", "tail_eof", "manysec999") and rc == 0:
             dl = doc_line(pf)
             t.check(dl.get("xref") == "ok" and b"xref-repaired" not in pf and b'xrefRebuilt="1"' not in outs[0], "%s: not repaired, no page flagged" % name, repr((dl.get("xref"), pf[-400:])))
+        if name == "lenstack":
+            # the XHTML header's /Title (in an object stream both the doc line and the header
+            # reach): each guarded scope parses it for itself
+            t.check(b"<title>Quarterly beat London</title>" in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, "-"])[0], "lenstack: the header reads /Title as drawing would, with or without facts")
         if name in ("manysec999", "manysec1000", "tail_eof"):
             t.check(b">Record<" in outs[0] or b"Record" in outs[0], "%s: the page content (listed only by the oldest section) is drawn" % name)
         if name == "manysec1000":
             t.check(b'xrefRebuilt="1"' in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", path, "-"])[0], "manysec1000: past the 999-section cap the content is found by a rebuild, flagged")
         unite = os.path.join(BIN, "pdfunite")
-        if name in ("manysec1000", "tail_eof", "manysec999") and os.path.exists(unite):
+        if name in ("manysec1000", "tail_eof", "manysec999", "missing_single", "missing_prev") and os.path.exists(unite):
             merged = os.path.join(base, name + "-united.pdf")
             subprocess.run([unite, path, path, merged], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
             text = run([os.path.join(BIN, "pdftotext"), "-q", merged, "-"])[0]

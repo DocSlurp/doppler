@@ -227,7 +227,9 @@ public:
     {
     public:
         explicit RepairGuard(XRef *xrefA) : xref(xrefA) { ++xref->repairSuppressed; }
-        ~RepairGuard() { --xref->repairSuppressed; }
+        // the outermost guard's end drops what guarded reads cached (objStrsGuarded), so one
+        // guarded read (the doc line, the XHTML header, a page's facts) never sees another's
+        ~RepairGuard();
         RepairGuard(const RepairGuard &) = delete;
         RepairGuard &operator=(const RepairGuard &) = delete;
 
@@ -296,10 +298,11 @@ private:
                          //   damaged files
     int streamEndsLen; // number of valid entries in streamEnds
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrs; // object streams map
-    // DocSlurp (issue 45): object streams parsed under a RepairGuard. Guarded reads use objStrs
-    // too, but drawing never uses these: a parse can depend on where it was reached from (the
-    // parser's recursion depth), so a read only some runs make must not decide what drawing
-    // gets. Both maps are dropped with the table (constructXRef).
+    // DocSlurp (issue 45): object streams parsed under a RepairGuard, kept until the outermost
+    // guard ends. Guarded reads use objStrs too, but drawing never uses these, nor does a later
+    // guarded scope: a parse can depend on where it was reached from (recursion depth, objects
+    // being fetched), so a read only some runs make must not decide what anything else gets.
+    // Both maps are also dropped with the table (constructXRef).
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     bool encrypted; // true if file is encrypted
     int encRevision;
