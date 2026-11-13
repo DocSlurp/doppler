@@ -259,7 +259,7 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `shadings` | `sh` operators and shading-pattern paints |
 | `patterns` | tiling-pattern paints |
 | `clips` | clipping operators (`W`, `W*`) |
-| `figureClusters` | clusters of curved or diagonal drawing, and bar charts drawn only with filled boxes (the raw material of pdftomarkdown's vector figures, before its size and density tests). Bar charts follow doppler-md `vector::bar_regions` (below the table); one overlapping a drawing cluster is joined into it, otherwise it is listed after the drawing clusters, at most 64 a page |
+| `figureClusters` | clusters of curved or diagonal drawing, and bar charts drawn only with filled boxes (the raw material of pdftomarkdown's vector figures, before its size and density tests). Bar charts follow doppler-md `vector::bar_regions` (below the table); one overlapping drawing clusters is joined with all of them (which can merge drawing clusters, so their count and order are not getGraphics' alone), otherwise it is listed after the drawing clusters, at most 64 a page |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`). A bar cluster has `curves` and `segments` 0 (unless joined into a drawing), and its `paths` count its boxes plus the stroked rules near it |
 | `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`) |
 | `gridsTruncated` | more than 64 grids, or the grid search hit its rule or work cap: the list is incomplete |
