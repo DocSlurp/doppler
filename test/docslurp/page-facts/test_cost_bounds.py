@@ -266,6 +266,16 @@ def cpu_run(cmd, pass_fds=(), timeout=300):
     return p.returncode, p.stdout, (r1.ru_utime - r0.ru_utime) + (r1.ru_stime - r0.ru_stime)
 
 
+def plain_cpu(*args):
+    """Plain pdftotext on ARGS: (exit code or None after 60 s wall, stdout, CPU seconds). The
+    bounds below are on CPU, not wall time: they guard against superlinear work, which a busy
+    host's scheduling would otherwise hide or fake."""
+    try:
+        return cpu_run([os.path.join(BIN, "pdftotext"), "-q"] + list(args), timeout=60)
+    except subprocess.TimeoutExpired:
+        return None, b"(timed out)", 60.0
+
+
 def pdftotext_facts(path, *extra):
     """pdftotext with the facts at level full on a descriptor: (exit code, facts, CPU s)."""
     out = os.path.join(os.path.dirname(path), "facts.jsonl")
@@ -313,9 +323,8 @@ with t.TempDir() as d:
         kind = "form" if form else "image"
         path = d.write("ocmd-%s.pdf" % kind, ocmd_chain(depth=22, form=form))
         ls = bounded("/OC /VE of 22 shared levels on an %s" % kind, path, factor=3.0)
-        start = time.monotonic()
-        subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, os.devnull], timeout=120)
-        t.check(time.monotonic() - start < 3, "/OC /VE of 22 shared levels on an %s: plain pdftotext is fast" % kind, "%.2f s" % (time.monotonic() - start))
+        _, _, secs = plain_cpu(path, os.devnull)
+        t.check(secs < 3, "/OC /VE of 22 shared levels on an %s: plain pdftotext is fast" % kind, "%.2f CPU-s" % secs)
         if not form:
             t.check(page(ls, 1)["images"]["imageCount"] == 1, "deep /VE of shown groups: the image is visible")
     ls = bounded("/OC /VE /And of 12000 operands", d.write("ocmd-wide.pdf", ocmd_wide()))
@@ -357,14 +366,10 @@ with t.TempDir() as d:
     #    operand budget, past which sections count as visible with limit-hit. Plain pdftotext too.
     for kind, sections in (("ve", 8000), ("ocgs", 5000), ("direct", 60000), ("xobject", 5000)):
         path = d.write("oc-%s.pdf" % kind, oc_marked(kind, sections))
-        start = time.monotonic()
-        try:
-            text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
-        except subprocess.TimeoutExpired:
-            text = "(timed out)"
-        secs = time.monotonic() - start
-        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 s" % (sections, kind), "%.2f s" % secs)
-        print("  oc %s x %d: pdftotext %.2f s" % (kind, sections, secs))
+        _, text, secs = plain_cpu(path, "-")
+        text = text.decode()
+        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 CPU-s" % (sections, kind), "%.2f CPU-s" % secs)
+        print("  oc %s x %d: pdftotext %.2f CPU-s" % (kind, sections, secs))
         if secs >= 3:
             continue
         ls = bounded("%d sections over one %s OCMD" % (sections, kind), path)
@@ -393,14 +398,10 @@ with t.TempDir() as d:
     # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
     #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit
     path = d.write("nested-mc.pdf", nested_marked(100000))
-    start = time.monotonic()
-    try:
-        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
-    except subprocess.TimeoutExpired:
-        text = "(timed out)"
-    secs = time.monotonic() - start
-    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 s, all text", "%.2f s %r" % (secs, text[:80]))
-    print("  100,000 nested BMC: pdftotext %.2f s" % secs)
+    _, text, secs = plain_cpu(path, "-")
+    text = text.decode()
+    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 CPU-s, all text", "%.2f CPU-s %r" % (secs, text[:80]))
+    print("  100,000 nested BMC: pdftotext %.2f CPU-s" % secs)
     if secs < 3:
         ls = bounded("100,000 nested BMC", path)
         t.check("limit-hit" in page(ls, 1)["parseWarnings"], "nesting past the cap: limit-hit", repr(page(ls, 1)["parseWarnings"]))
@@ -413,14 +414,9 @@ with t.TempDir() as d:
     #     image whose /Filter names a 50,000-entry array, drawn 20,000 times a page, ran past
     #     120 s in plain pdftotext -bbox-layout)
     path = d.write("filter-names.pdf", filter_names())
-    start = time.monotonic()
-    try:
-        rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, os.devnull], timeout=60).returncode
-    except subprocess.TimeoutExpired:
-        rc = None
-    secs = time.monotonic() - start
-    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 s", "%.2f s, rc %r" % (secs, rc))
-    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f s" % secs)
+    rc, _, secs = plain_cpu("-bbox-layout", path, os.devnull)
+    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 CPU-s", "%.2f CPU-s, rc %r" % (secs, rc))
+    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f CPU-s" % secs)
     if secs < 3:
         ls = bounded("50,000-name /Filter x 40,000 Do", path)
         t.check("limit-hit" in page(ls, 1)["parseWarnings"], "a refused filter chain: limit-hit", repr(page(ls, 1)["parseWarnings"]))
