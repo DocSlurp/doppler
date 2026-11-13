@@ -190,7 +190,10 @@
                   "decode": { "type": "boolean" },
                   "inline": { "type": "boolean" },
                   "obj": { "type": "integer", "minimum": 1 },
-                  "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] }
+                  "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] },
+                  "visibleWordsInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box lies inside this image's box (within 1 point). Added within /1: absent from earlier builds." },
+                  "invisibleWordsInside": { "$ref": "#/$defs/count", "description": "Invisible words (render mode 3, or clipped) inside this image's box: an OCR layer over a scan. Added within /1: absent from earlier builds." },
+                  "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's encoded bytes (its /Length as the parser delimited it, at most the file's remaining bytes; never decoded) over px width x height. Absent for inline images, external (/F) data and earlier builds." }
                 }
               }
             },
@@ -224,6 +227,22 @@
               }
             },
             "clustersTruncated": { "type": "boolean" },
+            "grids": {
+              "description": "Ruled grids, as pdftomarkdown's ruled-table search finds them from the rules alone, in the order it finds them: at most 64. Added within /1: absent from earlier builds.",
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "required": ["bbox", "rows", "columns", "coverage"],
+                "properties": {
+                  "bbox": { "$ref": "#/$defs/box" },
+                  "rows": { "type": "integer", "minimum": 1 },
+                  "columns": { "type": "integer", "minimum": 1 },
+                  "coverage": { "$ref": "#/$defs/ratio" }
+                }
+              }
+            },
+            "gridsTruncated": { "type": "boolean", "description": "More than 64 grids, or the search's rule (4,096 a direction) or work cap was hit: the list is incomplete." },
             "limitHit": { "type": "boolean" }
           }
         },

@@ -4237,7 +4237,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
         } else {
             if (ocState && out->needImageGeometry()) {
                 Object refObj = res->lookupXObjectNF(name);
-                reportImageGeometry(obj1StreamDict, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
+                reportImageGeometry(obj1StreamDict, obj1Stream, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
             }
             bool maskGeometry = false;
             if (out->needImageMaskGeometry()) {
@@ -4345,10 +4345,34 @@ bool Gfx::factsOcIsVisible(const Object &oc)
     return visible;
 }
 
+// DocSlurp page facts: the encoded bytes of an image XObject's stream, as the parser delimited
+// them (its /Length, corrected when the file's endstream disagrees), never read or decoded. A
+// hostile /Length can still claim more than the file holds when no endstream corrects it: the
+// count stops at the end of the document's bytes. -1 when the stream is not a slice of a base
+// stream (nothing to measure without decoding).
+static long long encodedStreamBytes(Stream *str, XRef *xref)
+{
+    BaseStream *base = str ? str->getBaseStream() : nullptr;
+    if (!base) {
+        return -1;
+    }
+    const Goffset length = base->getLength();
+    if (length < 0) {
+        return -1;
+    }
+    Goffset bytes = length;
+    if (BaseStream *file = xref ? xref->getBaseStream() : nullptr; file && file != base) {
+        const Goffset start = base->getStart(), fileLength = file->getLength();
+        const Goffset room = start >= 0 && fileLength >= start ? fileLength - start : 0;
+        bytes = std::min(bytes, room);
+    }
+    return static_cast<long long>(bytes);
+}
+
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
 // stream dictionary is read: never the image data, so a hostile image costs a few lookups, and
 // with the device's ImageInfoCache an image XObject's dictionary is read once per document.
-void Gfx::reportImageGeometry(Dict *dict, Ref ref)
+void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 {
     const Object &objOC = dict->lookupNF("OC");
     if (!factsOcIsVisible(objOC)) {
@@ -4390,6 +4414,7 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         image.height = size("Height", "H");
         if (image.width >= 1 && image.height >= 1) {
             image.info = factsImageInfo(dict, false, nullptr, &image.limited);
+            image.info.encodedBytes = image.info.external ? -1 : encodedStreamBytes(str, xref);
         }
         if (cacheable) {
             cache->store(ref, xref, image);

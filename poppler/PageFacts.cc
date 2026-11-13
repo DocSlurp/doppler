@@ -376,6 +376,11 @@ constexpr double hugePagePt = 14400; // 200 inches: the PDF 1.x page size limit
 constexpr double rotatedContentShare = 0.2;
 constexpr uint64_t rotatedContentMinChars = 10;
 constexpr size_t maxItems = 32; // images and figure clusters listed per page
+constexpr size_t maxGrids = 64; // ruled grids listed per page
+constexpr size_t maxGridRules = 4096; // horizontal (and vertical) rules a page's grid search takes
+constexpr size_t maxGridWork = size_t(1) << 20; // group and column-rule visits of a page's grid search
+constexpr double wordInsideSlack = 1.0; // points a word box may pass an image's box and still lie inside
+constexpr size_t maxSizeBins = 256; // distinct word sizes counted for a page's body size
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
 constexpr size_t maxAnnots = 10000; // annotations examined per page
@@ -481,6 +486,17 @@ public:
     {
         key(k);
         point(v);
+    }
+    // a non-negative measure with 4 decimals (bytes per pixel), at most maxPoint
+    void kmeasure(const char *k, double v)
+    {
+        key(k);
+        v = std::max(finite(v), 0.0);
+        if (v > maxPoint) {
+            v = maxPoint;
+            note(wOutOfRange);
+        }
+        number(v, 4);
     }
     void point(double v)
     {
@@ -588,6 +604,221 @@ private:
 };
 
 PageFacts *activeFacts = nullptr;
+
+// A ruled grid: the rule-only stage of pdftomarkdown's ruled-table search (doppler-md
+// tables::ruled_tables, with its default parameters), so the facts name the same grids its
+// table conversion starts from. Horizontal rules (and the top and bottom edges of shaded row
+// boxes) are joined where collinear segments touch, grouped down the page while they overlap
+// and lie close, and split where the spacing jumps; the inner vertical rules crossing at least
+// half a group's height are its column lines. The text-dependent steps (a caption band that
+// splits two tables, header rows above the first rule, columns from word gutters) are not
+// taken, so a table ruled only horizontally has one column here.
+struct RuleGrid
+{
+    double x0, y0, x1, y1;
+    size_t rows, columns;
+};
+
+// <body>: the page's body text size (thresholds scale with it, as in pdftomarkdown). At most
+// maxGridRules horizontal and vertical rules are taken (in drawing order), maxGrids grids kept,
+// and maxGridWork open-group and column-rule visits made (grouping is O(h x open groups), and
+// a hostile page can keep thousands open); *truncated says a cap was hit, and the grids found
+// until then are returned.
+std::vector<RuleGrid> ruleGrids(const std::vector<TextRule> &rules, double pageW, double pageH, double body, bool *truncated)
+{
+    // doppler-md Params defaults: rule_min_len, rule_max_lum, rule_row_gap, rule_split
+    constexpr double ruleMinLen = 3.0, ruleMaxLum = 0.97, ruleRowGap = 8.0, ruleSplit = 2.5;
+    *truncated = false;
+    std::vector<RuleGrid> out;
+    if (rules.empty() || !std::isfinite(body) || !(body > 0)) {
+        return out;
+    }
+    struct H
+    {
+        double x0, x1, y;
+    };
+    struct V
+    {
+        double x, y0, y1;
+    };
+    std::vector<H> h;
+    std::vector<V> v;
+    // pdftotext -rules writes colours as bytes; pdftomarkdown's luminance reads them back
+    auto byte = [](double c) { return static_cast<int>(std::clamp(std::isfinite(c) ? c : 0.0, 0.0, 1.0) * 255.0 + 0.5) / 255.0; };
+    for (const TextRule &r : rules) {
+        if (!std::isfinite(r.xMin) || !std::isfinite(r.yMin) || !std::isfinite(r.xMax) || !std::isfinite(r.yMax)) {
+            continue;
+        }
+        const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
+        if (r.box) {
+            // shaded rows and headers: their top and bottom edges separate rows; skip page backgrounds
+            if (w >= 0.5 * body && w < 0.95 * pageW && hh < 0.5 * pageH) {
+                if (h.size() + 2 > maxGridRules) {
+                    *truncated = true;
+                    continue;
+                }
+                h.push_back({ r.xMin, r.xMax, r.yMin });
+                h.push_back({ r.xMin, r.xMax, r.yMax });
+            }
+        } else if (0.2126 * byte(r.r) + 0.7152 * byte(r.g) + 0.0722 * byte(r.b) > ruleMaxLum) {
+            continue;
+        } else if (w >= hh && w >= 0.5 * body) {
+            if (h.size() >= maxGridRules) {
+                *truncated = true;
+                continue;
+            }
+            h.push_back({ r.xMin, r.xMax, 0.5 * (r.yMin + r.yMax) });
+        } else if (hh > w && hh >= 0.8 * body) {
+            if (v.size() >= maxGridRules) {
+                *truncated = true;
+                continue;
+            }
+            v.push_back({ 0.5 * (r.xMin + r.xMax), r.yMin, r.yMax });
+        }
+    }
+    std::ranges::stable_sort(v, [](const V &a, const V &b) { return a.x < b.x; });
+    // join collinear segments that touch (cell borders drawn cell by cell)
+    std::ranges::stable_sort(h, [](const H &a, const H &b) {
+        const double ya = std::nearbyint(a.y), yb = std::nearbyint(b.y);
+        return ya < yb || (ya == yb && a.x0 < b.x0);
+    });
+    std::vector<H> joined;
+    for (const H &r : h) {
+        if (!joined.empty() && std::fabs(joined.back().y - r.y) <= 1.0 && r.x0 <= joined.back().x1 + 2.0) {
+            joined.back().x1 = std::max(joined.back().x1, r.x1);
+        } else {
+            joined.push_back(r);
+        }
+    }
+    h.clear();
+    for (const H &r : joined) {
+        if (r.x1 - r.x0 >= ruleMinLen * body) {
+            h.push_back(r);
+        }
+    }
+    std::ranges::stable_sort(h, [](const H &a, const H &b) { return a.y < b.y; });
+    // group down the page: a rule joins the first open group whose last rule is within the gap
+    // and whose span overlaps it by 0.8 of the narrower one
+    struct Group
+    {
+        double x0, x1;
+        std::vector<double> ys;
+    };
+    std::vector<Group> groups;
+    std::vector<size_t> open;
+    const double gap = ruleRowGap * body;
+    size_t work = maxGridWork;
+    auto spend = [&](size_t n) {
+        if (n > work) {
+            *truncated = true;
+            return false;
+        }
+        work -= n;
+        return true;
+    };
+    for (const H &r : h) {
+        if (!spend(open.size() + 1)) {
+            groups.clear(); // grouping cut short: no grid from a partial grouping
+            return out;
+        }
+        std::optional<size_t> hit;
+        std::erase_if(open, [&](size_t gi) {
+            const Group &g = groups[gi];
+            if (!(r.y - g.ys.back() <= gap)) {
+                return true;
+            }
+            if (!hit) {
+                const double ov = std::min(r.x1, g.x1) - std::max(r.x0, g.x0);
+                if (ov >= 0.8 * std::min(r.x1 - r.x0, g.x1 - g.x0)) {
+                    hit = gi;
+                }
+            }
+            return false;
+        });
+        if (hit) {
+            Group &g = groups[*hit];
+            g.ys.push_back(r.y);
+            g.x0 = std::min(g.x0, r.x0);
+            g.x1 = std::max(g.x1, r.x1);
+        } else {
+            open.push_back(groups.size());
+            groups.push_back({ r.x0, r.x1, { r.y } });
+        }
+    }
+    auto median = [](std::vector<double> m) {
+        std::ranges::sort(m);
+        const size_t n = m.size();
+        return n % 2 ? m[n / 2] : 0.5 * (m[n / 2 - 1] + m[n / 2]);
+    };
+    auto keep = [&](double x0, double x1, const std::vector<double> &ys) {
+        if (ys.size() < 2) {
+            return true;
+        }
+        const double y0 = ys.front(), y1 = ys.back();
+        // inner vertical rules across at least half the height, 2 points apart, are column lines
+        const auto lo = std::ranges::partition_point(v, [&](const V &r) { return r.x <= x0 + 2.0; });
+        const auto hi = std::partition_point(lo, v.end(), [&](const V &r) { return r.x < x1 - 2.0; });
+        if (!spend(static_cast<size_t>(hi - lo) + 1)) {
+            return false;
+        }
+        std::vector<double> xs;
+        for (auto it = lo; it != hi; ++it) {
+            if (std::min(it->y1, y1) - std::max(it->y0, y0) > 0.5 * (y1 - y0)) {
+                xs.push_back(std::round(it->x * 10.0) / 10.0);
+            }
+        }
+        std::ranges::sort(xs);
+        size_t lines = 0;
+        double last = -INFINITY;
+        for (double x : xs) {
+            if (x - last > 2.0) {
+                ++lines;
+                last = x;
+            }
+        }
+        const size_t columns = lines + 1;
+        // a grid: at least two rows of rules, or one row split by a column line
+        if (ys.size() < 3 && columns < 2) {
+            return true;
+        }
+        if (out.size() >= maxGrids) {
+            *truncated = true;
+            return false;
+        }
+        out.push_back({ x0, y0, x1, y1, ys.size() - 1, columns });
+        return true;
+    };
+    // split a group where the rule spacing jumps (two tables sharing a width)
+    for (const Group &g : groups) {
+        std::vector<double> sorted = g.ys;
+        std::ranges::sort(sorted);
+        std::vector<double> ys;
+        for (double y : sorted) {
+            if (ys.empty() || y - ys.back() > 1.5) {
+                ys.push_back(y);
+            }
+        }
+        std::vector<double> gaps;
+        for (size_t i = 1; i < ys.size(); ++i) {
+            gaps.push_back(ys[i] - ys[i - 1]);
+        }
+        const double limit = gaps.empty() ? 0.0 : ruleSplit * median(gaps);
+        std::vector<double> cur;
+        for (size_t i = 0; i < ys.size(); ++i) {
+            if (i > 0 && ys[i] - ys[i - 1] > limit && gaps.size() >= 3) {
+                if (!keep(g.x0, g.x1, cur)) {
+                    return out;
+                }
+                cur.clear();
+            }
+            cur.push_back(ys[i]);
+        }
+        if (!keep(g.x0, g.x1, cur)) {
+            return out;
+        }
+    }
+    return out;
+}
 
 // The distinct (row, column) pairs of a page's rules that cross: a horizontal rule at row y
 // (its rounded middle) and a vertical one at column x cross when x lies within the horizontal
@@ -1045,6 +1276,17 @@ struct PageFacts::State
     bool fontsTruncated = false;
     const TextFontInfo *lastInfo = nullptr;
     const FontSeen *lastFont = nullptr;
+    // word boxes and whether each is visible (images-detail: words inside each listed image)
+    struct WordBox
+    {
+        double x0, y0, x1, y1;
+        bool visible;
+    };
+    std::vector<WordBox> wordBoxes;
+    // characters by word size in half points, in first-seen order (vectors: the body size the
+    // grid search scales with); at most maxSizeBins sizes
+    std::vector<std::pair<double, uint64_t>> sizeBins;
+    size_t lastSizeBin = 0;
 
     // vectors
     uint64_t paths = 0, filled = 0, stroked = 0;
@@ -1071,6 +1313,8 @@ struct PageFacts::State
         std::vector<uint64_t> cells = std::move(charCells), inv = std::move(invisibleCells);
         std::vector<FontSeen> fontBuffer = std::move(fonts);
         std::vector<AnnotDraw> drawBuffer = std::move(draws);
+        std::vector<WordBox> wordBuffer = std::move(wordBoxes);
+        std::vector<std::pair<double, uint64_t>> binBuffer = std::move(sizeBins);
         FormCache formCache = std::move(formObjects);
         const unsigned formGeneration = formObjectsGeneration;
         *this = State();
@@ -1081,6 +1325,10 @@ struct PageFacts::State
         inv.clear();
         fontBuffer.clear();
         drawBuffer.clear();
+        wordBuffer.clear();
+        binBuffer.clear();
+        wordBoxes = std::move(wordBuffer);
+        sizeBins = std::move(binBuffer);
         charCells = std::move(cells);
         invisibleCells = std::move(inv);
         fonts = std::move(fontBuffer);
@@ -1577,7 +1825,32 @@ void PageFacts::onWord(const TextWord *word)
 {
     double x0, y0, x1, y1;
     word->getBBox(&x0, &y0, &x1, &y1);
-    st->textGrid.mark(x0, y0, x1, y1, st->pageW, st->pageH);
+    State &s = *st;
+    s.textGrid.mark(x0, y0, x1, y1, s.pageW, s.pageH);
+    if (wants(ImagesDetail)) {
+        // visible as TextPage counts it (getInvisibleWordCount)
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible() });
+    }
+    if (wants(Vectors)) {
+        // pdftomarkdown's body size: the most common size rounded to half a point, by characters
+        const double size = word->getFontSize();
+        if (size != 0 && std::isfinite(size)) {
+            const double bin = std::nearbyint(size * 2.0) / 2.0;
+            const uint64_t n = static_cast<uint64_t>(std::max(word->getLength(), 0));
+            if (s.lastSizeBin < s.sizeBins.size() && s.sizeBins[s.lastSizeBin].first == bin) {
+                s.sizeBins[s.lastSizeBin].second += n;
+            } else {
+                const auto it = std::ranges::find_if(s.sizeBins, [bin](const auto &b) { return b.first == bin; });
+                if (it != s.sizeBins.end()) {
+                    it->second += n;
+                    s.lastSizeBin = static_cast<size_t>(it - s.sizeBins.begin());
+                } else if (s.sizeBins.size() < maxSizeBins) {
+                    s.lastSizeBin = s.sizeBins.size();
+                    s.sizeBins.emplace_back(bin, n);
+                }
+            }
+        }
+    }
 }
 
 void PageFacts::onPath(const GfxState *state, bool filled)
@@ -1949,6 +2222,18 @@ void PageFacts::endPage(const TextPage &text)
             masks += im.stencil;
             inlines += im.info.inlineImg;
         }
+        // words whose box lies inside each listed image's box (within wordInsideSlack points),
+        // [visible, invisible]
+        const size_t listed = std::min(images.size(), maxItems);
+        std::array<std::array<uint64_t, 2>, maxItems> wordsInside {};
+        for (const State::WordBox &w : s.wordBoxes) {
+            for (size_t i = 0; i < listed; ++i) {
+                const TextImage &im = images[i];
+                if (w.x0 >= im.xMin - wordInsideSlack && w.y0 >= im.yMin - wordInsideSlack && w.x1 <= im.xMax + wordInsideSlack && w.y1 <= im.yMax + wordInsideSlack) {
+                    ++wordsInside[i][w.visible ? 0 : 1];
+                }
+            }
+        }
         j.kint("maskCount", masks);
         j.kint("inlineCount", inlines);
         j.kopen("items", '[');
@@ -1980,6 +2265,13 @@ void PageFacts::endPage(const TextPage &text)
                 j.kint("obj", static_cast<uint64_t>(im.ref.num));
             }
             j.kenum("copy", imageCopyName(im.info.copy));
+            j.kint("visibleWordsInside", wordsInside[i][0]);
+            j.kint("invisibleWordsInside", wordsInside[i][1]);
+            // encoded bytes over samples, from the stream's length (never decoded)
+            const double samples = double(std::max(im.pixelWidth, 0)) * double(std::max(im.pixelHeight, 0));
+            if (!im.info.inlineImg && im.info.encodedBytes >= 0 && samples > 0) {
+                j.kmeasure("bytesPerPixel", double(im.info.encodedBytes) / samples);
+            }
             j.close();
         }
         j.close(']');
@@ -2080,6 +2372,27 @@ void PageFacts::endPage(const TextPage &text)
         }
         j.close(']');
         j.kbool("clustersTruncated", clusters.size() > maxItems);
+        double body = 10.0; // pdftomarkdown's default without text
+        uint64_t bodyChars = 0;
+        for (const auto &[size, n] : s.sizeBins) {
+            if (n > bodyChars) {
+                body = size;
+                bodyChars = n;
+            }
+        }
+        bool gridsTruncated = false;
+        const std::vector<RuleGrid> grids = ruleGrids(text.getRules(), pageW, pageH, body, &gridsTruncated);
+        j.kopen("grids", '[');
+        for (const RuleGrid &g : grids) {
+            j.open();
+            j.kbox("bbox", g.x0, g.y0, g.x1, g.y1);
+            j.kint("rows", g.rows);
+            j.kint("columns", g.columns);
+            j.kratio("coverage", area > 0 ? (g.x1 - g.x0) * (g.y1 - g.y0) / area : 0.0);
+            j.close();
+        }
+        j.close(']');
+        j.kbool("gridsTruncated", gridsTruncated);
         const bool limit = s.pathLimit || text.getRulesPageTruncated() || graphicsLimit;
         j.kbool("limitHit", limit);
         j.close();
