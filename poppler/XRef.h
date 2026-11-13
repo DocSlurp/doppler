@@ -344,6 +344,7 @@ private:
     bool parseEntry(Goffset offset, XRefEntry *entry);
     void readXRefUntil(int untilEntryNum, std::vector<int> *xrefStreamObjsNum = nullptr);
     void readPrevChain(bool *wasReconstructed);
+    bool chargeChainEntries(int first, int n, int newSize = 0);
     void markUnencrypted(Object *obj);
 
     class XRefWriter

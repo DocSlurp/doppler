@@ -618,12 +618,8 @@ bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *fol
         if (first < 0 || n < 0 || first > INT_MAX - n) {
             goto err0;
         }
-        if (chainEntriesLeft >= 0) {
-            if (n > chainEntriesLeft) {
-                chainBudgetHit = true;
-                goto err0;
-            }
-            chainEntriesLeft -= n;
+        if (!chargeChainEntries(first, n)) {
+            goto err0;
         }
         if (first + n > size) {
             if (resize(first + n) != first + n) {
@@ -775,6 +771,9 @@ bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
     if (newSize < 0) {
         return false;
     }
+    if (!chargeChainEntries(0, 0, newSize)) {
+        return false;
+    }
     if (newSize > size) {
         if (resize(newSize) != newSize) {
             error(errSyntaxError, -1, "Invalid 'size' parameter");
@@ -859,12 +858,8 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
     if (first + n < 0) {
         return false;
     }
-    if (chainEntriesLeft >= 0) {
-        if (n > chainEntriesLeft) {
-            chainBudgetHit = true;
-            return false;
-        }
-        chainEntriesLeft -= n;
+    if (!chargeChainEntries(first, n)) {
+        return false;
     }
     if (first + n > size) {
         if (resize(first + n) != size) {
@@ -1992,11 +1987,30 @@ int XRef::countSections(int maxSections, long long maxTokens)
     return pos > 0 ? 0 : static_cast<int>(seen.size());
 }
 
+bool XRef::chargeChainEntries(int first, int n, int newSize)
+{
+    // While readPrevChain runs, the entries an older section lists and the slots it adds to the
+    // table (a larger /Size or first + n) come out of one budget, checked before anything is
+    // allocated: a hostile older section cannot grow the table past it.
+    if (chainEntriesLeft < 0) {
+        return true;
+    }
+    const long long end = std::max(static_cast<long long>(first) + n, static_cast<long long>(newSize));
+    const long long cost = static_cast<long long>(n) + (end > size ? end - size : 0);
+    if (cost > chainEntriesLeft) {
+        chainBudgetHit = true;
+        return false;
+    }
+    chainEntriesLeft -= cost;
+    return true;
+}
+
 void XRef::readPrevChain(bool *wasReconstructed)
 {
     // DocSlurp: read every section older than the main one now, instead of when a missing entry
     // is first asked for, so the table no longer depends on fetch order. The walk keeps the
-    // bounds countSections uses: at most 1000 older sections, 10,000,000 entries across them, and
+    // bounds countSections uses: at most 1000 older sections, 10,000,000 entries across them (the
+    // entries listed plus the slots they add to the table), and
     // twice the file's bytes plus 64 KiB of parsing. Past a bound, or on a loop or a broken
     // older section where the lazy read rebuilt (a classic main table), the table is rebuilt from
     // a scan now: an open-time rebuild every run makes alike. A broken older section behind an

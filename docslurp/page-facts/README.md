@@ -520,8 +520,9 @@ chain) only when a missing entry is first asked for, so what an object resolves 
 on what a run fetched first. Doppler reads the whole chain when the document is opened, newest
 first, as the lazy read did (an entry is taken from the newest section that lists it):
 
-- **Bounds:** at most 1,000 older sections, 10,000,000 entries across them and twice the file's
-  bytes plus 64 KiB of parsing (the bounds `incrementalUpdates` uses). Past any of them, on a
+- **Bounds:** at most 1,000 older sections, 10,000,000 entries across them (entries listed plus
+  the slots a larger `/Size` or subsection adds to the table, checked before it is allocated)
+  and twice the file's bytes plus 64 KiB of parsing (the bounds `incrementalUpdates` uses). Past any of them, on a
   `/Prev` loop, or on a broken older section behind a classic table, the table is rebuilt from a
   scan at open: every run does the same, and the doc line says `xref: repaired`. A broken older
   section behind an xref stream ends the chain there, as the lazy read did.
