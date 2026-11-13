@@ -72,7 +72,7 @@ impl Default for LinkStyle {
             raster: RasterFormat::Webp,
             vector: VectorFormat::Svg,
             repeats: Repeats::Skip,
-            scans: ScanPages::Image,
+            scans: ScanPages::Copy,
         }
     }
 }

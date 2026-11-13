@@ -648,6 +648,131 @@ def multipage_pdf():
     )
 
 
+# --- issue 40: ruled grids, words inside images, image bytes per pixel ----------------------
+
+
+def _hlines(x0, x1, ys):
+    return "".join("%g %g m %g %g l S\n" % (x0, y, x1, y) for y in ys)
+
+
+def _vlines(xs, y0, y1):
+    return "".join("%g %g m %g %g l S\n" % (x, y0, x, y1) for x in xs)
+
+
+def _cells(xs, ys, label):
+    """A word in each cell of the grid with column lines <xs> and row lines <ys> (PDF space)."""
+    out = []
+    for r in range(len(ys) - 1):
+        for c in range(len(xs) - 1):
+            out.append("BT /F1 9 Tf %g %g Td (%s%d%d) Tj ET\n" % (xs[c] + 4, ys[r + 1] + 5, label, r, c))
+    return "".join(out)
+
+
+def grids_pdf():
+    """Ruled tables. Page 1: two tables, the second with a header cell merged across its three
+    columns (its column lines start below the header row). Page 2: two tables sharing a width,
+    told apart by the jump in rule spacing. Page 3: 72 small grids (the list holds 64).
+    Page 4: a table ruled only horizontally. Page 5: white rules only. Page 6: a table of
+    shaded row boxes with column rules."""
+    # page 1, table A: 4 x 4, PDF y 700..580; table B: header 450..430, body 430..370
+    ax, ay = [72, 172, 272, 372, 472], [700, 670, 640, 610, 580]
+    a = _hlines(72, 472, ay) + _vlines(ax, 580, 700) + _cells(ax, ay, "a")
+    bx, by = [72, 202, 332, 462], [450, 430, 410, 390, 370]
+    b = _hlines(72, 462, by) + _vlines([72, 462], 370, 450) + _vlines([202, 332], 370, 430)
+    b += "BT /F1 9 Tf 200 437 Td (Merged header) Tj ET\n" + _cells(bx, by[1:], "b")
+    # page 2: rules 20 apart, then a 70 point gap (under the 80 point row gap), then rules 20 apart
+    ys2 = [700, 680, 660, 640, 570, 550, 530, 510]
+    p2 = _hlines(72, 400, ys2) + _vlines([72, 236, 400], 640, 700) + _vlines([72, 236, 400], 510, 570) + words(4, y=300)
+    # page 3: 9 rows x 8 columns of 3-rule grids, 40 points wide, 85 points apart vertically
+    p3 = "".join(_hlines(20 + 72 * c, 60 + 72 * c, [770 - 85 * r, 765 - 85 * r, 760 - 85 * r]) for r in range(9) for c in range(8))
+    # page 4: booktabs-style rules, words in columns
+    p4 = _hlines(72, 472, [700, 680, 600]) + "".join("BT /F1 10 Tf %d %d Td (v%d) Tj ET\n" % (80 + 100 * (k % 4), 665 - 15 * (k // 4), k) for k in range(16))
+    # page 5: a white grid (separators on a coloured page): not rules a table reads
+    p5 = "1 1 1 RG\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 272, 472], 610, 700) + words(4, y=300)
+    # page 6: shaded row boxes (each a filled rectangle) with two column rules
+    p6 = "0.9 g\n" + "".join("72 %d 400 18 re f\n" % (700 - 30 * k) for k in range(4)) + "0 g\n" + _vlines([180, 290], 610, 718) + words(4, y=300)
+    return doc([{"content": "0.5 w\n" + a + b}, {"content": "0.5 w\n" + p2}, {"content": "0.5 w\n" + p3}, {"content": "0.5 w\n" + p4}, {"content": "0.5 w\n" + p5}, {"content": "0.5 w\n" + p6}])
+
+
+def _noise(n, seed=7):
+    """<n> deterministic bytes standing in for compressed image data (no '{', which doc() fills)."""
+    out = bytearray()
+    x = seed
+    while len(out) < n:
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        b = (x >> 16) & 0xFF
+        out.append(b if b != 0x7B else 0x7C)
+    return bytes(out)
+
+
+def image_words_pdf():
+    """Page 1: a 300 dpi JPEG scan under an invisible OCR layer of 300 words. Page 2: a photo
+    with a 6-word caption drawn over it and 20 words below it. Page 3: a JPEG scan next to a
+    flat chart (Flate). Page 4: an image whose /Length is an indirect object. Page 5: an inline
+    image (no bytes per pixel)."""
+    import zlib
+
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Scan {0} 0 R /Photo {1} 0 R /Jpeg {2} 0 R /Chart {3} 0 R /Ind {4} 0 R >> >>"
+    scan = image("/DCTDecode", 2550, 3300, "/DeviceRGB", 8)
+    photo = stream("/Type /XObject /Subtype /Image /Width 600 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(600 * 400 // 4))
+    jpeg = stream("/Type /XObject /Subtype /Image /Width 800 /Height 600 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(800 * 600 * 3 // 8, seed=11))
+    chart = stream("/Type /XObject /Subtype /Image /Width 800 /Height 600 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode", zlib.compress(b"\xff" * (800 * 600 * 3), 9))
+    data = _noise(5000, seed=3)
+    indirect = "<< /Type /XObject /Subtype /Image /Width 100 /Height 50 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length {5} 0 R >>\nstream\n" + data.decode("latin-1") + "\nendstream"
+    caption = "BT /F1 10 Tf 80 410 Td (Sunset over the harbour at dusk) Tj ET\n"
+    return doc(
+        [
+            {"content": "q 612 0 0 792 0 0 cm /Scan Do Q\n" + words(300, invisible=True), "resources": res},
+            {"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + caption + words(20, y=300), "resources": res},
+            {"content": "q 250 0 0 188 50 500 cm /Jpeg Do Q\nq 250 0 0 188 320 500 cm /Chart Do Q\n", "resources": res},
+            {"content": "q 200 0 0 100 72 500 cm /Ind Do Q\n", "resources": res},
+            {"content": "q 100 0 0 100 72 500 cm BI /W 2 /H 2 /CS /G /BPC 8 ID \x00\x80\x80\xff EI Q\n", "resources": res},
+        ],
+        extras=[scan, photo, jpeg, chart, indirect, str(len(data))],
+    )
+
+
+def _raw_image(length_entry, data, w=100, h=50):
+    """An image XObject body with a /Length entry as given (or none) over <data>."""
+    return "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode %s >>\nstream\n" % (w, h, length_entry) + data.decode("latin-1") + "\nendstream"
+
+
+def lengths_pdf(break_xref=False):
+    """One image per page, 5000 bytes each, under /Length: 5000; 4995 (short); missing; 0;
+    10^12; 5005 (past endstream); 5000 by reference. With <break_xref>, a first page draws a
+    form XObject whose cross-reference offset is wrong, so a whole run rebuilds the table before
+    the other pages are read and a single-page run does not."""
+    data = _noise(5000, seed=5)
+    entries = ["/Length 5000", "/Length 4995", "", "/Length 0", "/Length 1000000000000", "/Length 5005", "/Length {7} 0 R"]
+    names = " ".join("/I%d {%d} 0 R" % (k, k) for k in range(len(entries)))
+    res = "<< /XObject << %s /Bad {8} 0 R >> >>" % names
+    pages = [{"content": "q 200 0 0 100 72 500 cm /I%d Do Q\n" % k, "resources": res} for k in range(len(entries))]
+    if break_xref:
+        pages.insert(0, {"content": "/Bad Do\n", "resources": res})
+    extras = [_raw_image(e, data) for e in entries] + ["5000", stream("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", "0 0 5 5 re f")]
+    pdf = doc(pages, extras=extras)
+    if break_xref:
+        # point the form's xref entry at the wrong place (the start of the file's header)
+        num = 4 + 2 * len(pages) + 8
+        xref = pdf.rindex(b"xref\n0 ")
+        at = xref + len(b"xref\n0 %d\n" % (int(pdf[xref + 7 : pdf.index(b"\n", xref + 5)]),)) + 20 * num
+        pdf = pdf[:at] + b"%010d" % 3 + pdf[at + 10 :]
+    return pdf
+
+
+def grid_caps_pdf():
+    """Page 1: a word of size 5000 (outside the body-size bins) and a ruled table. Page 2: 256
+    one-letter words of distinct large sizes, then 200 words of 10 points and the table: the
+    body size is still 10. Page 3: 4,100 horizontal rules (the grid search takes 4,096). Page 4:
+    20,005 tiny fills (the page's rule cap), then the table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 272, 472], 610, 700)
+    big = "BT /F1 5000 Tf 0 0 Td (x) Tj ET\n"
+    decoys = "".join("BT /F1 %g Tf 10 10 Td 3 Tr (x) Tj ET\n" % (100 + 0.5 * k) for k in range(256))
+    many = "0.5 w\n" + "".join("72 %.2f m 472 %.2f l S\n" % (780 - 0.18 * k, 780 - 0.18 * k) for k in range(4100))
+    tiny = "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": big + words(20, y=300) + table}, {"content": decoys + words(200, y=500) + table}, {"content": many}, {"content": tiny + table}])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -670,4 +795,9 @@ ALL = {
     "table_then_stream": lambda: xref_stream_pdf("table-then-stream"),
     "clipped_text": clipped_text_pdf,
     "copy_class": copy_class_pdf,
+    "grids": grids_pdf,
+    "image_words": image_words_pdf,
+    "lengths": lengths_pdf,
+    "lengths_rebuilt": lambda: lengths_pdf(break_xref=True),
+    "grid_caps": grid_caps_pdf,
 }

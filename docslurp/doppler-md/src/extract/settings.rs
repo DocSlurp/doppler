@@ -32,6 +32,13 @@ pub enum RasterFormat {
 /// What becomes of a full-page scan (`--scan-pages`; the producer's `scan=` on `<page>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanPages {
+    /// the default: only a scan whose own bytes can be copied (one upright image the producer
+    /// marks `copyable="1"`, `copy="jpeg"` or `copy="bilevel"`) is a page scan, as in `image`;
+    /// any other scan is placed as the page's backdrop, with no marker and no file (its page
+    /// image comes from the host's page rendering). Nothing placed as a scan is decoded or
+    /// rendered; an image the producer does not make a scan (a stencil mask, a page whose image
+    /// list was truncated) is placed, and may be rendered, as any picture
+    Copy,
     /// the page's Markdown starts with `![page N scan](link)`; the file is the scan's own
     /// pixels where its dictionary allows (a `.jpg` copy, a bilevel `.png`, else decoded once),
     /// rendered otherwise (tiles, layers, a turned image)
@@ -45,6 +52,7 @@ pub enum ScanPages {
 impl ScanPages {
     pub fn as_str(self) -> &'static str {
         match self {
+            ScanPages::Copy => "copy",
             ScanPages::Image => "image",
             ScanPages::Skip => "skip",
             ScanPages::Render => "render",
@@ -150,7 +158,7 @@ impl Default for Settings {
             batch_pages: 64,
             doc_max_bytes: 4 << 30,
             deadline: None,
-            scan_pages: ScanPages::Image,
+            scan_pages: ScanPages::Copy,
             scan_dpi: 200,
             scan_max_dpi: 300,
             scan_max: 1000,
@@ -311,10 +319,11 @@ impl Settings {
             "--images-deadline" => self.deadline = Some(Duration::from_secs(int(v, 1, 604_800).ok_or_else(bad)?)),
             "--scan-pages" => {
                 self.scan_pages = match v {
+                    "copy" => ScanPages::Copy,
                     "image" => ScanPages::Image,
                     "skip" => ScanPages::Skip,
                     "render" => ScanPages::Render,
-                    _ => return Err(format!("{name} takes image, skip or render, not {v:?}")),
+                    _ => return Err(format!("{name} takes copy, image, skip or render, not {v:?}")),
                 }
             }
             "--scan-dpi" => self.scan_dpi = int(v, 36, 300).ok_or_else(bad)? as u32,
@@ -497,7 +506,7 @@ mod tests {
         );
         assert_eq!(
             (s.scan_pages, s.scan_dpi, s.scan_max_dpi, s.scan_max, s.scan_max_bytes),
-            (ScanPages::Image, 200, 300, 1000, 1 << 30)
+            (ScanPages::Copy, 200, 300, 1000, 1 << 30)
         );
     }
 
@@ -650,7 +659,8 @@ mod tests {
             ("--images-batch-pages", "0"),
             ("--images-doc-max-bytes", "0"),
             ("--images-deadline", "0"),
-            ("--scan-pages", "copy"),
+            ("--scan-pages", "decode"),
+            ("--scan-pages", "Copy"),
             ("--scan-dpi", "301"),
             ("--scan-dpi", "35"),
             ("--scan-max-dpi", "0"),

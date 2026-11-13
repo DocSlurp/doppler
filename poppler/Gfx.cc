@@ -4237,7 +4237,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
         } else {
             if (ocState && out->needImageGeometry()) {
                 Object refObj = res->lookupXObjectNF(name);
-                reportImageGeometry(obj1StreamDict, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
+                reportImageGeometry(obj1StreamDict, obj1Stream, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
             }
             bool maskGeometry = false;
             if (out->needImageMaskGeometry()) {
@@ -4345,10 +4345,67 @@ bool Gfx::factsOcIsVisible(const Object &oc)
     return visible;
 }
 
+// DocSlurp page facts: the encoded bytes of an image XObject's stream, never decoded: its
+// declared /Length, only when that is the file's own value and the stream's data ends there
+// (the bytes after it, past at most 32 whitespace bytes, are "endstream"); -1 otherwise.
+//
+// Not the length the parser delimited: that depends on whether the cross-reference table was
+// rebuilt earlier in the run (a rebuilt table ends a stream at the first endstream after its
+// start; an intact one follows /Length and scans forward when it is wrong), so a page's facts
+// would depend on which pages were read before it. Here: the dictionary's /Length must be a
+// non-negative int (a value of 2 GiB or more parses as a 64-bit integer: refused) within the
+// file, and "endstream" must follow the data it spans. A wrong /Length fails the test whether
+// or not the table was rebuilt. (An indirect /Length is resolved through the table, so after a
+// rebuild it can name another body of its object, like any other indirect object: page facts
+// flag pages read after a rebuild with xref-repaired-earlier.)
+static long long encodedStreamBytes(Stream *str, XRef *xref)
+{
+    BaseStream *base = str ? str->getBaseStream() : nullptr;
+    BaseStream *file = xref ? xref->getBaseStream() : nullptr;
+    if (!base || !file || file == base) {
+        return -1;
+    }
+    Dict *dict = str->getDict();
+    if (!dict) {
+        return -1;
+    }
+    const Object &nf = dict->lookupNF("Length");
+    const Object length = nf.isRef() ? dict->lookup("Length") : nf.copy();
+    if (!length.isInt() || length.getInt() < 0) {
+        return -1;
+    }
+    const Goffset declared = length.getInt();
+    const Goffset start = base->getStart(), fileLength = file->getLength();
+    if (start < 0 || fileLength < start || declared > fileLength - start) {
+        return -1;
+    }
+    static constexpr char tag[] = "endstream";
+    static constexpr int maxSpace = 32, tagLength = sizeof(tag) - 1;
+    const Goffset room = std::min<Goffset>(fileLength - start - declared, maxSpace + tagLength);
+    if (room < tagLength) {
+        return -1;
+    }
+    std::unique_ptr<Stream> tail = file->makeSubStream(start + declared, true, room, Object::null());
+    if (!tail || !tail->rewind()) {
+        return -1;
+    }
+    char buf[maxSpace + tagLength];
+    const int n = tail->doGetChars(static_cast<int>(room), reinterpret_cast<unsigned char *>(buf));
+    tail->close();
+    int i = 0;
+    while (i < n && i < maxSpace && (buf[i] == ' ' || buf[i] == '\r' || buf[i] == '\n' || buf[i] == '\t' || buf[i] == '\f' || buf[i] == '\0')) {
+        ++i;
+    }
+    if (n - i < tagLength || memcmp(buf + i, tag, tagLength) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(declared);
+}
+
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
 // stream dictionary is read: never the image data, so a hostile image costs a few lookups, and
 // with the device's ImageInfoCache an image XObject's dictionary is read once per document.
-void Gfx::reportImageGeometry(Dict *dict, Ref ref)
+void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 {
     const Object &objOC = dict->lookupNF("OC");
     if (!factsOcIsVisible(objOC)) {
@@ -4390,6 +4447,7 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         image.height = size("Height", "H");
         if (image.width >= 1 && image.height >= 1) {
             image.info = factsImageInfo(dict, false, nullptr, &image.limited);
+            image.info.encodedBytes = image.info.external ? -1 : encodedStreamBytes(str, xref);
         }
         if (cacheable) {
             cache->store(ref, xref, image);

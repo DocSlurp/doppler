@@ -210,6 +210,7 @@ private:
     GfxOpTally tally;
     int emitted = 0, failed = 0;
     XRef *docXref = nullptr; // the document's, for xref-repaired
+    unsigned docReconstructions = 0; // xref rebuilds once the doc line was read, for xref-repaired-earlier
     // box pairs the figure-cluster merge (TextPage::getGraphics) may still compare over the run;
     // past it a page's clusters stay as merged so far, with drawing-limit
     static constexpr size_t maxGraphicsComparisons = size_t(1) << 27;

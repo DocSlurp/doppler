@@ -346,7 +346,7 @@ pub struct Note {
     pub degraded: bool,
     /// part of its page's full-page scan (the producer's `scan=`): how the scan's file is made.
     /// Set whatever `--scan-pages` says; with `skip` such an image keeps its own placement and
-    /// is not extracted
+    /// is not extracted, with `copy` a scan that is not copied is a background (not extracted)
     pub scan: Option<ScanSource>,
 }
 
@@ -374,7 +374,9 @@ pub struct Figure {
 /// A page the producer calls a scan (`scan=`, `scanImage=`) gets [`Fate::PageScan`] for its
 /// scan image first (unless `scans` is [`ScanPages::Skip`]): a tiled or layered scan groups the
 /// page's other images of at least 1% of the page with it, its box their union. The caller
-/// puts the scan's marker at the top of the page.
+/// puts the scan's marker at the top of the page. With [`ScanPages::Copy`] only a scan copied
+/// as its own bytes ([`ScanSource::Jpeg`], [`ScanSource::Bilevel`]) is one; the images of any
+/// other scan are [`Fate::Background`].
 #[allow(clippy::too_many_arguments)]
 pub fn place(
     page: &mut Page,
@@ -418,7 +420,17 @@ pub fn place(
         };
         Some((k, members, source))
     });
-    let placed_scan = scans != ScanPages::Skip;
+    // `copy` (the default) keeps a page scan only when its file is the scan's own bytes (a JPEG
+    // copied unchanged, 1-bit samples as PNG): this is final now, from the producer's
+    // `copyable=`/`copy=`, so the links are. Any other scan is the page's backdrop, unmarked
+    // and not extracted (the host's page rendering pictures the page)
+    let copied = scan.as_ref().is_some_and(|(_, _, src)| matches!(src, ScanSource::Jpeg | ScanSource::Bilevel));
+    let placed_scan = match scans {
+        ScanPages::Skip => false,
+        ScanPages::Copy => copied,
+        ScanPages::Image | ScanPages::Render => true,
+    };
+    let backdrop_scan = scans == ScanPages::Copy && !copied;
     let mut figures = Vec::new();
     let mut notes: Vec<Note> = Vec::with_capacity(images.len());
     let area = pmax(page.width * page.height, 1.0);
@@ -436,6 +448,8 @@ pub fn place(
         // every page, which is not a watermark
         let fate = if let Some((k, _, _)) = in_scan.filter(|_| placed_scan) {
             Some(if *k == i { Fate::PageScan } else { Fate::Grouped })
+        } else if in_scan.is_some() && backdrop_scan {
+            Some(Fate::Background)
         } else if w * h >= p.image_background_share * area && kept_text {
             Some(Fate::Background)
         } else if watermarks.get(i).copied().unwrap_or(false) {
