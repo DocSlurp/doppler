@@ -471,6 +471,19 @@ pub fn extract(
         }
         batches.push(Batch { pages, status, cut_page: if status == "ok" { None } else { cut_page } });
     }
+    if let Some(prev) = previous {
+        // a resume (narrowed by --images-resume-pages, or with another --images-batch-pages)
+        // keeps the earlier records of the batches it did not run again: those with no page
+        // retried now. The lines stay in page order; the end line counts them all.
+        // (the jobs are sorted by page)
+        let retried = |(a, b): (u32, u32)| {
+            let i = jobs.partition_point(|(j, _)| j.page < a);
+            jobs.get(i).is_some_and(|(j, _)| j.page <= b)
+        };
+        let kept = prev.batches.iter().filter(|b| !retried(b.pages));
+        batches.extend(kept.cloned());
+        batches.sort_by_key(|b| b.pages);
+    }
     let complete = batches.iter().all(|b| b.status == "ok") && !run.entries.iter().any(Entry::stopped);
     if let (Some(b), Some(a)) = (cpu_before, children_cpu_ms()) {
         run.timing.children_ms = Some((a.0.saturating_sub(b.0), a.1.saturating_sub(b.1)));

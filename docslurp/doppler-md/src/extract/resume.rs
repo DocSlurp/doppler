@@ -11,12 +11,13 @@
 //! document ceilings less what DIR already holds; every other entry is kept as it was. Files go
 //! to the paths the Markdown already links (so the Markdown never changes), are created new
 //! (an existing file is never replaced) and the manifest is replaced atomically, with `resumes`
-//! one more. A resume with nothing to do changes nothing.
+//! one more; the earlier batch lines of batches with no retried page are kept. A resume with
+//! nothing to do changes nothing.
 
 use std::collections::HashMap;
 
 use super::manifest::{Kind, Line, NAME, Reader};
-use super::{Entry, Status};
+use super::{Batch, Entry, STOPS, Status};
 
 /// The reasons an image may be extracted by a resume: its batch stopped (a budget, a time
 /// limit, the abort rule), not anything about the image itself.
@@ -47,9 +48,11 @@ const REASONS: [&str; 16] = [
 const FORMATS: [&str; 4] = ["webp", "png", "svg", "jpg"];
 const SOURCES: [&str; 3] = ["render", "copy", "decode"];
 
-/// An earlier run's manifest: each image's entry and path, by id, and its resume count.
+/// An earlier run's manifest: each image's entry and path, by id, its batch lines (a resume
+/// carries forward those of batches it does not run again) and its resume count.
 pub struct Previous {
     pub(super) entries: HashMap<String, (Entry, Option<String>)>,
+    pub(super) batches: Vec<Batch>,
     pub resumes: u64,
 }
 
@@ -64,6 +67,7 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
     let mut lines = Reader::new(r);
     let mut resumes = 0;
     let mut entries = HashMap::new();
+    let mut batches = Vec::new();
     let bad = |id: &str, what: &str| format!("{NAME}: image {id:?}: {what}");
     // the first problem with a line's contents is reported once the whole file has been read
     // and checked (end line, counts, hash): a damaged file is refused as damaged
@@ -124,7 +128,28 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                         return Err(bad(id, "listed twice"));
                     }
                 }
-                Kind::Batch | Kind::End => {}
+                Kind::Batch => {
+                    let bad = || format!("{NAME}: a bad batch line");
+                    let page =
+                        |v: &serde_json::Value| v.as_u64().and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0);
+                    let pages = match im["pages"].as_array().map(Vec::as_slice) {
+                        Some([a, b]) => match (page(a), page(b)) {
+                            (Some(a), Some(b)) if a <= b => (a, b),
+                            _ => return Err(bad()),
+                        },
+                        _ => return Err(bad()),
+                    };
+                    let status = im["status"]
+                        .as_str()
+                        .and_then(|v| if v == "ok" { Some("ok") } else { known(&STOPS, v) })
+                        .ok_or_else(bad)?;
+                    let cut_page = match &im["cut_page"] {
+                        serde_json::Value::Null => None,
+                        v => Some(page(v).ok_or_else(bad)?),
+                    };
+                    batches.push(Batch { pages, status, cut_page });
+                }
+                Kind::End => {}
             }
             Ok(())
         })();
@@ -132,7 +157,7 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
     }
     match first {
         Some(e) => Err(e),
-        None => Ok(Previous { entries, resumes }),
+        None => Ok(Previous { entries, batches, resumes }),
     }
 }
 
@@ -193,6 +218,9 @@ mod tests {
         assert!(p.entries["p2.1"].0.resumable());
         assert!(!p.entries["p3.1"].0.resumable());
         assert_eq!(p.entries["p2.1"].0.format, None);
+        // the batch lines are kept (a resume carries forward those it does not run again)
+        let b: Vec<_> = p.batches.iter().map(|b| (b.pages, b.status, b.cut_page)).collect();
+        assert_eq!(b, [((1, 64), "budget", Some(2))]);
     }
 
     #[test]
@@ -216,5 +244,17 @@ mod tests {
         let twice = rehash(&ok.replace("\"p3.1\"", "\"p2.1\""));
         assert!(read(twice.as_bytes(), "aa", "ss").err().unwrap().contains("twice"));
         assert!(read(rehash(&ok).as_bytes(), "aa", "ss").is_ok());
+        // a batch line this program would not write
+        let batch = "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2";
+        for bad in [
+            "\"pages\":[2,1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[0,64],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"forged\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":\"2\"",
+        ] {
+            let e = read(rehash(&ok.replace(batch, bad)).as_bytes(), "aa", "ss").err().unwrap();
+            assert!(e.contains("batch"), "{bad}: {e}");
+        }
     }
 }

@@ -527,7 +527,7 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`); an encode that ends past it (or past `--images-deadline`) is dropped and its image is `timeout` (`deadline`), so one encode overruns by at most its own time |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
-| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; exit 5 while any image is left |
+| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; earlier batch lines outside the range are kept; a range outside `--images-pages` is refused (exit 2); exit 5 while any image is left |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 | `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
 | `--scan-dpi N` | `200` | rendered scans (tiled, layered, turned, not copyable, `--scan-pages render`), 36..300 |
@@ -619,10 +619,12 @@ size, time limits or confinement), `link_prefix`, `pages` (`--images-pages` as `
 when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`,
 `batch_pages`, `deadline_ms` (the effective `--images-deadline`) and `resumes` (how many
 `--images-resume` runs rewrote it). Then one **image** line per image (below), then one
-**batch** line per batch of this run (a resume lists its own): `pages` `[A,B]`, `status` `ok`,
+**batch** line per batch, in page order (a resume lists its own, and keeps the earlier lines of
+the batches it did not run again: those with no page it retried; with another
+`--images-batch-pages`, an earlier line may overlap a resume's own): `pages` `[A,B]`, `status` `ok`,
 `budget`, `doc_budget`, `timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the
 first page with an image the batch did not get to (null for `ok`). The **end** line, last:
-`complete` (every batch finished and no image was left by a stopped batch), `resumable` (some
+`complete` (every batch line `ok` and no image was left by a stopped batch), `resumable` (some
 image may still be extracted by a resume), `totals`, then `images` and `batches` (the number of
 image and batch lines) and `sha256`, the SHA-256 (lowercase hex) of every byte of the file
 before the end line. A reader refuses a manifest whose first line is not a `doppler-images/3`
@@ -701,8 +703,8 @@ document ceilings less the bytes DIR holds; every other entry stays as it was. F
 paths the Markdown already links, so the Markdown (written to stdout again when converting)
 never changes; they are created new, never replacing a file (one in the way is a hard
 failure). The manifest is then written whole to a temporary name, synced, and renamed over the
-old one in one step, with each entry's new status, the resume's own batches and `resumes` one
-more. Exit status **0** when nothing is left (`complete`), **5** when the resume
+old one in one step, with each entry's new status, the resume's own batches beside the
+earlier batch lines it did not replace, and `resumes` one more. Exit status **0** when nothing is left (`complete`), **5** when the resume
 stopped too; a resume with nothing to do changes nothing and exits 0 (5 if the manifest still
 lists images a stopped batch left that are not resumable, such as `renderer`). A hard failure
 (exit **6**) keeps the old manifest and every file that was there, and removes only the files
@@ -714,7 +716,11 @@ figure whose pixels repeat one extracted earlier gets its own file rather than
 the files of entries it keeps (a host that keeps them in object storage hands back only
 the manifest), the document ceilings count the bytes the manifest records for them, and the
 folder ends up with only the files this resume wrote, beside the replaced manifest.
-`--images-resume-pages A-B` limits one resume to the resumable images of those pages.
+`--images-resume-pages A-B` limits one resume to the resumable images of those pages; the
+manifest keeps the earlier batch lines (`pages`, `status`, `cut_page`) of every batch it did not
+retry a page of, so a host driving a series of range resumes keeps the whole record, and the end
+line's `batches`, `totals.batches`, `totals.batches_cut` and `complete` count those lines. A range
+that does not meet `--images-pages` (when given) is a usage error (exit 2).
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and

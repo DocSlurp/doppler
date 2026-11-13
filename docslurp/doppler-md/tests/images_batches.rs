@@ -2,7 +2,8 @@
 //! with its own budgets; partial results kept (exit 5), hard failures (exit 6), the document
 //! ceilings, stdout closed before extraction, and `--page-markers` through pdftotext. Needs the
 //! DocSlurp pdftotext with `-images` and python3 for the stand-in renderer
-//! (tests/fixtures/fake_pdfregions.py); skipped (passing) without them.
+//! (tests/fixtures/fake_pdfregions.py). Without them each test prints a `skipped:` line to stderr
+//! and passes, unless `DOPPLER_REQUIRE_INTEGRATION=1`, which makes a missing toolchain fail.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -100,7 +101,13 @@ fn make_pdf(n: usize) -> Vec<u8> {
 
 fn setup(tag: &str, pages: usize) -> Option<(PathBuf, Scratch, String)> {
     let Some(p) = pdftotext() else {
-        eprintln!("skipped: needs the DocSlurp pdftotext with -images and python3");
+        // CI that builds the toolchain sets DOPPLER_REQUIRE_INTEGRATION=1: a missing one fails
+        // there instead of passing silently
+        let why = "needs the DocSlurp pdftotext with -images (PDFTOTEXT, else ../../build/utils/pdftotext) and python3";
+        if std::env::var_os("DOPPLER_REQUIRE_INTEGRATION").is_some_and(|v| v == "1") {
+            panic!("{tag}: DOPPLER_REQUIRE_INTEGRATION=1 but this test {why}");
+        }
+        eprintln!("skipped: {tag}: {why}");
         return None;
     };
     let d = std::env::temp_dir().join(format!("images-batches-{tag}-{}", std::process::id()));
@@ -648,6 +655,50 @@ fn a_resume_page_range_retries_only_its_pages() {
     for pg in [2, 6] {
         assert_eq!(entry(&m, pg)["resumable"], true, "{pg}");
     }
+    // the batches it did not run again keep their records, in page order: [1,2] and [5,6] as
+    // the first run left them, beside this resume's own (one 64-page batch: the default)
+    let pages = |m: &serde_json::Value| -> Vec<(u64, u64)> {
+        m["batches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| (b["pages"][0].as_u64().unwrap(), b["pages"][1].as_u64().unwrap()))
+            .collect()
+    };
+    assert_eq!(pages(&m), [(1, 2), (1, 64), (5, 6)], "{m}");
+    assert_eq!(batches(&m), [("budget".to_string(), Some(2)), ok("ok"), ("budget".to_string(), Some(6))]);
+    assert_eq!((&m["totals"]["batches"], &m["totals"]["batches_cut"]), (&3.into(), &2.into()));
+    // a second narrowed resume still keeps the first run's [1,2]
+    let r = run(
+        &p,
+        &["--images-resume", part.to_str().unwrap(), "--images-resume-pages", "5-6", "--images-batch-pages", "2", &pdf],
+        &[],
+    );
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&part);
+    assert_eq!(status(&m, 6).0, "extracted");
+    assert_eq!(entry(&m, 2)["resumable"], true);
+    // ([1,64] held page 6, so this resume's [5,6] replaces it)
+    assert_eq!(pages(&m), [(1, 2), (5, 6)], "{m}");
+    assert_eq!(batches(&m), [("budget".to_string(), Some(2)), ok("ok")]);
+    assert_eq!(
+        (&m["totals"]["batches"], &m["totals"]["batches_cut"], &m["resumes"]),
+        (&2.into(), &1.into(), &2.into())
+    );
+    // a range that misses --images-pages is a usage error, and nothing changes
+    let before = std::fs::read(part.join("manifest.jsonl")).unwrap();
+    let r = run(
+        &p,
+        &["--images-resume", part.to_str().unwrap(), "--images-pages", "1-3", "--images-resume-pages", "5-6", &pdf],
+        &[],
+    );
+    assert_eq!(r.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&r.stderr).contains("outside --images-pages"),
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), before);
     // a range with nothing resumable changes nothing (still 5: pages 2 and 6 remain)
     let before = std::fs::read(part.join("manifest.jsonl")).unwrap();
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-resume-pages", "3-5", &pdf], &[]);
@@ -658,8 +709,12 @@ fn a_resume_page_range_retries_only_its_pages() {
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = manifest(&part);
-    assert_eq!((&m["complete"], &m["resumes"]), (&true.into(), &2.into()));
+    assert_eq!((&m["complete"], &m["resumes"]), (&true.into(), &3.into()));
     assert_eq!(m["totals"]["extracted"], 6);
+    // every line ok now: this resume's [1,64] replaces [1,2] (it retried page 2); [5,6] stays
+    assert_eq!(pages(&m), [(1, 64), (5, 6)], "{m}");
+    assert_eq!(batches(&m), [ok("ok"), ok("ok")]);
+    assert_eq!(m["totals"]["batches_cut"], 0);
     // --images-resume-pages without --images-resume is a usage error
     let r = run(&p, &["--images-dir", s.0.join("x").to_str().unwrap(), "--images-resume-pages", "1", &pdf], &[]);
     assert_eq!(r.status.code(), Some(2));
