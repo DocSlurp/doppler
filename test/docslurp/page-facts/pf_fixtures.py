@@ -213,6 +213,25 @@ def vectors_pdf():
     )
 
 
+
+def bars_pdf():
+    """Bar charts drawn only with filled boxes (doppler#38), and box-heavy pages that are not charts."""
+    axis = "0 g 0.5 w 100 300 m 400 300 l S 100 300 m 100 520 l S 96 400 m 100 400 l S\n"
+    vertical = "0.16 0.62 0.56 rg 110 300 30 80 re f 160 300 30 130 re f 210 300 30 50 re f 260 300 30 170 re f\n" + axis
+    haxis = "0 g 0.5 w 100 380 m 100 540 l S 100 380 m 420 380 l S\n"
+    horizontal = "0.48 0.38 1 rg 100 400 200 20 re f 100 440 120 20 re f 100 480 280 20 re f\n" + haxis
+    # a shaded table: cells of different widths on one row, each holding words, on a rule
+    table = "0 g 0.5 w 72 300 m 540 300 l S\n0.85 0.85 0.85 rg 72 300 128 20 re f 200 300 200 20 re f 400 300 140 20 re f\n"
+    table += "0 g " + "".join("BT /F1 10 Tf %d 306 Td (%s) Tj ET\n" % (x, w) for x, w in ((80, "Region"), (210, "Revenue"), (410, "Growth")))
+    # zebra stripes: rows of one length on a shared left edge, beside a rule
+    zebra = "0 g 0.5 w 72 200 m 72 560 l S\n0.95 0.95 0.95 rg " + "".join("72 %d 468 15 re f " % (200 + 30 * k) for k in range(6)) + "\n"
+    # highlighted text: boxes behind words, on a rule
+    highlight = "0 g 0.5 w 72 380 m 540 380 l S\n1 1 0 rg 72 380 78 20 re f 160 380 100 30 re f 270 380 30 10 re f\n0 g "
+    highlight += "".join("BT /F1 10 Tf %d 385 Td (%s) Tj ET\n" % (x, w) for x, w in ((75, "launch"), (165, "expansion"), (272, "go")))
+    # cost: 5000 thin boxes on one baseline, heights varying, with an axis (more than the 4000 boxes a page is read for)
+    many = "0.2 0.4 0.8 rg " + "".join("%.2f 100 0.1 %d re f\n" % (60 + 0.1 * k, 1 + k % 300) for k in range(5000)) + "0 g 0.5 w 60 100 m 560 100 l S\n"
+    return doc([{"content": vertical}, {"content": horizontal}, {"content": table}, {"content": zebra}, {"content": highlight}, {"content": many}])
+
 # --- E forms ------------------------------------------------------------------------
 
 
@@ -655,6 +674,7 @@ ALL = {
     "fonts": fonts_pdf,
     "images": images_pdf,
     "vectors": vectors_pdf,
+    "bars": bars_pdf,
     "forms": forms_pdf,
     "forms_xfa_static": lambda: forms_pdf("static"),
     "forms_xfa_dynamic": lambda: forms_pdf("dynamic"),

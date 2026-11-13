@@ -1016,6 +1016,197 @@ struct FormCache
     bool exhausted = false;
 };
 
+
+// Bar charts drawn only with filled boxes (DocSlurp/doppler#38). The producer records them as box rules, never as drawing
+// cells, so getGraphics() never sees them. The same rule as doppler-md's vector::bar_regions: at least kMinBars filled boxes on
+// one baseline (a shared bottom edge, or left edge for horizontal bars, to half a point), each within kMaxBarGap bar widths of
+// the next, lengths that differ (kMinBarSpread: shaded rows and zebra stripes are one length), few holding words
+// (kMaxBarTextShare, a bar's centre on the text coverage grid: shaded cells and highlights hold them), and a stroked rule
+// touching the baseline (an axis or a tick). White fills, boxes over a quarter of the page and the header and footer bands are
+// never bars. A run takes in the boxes stacked on it; runs that overlap are one cluster. At most kMaxBarBoxes boxes a page;
+// every comparison is charged to `budget` (the drawing budget getGraphics uses), and none is made once it is spent.
+constexpr size_t kMaxBarBoxes = 4000;
+constexpr size_t kMinBars = 3;
+constexpr double kMaxBarGap = 3.0;
+constexpr double kMinBarSpread = 1.15;
+constexpr double kMaxBarTextShare = 0.34;
+constexpr double kBarFurnitureBand = 0.09;
+constexpr double kBarRuleReach = 12; // points: an axis or tick a little way off the bars is still the chart's
+
+struct BarBox
+{
+    double x0, y0, x1, y1;
+};
+
+bool spend(size_t *budget, size_t n, bool *hit)
+{
+    if (!budget) {
+        return true;
+    }
+    if (*budget < n) {
+        *budget = 0;
+        if (hit) {
+            *hit = true;
+        }
+        return false;
+    }
+    *budget -= n;
+    return true;
+}
+
+std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const CoverageGrid &textGrid, double pageW, double pageH, size_t *budget, bool *budgetHit)
+{
+    std::vector<TextGraphic> out;
+    if (!(pageW > 0) || !(pageH > 0) || !std::isfinite(pageW * pageH)) {
+        return out;
+    }
+    const double area = pageW * pageH, band = kBarFurnitureBand * pageH;
+    std::vector<BarBox> filled;
+    std::vector<BarBox> strokes;
+    for (const TextRule &r : rules) {
+        if (r.imageMask) {
+            continue;
+        }
+        const BarBox b { r.xMin, r.yMin, r.xMax, r.yMax };
+        if (!r.box) {
+            strokes.push_back(b);
+            continue;
+        }
+        const double w = b.x1 - b.x0, h = b.y1 - b.y0;
+        const bool white = r.r >= 0.999 && r.g >= 0.999 && r.b >= 0.999;
+        if (white || !std::isfinite(w) || !std::isfinite(h) || !(w > 0) || !(h > 0) || w * h >= 0.25 * area || b.y1 <= band || b.y0 >= pageH - band) {
+            continue;
+        }
+        if (filled.size() < kMaxBarBoxes) {
+            filled.push_back(b);
+        }
+    }
+    if (filled.size() < kMinBars || !spend(budget, 2 * filled.size(), budgetHit)) {
+        return out;
+    }
+    std::vector<BarBox> found;
+    auto consider = [&](const std::vector<BarBox> &run, bool vertical) {
+        if (run.size() < kMinBars || !spend(budget, run.size() + strokes.size(), budgetHit)) {
+            return;
+        }
+        double lo = INFINITY, hi = 0;
+        size_t withText = 0;
+        BarBox u { INFINITY, INFINITY, -INFINITY, -INFINITY };
+        for (const BarBox &b : run) {
+            const double len = vertical ? b.y1 - b.y0 : b.x1 - b.x0;
+            lo = std::min(lo, len);
+            hi = std::max(hi, len);
+            if (textGrid.test((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, pageW, pageH)) {
+                ++withText;
+            }
+            u = { std::min(u.x0, b.x0), std::min(u.y0, b.y0), std::max(u.x1, b.x1), std::max(u.y1, b.y1) };
+        }
+        if (!(lo > 0) || hi < kMinBarSpread * lo || double(withText) > kMaxBarTextShare * double(run.size())) {
+            return;
+        }
+        const double base = vertical ? u.y1 : u.x0;
+        for (const BarBox &st : strokes) {
+            const bool touches = vertical ? (st.y0 <= base + 2 && st.y1 >= base - 2 && st.x1 >= u.x0 - 2 && st.x0 <= u.x1 + 2)
+                                          : (st.x0 <= base + 2 && st.x1 >= base - 2 && st.y1 >= u.y0 - 2 && st.y0 <= u.y1 + 2);
+            if (touches) {
+                found.push_back(u);
+                return;
+            }
+        }
+    };
+    for (const bool vertical : { true, false }) {
+        auto key = [&](const BarBox &b) { return std::round((vertical ? b.y1 : b.x0) * 2); };
+        std::vector<size_t> order(filled.size());
+        for (size_t i = 0; i < order.size(); ++i) {
+            order[i] = i;
+        }
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const double ka = key(filled[a]), kb = key(filled[b]);
+            if (ka != kb) {
+                return ka < kb;
+            }
+            return vertical ? filled[a].x0 < filled[b].x0 : filled[a].y0 < filled[b].y0;
+        });
+        size_t start = 0;
+        while (start < order.size()) {
+            size_t end = start + 1;
+            while (end < order.size() && key(filled[order[end]]) == key(filled[order[start]])) {
+                ++end;
+            }
+            std::vector<BarBox> run;
+            double thick = 0;
+            for (size_t k = start; k < end; ++k) {
+                const BarBox &b = filled[order[k]];
+                const double t = vertical ? b.x1 - b.x0 : b.y1 - b.y0;
+                if (!run.empty()) {
+                    const double gap = vertical ? b.x0 - run.back().x1 : b.y0 - run.back().y1;
+                    if (gap < -0.5 || gap > kMaxBarGap * std::max(thick, t)) {
+                        consider(run, vertical);
+                        run.clear();
+                        thick = 0;
+                    }
+                }
+                run.push_back(b);
+                thick = std::max(thick, t);
+            }
+            consider(run, vertical);
+            start = end;
+        }
+    }
+    // a run takes in the boxes stacked on it, and runs that now overlap are one cluster
+    std::vector<BarBox> merged;
+    for (BarBox r : found) {
+        if (!spend(budget, filled.size() + merged.size(), budgetHit)) {
+            break;
+        }
+        for (const BarBox &b : filled) {
+            if (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 <= r.y1 + 1 && b.y1 >= r.y0 - 1) {
+                r = { std::min(r.x0, b.x0), std::min(r.y0, b.y0), std::max(r.x1, b.x1), std::max(r.y1, b.y1) };
+            }
+        }
+        bool joined = false;
+        for (BarBox &o : merged) {
+            if (std::min(o.x1, r.x1) > std::max(o.x0, r.x0) && std::min(o.y1, r.y1) > std::max(o.y0, r.y0)) {
+                o = { std::min(o.x0, r.x0), std::min(o.y0, r.y0), std::max(o.x1, r.x1), std::max(o.y1, r.y1) };
+                joined = true;
+                break;
+            }
+        }
+        if (!joined) {
+            merged.push_back(r);
+        }
+    }
+    for (BarBox r : merged) {
+        if (!spend(budget, filled.size() + strokes.size(), budgetHit)) {
+            break;
+        }
+        TextGraphic g {};
+        // painted paths: the boxes inside the cluster's box (1 point of slack) ...
+        for (const BarBox &b : filled) {
+            if (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 >= r.y0 - 1 && b.y1 <= r.y1 + 1) {
+                ++g.paths;
+            }
+        }
+        // ... and the stroked rules near it (axes, ticks, gridlines: within kBarRuleReach points, at most twice the cluster's
+        // size, so a frame or a column rule is not taken), which also grow the cluster's box, as doppler-md grows a figure
+        const BarBox core = r;
+        const double reach = std::max(core.x1 - core.x0, core.y1 - core.y0);
+        for (const BarBox &st : strokes) {
+            const bool near = st.x1 >= core.x0 - kBarRuleReach && st.x0 <= core.x1 + kBarRuleReach && st.y1 >= core.y0 - kBarRuleReach && st.y0 <= core.y1 + kBarRuleReach;
+            if (near && std::max(st.x1 - st.x0, st.y1 - st.y0) <= 2 * reach) {
+                ++g.paths;
+                r = { std::min(r.x0, st.x0), std::min(r.y0, st.y0), std::max(r.x1, st.x1), std::max(r.y1, st.y1) };
+            }
+        }
+        g.xMin = r.x0;
+        g.yMin = r.y0;
+        g.xMax = r.x1;
+        g.yMax = r.y1;
+        out.push_back(g);
+    }
+    return out;
+}
+
 } // namespace
 
 //------------------------------------------------------------------------
@@ -2048,7 +2239,11 @@ void PageFacts::endPage(const TextPage &text)
             }
         }
         bool graphicsLimit = false;
-        const std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
+        std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
+        // Bar charts drawn only with filled boxes (doppler#38), after the drawing clusters (their list order is unchanged)
+        for (const TextGraphic &g : barClusters(text.getRules(), s.textGrid, pageW, pageH, &graphicsBudget, &graphicsLimit)) {
+            clusters.push_back(g);
+        }
         const int vectorCells = s.vectorGrid.count();
         j.kopen("vectors");
         j.kint("paths", s.paths);

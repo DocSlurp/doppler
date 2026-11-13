@@ -10,6 +10,7 @@ string (URIs, field names, file names) reaches the output.
 import json
 import os
 import subprocess
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -183,6 +184,16 @@ with t.TempDir() as d:
     t.check(v2["figureClusters"] >= 1 and v2["uncoveredRatio"] == 1 and v2["stroked"] == 21 and v2["coverage"] > 0.05, "vector chart: clusters, uncovered", repr(v2))
     t.check(v3["shadings"] == 1 and v3["patterns"] == 1 and v3["clips"] == 1, "shading, pattern and clip counted", repr(v3))
     t.check(v4["limitHit"] and v4["paths"] == 100000 and "drawing-limit" in page(ls, 4)["unusualFeatures"] and "limit-hit" in page(ls, 4)["parseWarnings"], "drawing-limit at 100000 paths", repr(v4))
+
+    # --- D vectors: bar charts drawn only with filled boxes (doppler#38) ---------------------------------------
+    started = time.monotonic()
+    ls = lines(facts(paths["bars"], "-level", "full")[1])
+    took = time.monotonic() - started
+    bv = [page(ls, n)["vectors"] for n in range(1, 7)]
+    t.check(bv[0]["figureClusters"] == 1 and bv[0]["clusters"][0]["paths"] >= 6, "vertical bars: one cluster, bars and axis rules as paths", repr(bv[0]))
+    t.check(bv[1]["figureClusters"] == 1, "horizontal bars: one cluster", repr(bv[1]))
+    t.check([v["figureClusters"] for v in bv[2:5]] == [0, 0, 0], "shaded table, zebra rows, highlights: no cluster", repr([v["figureClusters"] for v in bv[2:5]]))
+    t.check(bv[5]["figureClusters"] <= 2 and took < 20, "5000 boxes on one page: bounded", repr((bv[5]["figureClusters"], took)))
 
     # --- E forms -----------------------------------------------------------------------------------------------
     for name, xfa in (("forms", "none"), ("forms_xfa_static", "static"), ("forms_xfa_dynamic", "dynamic")):
