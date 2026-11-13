@@ -338,6 +338,23 @@ tree, peak RSS):
 ("Before" is the previous release with `--params '{"watermarks": false}'`, since it otherwise
 called a text-less scan repeated at one size a watermark and extracted nothing.)
 
+**Real scanned books, `copy` against `image`** (2026-11-13; first 100 pages, `--images-dir`,
+one job pinned to one core with `taskset`, this 8-core machine at a load average of 85 to 110
+from other work, so wall times are about 4x a quiet core's; CPU of the process tree, peak RSS
+of its largest process):
+
+| Book | `copy` (default) | `image` |
+|---|---|---|
+| Internet Archive JPX MRC (layered) | 0.49 CPU-s, 20 MiB, 0 files | 39.3 CPU-s, 133 MiB, 43 of 100 scans before the 170 s deadline (6.9 MB) |
+| CCITT G4, `/Decode [1 0]` (copy class `decode`) | 1.10 CPU-s, 21 MiB, 0 files | 32.2 CPU-s, 126 MiB, 51 of 100 scans before the deadline (17.9 MB) |
+| Google Books JBIG2 (1 page a scan, the rest pictures) | 2.23 CPU-s, 39 MiB, 11 files | 2.57 CPU-s, 45 MiB, 12 files |
+
+Over the first 100 pages of each of the 49 books of a burn corpus, 3,590 pages are scans and
+124 (3.5%) can be copied: 100 bilevel pages of one book and 24 JPEGs. The rest are layered or
+not copyable (3,057, rendered by `image`) or `decode` (409, mostly 1-bit JBIG2/CCITT with an
+inverted `/Decode`). A copyable JPEG 2000 scan (2221 x 2923) costs 1.27 CPU-s a page to decode
+and encode with `image`, 0.79 CPU-s to render with `render`, and nothing with `copy`.
+
 **The copy allow-list** (2026-11-12; a 500-page grey DCT book, 2550 x 3300, 0.65 MB a page,
 45 lines of invisible OCR text a page, median of 5 interleaved runs): every page is still
 copied (500 of 500 `.jpg`, byte-identical to the stored stream, as with the overpaint
