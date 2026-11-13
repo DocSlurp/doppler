@@ -296,3 +296,51 @@ fn facts_file_appears_before_image_extraction() {
         "facts file missing during extraction"
     );
 }
+
+#[test]
+fn facts_bound_pdftotext_in_time_and_only_then() {
+    let Some((pdftotext, _)) = tools() else { return };
+    let s = Scratch::new("bound");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    // a pdftotext that records its arguments, then runs the real one
+    let wrapper = s.0.join("pdftotext.sh");
+    let argv = s.0.join("argv.txt");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexec '{}' \"$@\"\n", argv.display(), pdftotext.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let plain = md(&wrapper, &[], &pdf);
+    assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
+    let f = s.0.join("facts.jsonl");
+    let with = md(&wrapper, &["--page-facts", f.to_str().unwrap()], &pdf);
+    assert!(with.status.success(), "{}", String::from_utf8_lossy(&with.stderr));
+    assert_eq!(plain.stdout, with.stdout);
+    let runs = std::fs::read_to_string(&argv).unwrap();
+    let runs: Vec<&str> = runs.lines().collect();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    // without facts pdftotext runs unbounded, as always
+    assert!(!runs[0].contains(" -timeout"), "{}", runs[0]);
+    assert!(runs[1].contains("-timeout 60 -timeout-per-page 1 -timeout-max 3600"), "{}", runs[1]);
+}
+
+#[test]
+fn a_pdftotext_timeout_is_named() {
+    let Some(_) = tools() else { return };
+    let s = Scratch::new("timeout-exit");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    // a pdftotext that times out (exit status 6)
+    let fake = s.0.join("pdftotext.sh");
+    std::fs::write(&fake, "#!/bin/sh\nexit 6\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let f = s.0.join("facts.jsonl");
+    let out = md(&fake, &["--page-facts", f.to_str().unwrap()], &pdf);
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(message.contains("ran past its time limit"), "{message}");
+}

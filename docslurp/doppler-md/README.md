@@ -423,6 +423,11 @@ without them. Facts never go to stdout.
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
 | `--scan-max-words N` | a page with more visible words is not a scan (20); also changes `scan=` in the XHTML |
 
+With page facts, pdftotext runs under a time limit of 60 s plus 1 s per page of the range, at
+most an hour (`-timeout 60 -timeout-per-page 1 -timeout-max 3600`); past it the conversion
+fails (pdftotext exit status 6, named in the message). Without page facts there is no limit,
+as before.
+
 With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
 Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor
 of `--page-facts` is inheritable only while pdftotext starts; the renderer never gets it.
