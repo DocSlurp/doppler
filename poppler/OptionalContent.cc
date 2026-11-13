@@ -139,7 +139,6 @@ void OCGs::syncCache() const
     const unsigned long g = OptionalContentGroup::stateGeneration();
     if (g != cacheGeneration) {
         ocmdCache.clear();
-        exprCache.clear();
         cacheGeneration = g;
     }
 }
@@ -162,18 +161,24 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
     }
 
     // DocSlurp: an OCMD named by many BDC /OC or XObject /OC entries is evaluated once (until a
-    // group's state changes), and what is not cached is charged to the page's budget
-    std::lock_guard<std::mutex> lock(cacheMutex);
-    syncCache();
-    if (dictRef->isRef()) {
-        const auto hit = ocmdCache.find(dictRef->getRef());
-        if (hit != ocmdCache.end()) {
-            if (hit->second.limited) {
+    // group's state changes). Its first answer on a page is charged to the page's budget at the
+    // cost of evaluating it, cached or not, so the page gets the same answers and limit-hit
+    // whatever pages ran before it; later answers on the page are free, as in a cold run.
+    if (budget && budget->generation != OptionalContentGroup::stateGeneration()) {
+        budget->answered.clear();
+        budget->generation = OptionalContentGroup::stateGeneration();
+    }
+    if (budget && dictRef->isRef()) {
+        const auto seen = budget->answered.find(dictRef->getRef());
+        if (seen != budget->answered.end()) {
+            if (seen->second.limited) {
                 error(errSyntaxWarning, -1, exprTooLarge);
             }
-            return hit->second.visible;
+            return seen->second.visible;
         }
     }
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    syncCache();
     if (budget && budget->operandsLeft <= 0) {
         if (!budget->limitHit) {
             budget->limitHit = true;
@@ -181,14 +186,33 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
         }
         return true;
     }
+    if (dictRef->isRef()) {
+        const auto hit = ocmdCache.find(dictRef->getRef());
+        if (hit != ocmdCache.end()) {
+            const CachedVisibility cached = hit->second;
+            if (cached.limited) {
+                error(errSyntaxWarning, -1, exprTooLarge);
+            }
+            if (budget) {
+                budget->operandsLeft -= cached.cost;
+                budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { cached.visible, cached.limited });
+            }
+            return cached.visible;
+        }
+    }
     long cost = 1;
     bool cacheable = true, limited = false;
     const bool result = evalVisibility(dictRef, cost, cacheable, limited);
+    if (dictRef->isRef() && cacheable) {
+        if (budget) {
+            budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { result, limited });
+        }
+        if (ocmdCache.size() < cacheLimit) {
+            ocmdCache.emplace(dictRef->getRef(), CachedVisibility { result, limited, cost });
+        }
+    }
     if (budget) {
         budget->operandsLeft -= cost;
-    }
-    if (dictRef->isRef() && cacheable && ocmdCache.size() < cacheLimit) {
-        ocmdCache.emplace(dictRef->getRef(), CachedVisibility { result, limited });
     }
     return result;
 }
@@ -278,10 +302,6 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEva
             }
             return seen->second.visible;
         }
-        const auto kept = exprCache.find(expr->getRef());
-        if (kept != exprCache.end()) {
-            return kept->second;
-        }
     }
     const int truncations = eval.truncations, errors = eval.errors;
     Object expr2 = expr->fetch(m_xref);
@@ -322,9 +342,6 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEva
     if (expr->isRef() && !eval.overBudget && eval.truncations == truncations) {
         const bool errored = eval.errors != errors;
         eval.memo.emplace(expr->getRef(), VisibilityEval::Result { ret, errored });
-        if (!errored && exprCache.size() < cacheLimit) {
-            exprCache.emplace(expr->getRef(), ret);
-        }
     }
     return ret;
 }

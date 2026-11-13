@@ -1,5 +1,5 @@
 // oc_state_probe: optional-content visibility follows group state changes, through OCGs'
-// visibility caches (OCMD and /VE sub-expression results are kept until a state changes).
+// visibility cache (OCMD results are kept until a state changes).
 // usage: docslurp-oc-state-probe FILE.pdf
 // Prints the visibility of page 1's /Properties /L as the document opens, with every group
 // on, and with every group off again, as "0 1 0".
