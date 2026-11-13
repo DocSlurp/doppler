@@ -224,6 +224,9 @@ with t.TempDir() as d:
         t.check(v["grids"] and not any("hRules" in x for x in v["grids"]) and v["unlistedRuledGrids"] == 1 and not v["gridsTruncated"], "%s: the set crosses the grid's box, so no counts, and it is unlisted" % what, repr(v["grids"]))
     v = page(ls, 5)["vectors"]
     t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
+    v6, v7 = page(ls, 6)["vectors"], page(ls, 7)["vectors"]
+    t.check(v6["gridsTruncated"] and v6["grids"] and not any("hRules" in x for x in v6["grids"]) and "unlistedRuledGrids" not in v6, "5,001 rules before a table (past the walker's 5,000): no counts, gridsTruncated", repr(v6["grids"]))
+    t.check(not v7["gridsTruncated"] and [(x["hRules"], x["vRules"], x["connected"]) for x in v7["grids"]] == [(4, 5, True)] and v7["unlistedRuledGrids"] == 0, "4,990 rules before a table: counted", repr(v7["grids"]))
     capped = page(lines(facts(paths["grid_rules"], "-level", "full")[1]), 6)["vectors"]
     t.check(capped["gridsTruncated"] and capped["limitHit"] and [(x["rows"], x["columns"]) for x in capped["grids"]] == [(3, 4)] and not any("hRules" in x for x in capped["grids"]), "the page's rule cap: the grid listed without rule counts, gridsTruncated", repr(capped["grids"]))
     ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
@@ -279,7 +282,7 @@ with t.TempDir() as d:
     t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
 
     # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
-    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1), ("grid_split", 5)):
+    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1), ("grid_split", 7)):
         whole = lines(facts(paths[name], "-level", "full")[1])
         ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
         t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)

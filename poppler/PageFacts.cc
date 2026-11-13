@@ -386,6 +386,7 @@ constexpr double thinRuleMaxPt = 3.0; // a grid's thin rule: at most this thick 
 constexpr double thinRuleMinPt = 8.0; // and at least this long
 constexpr double thinRuleTouchPt = 2.5; // rules this close are one line, and lie on (or inside) a grid's box
 constexpr double outerSideShare = 0.8; // a box side carries a rule when thin rules cover this share of it
+constexpr size_t walkerMaxRules = 5000; // <rule> elements a page the layout walker reads (past them it sees fewer)
 constexpr int maxSizeBins = 8192; // half-point word sizes 0 to 4095.5 counted for a page's body size
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
@@ -2615,9 +2616,10 @@ void PageFacts::endPage(const TextPage &text)
         gridsTruncated = gridsTruncated || text.getRulesPageTruncated() || s.sizeOutOfRange;
         // each grid's thin rules (thinRuleGrids), from the rules at the 0.01 pt the XHTML
         // writes (rounded as its %.2f is); absent from every grid (with unlistedRuledGrids, and
-        // gridsTruncated set) when the page's rule list is partial, more than maxGridRules thin
-        // rules run either way, or the maxGridWork visits run out: counts from part of the rules
-        // could be too low
+        // gridsTruncated set) when the page's rule list is partial, the walker would read fewer
+        // rules than the page has (past walkerMaxRules, or past the run's rule budget), a thin
+        // rule's extent or centre is not finite, more than maxGridRules thin rules run either
+        // way, or the maxGridWork visits run out: counts from part of the rules could be wrong
         std::vector<ThinRule> th, tv;
         bool thinComplete = !text.getRulesPageTruncated();
         if (thinComplete) {
@@ -2631,12 +2633,24 @@ void PageFacts::endPage(const TextPage &text)
                 }
                 return back;
             };
+            // the walker reads the <rule>s the XHTML writes, at most walkerMaxRules a page: on a
+            // page with more non-box rules, or with any past the run's rule budget (which the
+            // XHTML leaves out), it sees fewer than these facts would count
+            size_t written = 0;
             for (const TextRule &r : text.getRules()) {
-                if (r.box || !std::isfinite(r.xMin) || !std::isfinite(r.yMin) || !std::isfinite(r.xMax) || !std::isfinite(r.yMax)) {
+                if (r.box) {
                     continue;
                 }
+                if (r.pastDocumentCap || ++written > walkerMaxRules) {
+                    thinComplete = false;
+                    break;
+                }
                 ThinRule k { at01(r.xMin), at01(r.yMin), at01(r.xMax), at01(r.yMax), 0 };
-                const double w = k.x1 - k.x0, hh = k.y1 - k.y0; // NaN fails both tests
+                if (!std::isfinite(k.x0) || !std::isfinite(k.y0) || !std::isfinite(k.x1) || !std::isfinite(k.y1)) {
+                    thinComplete = false; // never skipped: the walker would read it
+                    break;
+                }
+                const double w = k.x1 - k.x0, hh = k.y1 - k.y0;
                 std::vector<ThinRule> *into = nullptr;
                 if (hh <= thinRuleMaxPt && w >= thinRuleMinPt) {
                     k.c = 0.5 * (k.y0 + k.y1);
@@ -2645,8 +2659,12 @@ void PageFacts::endPage(const TextPage &text)
                     k.c = 0.5 * (k.x0 + k.x1);
                     into = &tv;
                 }
-                if (!into || !std::isfinite(k.c)) {
+                if (!into) {
                     continue;
+                }
+                if (!std::isfinite(w) || !std::isfinite(hh) || !std::isfinite(k.c) || std::fabs(k.c) > maxPoint) {
+                    thinComplete = false; // an extent or centre past finite range: fail closed, never skip
+                    break;
                 }
                 if (into->size() >= maxGridRules) {
                     thinComplete = false;

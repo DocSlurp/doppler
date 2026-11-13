@@ -325,8 +325,8 @@ page, say which of its lines are thin ruled lines, the way a reader that finds r
 connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) counts them:
 
 - A thin rule is a `<rule>` of `pdftotext -rules` (a stroked line, or a fill at most 1.5 points
-  thin; never a shaded `<box>`), of any colour (white rules included, as the walker reads them)
-  and image-mask rules included, taken at the 0.01 point the XHTML writes (rounded exactly as
+  thin; never a shaded `<box>`), of any colour (white rules included, as the walker reads them),
+  taken at the 0.01 point the XHTML writes (rounded exactly as
   its `%.2f` is), at most 3 points thick and at least 8 points long (horizontal: height ≤ 3,
   width ≥ 8; vertical the other way round). Shaded fills thicker than 1.5 points and lines
   stroked thicker than 3 are not thin rules; dashes and underlines 8 points or longer are.
@@ -357,11 +357,18 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   then the grids with `connected` true, `hRules` ≥ 2 and `vRules` ≥ 3, of `hRules` - 1 rows and
   `vRules` - 1 columns. Otherwise treat the page's ruled grids as unknown. On the walker's public
   fixtures and the grid fixtures here (`test_walker_parity.py`), every page this reads as known
-  equals the walker. Where the walker itself sees less: it reads only the rules the XHTML
-  writes (none past the run's 200,000-rule budget, which the facts still count) and at most
-  5,000 a page.
+  equals the walker, as long as the facts and the XHTML the walker reads come from the same
+  pdftotext flags: thin image-mask rules are rules only when `pdftotext -glyphs` collects them
+  (`pdfpagefacts` and pdftotext without `-glyphs` never do), so facts from one and XHTML from the
+  other can disagree on a table drawn with stencil masks. Pages the grid search cannot see
+  (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are unknown
+  through `unlistedRuledGrids`, never known.
 - Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
-  the page's rule list is partial (the page's rule cap), more than 4,096 thin rules run either
+  the page's rule list is partial (the page's rule cap); the walker would read fewer rules than
+  the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
+  budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
+  run-wide caps); a thin rule's extent or centre is not finite or past 10^9 points; more than
+  4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
   the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
   part of the rules could be too low.
@@ -465,7 +472,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   read from an object the file holds twice can differ; a router wanting page-local facts of
   such a document should run the page alone), and the
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
-  colour-space budgets), past which `limit-hit` is set.
+  colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
+  grids also lose their thin-rule counts (`gridsTruncated`).
 
 ## Hostile input
 

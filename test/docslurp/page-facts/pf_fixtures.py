@@ -800,7 +800,9 @@ def grid_split_pdf():
     (one walker grid, two grid-search grids). Page 2: a 118-point row between two ruled blocks,
     column lines through all of it. Page 3: the left column line rises to a 20-point rule above
     the table. Page 4: the column lines drop to a 10-point rule below the last row. Page 5: a
-    table ruled only horizontally with one short vertical tick that touches nothing."""
+    table ruled only horizontally with one short vertical tick that touches nothing. Page 6:
+    5,001 short dashes, then a ruled table (the layout walker reads 5,000 rules a page and never
+    sees the table). Page 7: 4,990 dashes, then the same table (the walker sees it)."""
     ys1 = [700, 680, 660, 640, 570, 550, 530, 510]
     p1 = _hlines(72, 400, ys1) + _vlines([72, 236, 400], 510, 700)
     ys2 = [700, 680, 660, 542, 522, 502]
@@ -809,7 +811,11 @@ def grid_split_pdf():
     p3 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 640, 700) + _vlines([72], 700, 730) + _hlines(62, 82, [730])
     p4 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 600, 700) + _hlines(230, 242, [600])
     p5 = _hlines(72, 400, [700, 680, 660, 640, 620]) + _vlines([120], 645, 655)
-    return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5)])
+    def dashes(n):
+        return "".join("%d %d m %d %d l S\n" % (20 + 5 * (k % 110), 100 + 2 * (k // 110), 22 + 5 * (k % 110), 100 + 2 * (k // 110)) for k in range(n))
+
+    table = _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5, dashes(5001) + table, dashes(4990) + table)])
 
 
 def caption_straddle_pdf():

@@ -160,17 +160,28 @@ def rule_grid(pages=500, n=512):
     return d.pages([content] * pages)
 
 
-def thin_rule_mesh(pages=20, n=4096):
-    """Pages of n horizontal and n vertical thin rules that all cross (issue 43): the thin-rule
-    search's union-find would visit n x n pairs; it stops at its visit cap."""
+def thin_rule_mesh(pages=20, n=2400):
+    """Pages of n horizontal and n vertical thin rules that all cross (issue 43), under the
+    layout walker's 5,000 rules a page: the thin-rule search's union-find would visit n x n
+    pairs; it stops at its visit cap (2^20)."""
     ops = ["0.1 w"]
     for i in range(n):
-        ops.append("5 %.3f m 600 %.3f l S" % (10 + i * 0.19, 10 + i * 0.19))
+        ops.append("5 %.3f m 600 %.3f l S" % (10 + i * 0.32, 10 + i * 0.32))
     for i in range(n):
-        ops.append("%.3f 5 m %.3f 785 l S" % (5 + i * 0.145, 5 + i * 0.145))
+        ops.append("%.3f 5 m %.3f 785 l S" % (5 + i * 0.245, 5 + i * 0.245))
     d = Doc()
     content = d.stream("\n".join(ops), compress=True)
     return d.pages([content] * pages)
+
+
+def rule_budget(pages=11, n=19000):
+    """<pages> pages of <n> one-point square fills (thin rules to pdftotext -rules), past the run's
+    200,000-rule budget, then a page with a ruled 3 x 4 table."""
+    d = Doc()
+    noise = d.stream("\n".join("%d %d 1 1 re f" % (5 + (k % 600), 5 + 2 * (k // 600)) for k in range(n)), compress=True)
+    table = ["0.5 w"] + ["72 %d m 472 %d l S" % (y, y) for y in (700, 670, 640, 610)] + ["%d 610 m %d 700 l S" % (x, x) for x in (72, 172, 272, 372, 472)]
+    last = d.stream("\n".join(table), compress=True)
+    return d.pages([noise] * pages + [last])
 
 
 FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
@@ -483,9 +494,15 @@ with t.TempDir() as d:
 
     t.check(all("hRules" in g for g in page(ls_grid, 1)["vectors"]["grids"]), "a 512 x 512 rule grid: thin-rule counts within the visit cap", repr(page(ls_grid, 1)["vectors"]["grids"])[:300])
     # issue 43: the thin-rule union-find visits at most 2^20 rule pairs a page
-    ls = bounded("20 pages of 4,096 x 4,096 crossing thin rules", d.write("mesh.pdf", thin_rule_mesh()))
+    ls = bounded("20 pages of 2,400 x 2,400 crossing thin rules", d.write("mesh.pdf", thin_rule_mesh()))
     v = page(ls, 1)["vectors"]
-    t.check(v["gridsTruncated"] and v["grids"] and not any("hRules" in g for g in v["grids"]), "a 4,096 x 4,096 thin-rule mesh: the visit cap, no rule counts, gridsTruncated", repr((v["gridsTruncated"], v["grids"][:1])))
+    t.check(v["gridsTruncated"] and v["grids"] and not any("hRules" in g for g in v["grids"]) and "unlistedRuledGrids" not in v, "a 2,400 x 2,400 thin-rule mesh: the visit cap, no rule counts, gridsTruncated", repr((v["gridsTruncated"], v["grids"][:1])))
+    # the run's rule budget (200,000): the XHTML leaves later rules out, so a reader of it sees
+    # none of a later page's table; the facts must not count it either
+    budget = d.write("budget.pdf", rule_budget())
+    ls = bounded("11 pages of 19,000 rules, then a ruled table", budget)
+    v = page(ls, 12)["vectors"]
+    t.check(v["gridsTruncated"] and v["grids"] and not any("hRules" in g for g in v["grids"]), "a table past the run's rule budget: no rule counts, gridsTruncated", repr((v["gridsTruncated"], v["grids"][:1])))
 
     # 10. words inside images (issue 40): words x listed images, both bounded per page
     ls = bounded("20 pages of 32 images under 60,000 words", d.write("words-images.pdf", words_over_images()))
