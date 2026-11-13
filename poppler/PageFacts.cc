@@ -1382,7 +1382,8 @@ void PageFacts::noteError(ErrorCategory category, const char *format)
     static const char *const imagePrefixes[] = { "Bad image parameters", "Bad image", "Unknown image", "JPX", "JBIG2", "Bad DCT", "DCT", "CCITT", "Invalid Code", "Bad 2D code", "Bad white code", "Bad black code" };
     // fixed messages of poppler's own budgets (optional content expressions and the page's operand budget,
     // image colour spaces, marked-content nesting, filter chains)
-    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Optional content visibility budget", "Image colour space budget exhausted", "Marked content nested too deeply", "Too many stream filters" };
+    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Optional content visibility budget", "Image colour space budget exhausted", "Marked content nested too deeply",
+                                                 "Too many stream filters" };
     auto note = [&w, format](Warning warning, const auto &prefixes) {
         if (w & (1u << warning)) {
             return;
