@@ -104,9 +104,12 @@ with t.TempDir() as d:
         "ownparse": ("ownparse.py", []),
         "shapedbomb": ("shapedbomb.py", ["200", "20000000"]),
         "depthpred": ("depthpred.py", ["249"]),
+        "deepoc": ("deepoc.py", ["600"]),
+        "repairbomb": ("repairbomb2.py", ["200", "20000000"]),
+        "shapedbomb_decodeparms": ("shapedbomb_decodeparms.py", ["200", "20000000"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -145,6 +148,10 @@ with t.TempDir() as d:
                 t.check(facts == pf, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, " ".join(flags[:-2])), "%r\n%r" % (facts[:300], pf[:300]))
         # files upstream read without a rebuild, and that stay within the bounds or have nothing
         # missing: not repaired, no page flagged, the text drawn
+        if name == "deepoc":
+            # an intact file whose object stream holds a member nested past the parser's limit:
+            # not refused (the cut is the stream's own, not the route's), the hidden image stays out
+            t.check(b"<image " not in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", path, "-"])[0], "deepoc: the hidden image is not reported (a member's own depth cut is not a route-dependent parse)")
         if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest", "wide_pred", "widepred_old", "tail_eof", "manysec999") and rc == 0:
             dl = doc_line(pf)
             t.check(dl.get("xref") == "ok" and b"xref-repaired" not in pf and b'xrefRebuilt="1"' not in outs[0], "%s: not repaired, no page flagged" % name, repr((dl.get("xref"), pf[-400:])))

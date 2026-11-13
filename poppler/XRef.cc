@@ -623,6 +623,7 @@ XRef::RepairGuard::~RepairGuard()
     if (--xref->repairSuppressed == 0) {
         xref->objStrsGuarded.clear();
         xref->shapedByKind[static_cast<int>(GuardKind::Scope)].clear();
+        xref->repairedByKind[static_cast<int>(GuardKind::Scope)].clear();
     }
 }
 
@@ -1063,6 +1064,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     }
     for (auto &shaped : shapedByKind) {
         shaped.clear();
+    }
+    for (auto &repaired : repairedByKind) {
+        repaired.clear();
     }
     {
         const Goffset fileLength = str->getLength();
@@ -1600,6 +1604,11 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             }
             auto *kept = guardKind == GuardKind::Scope ? &objStrsGuarded : &objStrsByKind[kind - 1];
             if (const auto k = kept->find(e->offset); k != kept->end()) {
+                if (repairedByKind[kind].count(e->offset)) {
+                    // parsed with a repair refused: the same answer, refused again (flagged)
+                    ++suppressedRepairs;
+                    error(errSyntaxError, -1, "Object stream {0:d} needed a repair; read without it for a read-only lookup", static_cast<int>(e->offset));
+                }
                 if (endPos) {
                     *endPos = -1;
                 }
@@ -1620,10 +1629,13 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 *endPos = -1;
             }
             Object result = once->getObject(e->gen, num);
-            if (suppressedRepairs == repairsBefore) {
-                // the Scope kind keeps it until the outermost guard ends; constructXRef drops all
-                kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
+            // kept either way, so it is decoded once per kind; one a refused repair shaped is
+            // marked, and each reuse is refused (counted, flagged) again. The Scope kind keeps it
+            // until the outermost guard ends; constructXRef drops all.
+            if (suppressedRepairs != repairsBefore) {
+                repairedByKind[kind].insert(at);
             }
+            kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
             return result;
         } else {
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);

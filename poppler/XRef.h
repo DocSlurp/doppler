@@ -328,6 +328,8 @@ private:
     // object streams whose guarded parse depended on where it was reached from (an object being
     // fetched up the stack, or the parser's depth limit): refused, per kind, without re-parsing
     std::array<std::unordered_set<Goffset>, 4> shapedByKind;
+    // kept guarded parses that needed a refused repair: each reuse counts (and reports) it again
+    std::array<std::unordered_set<Goffset>, 4> repairedByKind;
     unsigned int blockedFetches = 0; // fetches refused because the object was being fetched
     bool encrypted; // true if file is encrypted
     int encRevision;

@@ -99,6 +99,21 @@ static std::string decryptedString(const std::string &s, const unsigned char *fi
 
 Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgorithm encAlgorithm, int keyLength, int objNum, int objGen, int recursion, bool strict, bool decryptString)
 {
+    if (getObjDepth == 0) {
+        entryRecursion = recursion;
+    }
+    struct DepthScope
+    {
+        int &d;
+        explicit DepthScope(int &dA) : d(dA) { ++d; }
+        ~DepthScope() { --d; }
+    } depthScope(getObjDepth);
+    // a cut by the recursion limit that depends on how deep this parse was entered
+    auto noteDepthCut = [this] {
+        if (entryRecursion > 0) {
+            ++depthLimitHitCount;
+        }
+    };
     // refill buffer after inline image data
     if (inlineImg == 2) {
         buf1 = lexer.getObj();
@@ -107,7 +122,7 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
     }
 
     if (unlikely(recursion >= recursionLimit)) {
-        ++depthLimitHitCount;
+        noteDepthCut();
         return Object::error();
     }
 
@@ -120,7 +135,7 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
             array->add(std::move(obj2));
         }
         if (recursion + 1 >= recursionLimit && !buf1.isCmd("]")) {
-            ++depthLimitHitCount;
+            noteDepthCut();
         }
         if (recursion + 1 >= recursionLimit && strict) {
             return Object::error();
@@ -165,7 +180,7 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
                 hasContentsEntry = hasContentsEntry || isContents;
                 Object obj2 = getObj(false, fileKey, encAlgorithm, keyLength, objNum, objGen, recursion + 1, /*strict*/ false, /*decryptString*/ !isContents);
                 if (unlikely(recursion + 1 >= recursionLimit)) {
-                    ++depthLimitHitCount;
+                    noteDepthCut();
                     break;
                 }
                 dict->add(key.getNameString(), std::move(obj2));
