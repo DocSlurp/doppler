@@ -4345,28 +4345,61 @@ bool Gfx::factsOcIsVisible(const Object &oc)
     return visible;
 }
 
-// DocSlurp page facts: the encoded bytes of an image XObject's stream, as the parser delimited
-// them (its /Length, corrected when the file's endstream disagrees), never read or decoded. A
-// hostile /Length can still claim more than the file holds when no endstream corrects it: the
-// count stops at the end of the document's bytes. -1 when the stream is not a slice of a base
-// stream (nothing to measure without decoding).
+// DocSlurp page facts: the encoded bytes of an image XObject's stream, never decoded: its
+// declared /Length, only when that is the file's own value and the stream's data ends there
+// (the bytes after it, past at most 32 whitespace bytes, are "endstream"); -1 otherwise.
+//
+// Not the length the parser delimited: that depends on whether the cross-reference table was
+// rebuilt earlier in the run (a rebuilt table ends a stream at the first endstream after its
+// start; an intact one follows /Length and scans forward when it is wrong), so a page's facts
+// would depend on which pages were read before it. Each test here reads only the file:
+//  - a /Length the parser had to correct is stored back as a 64-bit integer (Parser::makeStream,
+//    Object(Goffset)); a /Length as written in the file below 2^31 parses as an int. Corrected,
+//    or 2 GiB and more: -1;
+//  - the declared end must hold "endstream" (a rebuilt table leaves a wrong /Length in place,
+//    and the test fails just as it does when the parser corrected it): -1 when it does not.
 static long long encodedStreamBytes(Stream *str, XRef *xref)
 {
     BaseStream *base = str ? str->getBaseStream() : nullptr;
-    if (!base) {
+    BaseStream *file = xref ? xref->getBaseStream() : nullptr;
+    if (!base || !file || file == base) {
         return -1;
     }
-    const Goffset length = base->getLength();
-    if (length < 0) {
+    Dict *dict = str->getDict();
+    if (!dict) {
         return -1;
     }
-    Goffset bytes = length;
-    if (BaseStream *file = xref ? xref->getBaseStream() : nullptr; file && file != base) {
-        const Goffset start = base->getStart(), fileLength = file->getLength();
-        const Goffset room = start >= 0 && fileLength >= start ? fileLength - start : 0;
-        bytes = std::min(bytes, room);
+    const Object &nf = dict->lookupNF("Length");
+    const Object length = nf.isRef() ? dict->lookup("Length") : nf.copy();
+    if (!length.isInt() || length.getInt() < 0) {
+        return -1;
     }
-    return static_cast<long long>(bytes);
+    const Goffset declared = length.getInt();
+    const Goffset start = base->getStart(), fileLength = file->getLength();
+    if (start < 0 || fileLength < start || declared > fileLength - start) {
+        return -1;
+    }
+    static constexpr char tag[] = "endstream";
+    static constexpr int maxSpace = 32, tagLength = sizeof(tag) - 1;
+    const Goffset room = std::min<Goffset>(fileLength - start - declared, maxSpace + tagLength);
+    if (room < tagLength) {
+        return -1;
+    }
+    std::unique_ptr<Stream> tail = file->makeSubStream(start + declared, true, room, Object::null());
+    if (!tail || !tail->rewind()) {
+        return -1;
+    }
+    char buf[maxSpace + tagLength];
+    const int n = tail->doGetChars(static_cast<int>(room), reinterpret_cast<unsigned char *>(buf));
+    tail->close();
+    int i = 0;
+    while (i < n && i < maxSpace && (buf[i] == ' ' || buf[i] == '\r' || buf[i] == '\n' || buf[i] == '\t' || buf[i] == '\f' || buf[i] == '\0')) {
+        ++i;
+    }
+    if (n - i < tagLength || memcmp(buf + i, tag, tagLength) != 0) {
+        return -1;
+    }
+    return static_cast<long long>(declared);
 }
 
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the

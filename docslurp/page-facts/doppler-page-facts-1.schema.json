@@ -193,7 +193,7 @@
                   "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] },
                   "visibleWordsInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box lies inside this image's box (within 1 point). Added within /1: absent from earlier builds." },
                   "invisibleWordsInside": { "$ref": "#/$defs/count", "description": "Invisible words (render mode 3, or clipped) inside this image's box: an OCR layer over a scan. Added within /1: absent from earlier builds." },
-                  "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's encoded bytes (its /Length as the parser delimited it, at most the file's remaining bytes; never decoded) over px width x height. Absent for inline images, external (/F) data and earlier builds." }
+                  "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's declared /Length over px width x height, only when that /Length is the file's own non-negative integer and ends at endstream; never decoded. Absent otherwise, for inline images, external (/F) data and earlier builds." }
                 }
               }
             },
@@ -242,7 +242,7 @@
                 }
               }
             },
-            "gridsTruncated": { "type": "boolean", "description": "More than 64 grids, or the search's rule (4,096 a direction) or work cap was hit: the list is incomplete." },
+            "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, or a word size outside the body-size bins." },
             "limitHit": { "type": "boolean" }
           }
         },

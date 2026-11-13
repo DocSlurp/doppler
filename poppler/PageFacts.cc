@@ -380,7 +380,7 @@ constexpr size_t maxGrids = 64; // ruled grids listed per page
 constexpr size_t maxGridRules = 4096; // horizontal (and vertical) rules a page's grid search takes
 constexpr size_t maxGridWork = size_t(1) << 20; // group and column-rule visits of a page's grid search
 constexpr double wordInsideSlack = 1.0; // points a word box may pass an image's box and still lie inside
-constexpr size_t maxSizeBins = 256; // distinct word sizes counted for a page's body size
+constexpr int maxSizeBins = 8192; // half-point word sizes 0 to 4095.5 counted for a page's body size
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
 constexpr size_t maxAnnots = 10000; // annotations examined per page
@@ -487,7 +487,7 @@ public:
         key(k);
         point(v);
     }
-    // a non-negative measure with 4 decimals (bytes per pixel), at most maxPoint
+    // a non-negative measure with 6 decimals (bytes per pixel), at most maxPoint
     void kmeasure(const char *k, double v)
     {
         key(k);
@@ -496,7 +496,7 @@ public:
             v = maxPoint;
             note(wOutOfRange);
         }
-        number(v, 4);
+        number(v, 6);
     }
     void point(double v)
     {
@@ -1283,10 +1283,11 @@ struct PageFacts::State
         bool visible;
     };
     std::vector<WordBox> wordBoxes;
-    // characters by word size in half points, in first-seen order (vectors: the body size the
-    // grid search scales with); at most maxSizeBins sizes
-    std::vector<std::pair<double, uint64_t>> sizeBins;
-    size_t lastSizeBin = 0;
+    // characters by word size in half points (vectors: the body size the grid search scales
+    // with), the sizes in first-seen order, and whether a size fell outside the bins
+    std::vector<uint64_t> sizeChars; // maxSizeBins, allocated once
+    std::vector<int> sizeOrder;
+    bool sizeOutOfRange = false;
 
     // vectors
     uint64_t paths = 0, filled = 0, stroked = 0;
@@ -1314,7 +1315,11 @@ struct PageFacts::State
         std::vector<FontSeen> fontBuffer = std::move(fonts);
         std::vector<AnnotDraw> drawBuffer = std::move(draws);
         std::vector<WordBox> wordBuffer = std::move(wordBoxes);
-        std::vector<std::pair<double, uint64_t>> binBuffer = std::move(sizeBins);
+        std::vector<uint64_t> charsBuffer = std::move(sizeChars);
+        std::vector<int> orderBuffer = std::move(sizeOrder);
+        for (int bin : orderBuffer) {
+            charsBuffer[bin] = 0; // only the bins this page touched
+        }
         FormCache formCache = std::move(formObjects);
         const unsigned formGeneration = formObjectsGeneration;
         *this = State();
@@ -1326,9 +1331,10 @@ struct PageFacts::State
         fontBuffer.clear();
         drawBuffer.clear();
         wordBuffer.clear();
-        binBuffer.clear();
+        orderBuffer.clear();
         wordBoxes = std::move(wordBuffer);
-        sizeBins = std::move(binBuffer);
+        sizeChars = std::move(charsBuffer);
+        sizeOrder = std::move(orderBuffer);
         charCells = std::move(cells);
         invisibleCells = std::move(inv);
         fonts = std::move(fontBuffer);
@@ -1833,21 +1839,22 @@ void PageFacts::onWord(const TextWord *word)
     }
     if (wants(Vectors)) {
         // pdftomarkdown's body size: the most common size rounded to half a point, by characters
+        // (a size outside the bins makes the body size uncertain: gridsTruncated)
         const double size = word->getFontSize();
-        if (size != 0 && std::isfinite(size)) {
-            const double bin = std::nearbyint(size * 2.0) / 2.0;
-            const uint64_t n = static_cast<uint64_t>(std::max(word->getLength(), 0));
-            if (s.lastSizeBin < s.sizeBins.size() && s.sizeBins[s.lastSizeBin].first == bin) {
-                s.sizeBins[s.lastSizeBin].second += n;
-            } else {
-                const auto it = std::ranges::find_if(s.sizeBins, [bin](const auto &b) { return b.first == bin; });
-                if (it != s.sizeBins.end()) {
-                    it->second += n;
-                    s.lastSizeBin = static_cast<size_t>(it - s.sizeBins.begin());
-                } else if (s.sizeBins.size() < maxSizeBins) {
-                    s.lastSizeBin = s.sizeBins.size();
-                    s.sizeBins.emplace_back(bin, n);
+        if (size != 0) {
+            const double half = std::nearbyint(size * 2.0); // NaN and infinities fail the range test
+            if (half >= 0 && half < maxSizeBins) {
+                if (s.sizeChars.empty()) {
+                    s.sizeChars.assign(maxSizeBins, 0);
                 }
+                const int bin = static_cast<int>(half);
+                if (s.sizeChars[bin] == 0) {
+                    s.sizeOrder.push_back(bin);
+                }
+                // never 0 once touched, so the first-seen order is kept
+                s.sizeChars[bin] += static_cast<uint64_t>(std::max(word->getLength(), 1));
+            } else {
+                s.sizeOutOfRange = true;
             }
         }
     }
@@ -2374,14 +2381,17 @@ void PageFacts::endPage(const TextPage &text)
         j.kbool("clustersTruncated", clusters.size() > maxItems);
         double body = 10.0; // pdftomarkdown's default without text
         uint64_t bodyChars = 0;
-        for (const auto &[size, n] : s.sizeBins) {
-            if (n > bodyChars) {
-                body = size;
-                bodyChars = n;
+        for (int bin : s.sizeOrder) {
+            if (s.sizeChars[bin] > bodyChars) {
+                body = bin / 2.0;
+                bodyChars = s.sizeChars[bin];
             }
         }
         bool gridsTruncated = false;
         const std::vector<RuleGrid> grids = ruleGrids(text.getRules(), pageW, pageH, body, &gridsTruncated);
+        // the grids came from a partial rule list (the page's rule cap), or from a body size
+        // that ignored words of a size outside the bins: incomplete, said so
+        gridsTruncated = gridsTruncated || text.getRulesPageTruncated() || s.sizeOutOfRange;
         j.kopen("grids", '[');
         for (const RuleGrid &g : grids) {
             j.open();

@@ -216,6 +216,30 @@ with t.TempDir() as d:
     t.check(rc == 0 and out == facts(paths["image_words"], "-level", "full")[1], "stdin: the same bytes per pixel and words inside")
     basic = page(lines(facts(paths["image_words"])[1]), 1)
     t.check("items" not in basic["images"], "basic: no image items")
+    # bytesPerPixel only from a declared /Length that is the file's own and ends at endstream
+    ls = lines(facts(paths["lengths"], "-level", "full")[1])
+    got = [page(ls, n)["images"]["items"][0].get("bytesPerPixel") for n in range(1, 8)]
+    t.check(got == [1, None, None, None, None, None, 1], "/Length 5000, short, missing, 0, 10^12, past endstream, by reference: only the true ones", repr(got))
+    # a cross-reference table rebuilt by an earlier page does not change a later page's value
+    whole = lines(facts(paths["lengths_rebuilt"], "-level", "full")[1])
+    t.check("xref-repaired" in page(whole, 1)["parseWarnings"], "lengths_rebuilt: page 1 rebuilds the table", repr(page(whole, 1)["parseWarnings"]))
+    ok = True
+    for n in range(2, 9):
+        alone = page(lines(facts(paths["lengths_rebuilt"], "-level", "full", "-f", str(n), "-l", str(n))[1]), n)
+        a, b = dict(page(whole, n)), dict(alone)
+        a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
+        ok = ok and a == b
+    t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings equal its single-page run")
+    t.check([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)] == got, "after a mid-run xref rebuild: the same bytes per pixel", repr([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)]))
+
+    # the grid list says when it is incomplete
+    ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
+    c = [page(ls, n)["vectors"] for n in range(1, 5)]
+    t.check(c[0]["gridsTruncated"] and len(c[0]["grids"]) == 1, "a word size outside the body-size bins: gridsTruncated", repr(c[0]))
+    t.check(not c[1]["gridsTruncated"] and [(g["rows"], g["columns"]) for g in c[1]["grids"]] == [(3, 2)], "256 decoy sizes: the body size is still the text's, the table found", repr(c[1]["grids"]))
+    t.check(c[2]["gridsTruncated"] and c[2]["hRules"] == 4100, "4,100 horizontal rules: the grid search's rule cap, gridsTruncated", repr((c[2]["gridsTruncated"], c[2]["hRules"])))
+    t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
+
     # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
     for name, count in (("grids", 6), ("image_words", 5)):
         whole = lines(facts(paths[name], "-level", "full")[1])

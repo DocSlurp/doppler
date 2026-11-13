@@ -204,16 +204,24 @@ Each item also has (added within `/1`; absent from earlier builds):
   `visibleWordCount` and `invisibleWordCount` count them. An OCR'd scan has about the page's
   word count invisible inside its image; a picture with a caption drawn over it has a few
   visible words; a plain photo none. A word straddling the image's edge counts for neither.
-- `bytesPerPixel`: the image stream's encoded bytes over `px` width x height, 4 decimals. The
-  bytes are the stream's `/Length` as the parser delimited the stream (when the file's
-  `endstream` disagrees with `/Length`, the parser's correction), never more than the file
-  holds after the stream's start; the data is never read or decoded. It counts the stored
-  bytes, whatever the filters (an ASCII85 wrapper inflates it; a JBIG2 image's `/JBIG2Globals`
-  are not counted). With `filter` and `dpi` it tells a photographic scan (DCT, a few tenths
-  of a byte per pixel) from flat or line art (Flate, hundredths or less). Absent for inline
+  The box is axis-aligned: words in the corners of a rotated or skewed image, or outside a
+  clip within its box, count as inside; and, as for `visibleWordCount`, paint over text is
+  not tracked, so text drawn before an image that covers it still counts as visible.
+- `bytesPerPixel`: the image stream's encoded bytes over `px` width x height, 6 decimals. The
+  bytes are the stream's declared `/Length` (direct or by reference), and only when it is
+  consistent: a non-negative integer below 2^31 as written in the file, within the file, with
+  `endstream` right after the data it spans (past at most 32 whitespace bytes; the 9 bytes
+  there are read, the image data never is). A missing, negative, non-integer, oversized or
+  wrong `/Length` leaves the field absent, never a guess: the length the parser falls back on
+  for a wrong one depends on whether the cross-reference table was rebuilt earlier in the
+  run, which would make a page's value depend on the pages read before it. It counts the
+  stored bytes, whatever the filters (an ASCII85 wrapper inflates it; an encrypted stream
+  counts its AES IV and padding; a JBIG2 image's `/JBIG2Globals` are not counted). With
+  `filter` and `dpi` it tells a photographic scan (DCT, a few tenths of a byte per pixel) from
+  flat or line art (Flate, hundredths or less; bilevel scans thousandths). Absent for inline
   images (their data is in the content stream) and for image data in an external file (`/F`).
   It is what the file says, not a measurement of the picture: a crafted stream can pad its
-  data to claim any value up to the file's size.
+  data, or end its `/Length` at a later `endstream`, to claim a larger value.
 
 **Scan detection** (shared with `pdftotext -images`, which writes `scan="..." scanImage="K"`
 on `<page>`): `fullPageImage`, and at most 20 visible words. Then `single` when one image
@@ -262,30 +270,44 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 so a router can see where a table is and how big it is without a layout pass:
 
 - Rules are the page's rules as `pdftotext -rules` writes them (image-mask rules included),
-  dark ones only (luminance at most 0.97): horizontal ones at least half a body size wide,
-  vertical ones at least 0.8 of it tall; a shaded box (a filled rectangle under 0.95 of the
-  page's width and half its height) adds its top and bottom edges as horizontal rules.
+  dark ones only (luminance at most 0.97): horizontal ones (at least as wide as tall) at least
+  half a body size wide, vertical ones (taller than wide) at least 0.8 of it tall; a shaded box
+  (a filled rectangle under 0.95 of the page's width and half its height, whatever its colour)
+  adds its top and bottom edges as horizontal rules. Coordinates are used as computed;
+  pdftomarkdown reads them (and word sizes) rounded to 2 decimals, which can flip a threshold
+  at its edge.
 - Collinear horizontal segments that touch (within 1 point vertically and 2 along) are
   joined, and those shorter than 3 body sizes dropped. Down the page, a rule joins the first
   group whose last rule is at most 8 body sizes above it and that it overlaps by 0.8 of the
   narrower of the two; a group is split where the gap between its rule rows (rows 1.5 points
   apart are one) is more than 2.5 times their median, given at least three gaps.
 - `bbox` is the group's span by its first and last rule row; `rows` the bands between its
-  rule rows; `columns` one more than its inner column lines: vertical rules more than 2
-  points inside its sides crossing at least half its height, 2 points apart. A group is a grid
-  with at least three rule rows, or two and a column line. `coverage` is the box over the page.
-- The body size is the page's most common word size (half points, by characters; the first
-  seen on a tie), or 10 without words; pdftomarkdown takes it over the document, so on pages
-  whose text size differs from the document's the two can differ.
+  rule rows, which are not always table rows (shaded row boxes with gaps between them give two
+  bands a box: the box and the gap); `columns` one more than its inner column lines: vertical
+  rules more than 2 points inside its sides crossing at least half its height, 2 points apart.
+  A group is a grid with at least three rule rows, or two and a column line. `coverage` is the
+  box over the page. Three or more parallel rules (form lines, lined paper, a letterhead) make
+  a grid of one column too: treat `columns` 1 as weak evidence of a table.
+- The body size is the page's most common word size (half points, by characters, invisible
+  words included; the first seen on a tie), or 10 without words; pdftomarkdown takes it over
+  the document, so on pages whose text size differs from the document's the two can differ. A
+  word size outside 0 to 4,095.5 points is not counted and sets `gridsTruncated` (the body
+  size, and so the grids, may be wrong). Text much larger than the page's real body text that
+  outnumbers it (invisible text included) raises every threshold and can hide a table.
 - What pdftomarkdown then does with the text is not done here: it does not split two tables
   at a single-cell caption band between them, add a header row above the first rule, or find
   columns from word gutters, so a table ruled only horizontally has `columns` 1 here.
 - The order is the search's: by the first rule row of the group each grid was split from,
-  then down that group.
-- Cost: at most 4,096 horizontal and 4,096 vertical rules are taken (in drawing order), and at
-  most 2^20 open-group and column-rule visits are made a page; past either, or past 64 grids,
-  the grids found so far are listed and `gridsTruncated` is set (grouping cut short lists
-  none). This is the grid list's own flag: `limitHit` and `limit-hit` are unchanged by it.
+  then down that group. Coordinates are the page as displayed: on a `/Rotate 90` page a table
+  upright in the file's own coordinates has its rules turned, and is not found (as in
+  pdftomarkdown).
+- Cost: at most 4,096 horizontal rules (a shaded box counts two) and 4,096 vertical ones are
+  taken, in drawing order, and at most 2^20 open-group and column-rule visits are made a page;
+  past either, or past 64 grids, the grids found so far are listed and `gridsTruncated` is set
+  (grouping cut short lists none). Rules past the page's rule cap (20,000, `limitHit`) also
+  set it. `gridsTruncated` means the list may be incomplete; a decoy that fills a cap before a
+  real table is drawn hides the table but not the flag. It adds nothing to `limitHit` or
+  `limit-hit`.
 
 ### `forms` (`forms`)
 
@@ -379,7 +401,9 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   (`-page-facts-timing`, `--page-facts-timing`).
 - A page line depends only on that page and the resources it shares with others, never on
   which other pages were processed: `-f p -l p` gives the same line as a whole run (tested).
-  The exceptions are documented above: `parseWarnings` of shared resources, and the
+  The exceptions are documented above: `parseWarnings` of shared resources (and of a damaged
+  file whose cross-reference table an earlier page rebuilt: the stream-length errors an intact
+  table raises are not raised again), and the
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set.
 

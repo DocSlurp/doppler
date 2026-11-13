@@ -732,6 +732,47 @@ def image_words_pdf():
     )
 
 
+def _raw_image(length_entry, data, w=100, h=50):
+    """An image XObject body with a /Length entry as given (or none) over <data>."""
+    return "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode %s >>\nstream\n" % (w, h, length_entry) + data.decode("latin-1") + "\nendstream"
+
+
+def lengths_pdf(break_xref=False):
+    """One image per page, 5000 bytes each, under /Length: 5000; 4995 (short); missing; 0;
+    10^12; 5005 (past endstream); 5000 by reference. With <break_xref>, a first page draws a
+    form XObject whose cross-reference offset is wrong, so a whole run rebuilds the table before
+    the other pages are read and a single-page run does not."""
+    data = _noise(5000, seed=5)
+    entries = ["/Length 5000", "/Length 4995", "", "/Length 0", "/Length 1000000000000", "/Length 5005", "/Length {7} 0 R"]
+    names = " ".join("/I%d {%d} 0 R" % (k, k) for k in range(len(entries)))
+    res = "<< /XObject << %s /Bad {8} 0 R >> >>" % names
+    pages = [{"content": "q 200 0 0 100 72 500 cm /I%d Do Q\n" % k, "resources": res} for k in range(len(entries))]
+    if break_xref:
+        pages.insert(0, {"content": "/Bad Do\n", "resources": res})
+    extras = [_raw_image(e, data) for e in entries] + ["5000", stream("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", "0 0 5 5 re f")]
+    pdf = doc(pages, extras=extras)
+    if break_xref:
+        # point the form's xref entry at the wrong place (the start of the file's header)
+        num = 4 + 2 * len(pages) + 8
+        xref = pdf.rindex(b"xref\n0 ")
+        at = xref + len(b"xref\n0 %d\n" % (int(pdf[xref + 7 : pdf.index(b"\n", xref + 5)]),)) + 20 * num
+        pdf = pdf[:at] + b"%010d" % 3 + pdf[at + 10 :]
+    return pdf
+
+
+def grid_caps_pdf():
+    """Page 1: a word of size 5000 (outside the body-size bins) and a ruled table. Page 2: 256
+    one-letter words of distinct large sizes, then 200 words of 10 points and the table: the
+    body size is still 10. Page 3: 4,100 horizontal rules (the grid search takes 4,096). Page 4:
+    20,005 tiny fills (the page's rule cap), then the table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 272, 472], 610, 700)
+    big = "BT /F1 5000 Tf 0 0 Td (x) Tj ET\n"
+    decoys = "".join("BT /F1 %g Tf 10 10 Td 3 Tr (x) Tj ET\n" % (100 + 0.5 * k) for k in range(256))
+    many = "0.5 w\n" + "".join("72 %.2f m 472 %.2f l S\n" % (780 - 0.18 * k, 780 - 0.18 * k) for k in range(4100))
+    tiny = "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": big + words(20, y=300) + table}, {"content": decoys + words(200, y=500) + table}, {"content": many}, {"content": tiny + table}])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -756,4 +797,7 @@ ALL = {
     "copy_class": copy_class_pdf,
     "grids": grids_pdf,
     "image_words": image_words_pdf,
+    "lengths": lengths_pdf,
+    "lengths_rebuilt": lambda: lengths_pdf(break_xref=True),
+    "grid_caps": grid_caps_pdf,
 }
