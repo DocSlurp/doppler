@@ -280,4 +280,14 @@ params! {
     vector_max_text_share: num = 0.35,
     vector_max_prose_lines: num = 1.0,
     vector_prose_words: num = 8.0,
+    /// bar charts (filled axis-aligned boxes, which are not `<graphic>` drawing): at least this
+    /// many boxes on one baseline (a shared bottom edge, or a shared left edge for horizontal
+    /// bars), each at most `bar_max_gap` of the widest bar from the next
+    bar_min_count: num = 3.0,
+    bar_max_gap: num = 3.0,
+    /// the longest bar of a run at least this many times the shortest (shaded table rows and zebra
+    /// stripes are all one length)
+    bar_min_spread: num = 1.15,
+    /// at most this share of a run's bars may hold words (shaded cells and highlights hold them)
+    bar_max_text_share: num = 0.34,
 }
