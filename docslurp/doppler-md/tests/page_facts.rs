@@ -181,6 +181,46 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// The context pages read around a range (`--context`) get no facts: for every range, edge and
+/// context size the facts file is pdfpagefacts' for the range alone (doc line, the range's page
+/// lines, run-line counts), and the Markdown is the same as without --page-facts.
+#[test]
+fn context_pages_get_no_facts() {
+    let Some((pdftotext, facts_exe)) = tools() else { return };
+    let s = Scratch::new("context");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    let ranges: [(Option<&str>, Option<&str>); 5] =
+        [(Some("2"), Some("3")), (Some("1"), Some("2")), (Some("3"), Some("4")), (None, Some("2")), (Some("3"), None)];
+    for (first, last) in ranges {
+        for context in ["0", "1", "3", "16"] {
+            let f = s.0.join(format!("facts-{first:?}-{last:?}-{context}.jsonl"));
+            let mut range: Vec<&str> = Vec::new();
+            if let Some(n) = first {
+                range.extend(["-f", n]);
+            }
+            if let Some(n) = last {
+                range.extend(["-l", n]);
+            }
+            let mut args = range.clone();
+            args.extend(["--context", context, "--page-facts", f.to_str().unwrap()]);
+            let with = md(&pdftotext, &args, &pdf);
+            assert_eq!(with.status.code(), Some(0), "{}", String::from_utf8_lossy(&with.stderr));
+            let mut plain = range.clone();
+            plain.extend(["--context", context]);
+            let without = md(&pdftotext, &plain, &pdf);
+            assert_eq!(with.stdout, without.stdout, "Markdown changed by --page-facts ({range:?} context {context})");
+            let expected = pdfpagefacts(&facts_exe, &range, &pdf);
+            let got = std::fs::read(&f).unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(&expected),
+                "facts for {range:?} with context {context}"
+            );
+        }
+    }
+}
+
 /// The scan thresholds reach pdftotext: the facts (and their doc line) are pdfpagefacts' with
 /// the same options, and the Markdown places the page that became a scan as one.
 #[test]

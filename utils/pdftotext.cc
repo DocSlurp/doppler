@@ -1085,6 +1085,10 @@ int main(int argc, char *argv[])
             error(errCommandLine, -1, "Bad '-page-facts-level' or '-page-facts-include' value");
             return 99;
         }
+        if (pageFactsFirst < 0 || pageFactsLast < 0 || (pageFactsFirst > 0 && pageFactsLast > 0 && pageFactsFirst > pageFactsLast)) {
+            error(errCommandLine, -1, "'-page-facts-f' and '-page-facts-l' take page numbers, first no later than last");
+            return 99;
+        }
 #ifndef _WIN32
         const int flags = fcntl(pageFactsFd, F_GETFL);
         if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY) {
