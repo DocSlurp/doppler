@@ -1261,10 +1261,10 @@ void PageFacts::beginPage(int pageNum)
     activeFacts = this;
 }
 
-void PageFacts::noteError(ErrorCategory category, const char *msg)
+void PageFacts::noteError(ErrorCategory category, const char *format)
 {
     PageFacts *f = activeFacts;
-    if (!f || !f->st->begun || !msg) {
+    if (!f || !f->st->begun || !format) {
         return;
     }
     unsigned &w = f->st->warnings;
@@ -1287,28 +1287,32 @@ void PageFacts::noteError(ErrorCategory category, const char *msg)
     default:
         break;
     }
-    // the stage, from a few fixed message prefixes (the message itself is never kept)
+    // the stage, from a few fixed prefixes of the format string (never formatted: its arguments,
+    // which can quote the document, are not read); a group whose warning the page already has is
+    // skipped, so an error-dense page costs a few comparisons per error
     static const char *const contentPrefixes[] = {
         "Unknown operator", "Too few (",     "Too many (", "Too many args", "Leftover args", "Arg #", "Weird page contents", "Illegal character", "Unterminated", "End of file inside", "Found state under last state guard",
         "No current point", "Mismatched EMC"
     };
     static const char *const fontPrefixes[] = { "No font in show", "Unknown font tag", "Unknown font type", "Couldn't find a font", "Couldn't create a font", "Bad font type" };
     static const char *const imagePrefixes[] = { "Bad image parameters", "Bad image", "Unknown image", "JPX", "JBIG2", "Bad DCT", "DCT", "CCITT", "Invalid Code", "Bad 2D code", "Bad white code", "Bad black code" };
-    for (const char *p : contentPrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wBadContent;
+    // fixed messages of poppler's own budgets (optional content expressions, image colour spaces)
+    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Image colour space budget exhausted" };
+    auto note = [&w, format](Warning warning, const auto &prefixes) {
+        if (w & (1u << warning)) {
+            return;
         }
-    }
-    for (const char *p : fontPrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wMissingFont;
+        for (const char *p : prefixes) {
+            if (startsWith(format, p)) {
+                w |= 1u << warning;
+                return;
+            }
         }
-    }
-    for (const char *p : imagePrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wBrokenImage;
-        }
-    }
+    };
+    note(wBadContent, contentPrefixes);
+    note(wMissingFont, fontPrefixes);
+    note(wBrokenImage, imagePrefixes);
+    note(wLimit, limitPrefixes);
 }
 
 void PageFacts::startPage(Page *page, double pageWidth, double pageHeight)

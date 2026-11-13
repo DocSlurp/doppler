@@ -166,9 +166,10 @@ public:
     int pagesEmitted() const { return emitted; }
     int pagesFailed() const { return failed; }
 
-    // Poppler's error callback while facts are collected: the category (and, for a few fixed
-    // message prefixes, the stage) is recorded for the current page. Never the message.
-    static void noteError(ErrorCategory category, const char *msg);
+    // Poppler's error format callback (setErrorFormatCallback) while facts are collected: the
+    // category (and, for a few fixed format-string prefixes, the stage) is recorded for the
+    // current page. The message is never formatted for it.
+    static void noteError(ErrorCategory category, const char *format);
 
     //----- device hooks
 

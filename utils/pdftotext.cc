@@ -941,24 +941,6 @@ static void writeFactsLine(const std::string &line)
 #endif
 }
 
-// With page facts, poppler's errors are also counted for the page (by category, never the
-// message); they are still printed as without facts unless -q.
-static void factsErrorCallback(ErrorCategory category, Goffset pos, const char *msg)
-{
-    PageFacts::noteError(category, msg);
-    if (quiet) {
-        return;
-    }
-    static const char *const names[] = { "Syntax Warning", "Syntax Error", "Config Error", "Command Line Error", "I/O Error", "Permission Error", "Unimplemented Feature", "Internal Error" };
-    const char *name = static_cast<unsigned>(category) < sizeof(names) / sizeof(names[0]) ? names[category] : "Error";
-    if (pos >= 0) {
-        fprintf(stderr, "%s (%lld): %s\n", name, static_cast<long long>(pos), msg);
-    } else {
-        fprintf(stderr, "%s: %s\n", name, msg);
-    }
-    fflush(stderr);
-}
-
 static double millisecondsSince(std::chrono::steady_clock::time_point start)
 {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -1104,7 +1086,9 @@ int main(int argc, char *argv[])
         facts->setScanThresholds(scanThresholds);
         facts->setTiming(pageFactsTiming);
         pageFacts = &*facts;
-        setErrorCallback(factsErrorCallback);
+        // poppler's errors are also counted for the page, from their category and format string
+        // (never formatted for it); they are printed as without facts unless -q
+        setErrorFormatCallback(PageFacts::noteError);
     }
 
     EndOfLineHyphenMode hyphenMode = EndOfLineHyphenMode::RemoveAll;
