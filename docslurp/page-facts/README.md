@@ -348,7 +348,13 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   only from a later ABI: chmod, chown, utimes and their variants, truncate and ftruncate,
   fallocate, extended attributes, unlink/rename/mkdir/link/symlink/mknod, signals to other
   processes (kill and tgkill reach only this process; tkill, sigqueue and pidfds never),
-  System V and POSIX IPC and memfd_create. Landlock ABI 1 (Linux 5.13) is enough for
+  System V and POSIX IPC and memfd_create, resource limits, priority, scheduling and memory
+  placement of any other process (prlimit64, setpriority, sched_set*, ioprio_set,
+  migrate_pages and move_pages only for pid 0 or this process), sessions and process groups,
+  namespaces, keyrings, flock, new processes (fork, vfork, clone without CLONE_THREAD;
+  clone3 is ENOSYS, threads still work) and every ioctl outside TCGETS, TIOCGWINSZ,
+  FIONREAD, FIONBIO, FIOCLEX and FIONCLEX (neither tool forks; a strace of both on
+  Ghostscript.pdf shows no clone, fork or ioctl after confinement). Landlock ABI 1 (Linux 5.13) is enough for
   `require`; ABI 2 adds cross-directory link and rename checks, ABI 3 truncation, ABI 4 TCP,
   ABI 5 device ioctls and ABI 6 signal and abstract-socket scoping, all but device ioctls also
   denied by seccomp (tested with a probe, `test/docslurp/page-facts/confine_probe.cc`). It must still run inside the credential-free, network-blocked VM boundary

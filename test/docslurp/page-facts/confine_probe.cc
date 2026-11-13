@@ -8,7 +8,14 @@
 #include <cstring>
 #include <string>
 #include <fcntl.h>
+#include <linux/fs.h>
+#include <pthread.h>
+#include <sched.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <sys/ioctl.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <sys/sem.h>
@@ -50,6 +57,14 @@ int main(int argc, char **argv)
         return 2;
     }
     const pid_t parent = getppid();
+    // values read before confinement, so that a call that is wrongly allowed changes nothing
+    const int parentNice = getpriority(PRIO_PROCESS, parent);
+    const long parentIoprio = syscall(SYS_ioprio_get, 1, parent);
+    cpu_set_t parentCpus;
+    CPU_ZERO(&parentCpus);
+    sched_getaffinity(parent, sizeof(parentCpus), &parentCpus);
+    int fileFlags = 0;
+    ioctl(rfd, FS_IOC_GETFLAGS, &fileFlags);
     const Confinement c = confine(false);
     printf("landlock=%d seccomp=%d\n", c.landlockAbi, c.seccomp ? 1 : 0);
     // still allowed: this process, its open descriptors, reading
@@ -57,6 +72,26 @@ int main(int argc, char **argv)
     PROBE("write-open-fd", write(wfd, "x", 1));
     char b;
     PROBE("read", read(rfd, &b, 1));
+    struct rlimit rl;
+    PROBE("prlimit-self", prlimit(0, RLIMIT_NOFILE, nullptr, &rl));
+    PROBE("setpriority-self", setpriority(PRIO_PROCESS, 0, getpriority(PRIO_PROCESS, 0)));
+    int avail = 0;
+    PROBE("ioctl-fionread", ioctl(rfd, FIONREAD, &avail));
+    PROBE("ioctl-fioclex", ioctl(rfd, FIOCLEX));
+    {
+        pthread_t th;
+        errno = 0;
+        const int rc = pthread_create(&th, nullptr, [](void *) -> void * { return nullptr; }, nullptr);
+        if (rc == 0) {
+            pthread_join(th, nullptr);
+        }
+        errno = rc;
+        report("thread", rc == 0 ? 0 : -1);
+    }
+    // clone3 is unavailable (ENOSYS), so that the C library falls back to clone
+#ifdef SYS_clone3
+    PROBE("clone3", syscall(SYS_clone3, nullptr, 0));
+#endif
     // denied
     PROBE("chmod", chmod(f.c_str(), 0600));
     PROBE("fchmod", fchmod(rfd, 0600));
@@ -91,6 +126,53 @@ int main(int argc, char **argv)
     PROBE("tkill-parent", syscall(SYS_tkill, parent, 0));
 #ifdef SYS_pidfd_open
     PROBE("pidfd_open", syscall(SYS_pidfd_open, parent, 0));
+#endif
+    // other processes by pid: resource limits, priority, scheduling, memory placement
+    PROBE("prlimit-parent", prlimit(parent, RLIMIT_NOFILE, nullptr, &rl));
+    PROBE("setpriority-parent", setpriority(PRIO_PROCESS, parent, parentNice));
+    PROBE("setpriority-group", setpriority(PRIO_PGRP, 0, getpriority(PRIO_PGRP, 0)));
+    PROBE("sched_setaffinity-parent", syscall(SYS_sched_setaffinity, parent, sizeof(parentCpus), &parentCpus));
+    struct sched_param sp = {};
+    PROBE("sched_setscheduler-parent", syscall(SYS_sched_setscheduler, parent, SCHED_OTHER, &sp));
+    PROBE("sched_setparam-parent", syscall(SYS_sched_setparam, parent, &sp));
+    PROBE("ioprio_set-parent", syscall(SYS_ioprio_set, 1, parent, parentIoprio));
+    PROBE("migrate_pages-parent", syscall(SYS_migrate_pages, parent, 0, nullptr, nullptr));
+    PROBE("move_pages-parent", syscall(SYS_move_pages, parent, 0, nullptr, nullptr, nullptr, 0));
+    // ioctls outside the allow-list, even on a read-only descriptor
+    PROBE("ioctl-setflags", ioctl(rfd, FS_IOC_SETFLAGS, &fileFlags));
+    PROBE("ioctl-getflags", ioctl(rfd, FS_IOC_GETFLAGS, &fileFlags));
+    // shared locks, sessions, process groups, namespaces, keyrings, new processes
+    PROBE("flock", flock(rfd, LOCK_SH));
+    PROBE("setsid", setsid());
+    PROBE("setpgid", setpgid(0, 0));
+    PROBE("unshare", unshare(0));
+    PROBE("setns", setns(-1, 0));
+    PROBE("keyctl", syscall(SYS_keyctl, 0, -2, 0));
+    PROBE("add_key", syscall(SYS_add_key, "user", "probe", "x", 1, -2));
+    PROBE("request_key", syscall(SYS_request_key, "user", "probe-none", nullptr, -2));
+    {
+        errno = 0;
+        const long pid = syscall(SYS_clone, SIGCHLD, 0, 0, 0, 0);
+        if (pid == 0) {
+            _exit(0);
+        }
+        if (pid > 0) {
+            waitpid(static_cast<pid_t>(pid), nullptr, 0);
+        }
+        report("clone-process", pid);
+    }
+#ifdef SYS_fork
+    {
+        errno = 0;
+        const long pid = syscall(SYS_fork);
+        if (pid == 0) {
+            _exit(0);
+        }
+        if (pid > 0) {
+            waitpid(static_cast<pid_t>(pid), nullptr, 0);
+        }
+        report("fork", pid);
+    }
 #endif
     const int shm = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
     report("shmget", shm);

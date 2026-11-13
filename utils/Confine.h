@@ -28,8 +28,14 @@
 //    io_uring with ENOSYS), and so do the calls that change a file without opening it for
 //    writing (chmod, chown, utimes and their variants, truncate, ftruncate, fallocate,
 //    extended attributes, unlink, rename, mkdir, rmdir, link, symlink, mknod), signals to any
-//    other process (kill and tgkill only to this one; tkill, sigqueue and pidfds never), and
-//    System V and POSIX IPC and memfd_create. It is a second layer that also holds on kernels
+//    other process (kill and tgkill only to this one; tkill, sigqueue and pidfds never),
+//    System V and POSIX IPC and memfd_create; calls that act on a process by pid (prlimit64,
+//    setpriority, sched_setaffinity/setscheduler/setparam/setattr, ioprio_set,
+//    migrate_pages, move_pages) only on this one (pid 0 or its own); setsid, setpgid,
+//    unshare, setns, keyctl, add_key, request_key, flock, fork and vfork; clone without
+//    CLONE_THREAD (threads still work; clone3, whose flags a filter cannot read, fails with
+//    ENOSYS and the C library falls back to clone); and every ioctl but TCGETS, TIOCGWINSZ,
+//    FIONREAD, FIONBIO, FIOCLEX and FIONCLEX. It is a second layer that also holds on kernels
 //    without Landlock.
 // Which guarantees need which kernel: seccomp (Linux 3.5+) gives everything in its list on any
 // supported kernel. Landlock adds path-based write denial (ABI 1, Linux 5.13), cross-directory

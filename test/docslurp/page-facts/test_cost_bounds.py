@@ -363,10 +363,11 @@ with t.TempDir() as d:
         res = dict(l.split("=", 1) for l in out.splitlines() if "=" in l and not l.startswith("landlock="))
         head = out.splitlines()[0] if out else ""
         if "seccomp=1" in head:
-            allowed = {"kill-self", "write-open-fd", "read"}
-            t.check(all(res.get(k) == "allowed" for k in allowed), "confined: this process, open descriptors and reads still work", out)
-            bad = {k: v for k, v in res.items() if k not in allowed and v != "denied"}
-            t.check(not bad and len(res) > 30, "confined: modes, owners, times, sizes, xattrs, names, signals to others, IPC and memfds denied", repr(bad))
+            allowed = {"kill-self", "write-open-fd", "read", "prlimit-self", "setpriority-self", "ioctl-fionread", "ioctl-fioclex", "thread"}
+            t.check(all(res.get(k) == "allowed" for k in allowed), "confined: this process, open descriptors, reads, threads and allow-listed ioctls still work", out)
+            t.check(res.get("clone3", "errno-38") == "errno-38", "confined: clone3 is unavailable (ENOSYS)", repr(res.get("clone3")))
+            bad = {k: v for k, v in res.items() if k not in allowed and k != "clone3" and v != "denied"}
+            t.check(not bad and len(res) > 50, "confined: modes, owners, times, sizes, xattrs, names, signals and limits/priority/scheduling of others, other ioctls, locks, sessions, namespaces, keyrings, new processes, IPC and memfds denied", repr(bad))
             with open(os.path.join(pd, "f"), "rb") as f:
                 t.check(f.read() == b"xata", "confined: the file kept its size (only the open descriptor wrote)")
             t.check(sorted(os.listdir(pd)) == ["f"], "confined: nothing created or renamed", repr(os.listdir(pd)))
