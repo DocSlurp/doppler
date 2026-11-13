@@ -243,7 +243,8 @@ is known not to paint or change how it looks (`poppler/ScanCopyAudit.h`):
   an opacity below 1, a transparency group or page `/Group`, an annotation that can draw an
   appearance or a border in view or print mode (a `Print` `NoView` one included; only a link
   or popup without an appearance or border passes), an ICC-based, calibrated, Lab, separation or `Default` colour space,
-  or a `gs` key not listed above.
+  `/OutputIntents` on the catalog or the page (any at all: a viewer may show the page through
+  their profile), or a `gs` key not listed above.
 
 pdfregions runs the same allow-list again on its own pass before every copy job (`err:copy`
 otherwise), so both must agree; the earlier overpaint estimate (`overlaid="0"`) stays as one

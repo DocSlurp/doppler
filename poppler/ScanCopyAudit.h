@@ -32,8 +32,10 @@
 // Anything else, at any depth (forms, annotation appearances, charprocs), denies the page:
 // every other operator (fills, strokes, shadings, inline images, Type 3 glyph metrics),
 // visible text in any mode, a second image, a page /Group, a transparency group, a soft mask,
-// a non-rectangular or stroke clip, and any annotation that draws an appearance or border, in
-// view or in print mode (only a link or popup with no appearance and no border is let pass).
+// a non-rectangular or stroke clip, any annotation that draws an appearance or border, in
+// view or in print mode (only a link or popup with no appearance and no border is let pass),
+// and /OutputIntents on the catalog or the page (a viewer may show the page through their
+// destination profile, which a copy of the samples does not carry).
 // Operators the table does not know are ignored by Gfx and paint nothing.
 //
 // Gfx feeds it (OutputDev::getScanCopyAudit, asked once per page Gfx): op() before each
@@ -87,6 +89,7 @@ public:
         Group, // a transparency group
         SoftMask, // a soft mask
         Annotation, // an annotation drew something
+        OutputIntent, // the document (or the page) has /OutputIntents: a viewer may show the page through their profile
     };
 
     // A new page: forget the last one. The state's CTM is the page's base matrix.

@@ -151,6 +151,11 @@ CASES = {
     "transfer": (b"q /Tr gs " + SCAN + b"Q\n", "", "", 6, False),
     "unknown-gs-key": (b"q /Unknown gs " + SCAN + b"Q\n", "", "", 6, False),
     "page-group": (SCAN, "/Group << /S /Transparency /CS /DeviceRGB >>", "", 6, False),
+    # denied: output intents (a viewer may show the page through their profile), on the
+    # catalog or the page, whatever they hold
+    "output-intent": (SCAN, "", "/OutputIntents [<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (x) >>]", 6, False),
+    "output-intent-empty": (SCAN, "", "/OutputIntents []", 6, False),
+    "page-output-intent": (SCAN, "/OutputIntents [<< /Type /OutputIntent /S /GTS_PDFX >>]", "", 6, False),
     "stencil-white": (b"1 g q 612 0 0 792 0 0 cm /M Do Q\n", "", "", 19, False),
     # denied: colour
     "icc": (b"q 612 0 0 792 0 0 cm /I Do Q\n", "", "", 13, False),

@@ -23,6 +23,8 @@
 #include "GfxFont.h"
 #include "GfxState.h"
 #include "Page.h"
+#include "PDFDoc.h"
+#include "XRef.h"
 #include "Stream.h"
 #include "PageFactsHooks.h"
 
@@ -136,6 +138,8 @@ const char *ScanCopyAudit::reasonName(Reason r)
         return "cropbox";
     case Reason::PageGroup:
         return "page-group";
+    case Reason::OutputIntent:
+        return "output-intent";
     case Reason::Group:
         return "group";
     case Reason::SoftMask:
@@ -163,6 +167,17 @@ void ScanCopyAudit::startPage(Page *page, const GfxState *state)
     }
     if (page->getGroup()) {
         deny(Reason::PageGroup);
+    }
+    // output intents (on the catalog, or a PDF 2.0 page's own): present at all, whatever they
+    // hold, denies; nothing of them is fetched
+    {
+        PDFDoc *doc = page->getDoc();
+        XRef *xref = doc ? doc->getXRef() : nullptr;
+        const Object catalog = xref ? xref->getCatalog() : Object::null();
+        const Object &pageObj = page->getPageObj();
+        if (!catalog.isDict() || !catalog.dictLookupNF("OutputIntents").isNull() || (pageObj.isDict() && !pageObj.dictLookupNF("OutputIntents").isNull())) {
+            deny(Reason::OutputIntent);
+        }
     }
     // annotations: the audit runs the page in view mode, where drawAnnot reports what is drawn
     // (annotation()); one shown only when printing (Print with NoView) or one that draws in
