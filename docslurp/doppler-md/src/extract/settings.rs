@@ -91,6 +91,10 @@ pub struct Settings {
     pub confine: &'static str,
     /// only figures on these pages (1-based, inclusive) are extracted
     pub pages: Option<(u32, u32)>,
+    /// `--images-resume-pages`: a resume retries only the resumable images on these pages
+    /// (1-based, inclusive); the others keep their entries, still resumable. Not part of the
+    /// settings a manifest is bound to: it narrows what one resume does, not what the images are.
+    pub resume_pages: Option<(u32, u32)>,
     /// `--images-link-prefix`: put before each image path in the Markdown links
     pub link_prefix: String,
     /// `--images-batch-pages`: pages per extraction batch (one renderer each, its own budgets)
@@ -141,6 +145,7 @@ impl Default for Settings {
             timeout: Duration::from_secs(120),
             confine: "auto",
             pages: None,
+            resume_pages: None,
             link_prefix: super::layout::DEFAULT_PREFIX.into(),
             batch_pages: 64,
             doc_max_bytes: 4 << 30,
@@ -177,6 +182,7 @@ const WITH_VALUE: &[&str] = &[
     "--images-timeout",
     "--images-confine",
     "--images-pages",
+    "--images-resume-pages",
     // links (also without --images-dir) and batches
     "--images-link-prefix",
     "--images-batch-pages",
@@ -293,14 +299,8 @@ impl Settings {
                     _ => return Err(format!("{name} takes require, auto or off, not {v:?}")),
                 }
             }
-            "--images-pages" => {
-                let (a, b) = v.split_once('-').unwrap_or((v, v));
-                let (a, b) = (int(a, 1, i32::MAX as u64).ok_or_else(bad)?, int(b, 1, i32::MAX as u64).ok_or_else(bad)?);
-                if a > b {
-                    return Err(bad());
-                }
-                self.pages = Some((a as u32, b as u32));
-            }
+            "--images-pages" => self.pages = Some(page_range(v).ok_or_else(bad)?),
+            "--images-resume-pages" => self.resume_pages = Some(page_range(v).ok_or_else(bad)?),
             "--images-timeout" => self.timeout = Duration::from_secs(int(v, 1, 86400).ok_or_else(bad)?),
             "--images-link-prefix" => {
                 super::layout::check_prefix(v)?;
@@ -335,7 +335,16 @@ impl Settings {
                  and --scan-pages, which need --markers)"
                 .into());
         }
+        if self.resume_pages.is_some() && !self.resume {
+            return Err("--images-resume-pages needs --images-resume".into());
+        }
         Ok(())
+    }
+
+    /// Whether a resume retries the resumable images of `page` (`--images-resume-pages`; all
+    /// pages without it).
+    pub fn resumes_page(&self, page: u32) -> bool {
+        self.resume_pages.is_none_or(|(a, b)| (a..=b).contains(&page))
     }
 
     /// Whether a flag that shapes the links was given.
@@ -396,6 +405,13 @@ impl Settings {
             MinSide::Px(v) => v * 72.0 / f64::from(self.dpi),
         }
     }
+}
+
+/// `A-B` or `N` (1-based, inclusive, A <= B).
+fn page_range(v: &str) -> Option<(u32, u32)> {
+    let (a, b) = v.split_once('-').unwrap_or((v, v));
+    let (a, b) = (int(a, 1, i32::MAX as u64)?, int(b, 1, i32::MAX as u64)?);
+    (a <= b).then_some((a as u32, b as u32))
 }
 
 fn int(v: &str, lo: u64, hi: u64) -> Option<u64> {
@@ -546,6 +562,24 @@ mod tests {
     }
 
     #[test]
+    fn resume_pages_narrow_a_resume_only() {
+        let s = with(&[("--images-resume", Some("out")), ("--images-resume-pages", Some("3-4"))]).unwrap();
+        assert_eq!(s.resume_pages, Some((3, 4)));
+        assert_eq!(
+            (s.resumes_page(2), s.resumes_page(3), s.resumes_page(4), s.resumes_page(5)),
+            (false, true, true, false)
+        );
+        let s = with(&[("--images-resume", Some("out")), ("--images-resume-pages", Some("7"))]).unwrap();
+        assert_eq!(s.resume_pages, Some((7, 7)));
+        assert!(with(&[("--images-resume", Some("out"))]).unwrap().resumes_page(1_000_000));
+        // not with --images-dir, and not part of the settings a manifest is bound to
+        assert!(with(&[("--images-dir", Some("out")), ("--images-resume-pages", Some("3-4"))]).is_err());
+        let a = with(&[("--images-resume", Some("out"))]).unwrap();
+        let b = with(&[("--images-resume", Some("out")), ("--images-resume-pages", Some("3-4"))]).unwrap();
+        assert_eq!(a.output_canonical(), b.output_canonical());
+    }
+
+    #[test]
     fn bad_values() {
         for (k, v) in [
             ("--images-min-side", "-1"),
@@ -574,6 +608,8 @@ mod tests {
             ("--images-pages", "5-2"),
             ("--images-pages", "0-2"),
             ("--images-pages", "1-"),
+            ("--images-resume-pages", "5-2"),
+            ("--images-resume-pages", "0"),
             ("--images-dir", ""),
             ("--images-link-prefix", "../x/"),
             ("--images-link-prefix", "x"),
