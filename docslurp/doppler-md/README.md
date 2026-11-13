@@ -598,9 +598,15 @@ temporary name in a directory opened without following links, then renamed with
 **manifest.json** (version 2; written last, atomically, after the files are synced; the same
 input gives the same bytes; a DIR without a manifest is garbage). It is the source of truth:
 every link of the Markdown has an entry, and every file in DIR is listed. First line:
-`version` (2), `source_sha256` (the PDF), `link_prefix`, `dpi`, `min_side_pt`, `repeats`,
-`scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`, `deadline_ms` (the effective
-`--images-deadline`), `complete` (every batch finished); then `batches`, one per line:
+`version` (2), `source_sha256` (the PDF), `settings_sha256` (what a resume must repeat: the
+conversion settings an images plan is bound to, `-f`/`-l`, the link options, the formats and
+their encoder settings, `--images-dpi`, `--images-min-side`, `--images-pages`,
+`--images-max-file-bytes`, `--svg-*`, `--scan-dpi`, `--scan-max-dpi`; not the budgets, batch
+size, time limits or confinement), `resumes` (how many `--images-resume` runs rewrote it),
+`resumable` (some image may still be extracted by a resume), `link_prefix`, `dpi`,
+`min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`,
+`deadline_ms` (the effective `--images-deadline`), `complete` (every batch finished and no
+image was left by a stopped batch); then `batches` (of this run; a resume lists its own), one per line:
 `{"pages":[A,B],"status":S,"cut_page":N}`, `status` `ok`, `budget`, `doc_budget`, `timeout`,
 `deadline`, `renderer` or `aborted`, and `cut_page` the first page with an image the batch did
 not get to. Then `images`, sorted by page, pictures before figures, by index, one per line:
@@ -612,7 +618,9 @@ not get to. Then `images`, sorted by page, pictures before figures, by index, on
 `scan-pages` (`--scan-pages skip`), `copy` (a scan copy that failed its checks: `error` `jpeg`,
 `size`, `kind`, or the renderer's `copy`, `copysize`, `pixels`, `decode`), `error`
 for a per-image renderer or record error, and the batch stops `budget`, `doc_budget`,
-`timeout`, `deadline`, `renderer`, `aborted`), `error` with `reason: error` (renderer `pixels`,
+`timeout`, `deadline`, `renderer`, `aborted`), `resumable: true` for the reasons a resume
+retries (`budget`, `doc_budget`, `deadline`, `timeout`, `aborted`: the batch stopped, not
+anything about the image), `error` with `reason: error` (renderer `pixels`,
 `render`, `empty`, `page`, `svgsize`, `renderer`; `mismatch` when a record does not match its
 request in id, size within 1 px of box × dpi, or byte count; `utf8`), `repeat_of`, `format`
 (the link's extension), `source` (`render`; for page scans also `copy`, a JPEG written
@@ -643,16 +651,38 @@ go on. A batch that reaches `--images-max` or `--images-max-bytes`, times out, o
 renderer fails (crash, signal, any non-zero exit including 3 limit and 5 cannot confine,
 broken framing) keeps the files it wrote (a record is used only once whole), marks its other
 images `not-extracted` with the reason, records `cut_page`, and the next batch starts with a
-fresh budget. Two failed batches in a row mark the rest `aborted`: a failed batch is one whose
-`status` is `budget` (files, bytes or scan bytes, also when the batch went on past a scan or
-figure budget), `timeout` or `renderer`, since we do not pay for more work on bad inputs; an
-`ok` batch resets the count. The rest is marked `aborted`
+fresh budget. Two failed batches in a row, or three in all, mark the rest `aborted`: a failed
+batch is one whose `status` is `timeout`, `deadline`, `renderer`, or `budget` because of the
+scans' pool (`--scan-max`, `--scan-max-bytes`) or the protocol's job limit, since we do not
+pay for more work on bad inputs; an `ok` batch ends a run of failed ones (but not the total).
+A batch stopped by the figures' pool alone (`--images-max`, `--images-max-bytes`) is not
+failed: it neither counts nor ends a run, and its images are `not-extracted`, `budget`,
+`resumable: true` for a later `--images-resume`. The rest is marked `aborted`
 without starting another renderer; `--images-doc-max-bytes` and `--images-deadline` mark the
 rest `doc_budget` or `deadline`. Then the manifest is written, DIR is kept, and the exit status
 is **5** (`complete: false`). Only a hard failure removes DIR, with exit status **6**: a write
 failure (disk full, I/O error), a manifest that cannot be written, or a renderer that cannot be
 started. The Markdown is written in every case. pdftotext failing exits as before and removes
 DIR.
+
+**Resuming** (`--images-resume DIR`, in place of `--images-dir`): give the same PDF and either
+the same conversion options or `--images-plan PLAN`, and the same image options (the budgets,
+`--images-batch-pages`, the time limits and `--images-confine` may change). DIR's
+`manifest.json` must be version 2, name the same PDF (`source_sha256`) and settings
+(`settings_sha256`) and list exactly this conversion's images at the same paths; otherwise
+nothing is touched and the exit status is **2** (also for a DIR without a manifest). Only the
+images marked `resumable` are extracted, in fresh batches with their own budgets, under the
+document ceilings less the bytes DIR holds; every other entry stays as it was. Files go to the
+paths the Markdown already links, so the Markdown (written to stdout again when converting)
+never changes; they are created new, never replacing a file (one in the way is a hard
+failure). The manifest is then replaced in one rename, with each entry's new status and
+`resumes` one more. Exit status **0** when nothing is left (`complete`), **5** when the resume
+stopped too; a resume with nothing to do changes nothing and exits 0 (5 if the manifest still
+lists images a stopped batch left that are not resumable, such as `renderer`). A hard failure
+(exit **6**) keeps the old manifest and every file that was there, and removes only the files
+and page folders the resume made. Content repeats are compared within one run only: a resumed
+figure whose pixels repeat one extracted earlier gets its own file rather than
+`reason: repeat`.
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
@@ -700,8 +730,9 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
 
 ## Exit status and report
 
-- 5 (`pdftomarkdown --images-dir`): the Markdown was written and the images only in part; DIR
-  and its manifest are kept, and the manifest says why per image and per batch.
+- 5 (`pdftomarkdown --images-dir` or `--images-resume`): the Markdown was written and the
+  images only in part; DIR and its manifest are kept, and the manifest says why per image and
+  per batch (`resumable` images may be finished with `--images-resume DIR`).
 - 6 (`pdftomarkdown --images-dir`, `--images-plan-out` or `--page-facts`): the Markdown was
   written but image extraction failed hard (DIR removed), or the images plan or page facts
   could not be written.

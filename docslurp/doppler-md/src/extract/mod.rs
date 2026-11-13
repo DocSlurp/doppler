@@ -22,10 +22,12 @@
 //! that batch's own budgets (`--images-max`, `--images-max-bytes`, `--images-timeout`). A
 //! batch that hits a budget, times out or whose renderer fails keeps the files it wrote; its
 //! other images are `not-extracted` with the reason, the batch records the page it was cut at,
-//! and the next batch goes on. Two failed batches in a row (stopped by a budget, a timeout or
-//! the renderer: a document whose batches keep failing is not worth more work) stop the rest
-//! (`aborted`), as do the document ceilings (`--images-doc-max-bytes`, and `--images-deadline`,
-//! by default 120 s plus 0.5 s per converted page, at most an hour). Only a write failure or a
+//! and the next batch goes on. Two failed batches in a row, or three in all (stopped by the
+//! scans' budget, a time limit or the renderer: a document whose batches keep failing is not
+//! worth more work) stop the rest (`aborted`); a batch stopped by the figures' budget alone is
+//! not failed, and its images are resumable ([`resume`]). The document ceilings
+//! (`--images-doc-max-bytes`, and `--images-deadline`, by default 120 s plus 0.5 s per converted
+//! page, at most an hour) stop the rest too. Only a write failure or a
 //! renderer that cannot be started fails the extraction: the caller removes the folder.
 
 pub mod encode;
@@ -33,6 +35,7 @@ pub mod layout;
 pub mod outdir;
 pub mod plan;
 pub mod regions;
+pub mod resume;
 pub mod settings;
 pub mod svg;
 
@@ -57,6 +60,9 @@ const GRACE: Duration = Duration::from_secs(2);
 pub const MAX_SVG_INPUT: usize = 8 << 20;
 /// Failed batches in a row that stop the rest of the extraction.
 const MAX_FAILED_IN_A_ROW: usize = 2;
+/// Failed batches in all that stop the rest of the extraction (alternating failed and cheap
+/// batches never come two in a row).
+const MAX_FAILED: usize = 3;
 
 /// Why a batch stopped before its end, as the manifest says it (the batch's `status` and the
 /// `reason` of the images it did not get to).
@@ -224,12 +230,18 @@ struct Run<'a> {
 /// Extracts the images of `report` into `dir` and writes `manifest.json` last: sets each note's
 /// link (from `s`, as the Markdown has them) and `file`, and the report's `images_written`,
 /// `images_complete`, `images_confined` and `images_timing`. `source_sha256` names the PDF in
-/// the manifest. `Err` is a hard failure (a write failure, or a renderer that cannot be
-/// started): the caller removes the folder.
+/// the manifest, `settings_sha256` the settings a resume must repeat. With `previous` (an
+/// earlier run's manifest, `--images-resume`), only its resumable images are extracted, the
+/// others keep their entries, and the manifest is replaced; nothing at all changes when none
+/// is resumable. `Err` is a hard failure (a write failure, a renderer that cannot be started,
+/// or a previous manifest that does not list these images): the caller removes what this run
+/// wrote (and the folder, unless resumed).
 pub fn extract(
     report: &mut Report,
     s: &Settings,
     source_sha256: &str,
+    settings_sha256: &str,
+    previous: Option<&resume::Previous>,
     renderer: &Renderer,
     dir: &mut OutDir,
 ) -> Result<Summary, String> {
@@ -246,7 +258,31 @@ pub fn extract(
     let index: HashMap<&str, usize> = notes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
     let mut promoted: HashSet<&str> = HashSet::new();
     let mut scan_render: HashSet<usize> = HashSet::new();
+    if let Some(prev) = previous
+        && prev.entries.len() != notes.len()
+    {
+        return Err(format!(
+            "--images-resume: manifest.json lists {} images, this conversion has {}",
+            prev.entries.len(),
+            notes.len()
+        ));
+    }
     for (i, n) in notes.iter().enumerate() {
+        // a resume keeps every entry but the resumable ones, which go through the same
+        // decisions as in the first run (all of which depend on the notes and settings only)
+        if let Some(prev) = previous {
+            let Some((old, path)) = prev.entries.get(&n.id) else {
+                return Err(format!("--images-resume: manifest.json does not list image {}", n.id));
+            };
+            let linked = if old.status == Status::Unlinked { None } else { n.link.as_ref() };
+            if path.as_ref() != linked {
+                return Err(format!("--images-resume: image {} is at another path in manifest.json", n.id));
+            }
+            if !old.resumable() {
+                entries[i] = old.clone();
+                continue;
+            }
+        }
         let e = &mut entries[i];
         let scan = n.fate == Fate::PageScan;
         if n.scan.is_some() && !scan {
@@ -337,13 +373,38 @@ pub fn extract(
         *key_count.entry(repeat_key(&notes[*i])).or_default() += 1;
     }
     let shared_keys = key_count.into_iter().filter(|(_, c)| *c > 1).map(|(k, _)| k).collect();
+    // what the folder already holds (a resume): counted in the totals and the document ceiling
+    let held = |scans: bool| {
+        entries
+            .iter()
+            .zip(notes)
+            .filter(|(e, n)| e.status == Status::Extracted && (!scans || n.fate == Fate::PageScan))
+            .fold((0usize, 0u64), |(c, b), (e, _)| (c + 1, b.saturating_add(e.bytes)))
+    };
+    let (held_files, held_bytes) = held(false);
+    let (held_scans, held_scan_bytes) = held(true);
+    if previous.is_some() && jobs.is_empty() {
+        // nothing to resume: the folder and its manifest stay exactly as they are
+        let complete = !entries.iter().any(Entry::stopped);
+        let files: Vec<Option<String>> = entries
+            .iter()
+            .zip(notes)
+            .map(|(e, n)| if e.status == Status::Extracted { n.link.clone() } else { None })
+            .collect();
+        for (n, f) in report.images.iter_mut().zip(files) {
+            n.file = f;
+        }
+        report.images_written = Some(held_files);
+        report.images_complete = Some(complete);
+        return Ok(Summary { written: held_files, complete });
+    }
     let mut run = Run {
         s,
         notes,
         entries,
         dir,
-        written: 0,
-        total_bytes: 0,
+        written: held_files,
+        total_bytes: held_bytes,
         batch_written: 0,
         batch_bytes: 0,
         scan_batch_written: 0,
@@ -351,8 +412,8 @@ pub fn extract(
         scan_over: false,
         figures_over: false,
         scan_render,
-        scans_written: 0,
-        scan_bytes: 0,
+        scans_written: held_scans,
+        scan_bytes: held_scan_bytes,
         seen_payload: HashMap::new(),
         shared_keys,
         fallbacks: Vec::new(),
@@ -363,7 +424,7 @@ pub fn extract(
     };
     let batch_pages = s.batch_pages.max(1);
     let mut batches: Vec<Batch> = Vec::new();
-    let mut failed_in_a_row = 0;
+    let (mut failed_in_a_row, mut failed) = (0, 0);
     let mut confined: Option<bool> = None;
     let mut k = 0;
     while k < jobs.len() {
@@ -373,7 +434,7 @@ pub fn extract(
         let pages = (first_page, first_page.saturating_add(batch_pages - 1));
         let batch = &jobs[k..end];
         k = end;
-        let skip = if failed_in_a_row >= MAX_FAILED_IN_A_ROW {
+        let skip = if failed_in_a_row >= MAX_FAILED_IN_A_ROW || failed >= MAX_FAILED {
             Some("aborted")
         } else if run.doc_full {
             Some("doc_budget")
@@ -389,28 +450,36 @@ pub fn extract(
             batches.push(Batch { pages, status: why, cut_page: Some(batch[0].0.page) });
             continue;
         }
-        let (status, c) = run.batch(batch, renderer)?;
+        let (status, c, counts) = run.batch(batch, renderer)?;
         confined = match (confined, c) {
             (Some(a), Some(b)) => Some(a && b),
             (a, b) => a.or(b),
         };
         let cut_page = batch.iter().filter(|(_, i)| run.entries[*i].stopped()).map(|(j, _)| j.page).min();
-        // a batch stopped by a budget counts as failed too: we do not pay for bad inputs
-        if matches!(status, "budget" | "timeout" | "renderer") {
+        // a batch stopped by the scans' budget, a time limit or its renderer counts as failed:
+        // we do not pay for bad inputs. One stopped only by the figures' budget does not (a
+        // resume finishes it), nor does it break a run of failed batches.
+        if counts {
             failed_in_a_row += 1;
-        } else {
+            failed += 1;
+        } else if status == "ok" {
             failed_in_a_row = 0;
         }
         batches.push(Batch { pages, status, cut_page: if status == "ok" { None } else { cut_page } });
     }
-    let complete = batches.iter().all(|b| b.status == "ok");
+    let complete = batches.iter().all(|b| b.status == "ok") && !run.entries.iter().any(Entry::stopped);
     if let (Some(b), Some(a)) = (cpu_before, children_cpu_ms()) {
         run.timing.children_ms = Some((a.0.saturating_sub(b.0), a.1.saturating_sub(b.1)));
     }
     // the files first, then the manifest that lists them
     run.dir.sync()?;
-    let manifest = manifest(&run, source_sha256, &batches, complete, doc_deadline);
-    run.dir.write("manifest.json", manifest.as_bytes())?;
+    let resumes = previous.map_or(0, |p| p.resumes.saturating_add(1));
+    let manifest = manifest(&run, source_sha256, settings_sha256, resumes, &batches, complete, doc_deadline);
+    if previous.is_some() {
+        run.dir.replace("manifest.json", manifest.as_bytes())?;
+    } else {
+        run.dir.write("manifest.json", manifest.as_bytes())?;
+    }
     run.dir.sync_top()?;
     let written = run.written;
     let files: Vec<Option<String>> = run
@@ -433,9 +502,14 @@ pub fn extract(
 
 impl Run<'_> {
     /// Renders and writes one batch (its jobs sorted by page), then its SVG fallbacks. Returns
-    /// how the batch ended (`ok` or one of [`STOPS`]) and whether the renderer said it was
-    /// confined. `Err` only for hard failures.
-    fn batch(&mut self, jobs: &[(Job, usize)], renderer: &Renderer) -> Result<(&'static str, Option<bool>), String> {
+    /// how the batch ended (`ok` or one of [`STOPS`]), whether the renderer said it was
+    /// confined, and whether it counts as failed for the abort rule (any stop but one by the
+    /// figures' budget alone). `Err` only for hard failures.
+    fn batch(
+        &mut self,
+        jobs: &[(Job, usize)],
+        renderer: &Renderer,
+    ) -> Result<(&'static str, Option<bool>, bool), String> {
         let s = self.s;
         self.batch_written = 0;
         self.batch_bytes = 0;
@@ -485,7 +559,15 @@ impl Run<'_> {
                 }
             }
         }
-        Ok((status, confined))
+        // stopped by the figures' pool alone: no job past the protocol's limit, no scan over the
+        // scans' pool (nor left without a file when the batch stopped)
+        let figures_only = status == "budget"
+            && over.is_empty()
+            && !self.scan_over
+            && !jobs.iter().any(|(_, i)| {
+                self.notes[*i].fate == Fate::PageScan && self.entries[*i].status == Status::NotExtracted("budget")
+            });
+        Ok((status, confined, status != "ok" && !figures_only))
     }
 
     /// One renderer run over `jobs` (`fallbacks`: the raster pass of refused SVG figures); every
@@ -901,7 +983,15 @@ fn js(s: &str) -> String {
 /// `manifest.json` (version 2): the run's settings and batches, then one image per line,
 /// sorted by page, then pictures before vector figures, by index; then the totals. The same
 /// input gives the same bytes.
-fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool, deadline: Duration) -> String {
+fn manifest(
+    run: &Run,
+    source_sha256: &str,
+    settings_sha256: &str,
+    resumes: u64,
+    batches: &[Batch],
+    complete: bool,
+    deadline: Duration,
+) -> String {
     let notes = run.notes;
     let s = run.s;
     let mut order: Vec<usize> = (0..run.entries.len()).collect();
@@ -910,8 +1000,10 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool, d
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"deadline_ms\":{},\"complete\":{complete},\n\"batches\":[",
+        "{{\"version\":2,\"source_sha256\":{},\"settings_sha256\":{},\"resumes\":{resumes},\"resumable\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"deadline_ms\":{},\"complete\":{complete},\n\"batches\":[",
         js(source_sha256),
+        js(settings_sha256),
+        run.entries.iter().any(Entry::resumable),
         js(&s.link_prefix),
         s.dpi,
         s.min_side_pt(),
@@ -974,6 +1066,9 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool, d
         );
         if let Some(r) = reason {
             let _ = write!(out, ",\"reason\":{}", js(r));
+        }
+        if e.resumable() {
+            out.push_str(",\"resumable\":true");
         }
         if let Some(err) = &e.error {
             let _ = write!(out, ",\"error\":{}", js(err));

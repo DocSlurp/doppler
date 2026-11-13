@@ -63,6 +63,9 @@ pub enum VectorFormat {
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub dir: Option<PathBuf>,
+    /// `--images-resume DIR`: `dir` is an earlier run's folder whose resumable images are
+    /// extracted now (see [`super::resume`])
+    pub resume: bool,
     pub min_side: MinSide,
     pub repeats: Repeats,
     pub raster_format: RasterFormat,
@@ -118,6 +121,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             dir: None,
+            resume: false,
             min_side: MinSide::Px(24.0),
             repeats: Repeats::Skip,
             raster_format: RasterFormat::Webp,
@@ -155,6 +159,7 @@ impl Default for Settings {
 /// Every flag that takes a value.
 const WITH_VALUE: &[&str] = &[
     "--images-dir",
+    "--images-resume",
     "--images-min-side",
     "--images-repeats",
     "--raster-format",
@@ -232,15 +237,19 @@ impl Settings {
         let bad = || format!("{name}: bad value {v:?}");
         if LINK_FLAGS.contains(&name) {
             self.link_flags = true;
-        } else if name != "--images-dir" {
+        } else if name != "--images-dir" && name != "--images-resume" {
             self.other_flags = true;
         }
         match name {
-            "--images-dir" => {
+            "--images-dir" | "--images-resume" => {
                 if v.is_empty() {
                     return Err(bad());
                 }
+                if self.dir.is_some() {
+                    return Err("give one --images-dir or --images-resume".into());
+                }
                 self.dir = Some(PathBuf::from(v));
+                self.resume = name == "--images-resume";
             }
             "--images-min-side" => self.min_side = parse_min_side(v).ok_or_else(bad)?,
             "--images-repeats" => {
@@ -343,6 +352,32 @@ impl Settings {
             repeats: self.repeats,
             scans: self.scan_pages,
         }
+    }
+
+    /// What shapes the files and the manifest's entries, for the manifest's settings digest
+    /// (a resume must make the same files an uninterrupted run would): the links, the formats
+    /// and their encoder settings, the resolutions, the smallest side and the page range. The
+    /// budgets, batch size, time limits and confinement are left out: a resume may change them.
+    pub fn output_canonical(&self) -> String {
+        format!(
+            "{}files min_side={:?} raster_quality={} raster_lossless={} raster_method={} lossless_method={} \
+             lossless_quality={} svg_precision={} svg_max_bytes={} max_file_bytes={} dpi={} pages={:?} scan_dpi={} \
+             scan_max_dpi={}\n",
+            self.link_style().canonical(),
+            self.min_side,
+            self.raster_quality,
+            self.raster_lossless,
+            self.raster_method,
+            self.lossless_method,
+            self.lossless_quality,
+            self.svg_precision,
+            self.svg_max_bytes,
+            self.max_file_bytes,
+            self.dpi,
+            self.pages,
+            self.scan_dpi,
+            self.scan_max_dpi
+        )
     }
 
     /// The WebP encoder effort.

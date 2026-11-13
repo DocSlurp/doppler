@@ -24,9 +24,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use doppler_md::extract::outdir::{NewFile, OutDir};
-use doppler_md::extract::plan;
 use doppler_md::extract::regions::{self, Renderer};
 use doppler_md::extract::settings::Settings;
+use doppler_md::extract::{plan, resume};
 use doppler_md::{Options, Params, TableFormat};
 
 #[path = "../cli.rs"]
@@ -117,8 +117,10 @@ closed once the Markdown is complete, before extraction):
   --images-batch-pages N      pages per extraction batch (64): one pdfregions each, with the
                               budgets below; a batch over budget keeps its files, the rest of
                               it is not-extracted (manifest: reason, cut_page) and the next goes on;
-                              two failed batches in a row (budget, timeout, renderer) stop the rest
-                              (aborted)
+                              two failed batches in a row, or three in all (timeout, deadline,
+                              renderer, the scans' budget) stop the rest (aborted); a stop by
+                              --images-max or --images-max-bytes alone is not a failure, and its
+                              images are resumable
   --images-max N              most files per batch (500); --images-max-bytes N (256MiB) per
                               batch; --images-max-file-bytes N (8MiB): that file only
   --images-timeout S          renderer time per batch (120)
@@ -148,6 +150,16 @@ closed once the Markdown is complete, before extraction):
                               --html, image link options and the --scan-... thresholds, and the same
                               pdftomarkdown version,
                               or it is refused (exit status 2)
+  --images-resume DIR         instead of --images-dir: finish an earlier run's DIR, extracting
+                              only its resumable images (stopped by a budget, time limit or the
+                              abort rule) to the paths the Markdown links, never replacing a
+                              file; the manifest is replaced (resumes + 1). Give the same FILE.pdf
+                              and the same conversion and image options (or --images-plan PLAN);
+                              the budgets, batch size, time limits and --images-confine may
+                              change. A manifest that is not version 2, names another PDF or
+                              other settings, or is missing is refused (exit status 2, nothing
+                              touched); a hard failure keeps the old manifest and files and
+                              removes only the new ones (6); 0 complete, 5 still partial
   Exit status 5: Markdown written, images in part (DIR and manifest.json kept; manifest:
   complete false, why per image and per batch). 6: Markdown written, extraction failed (DIR
   removed), or the images plan could not be written.
@@ -423,6 +435,9 @@ fn main() -> ExitCode {
         scan.canonical()
     ));
     let pages = (first.map(|n| n as u32), last.map(|n| n as u32));
+    // what a manifest is bound to (a resume must repeat it): the conversion, the page range
+    // and everything that shapes the files
+    let files_settings = plan::settings_digest(&format!("{settings}\npages {pages:?}\n{}", images.output_canonical()));
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
     // it as an option ("-" is stdin to pdftotext)
     let file = if input.as_encoded_bytes().first() == Some(&b'-') && input != "-" {
@@ -461,17 +476,38 @@ fn main() -> ExitCode {
     facts_opts.extend(scan.pdftotext_args());
     // pdftotext always runs under a wall-clock bound scaled from the page count
     facts_opts.extend(text_timeout.pdftotext_args());
-    // the folder is created before anything runs: it must be new
-    let mut out_dir = match images.dir.as_deref().map(OutDir::create) {
+    // the folder is created before anything runs: it must be new (a resumed one must exist,
+    // with a manifest bound to this PDF and these settings)
+    let flag = if images.resume { "--images-resume" } else { "--images-dir" };
+    let opened =
+        images.dir.as_deref().map(|d| if images.resume { OutDir::open_existing(d) } else { OutDir::create(d) });
+    let mut out_dir = match opened {
         Some(Ok(d)) => Some(d),
         Some(Err(e)) => {
-            eprintln!("pdftomarkdown: --images-dir: {e}");
+            eprintln!("pdftomarkdown: {flag}: {e}");
             return ExitCode::from(2);
         }
         None => None,
     };
+    let previous = match out_dir.as_ref().filter(|_| images.resume) {
+        Some(d) => {
+            let read = d.read("manifest.json", resume::MAX_MANIFEST_BYTES).and_then(|m| {
+                let m = m.ok_or("the folder has no manifest.json")?;
+                resume::read(&m, &source_sha256(&file)?, &files_settings)
+            });
+            match read {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("pdftomarkdown: --images-resume: refused: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        None => None,
+    };
+    let bound = (files_settings.as_str(), previous.as_ref());
     let code = match &plan_in {
-        Some(plan) => extract_from_plan(plan, &file, pages, &settings, &images, &passwords, &mut out_dir),
+        Some(plan) => extract_from_plan(plan, &file, pages, &settings, &images, &passwords, &mut out_dir, bound),
         None => convert(
             &params,
             &opts,
@@ -487,6 +523,7 @@ fn main() -> ExitCode {
             plan_file.map(|f| (f, pages, settings)),
             &facts_opts,
             facts_file,
+            bound,
         ),
     };
     // a folder left over is a failed or skipped extraction
@@ -514,6 +551,7 @@ fn convert(
     plan_out: Option<(NewFile, (Option<u32>, Option<u32>), String)>,
     facts_opts: &[OsString],
     mut facts_file: Option<FactsFile>,
+    (files_settings, previous): (&str, Option<&resume::Previous>),
 ) -> ExitCode {
     // the plan names the bytes converted: hash them first
     let plan_out = match plan_out.map(|(f, pages, settings)| binding(file, pages, settings).map(|b| (f, b))) {
@@ -654,7 +692,15 @@ fn convert(
         // images are extracted (the report and exit status still come after)
         close_stdout();
         let r = source_sha256(file).and_then(|sha| {
-            doppler_md::extract::extract(&mut report, images, &sha, &renderer(file, images, passwords), dir)
+            doppler_md::extract::extract(
+                &mut report,
+                images,
+                &sha,
+                files_settings,
+                previous,
+                &renderer(file, images, passwords),
+                dir,
+            )
         });
         match r {
             Ok(summary) => {
@@ -763,6 +809,7 @@ fn binding(
 /// after a conversion: 0, 5 when the images were extracted in part (DIR kept), 6 when
 /// extraction failed (DIR removed); 2 for an unreadable plan or one bound to another PDF, page
 /// range, settings or version.
+#[allow(clippy::too_many_arguments)]
 fn extract_from_plan(
     plan_path: &OsString,
     file: &OsString,
@@ -771,6 +818,7 @@ fn extract_from_plan(
     images: &Settings,
     passwords: &[OsString],
     out_dir: &mut Option<OutDir>,
+    (files_settings, previous): (&str, Option<&resume::Previous>),
 ) -> ExitCode {
     use std::io::Read as _;
     let mut text = String::new();
@@ -798,7 +846,15 @@ fn extract_from_plan(
     let mut report = doppler_md::Report { images: notes, parse, ..Default::default() };
     let Some(dir) = out_dir.as_mut() else { return ExitCode::from(2) };
     let r = source_sha256(file).and_then(|sha| {
-        doppler_md::extract::extract(&mut report, images, &sha, &renderer(file, images, passwords), dir)
+        doppler_md::extract::extract(
+            &mut report,
+            images,
+            &sha,
+            files_settings,
+            previous,
+            &renderer(file, images, passwords),
+            dir,
+        )
     });
     match r {
         Ok(summary) => {

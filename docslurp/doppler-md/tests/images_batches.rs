@@ -127,6 +127,10 @@ fn status(m: &serde_json::Value, page: u32) -> (String, Option<String>) {
     (e["status"].as_str().unwrap().to_string(), e["reason"].as_str().map(str::to_string))
 }
 
+fn entry(m: &serde_json::Value, page: u32) -> &serde_json::Value {
+    m["images"].as_array().unwrap().iter().find(|e| e["page"] == page).unwrap()
+}
+
 fn batches(m: &serde_json::Value) -> Vec<(String, Option<u64>)> {
     m["batches"]
         .as_array()
@@ -152,23 +156,22 @@ fn each_batch_has_its_own_renderer_and_budgets() {
     );
     let err = String::from_utf8_lossy(&r.stderr);
     assert_eq!(r.status.code(), Some(5), "{err}");
-    // one renderer per batch, each with a fresh budget; two batches stopped by their budget in
-    // a row abort the rest without a third renderer (we do not pay for bad inputs)
-    assert_eq!(std::fs::read_to_string(&log).unwrap(), "1 2\n3 4\n");
+    // one renderer per batch, each with a fresh budget; a batch stopped by the figures' budget
+    // alone is not a failure (a resume finishes it): three of them in a row do not abort
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "1 2\n3 4\n5 6\n");
     let m = manifest(&d);
-    assert_eq!(m["complete"], false);
-    let want = vec![("budget".to_string(), Some(2)), ("budget".to_string(), Some(4)), ("aborted".to_string(), Some(5))];
+    assert_eq!((&m["complete"], &m["resumable"], &m["resumes"]), (&false.into(), &true.into(), &0.into()));
+    let want = vec![("budget".to_string(), Some(2)), ("budget".to_string(), Some(4)), ("budget".to_string(), Some(6))];
     assert_eq!(batches(&m), want, "{m}");
-    // each batch that ran wrote its first picture; the budget cut the second
-    for page in [1, 3] {
+    // each batch wrote its first picture; the budget cut the second, which a resume may extract
+    for page in [1, 3, 5] {
         assert_eq!(status(&m, page).0, "extracted", "{page}");
         assert!(d.join(format!("page-{page:04}/image-001.webp")).is_file());
+        assert!(entry(&m, page).get("resumable").is_none());
     }
-    for page in [2, 4] {
+    for page in [2, 4, 6] {
         assert_eq!(status(&m, page), ("not-extracted".into(), Some("budget".into())), "{page}");
-    }
-    for page in [5, 6] {
-        assert_eq!(status(&m, page), ("not-extracted".into(), Some("aborted".into())), "{page}");
+        assert_eq!(entry(&m, page)["resumable"], true);
     }
     assert!(err.contains("\"images_complete\":false"), "{err}");
     // the batches of the default size are one here, and nothing is cut
@@ -306,4 +309,190 @@ fn page_markers_name_the_pdf_pages() {
     // off: the Markdown is as before
     let r = run(&p, &["-f", "2", "-l", "3", &pdf], &[]);
     assert!(!String::from_utf8_lossy(&r.stdout).contains("doppler:page"));
+}
+
+#[test]
+fn failed_batches_abort_two_in_a_row_or_three_in_all() {
+    // one page a batch, the renderer failing on every other page: never two in a row, but the
+    // third failure stops the rest (alternating failed and cheap batches must not run forever)
+    let Some((p, s, pdf)) = setup("alternate", 8) else { return };
+    let log = s.0.join("runs.log");
+    let d = s.0.join("out");
+    let r = run(
+        &p,
+        &["--images-dir", d.to_str().unwrap(), "--images-batch-pages", "1", &pdf],
+        &[("FAKE_PDFREGIONS_FAIL_PAGES", "1,3,5,7"), ("FAKE_PDFREGIONS_LOG", log.to_str().unwrap())],
+    );
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&d);
+    let got: Vec<String> = batches(&m).into_iter().map(|b| b.0).collect();
+    assert_eq!(got, ["renderer", "ok", "renderer", "ok", "renderer", "aborted", "aborted", "aborted"], "{m}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 5, "no renderer after the third failure");
+    for page in [6, 7, 8] {
+        assert_eq!(status(&m, page), ("not-extracted".into(), Some("aborted".into())));
+        assert_eq!(entry(&m, page)["resumable"], true);
+    }
+    // a renderer failure is the image's own: not resumable
+    assert!(entry(&m, 1).get("resumable").is_none());
+}
+
+/// Every file under `dir` but the manifest: relative path -> (bytes, inode, mtime).
+fn files(dir: &Path) -> std::collections::BTreeMap<String, (Vec<u8>, u64, std::time::SystemTime)> {
+    use std::os::unix::fs::MetadataExt;
+    let mut out = std::collections::BTreeMap::new();
+    for sub in std::fs::read_dir(dir).unwrap() {
+        let sub = sub.unwrap().path();
+        if !sub.is_dir() {
+            continue;
+        }
+        for f in std::fs::read_dir(&sub).unwrap() {
+            let f = f.unwrap().path();
+            let md = std::fs::metadata(&f).unwrap();
+            let rel = f.strip_prefix(dir).unwrap().to_str().unwrap().to_string();
+            out.insert(rel, (std::fs::read(&f).unwrap(), md.ino(), md.modified().unwrap()));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_resume_finishes_what_a_budget_stopped() {
+    let Some((p, s, pdf)) = setup("resume", 6) else { return };
+    let full = s.0.join("full");
+    let r = run(&p, &["--images-dir", full.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0));
+    let markdown = r.stdout;
+    let part = s.0.join("part");
+    let budget = ["--images-batch-pages", "2", "--images-max", "1"];
+    let mut args = vec!["--images-dir", part.to_str().unwrap()];
+    args.extend(budget);
+    args.push(&pdf);
+    let r = run(&p, &args, &[]);
+    assert_eq!(r.status.code(), Some(5));
+    assert_eq!(r.stdout, markdown);
+    let before = files(&part);
+    assert_eq!(before.len(), 3);
+    // the resume: the same PDF and settings, the budgets left at their defaults
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-batch-pages", "2", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(r.stdout, markdown, "the Markdown never changes");
+    let after = files(&part);
+    let whole = files(&full);
+    assert_eq!(
+        after.iter().map(|(k, v)| (k, &v.0)).collect::<Vec<_>>(),
+        whole.iter().map(|(k, v)| (k, &v.0)).collect::<Vec<_>>(),
+        "the files of an uninterrupted run, byte for byte"
+    );
+    for (k, v) in &before {
+        assert_eq!((after[k].1, after[k].2), (v.1, v.2), "{k}: never rewritten");
+    }
+    let m = manifest(&part);
+    let f = manifest(&full);
+    assert_eq!((&m["complete"], &m["resumable"], &m["resumes"]), (&true.into(), &false.into(), &1.into()));
+    assert_eq!(m["totals"]["extracted"], 6);
+    for page in 1..=6 {
+        assert_eq!(entry(&m, page)["sha256"], entry(&f, page)["sha256"], "{page}");
+        assert_eq!(entry(&m, page)["path"], entry(&f, page)["path"], "{page}");
+    }
+    // nothing left to do: nothing changes, exit 0
+    let manifest_bytes = std::fs::read(part.join("manifest.json")).unwrap();
+    let mtime = std::fs::metadata(part.join("manifest.json")).unwrap().modified().unwrap();
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(std::fs::read(part.join("manifest.json")).unwrap(), manifest_bytes);
+    assert_eq!(std::fs::metadata(part.join("manifest.json")).unwrap().modified().unwrap(), mtime);
+    // from an images plan, without converting again
+    let plan = s.0.join("doc.plan");
+    let r = run(&p, &["--markers", "--images-plan-out", plan.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0));
+    let planned = s.0.join("planned");
+    let mut args = vec!["--images-plan", plan.to_str().unwrap(), "--images-dir", planned.to_str().unwrap()];
+    args.extend(budget);
+    args.push(&pdf);
+    assert_eq!(run(&p, &args, &[]).status.code(), Some(5));
+    let r =
+        run(&p, &["--images-plan", plan.to_str().unwrap(), "--images-resume", planned.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(
+        files(&planned).into_iter().map(|(k, v)| (k, v.0)).collect::<Vec<_>>(),
+        whole.into_iter().map(|(k, v)| (k, v.0)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_resume_is_refused_unless_bound_to_the_same_pdf_and_settings() {
+    let Some((p, s, pdf)) = setup("refuse", 4) else { return };
+    let part = s.0.join("part");
+    let r = run(&p, &["--images-dir", part.to_str().unwrap(), "--images-max", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    let snapshot = || {
+        let mut v: Vec<(String, Vec<u8>)> = files(&part).into_iter().map(|(k, v)| (k, v.0)).collect();
+        v.push(("manifest.json".into(), std::fs::read(part.join("manifest.json")).unwrap_or_default()));
+        v
+    };
+    let before = snapshot();
+    let resume = |extra: &[&str], file: &str| {
+        let mut args = vec!["--images-resume", part.to_str().unwrap()];
+        args.extend(extra);
+        args.push(file);
+        run(&p, &args, &[])
+    };
+    // another PDF (one page more)
+    let other = s.0.join("other.pdf");
+    std::fs::write(&other, make_pdf(5)).unwrap();
+    let r = resume(&[], other.to_str().unwrap());
+    assert_eq!(r.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("another PDF"), "{}", String::from_utf8_lossy(&r.stderr));
+    // other settings: a format, a resolution, a page range, the scan test
+    for extra in [
+        &["--raster-format", "png"][..],
+        &["--images-dpi", "300"],
+        &["-l", "3"],
+        &["--scan-max-words", "5"],
+        &["--images-repeats", "keep"],
+    ] {
+        let r = resume(extra, &pdf);
+        assert_eq!(r.status.code(), Some(2), "{extra:?}");
+        assert!(String::from_utf8_lossy(&r.stderr).contains("other settings"), "{extra:?}");
+    }
+    assert_eq!(snapshot(), before, "a refused resume changes nothing");
+    // a version 1 manifest, and none at all
+    let text = String::from_utf8(std::fs::read(part.join("manifest.json")).unwrap()).unwrap();
+    std::fs::write(part.join("manifest.json"), text.replacen("\"version\":2", "\"version\":1", 1)).unwrap();
+    assert_eq!(resume(&[], &pdf).status.code(), Some(2));
+    std::fs::remove_file(part.join("manifest.json")).unwrap();
+    assert_eq!(resume(&[], &pdf).status.code(), Some(2));
+    // a folder that does not exist, and --images-dir with --images-resume
+    assert_eq!(run(&p, &["--images-resume", s.0.join("none").to_str().unwrap(), &pdf], &[]).status.code(), Some(2));
+    let r = run(
+        &p,
+        &["--images-resume", part.to_str().unwrap(), "--images-dir", s.0.join("x").to_str().unwrap(), &pdf],
+        &[],
+    );
+    assert_eq!(r.status.code(), Some(2));
+    // the budget flags may change: a resume with a bigger budget is not refused
+    std::fs::write(part.join("manifest.json"), text).unwrap();
+    let r = resume(&["--images-max", "100", "--images-timeout", "30"], &pdf);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+}
+
+#[test]
+fn a_failed_resume_keeps_the_old_manifest_and_removes_only_its_own_files() {
+    let Some((p, s, pdf)) = setup("resume-fail", 4) else { return };
+    let part = s.0.join("part");
+    let r = run(&p, &["--images-dir", part.to_str().unwrap(), "--images-max", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    let manifest_bytes = std::fs::read(part.join("manifest.json")).unwrap();
+    // something put a file where page 4's picture goes: the resume writes pages 2 and 3, then
+    // must not replace it (a hard failure, exit 6)
+    std::fs::create_dir(part.join("page-0004")).unwrap();
+    std::fs::write(part.join("page-0004/image-001.webp"), b"theirs").unwrap();
+    let before = files(&part);
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(6), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(std::fs::read(part.join("manifest.json")).unwrap(), manifest_bytes, "the old manifest stays");
+    let after = files(&part);
+    assert_eq!(after.keys().collect::<Vec<_>>(), before.keys().collect::<Vec<_>>(), "only the new files went");
+    assert_eq!(std::fs::read(part.join("page-0004/image-001.webp")).unwrap(), b"theirs");
+    assert!(!part.join("page-0002").exists(), "a page folder the resume made is removed");
 }

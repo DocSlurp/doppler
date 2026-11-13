@@ -12,6 +12,12 @@
 //! Whatever the umask, nothing is readable by others: copy or `chmod` the files to share them.
 //! Names are checked against the layout's pattern ([`super::layout::valid_rel`]): no document
 //! string reaches a path.
+//!
+//! `--images-resume` opens an existing folder ([`OutDir::open_existing`]) the same way: page
+//! folders already there are reused (opened with `O_NOFOLLOW`), files are still created new
+//! (`RENAME_NOREPLACE`: an existing file is never overwritten), `manifest.json` alone is
+//! replaced ([`OutDir::replace`], an atomic rename), and [`OutDir::remove`] removes only what
+//! this run created, never the folder or what was there.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -29,6 +35,10 @@ pub struct OutDir {
     dir: OwnedFd,
     created: Vec<(Option<String>, String)>,
     subdirs: std::collections::HashSet<String>,
+    /// the page subfolders this run made (the others were there: `existing`)
+    made: Vec<String>,
+    /// the folder was there before this run (`--images-resume`)
+    existing: bool,
     /// the subfolder last written to, and its descriptor
     current: Option<(String, OwnedFd)>,
 }
@@ -62,7 +72,65 @@ impl OutDir {
                 return Err(err(&format!("opening {}", path.display()), e));
             }
         };
-        Ok(OutDir { parent, name, dir, created: Vec::new(), subdirs: std::collections::HashSet::new(), current: None })
+        Ok(OutDir {
+            parent,
+            name,
+            dir,
+            created: Vec::new(),
+            subdirs: std::collections::HashSet::new(),
+            made: Vec::new(),
+            existing: false,
+            current: None,
+        })
+    }
+
+    /// Opens the existing folder `path` (no component may be a symbolic link), for
+    /// `--images-resume`.
+    pub fn open_existing(path: &Path) -> Result<OutDir, String> {
+        let (parent, name) = open_parent(path, "--images-resume must end in a folder name")?;
+        let dir = rustix::fs::openat(
+            &parent,
+            &name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| err(&format!("opening {}", path.display()), e))?;
+        Ok(OutDir {
+            parent,
+            name,
+            dir,
+            created: Vec::new(),
+            subdirs: std::collections::HashSet::new(),
+            made: Vec::new(),
+            existing: true,
+            current: None,
+        })
+    }
+
+    /// The contents of regular file `name` (`manifest.json`) in the folder, read without
+    /// following a symbolic link; `Ok(None)` when it does not exist, `Err` past `max` bytes.
+    pub fn read(&self, name: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
+        use std::io::Read as _;
+        let fd = match rustix::fs::openat(
+            &self.dir,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(e) => return Err(err(&format!("opening {name}"), e)),
+        };
+        let st = rustix::fs::fstat(&fd).map_err(|e| err(&format!("reading {name}"), e))?;
+        if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
+            return Err(format!("{name} is not a regular file"));
+        }
+        let mut data = Vec::new();
+        std::fs::File::from(fd).take(max + 1).read_to_end(&mut data).map_err(|e| format!("reading {name}: {e}"))?;
+        if data.len() as u64 > max {
+            return Err(format!("{name} is larger than {max} bytes"));
+        }
+        Ok(Some(data))
     }
 
     /// The descriptor of page subfolder `sub`: made (0700, must not exist) the first time,
@@ -71,8 +139,12 @@ impl OutDir {
         if self.current.as_ref().is_none_or(|(n, _)| n != sub) {
             self.current = None;
             if !self.subdirs.contains(sub) {
-                rustix::fs::mkdirat(&self.dir, sub, Mode::from_raw_mode(0o700))
-                    .map_err(|e| err(&format!("creating {sub}"), e))?;
+                match rustix::fs::mkdirat(&self.dir, sub, Mode::from_raw_mode(0o700)) {
+                    Ok(()) => self.made.push(sub.to_string()),
+                    // a resumed folder's page folder (opened below without following links)
+                    Err(Errno::EXIST) if self.existing => {}
+                    Err(e) => return Err(err(&format!("creating {sub}"), e)),
+                }
                 self.subdirs.insert(sub.to_string());
             }
             let fd = rustix::fs::openat(
@@ -127,6 +199,31 @@ impl OutDir {
         Ok(())
     }
 
+    /// Replaces `manifest.json` with `data` in one rename (a resumed folder's manifest): the
+    /// old one stays until the new one is whole on disk.
+    pub fn replace(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
+        if name != "manifest.json" {
+            return Err("invalid file name".into());
+        }
+        let tmp = format!(".{name}.part");
+        let fd = rustix::fs::openat(
+            &self.dir,
+            tmp.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|e| err(&format!("creating {name}"), e))?;
+        self.created.push((None, tmp.clone()));
+        let mut f = std::fs::File::from(fd);
+        f.write_all(data).and_then(|()| f.sync_all()).map_err(|e| format!("writing {name}: {e}"))?;
+        drop(f);
+        rustix::fs::renameat(&self.dir, tmp.as_str(), &self.dir, name)
+            .map_err(|e| err(&format!("renaming {name}"), e))?;
+        // the new manifest is not this run's to remove
+        self.created.pop();
+        Ok(())
+    }
+
     /// Flushes the entries of the page subfolders and of the folder to disk.
     pub fn sync(&mut self) -> Result<(), String> {
         self.current = None;
@@ -151,7 +248,8 @@ impl OutDir {
     }
 
     /// Removes the files written, the page subfolders made and the folder (a folder that
-    /// something else put a file in stays, and this fails).
+    /// something else put a file in stays, and this fails). A resumed folder keeps itself and
+    /// everything that was in it: only this run's files and page folders go.
     pub fn remove(mut self) -> Result<(), String> {
         self.current = None;
         for (sub, n) in &self.created {
@@ -172,8 +270,11 @@ impl OutDir {
                 }
             }
         }
-        for d in &self.subdirs {
+        for d in &self.made {
             let _ = rustix::fs::unlinkat(&self.dir, d.as_str(), AtFlags::REMOVEDIR);
+        }
+        if self.existing {
+            return Ok(());
         }
         drop(self.dir);
         rustix::fs::unlinkat(&self.parent, &self.name, AtFlags::REMOVEDIR).map_err(|e| err("removing the folder", e))

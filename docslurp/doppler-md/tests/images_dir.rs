@@ -239,8 +239,10 @@ fn the_manifest_lists_every_link_and_every_file() {
     let m = manifest(&d);
     let text = std::fs::read_to_string(d.join("manifest.json")).unwrap();
     let source = sha(&std::fs::read(&pdf).unwrap());
+    let settings = m["settings_sha256"].as_str().unwrap();
+    assert!(settings.len() == 64 && settings.bytes().all(|b| b.is_ascii_hexdigit()), "{settings}");
     let head = format!(
-        "{{\"version\":2,\"source_sha256\":\"{source}\",\"link_prefix\":\"images/\",\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"complete\":true,\n\"batches\":[\n{{\"pages\":[1,64],\"status\":\"ok\"}}\n],\n\"images\":["
+        "{{\"version\":2,\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"resumes\":0,\"resumable\":false,\"link_prefix\":\"images/\",\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"complete\":true,\n\"batches\":[\n{{\"pages\":[1,64],\"status\":\"ok\"}}\n],\n\"images\":["
     );
     assert!(text.starts_with(&head), "{text}");
     let file = |f: &str| std::fs::read(d.join(f)).unwrap();

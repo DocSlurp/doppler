@@ -201,8 +201,9 @@ production.
   `default-src 'none'; style-src 'unsafe-inline'; sandbox` (DocSlurp pins this with a test).
 - **Figures never fail the Markdown.** The Markdown is written (and stdout closed) before
   extraction starts. A batch that hits a budget, times out or whose renderer fails keeps the
-  files it wrote and the next batch goes on (two failed batches in a row, budget stops
-  included, stop the rest); the whole extraction has a deadline (`--images-deadline`, by
+  files it wrote and the next batch goes on (two failed batches in a row, or three in all,
+  stop the rest; scan-budget stops count, a stop by the figures' budget alone does not, and
+  `pdftomarkdown --images-resume` finishes those later); the whole extraction has a deadline (`--images-deadline`, by
   default 120 s + 0.5 s per converted page, at most 3600 s); the
   manifest says what is missing and why, and the exit status is 5 with the folder kept.
 - **Copy jobs move stored bytes out of the parser.** A copied JPEG is the document's own
