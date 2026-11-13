@@ -5,7 +5,7 @@ byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-1
 
 ```sh
 doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--images-dir DIR ...] [--] FILE.pdf
+pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--text-timeout S] [--text-timeout-per-page P] [--text-timeout-max M] [--images-dir DIR ...] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -676,11 +676,8 @@ without them. Facts never go to stdout.
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
 | `--scan-min-coverage F`, `--scan-max-words N`, `--scan-layer-overlap F` | the scan test's thresholds ([Page scans](#page-scans)); a changed one is recorded on the doc line (`scanThresholds`), so the lines stay byte-identical to `pdfpagefacts` given the same `-scan-...` options |
 
-With page facts, pdftotext runs under a time limit of 60 s plus 1 s per page of the range, at
-most an hour (`-timeout 60 -timeout-per-page 1 -timeout-max 3600`); past it the conversion
-fails: pdftomarkdown exits 1 with no Markdown, and the message names pdftotext's timeout (its
-exit status 6, which is not pdftomarkdown's exit status 6). Without page facts there is no
-limit, as before.
+pdftotext's time limit (see [Exit status and report](#exit-status-and-report)) applies with or
+without page facts.
 
 With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
 Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor
@@ -703,9 +700,22 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
   the pdftotext used, which is probably not the DocSlurp fork), and 1 when pdftotext is not
   found, cannot be run or exits non-zero. pdftotext runs with `-q`, so the message names its
   exit status instead: 1 could not open or decrypt the PDF, 3 refused by the PDF's permissions,
-  6 (with page facts only) ran past its time limit,
-  99 bad arguments (a first page past the last page of the document, or not the fork). Page
-  numbers outside 1 to 2147483647 and `-f` after `-l` exit 2 before pdftotext runs.
+  6 ran past its time limit (below), 99 bad arguments (a first page past the last page of the
+  document, or not the fork). Page numbers outside 1 to 2147483647 and `-f` after `-l` exit 2
+  before pdftotext runs.
+- pdftotext always runs under a wall-clock limit: 60 s plus 1 s per page of the range, at most
+  3600 s (`-timeout 60 -timeout-per-page 1 -timeout-max 3600`), with or without page facts.
+  Plain pdftotext still has per-draw costs that no other limit bounds (a large direct image
+  dictionary is parsed again on every `Do`: 20,000 of them take about 30 s). Past the limit
+  pdftotext exits with its status 6 and pdftomarkdown fails with exit status 1 (never its own
+  6, which means the Markdown was written), no Markdown (with `--window` or `--stream`, the
+  pages already written stay written), and the fixed message `pdftomarkdown: pdftotext ran
+  past its time limit (status 6; see --text-timeout); no Markdown`. `--text-timeout S`,
+  `--text-timeout-per-page P` and `--text-timeout-max M` override the three values (whole
+  seconds, 0 to 86400; 0 turns that part off, and `--text-timeout 0 --text-timeout-per-page 0`
+  runs pdftotext without a limit). `--images-plan` runs no pdftotext and refuses them. Image
+  extraction is bounded on its own: every pdfregions batch gets `-timeout` from
+  `--images-timeout` (and `--images-deadline`).
 - `--report` prints one line of JSON to stderr: pages found and unclosed, lines and words kept,
   words skipped by reason (`missing_coord`, `bad_number` for a malformed or non-finite number,
   `outside_line`, `unclosed_line` for words of a `<line>` that never closed on a page), whether

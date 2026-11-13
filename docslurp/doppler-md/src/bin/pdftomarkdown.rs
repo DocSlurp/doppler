@@ -15,7 +15,7 @@
 //! pdftotext is `$PDFTOTEXT` if set, else a `pdftotext` next to this executable, else
 //! `pdftotext` on `PATH`. Exit status 2 for bad arguments or output without a `<page>` (a
 //! pdftotext that is not the fork), 1 when pdftotext cannot be run or exits non-zero
-//! (including its time limit with page facts, its own status 6, which is not ours).
+//! (including its time limit, always passed: its own status 6, which is not ours).
 
 #![forbid(unsafe_code)]
 
@@ -70,6 +70,15 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
   -f N, -l N     first and last page to convert
   --opw, --upw   owner and user password (also -opw, -upw); as with pdftotext they are
                  visible in the process list
+
+pdftotext time limit (always on: 60 s plus 1 s per page of the range, at most 3600 s; past it
+the conversion fails with exit status 1 and no Markdown, and stderr says pdftotext ran past
+its time limit; with --window or --stream the pages already written stay written):
+  --text-timeout S            seconds for the run, before the per-page seconds (60; 0: none)
+  --text-timeout-per-page P   seconds added per page of the range (1; 0: none)
+  --text-timeout-max M        cap on the total (3600; 0: no cap); --text-timeout 0
+                              --text-timeout-per-page 0 runs pdftotext without a limit
+                              (each 0 to 86400)
 
 
 image links (with --markers or --images-dir; they shape the Markdown):
@@ -153,10 +162,7 @@ docslurp/page-facts/README.md):
   --page-facts-fd N           write them to descriptor N (3 or more), open for writing and
                               inherited from the caller (the image renderer does not keep it)
   A facts write that fails (the reader closed it, say) keeps the Markdown: exit status 6.
-  With page facts pdftotext runs under a time limit of 60 s plus 1 s per page (at most
-  3600 s); past it the conversion fails with exit status 1 and no Markdown (pdftotext's own
-  status 6, its timeout, is named on stderr; it is not pdftomarkdown's 6). Without them there
-  is no limit.
+  pdftotext's time limit (--text-timeout) applies with or without them.
   --page-facts-level L        basic (default) or full
   --page-facts-include LIST   families added to basic: fonts,oddtext,images-detail,vectors,
                               forms,annots,ocg,structure
@@ -175,9 +181,50 @@ It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pd
 (image extraction) is found the same way ($PDFREGIONS).
 ";
 
-/// pdftotext's time limit when page facts are requested: 60 s plus 1 s per page of the range,
-/// at most an hour (pdftotext exits with status 6 past it).
-const FACTS_TIMEOUT: [&str; 6] = ["-timeout", "60", "-timeout-per-page", "1", "-timeout-max", "3600"];
+/// pdftotext's time limit, always passed: `base` seconds plus `per_page` a page of the range,
+/// at most `max` (0: none of that part; pdftotext exits with status 6 past it). Plain
+/// pdftotext still has per-draw costs no other bound covers (a large direct XObject
+/// dictionary is parsed again on every Do), so a run is never left unbounded by default.
+struct TextTimeout {
+    base: u32,
+    per_page: u32,
+    max: u32,
+}
+
+impl Default for TextTimeout {
+    fn default() -> Self {
+        TextTimeout { base: 60, per_page: 1, max: 3600 }
+    }
+}
+
+impl TextTimeout {
+    /// pdftotext's own range for each value.
+    const MAX_SECONDS: u32 = 86400;
+
+    fn apply(&mut self, option: &str, value: Option<&str>) -> Result<(), String> {
+        let n = value
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|n| *n <= Self::MAX_SECONDS)
+            .ok_or_else(|| format!("{option} needs whole seconds from 0 to {}", Self::MAX_SECONDS))?;
+        match option {
+            "--text-timeout" => self.base = n,
+            "--text-timeout-per-page" => self.per_page = n,
+            _ => self.max = n,
+        }
+        Ok(())
+    }
+
+    fn pdftotext_args(&self) -> [OsString; 6] {
+        [
+            "-timeout".into(),
+            self.base.to_string().into(),
+            "-timeout-per-page".into(),
+            self.per_page.to_string().into(),
+            "-timeout-max".into(),
+            self.max.to_string().into(),
+        ]
+    }
+}
 
 fn main() -> ExitCode {
     let mut params = Params::default();
@@ -196,6 +243,8 @@ fn main() -> ExitCode {
     let (mut facts_path, mut facts_fd): (Option<OsString>, Option<u32>) = (None, None);
     let mut facts_opts: Vec<OsString> = Vec::new();
     let mut scan = ScanThresholds::default();
+    let mut text_timeout = TextTimeout::default();
+    let mut text_timeout_set = false;
     let mut args = std::env::args_os().skip(1);
     let mut options_done = false;
     while let Some(a) = args.next() {
@@ -285,6 +334,13 @@ fn main() -> ExitCode {
                     return usage_error(&e);
                 }
             }
+            "--text-timeout" | "--text-timeout-per-page" | "--text-timeout-max" => {
+                let value = args.next().and_then(|v| v.into_string().ok());
+                if let Err(e) = text_timeout.apply(s, value.as_deref()) {
+                    return usage_error(&e);
+                }
+                text_timeout_set = true;
+            }
             "--images-plan-out" | "--images-plan" => {
                 let Some(path) = args.next() else {
                     return usage_error(&format!("{s} needs a FILE"));
@@ -351,6 +407,9 @@ fn main() -> ExitCode {
     if want_facts && plan_in.is_some() {
         return usage_error("--images-plan runs no pdftotext: it takes no --page-facts");
     }
+    if text_timeout_set && plan_in.is_some() {
+        return usage_error("--images-plan runs no pdftotext: it takes no --text-timeout options");
+    }
     if (plan_out.is_some() || plan_in.is_some()) && input == "-" {
         return usage_error("an images plan needs a FILE, not standard input");
     }
@@ -397,12 +456,11 @@ fn main() -> ExitCode {
     if let Some(fd) = facts_target {
         let mut args: Vec<OsString> = vec!["-page-facts-fd".into(), fd.to_string().into()];
         args.append(&mut facts_opts);
-        // with facts, pdftotext runs under a wall-clock bound scaled from the page count
-        // (FACTS_TIMEOUT); without them it runs as it always has, unbounded
-        args.extend(FACTS_TIMEOUT.iter().map(OsString::from));
         facts_opts = args;
     }
     facts_opts.extend(scan.pdftotext_args());
+    // pdftotext always runs under a wall-clock bound scaled from the page count
+    facts_opts.extend(text_timeout.pdftotext_args());
     // the folder is created before anything runs: it must be new
     let mut out_dir = match images.dir.as_deref().map(OutDir::create) {
         Some(Ok(d)) => Some(d),
@@ -565,15 +623,11 @@ fn convert(
                 Path::new(file).display()
             ),
             Some(3) => eprintln!("pdftomarkdown: {} was refused by the PDF's permissions (status 3)", exe.display()),
-            // pdftotext's 6 is its -timeout (passed only with page facts): the conversion fails
-            // (exit status 1, like any failed pdftotext), never pdftomarkdown's own 6, which says
-            // the Markdown was written
-            Some(6) if facts_requested => eprintln!(
-                "pdftomarkdown: {} ran past its time limit (pdftotext status 6; with page facts: {} s plus {} s a page, at most {} s); no Markdown",
-                exe.display(),
-                FACTS_TIMEOUT[1],
-                FACTS_TIMEOUT[3],
-                FACTS_TIMEOUT[5]
+            // pdftotext's 6 is its -timeout (always passed): the conversion fails (exit status 1,
+            // like any failed pdftotext), never pdftomarkdown's own 6, which says the Markdown
+            // was written. A fixed message: callers may match it.
+            Some(6) => eprintln!(
+                "pdftomarkdown: pdftotext ran past its time limit (status 6; see --text-timeout); no Markdown"
             ),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
             None => eprintln!("pdftomarkdown: {} {}", exe.display(), status),

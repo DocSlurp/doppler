@@ -402,8 +402,9 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   no run line). Facts lines written are whole, except the last one when the limit falls while
   a facts write is blocked (a reader that stalled): it can end without its newline, so a
   reader must drop an unterminated last line; pdftomarkdown drops it before committing
-  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
-  -timeout-max 3600` when, and only when, page facts are requested.
+  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown always passes `-timeout 60 -timeout-per-page 1
+  -timeout-max 3600` (with or without page facts; `--text-timeout`, `--text-timeout-per-page`
+  and `--text-timeout-max` override them).
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and
   exits 6.

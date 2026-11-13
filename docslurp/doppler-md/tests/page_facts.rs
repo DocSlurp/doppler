@@ -367,7 +367,7 @@ fn facts_file_appears_before_image_extraction() {
 }
 
 #[test]
-fn facts_bound_pdftotext_in_time_and_only_then() {
+fn pdftotext_is_bounded_in_time_with_and_without_facts() {
     let Some((pdftotext, _)) = tools() else { return };
     let s = Scratch::new("bound");
     let pdf = s.0.join("doc.pdf");
@@ -391,9 +391,10 @@ fn facts_bound_pdftotext_in_time_and_only_then() {
     let runs = std::fs::read_to_string(&argv).unwrap();
     let runs: Vec<&str> = runs.lines().collect();
     assert_eq!(runs.len(), 2, "{runs:?}");
-    // without facts pdftotext runs unbounded, as always
-    assert!(!runs[0].contains(" -timeout"), "{}", runs[0]);
-    assert!(runs[1].contains("-timeout 60 -timeout-per-page 1 -timeout-max 3600"), "{}", runs[1]);
+    // the same bound, facts or not
+    for run in &runs {
+        assert!(run.contains("-timeout 60 -timeout-per-page 1 -timeout-max 3600"), "{run}");
+    }
 }
 
 #[test]

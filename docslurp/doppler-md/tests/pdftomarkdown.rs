@@ -250,3 +250,68 @@ fn a_failing_pdftotext_fails_the_run_and_only_a_window_writes_early_pages() {
     assert_eq!(streamed.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&streamed.stdout), "first\x0csecond");
 }
+
+/// A stand-in pdftotext that records its arguments in `argv` and, when they set a time limit
+/// (-timeout or -timeout-per-page above 0), sleeps far past it unless it stops itself as the
+/// real one does: after -timeout seconds it exits with status 6. With no limit it exits 0 at
+/// once, writing nothing.
+#[cfg(unix)]
+fn sleeping_pdftotext(dir: &Path, argv: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let exe = dir.join("pdftotext");
+    std::fs::write(
+        &exe,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\nt=0; p=0\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -timeout) t=$2;; -timeout-per-page) p=$2;; esac; shift; done\n\
+             if [ \"$t\" -gt 0 ] || [ \"$p\" -gt 0 ]; then\n\
+             sleep 30 & s=$!\n( sleep \"$t\"; kill $s 2>/dev/null ) &\n\
+             wait $s && exit 0\nexit 6\nfi\nexit 0\n",
+            argv.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+#[cfg(unix)]
+#[test]
+fn pdftotext_always_runs_under_a_time_limit() {
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-timeout-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let argv = scratch.0.join("argv.txt");
+    let fake = sleeping_pdftotext(&scratch.0, &argv);
+    let last_run = || std::fs::read_to_string(&argv).unwrap().lines().last().unwrap_or_default().to_string();
+
+    // the default bound is passed without page facts, and a run past it fails (1, not 6) with a
+    // fixed message and no Markdown
+    let start = std::time::Instant::now();
+    let out = run(&fake, &["--text-timeout", "1", "--text-timeout-per-page", "0", "x.pdf"]);
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(start.elapsed() < std::time::Duration::from_secs(20), "{:?}", start.elapsed());
+    assert_eq!(out.status.code(), Some(1), "{message}");
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        message.trim_end(),
+        "pdftomarkdown: pdftotext ran past its time limit (status 6; see --text-timeout); no Markdown"
+    );
+    assert!(last_run().contains("-timeout 1 -timeout-per-page 0 -timeout-max 3600"), "{}", last_run());
+
+    // every part turned off (the defaults, with no option, are checked against the real
+    // pdftotext in page_facts.rs)
+    let out = run(&fake, &["--text-timeout", "0", "--text-timeout-per-page", "0", "--text-timeout-max", "0", "x.pdf"]);
+    // no limit: the fake writes nothing at once (no <page>: exit status 2)
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(last_run().contains("-timeout 0 -timeout-per-page 0 -timeout-max 0"), "{}", last_run());
+
+    // bad values are usage errors, before pdftotext runs
+    let runs = std::fs::read_to_string(&argv).unwrap().lines().count();
+    for (opt, v) in [("--text-timeout", "-1"), ("--text-timeout-per-page", "86401"), ("--text-timeout-max", "x")] {
+        let out = run(&fake, &[opt, v, "x.pdf"]);
+        assert_eq!(out.status.code(), Some(2), "{opt} {v}");
+    }
+    let out = run(&fake, &["--text-timeout", "5", "--images-plan", "plan.json", "--images-dir", "d", "x.pdf"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(std::fs::read_to_string(&argv).unwrap().lines().count(), runs);
+}
