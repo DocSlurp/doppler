@@ -91,12 +91,16 @@ image links (with --markers or --images-dir; they shape the Markdown):
                               gets none; the manifest names it: repeat_of), or keep (its own
                               file) (default skip)
   --scan-pages MODE           a full-page scan (images cover --scan-min-coverage of the page,
-                              at most --scan-max-words visible words): image (default) starts the page
-                              with ![page N scan](images/page-0012/image-001.jpg), then its OCR
-                              text; the file is the scan's own JPEG (.jpg), a bilevel scan as
-                              1-bit .png, else decoded or rendered (--raster-format). render:
-                              always rendered (--raster-format). skip: placed as any picture,
-                              never extracted
+                              at most --scan-max-words visible words). copy (default): a scan
+                              that can be copied as its own bytes (copyable, upright, a JPEG or
+                              bilevel stream) starts the page with
+                              ![page N scan](images/page-0012/image-001.jpg), then its OCR text;
+                              the file is its JPEG (.jpg) or 1-bit .png. Any other scan (JPEG
+                              2000, Flate, a visible page number, tiles, layers) gets no marker
+                              and no file: its page image comes from the host's page rendering.
+                              image: as copy, but other scans are decoded or rendered
+                              (--raster-format) by Doppler. render: always rendered. skip:
+                              placed as any picture, never extracted
 
 image extraction (implies --markers; files where the links point: DIR/page-0012/image-003.webp,
 DIR/page-0012/figure-001.svg, and DIR/manifest.jsonl, written last, listing every image and
@@ -132,9 +136,10 @@ closed once the Markdown is complete, before extraction):
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
-  --scan-dpi N                rendered scans (tiles, layers, turned, covered, --scan-pages
-                              render): 36 to 300 (200)
-  --scan-max-dpi N            a decoded scan finer than this is scaled down to it (300)
+  --scan-dpi N                rendered scans (--scan-pages image: tiles, layers, turned,
+                              covered; --scan-pages render): 36 to 300 (200)
+  --scan-max-dpi N            --scan-pages image: a decoded scan finer than this is scaled down
+                              to it (300)
   --scan-max N                most scan files per batch (1000); --scan-max-bytes N (1GiB) per
                               batch. Scans have their own budget, apart from --images-max and
                               --images-max-bytes; a scan over it is not-extracted (budget) and the

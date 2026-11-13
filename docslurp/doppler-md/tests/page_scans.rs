@@ -214,6 +214,70 @@ fn scan_pages_skip_and_render() {
 }
 
 #[test]
+fn copy_keeps_only_scans_copied_as_their_own_bytes() {
+    // --scan-pages copy (the default): a plain JPEG scan and a bilevel one are page scans as
+    // with image, with or without an OCR layer
+    let ccitt =
+        image(FULL, (2550, 3300), 12, &format!(" filter=\"ccitt\" bpc=\"1\" cs=\"gray\" copy=\"bilevel\"{EXACT}"));
+    let xhtml = doc(&[
+        page(1, Some(("single", 1)), &image(FULL, (2550, 3300), 9, DCT)),
+        page(2, Some(("single", 1)), &(image(FULL, (2550, 3300), 10, DCT) + &lines(6, true))),
+        page(3, Some(("single", 1)), &ccitt),
+    ]);
+    let (md, report) = convert(&xhtml, ScanPages::Copy);
+    let (image_md, image_report) = convert(&xhtml, ScanPages::Image);
+    assert_eq!(md, image_md, "copyable scans: the same Markdown as image");
+    assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.jpg)");
+    assert!(md[1].starts_with("![page 2 scan](images/page-0002/image-001.jpg)\n\n"), "{}", md[1]);
+    assert!(md[1].contains("w0x0"), "the OCR text stays: {}", md[1]);
+    assert_eq!(md[2], "![page 3 scan](images/page-0003/image-001.png)");
+    assert!(report.images.iter().all(|n| n.fate == Fate::PageScan), "{:?}", report.images);
+    assert_eq!(report.to_json(), image_report.to_json());
+
+    // any other scan is the page's backdrop: no marker of any kind, still known as a scan
+    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT} orient=\"90\" overlaid=\"0\" copyable=\"1\""));
+    let not_copyable = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT} orient=\"0\" overlaid=\"0\" copyable=\"0\""));
+    let flate =
+        image(FULL, (2550, 3300), 10, &format!(" filter=\"flate\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"{EXACT}"));
+    let jpx = image(FULL, (2550, 3300), 11, &format!(" filter=\"jpx\" bpc=\"8\" cs=\"gray\" copy=\"decode\"{EXACT}"));
+    let tiled: String = (0..4)
+        .map(|k| image((0.0, 198.0 * k as f64, 612.0, 198.0 * (k + 1) as f64), (2550, 825), 20 + k, DCT))
+        .collect();
+    let layered = image(FULL, (2550, 3300), 5, " filter=\"jpx\" bpc=\"8\" cs=\"rgb\" copy=\"decode\"")
+        + &image(FULL, (2550, 3300), 6, " kind=\"mask\" filter=\"jbig2\" bpc=\"1\" cs=\"none\" copy=\"bilevel\"");
+    for (what, kind, body) in [
+        ("turned", "single", turned),
+        ("not copyable (a visible page number)", "single", not_copyable.clone() + &lines(3, true)),
+        ("not copyable, no text", "single", not_copyable),
+        ("flate", "single", flate),
+        ("jpx", "single", jpx),
+        ("tiled", "tiled", tiled),
+        ("layered", "layered", layered),
+    ] {
+        let (md, report) = convert(&doc(&[page(1, Some((kind, 1)), &body)]), ScanPages::Copy);
+        assert!(!md[0].contains("]("), "{what}: {}", md[0]);
+        assert!(
+            report.images.iter().all(|n| n.fate == Fate::Background && n.scan.is_some() && n.link.is_none()),
+            "{what}: {:?}",
+            report.images
+        );
+    }
+    // a scan repeated on every page is the backdrop, not a watermark nor a block
+    let pages: Vec<String> = (1..=3)
+        .map(|n| {
+            page(
+                n,
+                Some(("single", 1)),
+                &image(FULL, (2550, 3300), 7, &format!(" filter=\"jpx\" bpc=\"8\" cs=\"gray\" copy=\"decode\"{EXACT}")),
+            )
+        })
+        .collect();
+    let (md, report) = convert(&doc(&pages), ScanPages::Copy);
+    assert!(md.iter().all(|m| m.is_empty()), "{md:?}");
+    assert!(report.images.iter().all(|n| n.fate == Fate::Background));
+}
+
+#[test]
 fn hostile_scan_attributes_are_ignored() {
     // a scanImage past the list, zero, not a number, on a stencil mask, or an unknown kind
     for (kind, k, extra) in [
@@ -290,7 +354,20 @@ fn whole_scanned_documents_are_copied_not_rendered() {
     let Some((t, r, s)) = fixtures("copy") else { return };
     let pdf = s.0.join("scans.pdf");
     let out = s.0.join("out");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-max-dpi", "72", pdf.to_str().unwrap()]);
+    // --scan-pages image: Doppler decodes and renders the scans it cannot copy
+    let res = run(
+        &t,
+        &r,
+        &[
+            "--images-dir",
+            out.to_str().unwrap(),
+            "--scan-pages",
+            "image",
+            "--scan-max-dpi",
+            "72",
+            pdf.to_str().unwrap(),
+        ],
+    );
     assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
     let md = String::from_utf8(res.stdout.clone()).unwrap();
     let pages: Vec<&str> = md.split('\u{c}').collect();
@@ -303,7 +380,7 @@ fn whole_scanned_documents_are_copied_not_rendered() {
     assert_eq!(pages[5], "![page 6 scan](images/page-0006/image-001.webp)", "tiled: rendered");
     assert!(pages[6].contains("![image](images/page-0007/image-001.webp)"), "{}", pages[6]);
     // the same Markdown without extraction
-    let plain = run(&t, &r, &["--markers", pdf.to_str().unwrap()]);
+    let plain = run(&t, &r, &["--markers", "--scan-pages", "image", pdf.to_str().unwrap()]);
     assert_eq!(plain.stdout, res.stdout);
     // the JPEG is the embedded stream, byte for byte
     let jpg = std::fs::read(out.join("page-0001/image-001.jpg")).unwrap();
@@ -347,14 +424,144 @@ fn whole_scanned_documents_are_copied_not_rendered() {
 }
 
 #[test]
+fn the_default_copies_copyable_scans_and_leaves_the_rest_to_the_host() {
+    // --scan-pages copy (the default): pages 1 (a DCT scan), 2 (another DCT object under an
+    // OCR layer) and 7 (CCITT) are copied; page 3 (a visible page number), 4 (JPEG 2000),
+    // 5 (tiled) and 6 (layered) get no marker and no file, and no renderer work
+    let Some((t, r, s)) = fixtures("default") else { return };
+    let pdf = s.0.join("kinds.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout.clone()).unwrap();
+    let pages: Vec<&str> = md.split('\u{c}').collect();
+    assert_eq!(pages.len(), 7, "{md}");
+    assert_eq!(pages[0], "![page 1 scan](images/page-0001/image-001.jpg)");
+    assert!(pages[1].starts_with("![page 2 scan](images/page-0002/image-001.jpg)\n\nScanned line 0"), "{}", pages[1]);
+    assert!(pages[2].starts_with("Scanned line 0"), "the OCR text stays, no marker: {}", pages[2]);
+    for (k, p) in pages.iter().enumerate().take(6).skip(2) {
+        assert!(!p.contains("]("), "page {}: {p}", k + 1);
+    }
+    assert_eq!(pages[6], "![page 7 scan](images/page-0007/image-001.png)");
+    // the same Markdown without extraction (the links were final at conversion)
+    let plain = run(&t, &r, &["--markers", pdf.to_str().unwrap()]);
+    assert_eq!(plain.stdout, res.stdout);
+    // the copies are the stored JPEG byte for byte, with or without the OCR layer
+    let stored = std::fs::read(s.0.join("scan.jpg")).unwrap();
+    for page in [1, 2] {
+        assert_eq!(std::fs::read(out.join(format!("page-{page:04}/image-001.jpg"))).unwrap(), stored, "page {page}");
+    }
+    // exactly the linked files, and every link has one entry
+    let mut files: Vec<String> = Vec::new();
+    for d in std::fs::read_dir(&out).unwrap() {
+        let d = d.unwrap().path();
+        if d.is_dir() {
+            for f in std::fs::read_dir(&d).unwrap() {
+                files.push(f.unwrap().path().strip_prefix(&out).unwrap().to_str().unwrap().to_string());
+            }
+        }
+    }
+    files.sort();
+    assert_eq!(files, ["page-0001/image-001.jpg", "page-0002/image-001.jpg", "page-0007/image-001.png"]);
+    let m = manifest(&out);
+    assert_eq!((m["scan_pages"].as_str(), m["complete"].as_bool()), (Some("copy"), Some(true)));
+    assert_eq!((m["totals"]["scans"].as_u64(), m["totals"]["extracted"].as_u64()), (Some(3), Some(3)), "{m}");
+    assert_eq!(m["totals"]["linked"], 3);
+    for id in ["p3.1", "p4.1", "p5.1", "p5.2", "p5.3", "p5.4", "p6.1", "p6.2"] {
+        let e = entry(&m, id);
+        assert_eq!(
+            (e["fate"].as_str(), e["status"].as_str(), e["reason"].as_str(), e["path"].as_str(), e["link"].as_str()),
+            (Some("background"), Some("unlinked"), Some("scan-not-copyable"), None, None),
+            "{e}"
+        );
+    }
+    for (id, source, format) in [("p1.1", "copy", "jpg"), ("p2.1", "copy", "jpg"), ("p7.1", "decode", "png")] {
+        let e = entry(&m, id);
+        assert_eq!(
+            (e["fate"].as_str(), e["status"].as_str(), e["source"].as_str(), e["format"].as_str()),
+            (Some("page-scan"), Some("extracted"), Some(source), Some(format)),
+            "{e}"
+        );
+    }
+
+    // --scan-pages image: Doppler renders or decodes the others, as before
+    let out = s.0.join("image");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", pdf.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout).unwrap();
+    for page in 3..=6 {
+        assert!(md.contains(&format!("![page {page} scan](images/page-{page:04}/image-001.webp)")), "{md}");
+    }
+    let m = manifest(&out);
+    assert_eq!((m["scan_pages"].as_str(), m["totals"]["scans"].as_u64()), (Some("image"), Some(7)));
+    for (id, source) in [("p3.1", "render"), ("p4.1", "decode"), ("p5.1", "render"), ("p6.1", "render")] {
+        let e = entry(&m, id);
+        assert_eq!((e["status"].as_str(), e["source"].as_str()), (Some("extracted"), Some(source)), "{e}");
+    }
+}
+
+#[test]
+fn the_default_through_a_plan_and_a_resume_is_the_same() {
+    // an images plan made with the default and extraction from it write the same manifest; the
+    // plan binds the mode (a plan for copy is refused for image), and a resume with nothing to
+    // do changes nothing
+    let Some((t, r, s)) = fixtures("default-plan") else { return };
+    let pdf = s.0.join("kinds.pdf");
+    let pdf = pdf.to_str().unwrap();
+    let direct = s.0.join("direct");
+    let res = run(&t, &r, &["--images-dir", direct.to_str().unwrap(), pdf]);
+    assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    let plan = s.0.join("k.plan");
+    let one = run(&t, &r, &["--markers", "--images-plan-out", plan.to_str().unwrap(), pdf]);
+    assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
+    assert_eq!(one.stdout, res.stdout);
+    let planned = s.0.join("planned");
+    let two = run(&t, &r, &["--images-plan", plan.to_str().unwrap(), "--images-dir", planned.to_str().unwrap(), pdf]);
+    assert_eq!(two.status.code(), Some(0), "{}", String::from_utf8_lossy(&two.stderr));
+    assert_eq!(
+        std::fs::read(direct.join("manifest.jsonl")).unwrap(),
+        std::fs::read(planned.join("manifest.jsonl")).unwrap()
+    );
+    let refused = s.0.join("refused");
+    let three = run(
+        &t,
+        &r,
+        &[
+            "--images-plan",
+            plan.to_str().unwrap(),
+            "--scan-pages",
+            "image",
+            "--images-dir",
+            refused.to_str().unwrap(),
+            pdf,
+        ],
+    );
+    assert_eq!(three.status.code(), Some(2), "{}", String::from_utf8_lossy(&three.stderr));
+    assert!(!refused.exists());
+    let before = std::fs::read(direct.join("manifest.jsonl")).unwrap();
+    let again = run(&t, &r, &["--images-resume", direct.to_str().unwrap(), pdf]);
+    assert_eq!(again.status.code(), Some(0), "{}", String::from_utf8_lossy(&again.stderr));
+    assert_eq!(std::fs::read(direct.join("manifest.jsonl")).unwrap(), before);
+}
+
+#[test]
 fn batches_stopped_by_a_budget_count_toward_the_abort() {
     // one page a batch and no scan budget: the scans of pages 1 and 3 each stop their batch
     // (budget), two failed batches in a row, so the rest is aborted without another renderer
     let Some((t, r, s)) = fixtures("abort") else { return };
     let pdf = s.0.join("scans.pdf");
     let out = s.0.join("out");
-    let args =
-        ["--images-dir", out.to_str().unwrap(), "--images-batch-pages", "1", "--scan-max", "0", pdf.to_str().unwrap()];
+    let args = [
+        "--images-dir",
+        out.to_str().unwrap(),
+        "--scan-pages",
+        "image",
+        "--images-batch-pages",
+        "1",
+        "--scan-max",
+        "0",
+        pdf.to_str().unwrap(),
+    ];
     let res = run(&t, &r, &args);
     assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
     let m = manifest(&out);
@@ -374,6 +581,8 @@ fn batches_stopped_by_a_budget_count_toward_the_abort() {
     let args = [
         "--images-dir",
         out.to_str().unwrap(),
+        "--scan-pages",
+        "image",
         "--images-batch-pages",
         "1",
         "--images-max",
@@ -393,13 +602,21 @@ fn scans_have_their_own_budget() {
     let pdf = s.0.join("scans.pdf");
     // the pictures' budget of one file does not touch the scans
     let out = s.0.join("a");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--images-max", "1", pdf.to_str().unwrap()]);
+    let res = run(
+        &t,
+        &r,
+        &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", "--images-max", "1", pdf.to_str().unwrap()],
+    );
     assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
     let m = manifest(&out);
     assert_eq!((m["totals"]["scans"].as_u64(), m["totals"]["extracted"].as_u64()), (Some(5), Some(6)), "{m}");
     // two scans per batch: the rest of the scans are not extracted (budget), the picture is
     let out = s.0.join("b");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-max", "2", pdf.to_str().unwrap()]);
+    let res = run(
+        &t,
+        &r,
+        &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", "--scan-max", "2", pdf.to_str().unwrap()],
+    );
     assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
     let m = manifest(&out);
     assert_eq!(m["complete"], false);
@@ -450,7 +667,7 @@ fn scans_with_anything_over_them_are_rendered_not_copied() {
     let Some((t, r, s)) = fixtures("redacted") else { return };
     let pdf = s.0.join("redacted.pdf");
     let out = s.0.join("out");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", pdf.to_str().unwrap()]);
     assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
     let m = manifest(&out);
     for id in ["p1.1", "p2.1", "p3.1", "p4.1"] {
@@ -514,7 +731,7 @@ fn a_document_whose_cross_reference_table_was_rebuilt_copies_no_scan() {
     let Some((t, r, s)) = fixtures("rebuilt") else { return };
     let pdf = s.0.join("rebuilt.pdf");
     let out = s.0.join("out");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", pdf.to_str().unwrap()]);
     assert!(matches!(res.status.code(), Some(0 | 5)), "{}", String::from_utf8_lossy(&res.stderr));
     let md = String::from_utf8(res.stdout.clone()).unwrap();
     let pages: Vec<&str> = md.split('\u{c}').collect();
@@ -546,7 +763,7 @@ fn a_scan_past_the_copy_cap_is_rendered_not_decoded() {
     let Some((t, r, s)) = fixtures("huge") else { return };
     let pdf = s.0.join("huge.pdf");
     let out = s.0.join("out");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), "--scan-pages", "image", pdf.to_str().unwrap()]);
     assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
     assert_eq!(String::from_utf8_lossy(&res.stdout), "![page 1 scan](images/page-0001/image-001.webp)");
     let m = manifest(&out);
@@ -564,6 +781,8 @@ fn an_encode_that_ends_past_the_deadline_is_dropped() {
     let args = [
         "--images-dir",
         out.to_str().unwrap(),
+        "--scan-pages",
+        "image",
         "--images-deadline",
         "1",
         "--raster-lossless",
@@ -595,7 +814,7 @@ fn scan_thresholds_change_the_scans_and_bind_the_plan() {
     // page 7: 54 visible words over a picture of 0.103 of the page, a scan only when both
     // thresholds allow it
     let md = |extra: &[&str]| {
-        let mut a = vec!["--markers"];
+        let mut a = vec!["--markers", "--scan-pages", "image"];
         a.extend(extra);
         a.push(pdf);
         let out = run(&t, &r, &a);
@@ -611,14 +830,14 @@ fn scan_thresholds_change_the_scans_and_bind_the_plan() {
     let plan = s.0.join("t.plan");
     let plan_s = plan.to_str().unwrap();
     let thresholds = ["--scan-min-coverage", "0.1", "--scan-max-words", "100", "--scan-layer-overlap", "0.4"];
-    let mut a = vec!["--markers", "--images-plan-out", plan_s];
+    let mut a = vec!["--markers", "--scan-pages", "image", "--images-plan-out", plan_s];
     a.extend(thresholds);
     a.push(pdf);
     let one = run(&t, &r, &a);
     assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
     let extract = |k: usize, extra: &[&str]| {
         let d = s.0.join(format!("x-{k}"));
-        let mut a = vec!["--images-plan", plan_s, "--images-dir", d.to_str().unwrap()];
+        let mut a = vec!["--images-plan", plan_s, "--scan-pages", "image", "--images-dir", d.to_str().unwrap()];
         a.extend(extra);
         a.push(pdf);
         (run(&t, &r, &a), d)

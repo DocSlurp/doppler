@@ -241,7 +241,7 @@ fn the_manifest_lists_every_link_and_every_file() {
     let settings = m["settings_sha256"].as_str().unwrap();
     assert!(settings.len() == 64 && settings.bytes().all(|b| b.is_ascii_hexdigit()), "{settings}");
     let header = format!(
-        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
+        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"copy\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
     );
     let file = |f: &str| std::fs::read(d.join(f)).unwrap();
     let webp = file(PICTURE);
