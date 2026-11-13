@@ -1003,6 +1003,8 @@ public:
     void clipToStrokePath(GfxState *state) override;
     void skippedPaint(GfxState *state, bool path, bool stroke) override;
     void skippedSoftMask(GfxState *state) override;
+    void beginTransparencyGroup(GfxState *state, const std::array<double, 4> &bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask) override;
+    void endTransparencyGroup(GfxState *state) override;
 
     //----- update text state
     void updateFont(GfxState *state) override;
@@ -1154,6 +1156,8 @@ private:
     // TextImage::overlaid: the graphics state depth, and the shallowest depth at which a
     // non-rectangular clip or a skipped soft mask was set (-1: none in force)
     int gsDepth = 0, oddClipDepth = -1, softMaskDepth = -1;
+    // transparency groups open around the current content
+    int transparencyGroupDepth = 0;
     void noteClip(GfxState *state, bool rectangular);
     void overpaintPath(GfxState *state, bool stroke);
     void overpaintGlyph(GfxState *state, double x, double y, double dx, double dy);

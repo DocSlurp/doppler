@@ -186,10 +186,13 @@ per inch along the image's own axes), `filter` (the codec, the last `/Filter`: `
 XObject's object number: the same picture on several pages has the same `obj`; callers
 aggregate across lines, a page line never depends on other pages), and `copy`, how its
 pixels can be taken out without rendering: `jpeg` (copy the stream: sole DCT filter, 8 bits,
-gray or RGB, no `/Decode`, no `/DecodeParms` that could set `/ColorTransform`, no mask),
-`bilevel` (1-bit CCITT, JBIG2 or gray, no `/Decode`, no soft mask), `decode` (a single image
-to decode at native size), `render` (inline, masked or soft-masked images, unusual
-encodings, an XObject whose data is an external file (`/F`): render the region). The class
+`DeviceGray` or `DeviceRGB`, no `/Decode`, no `/DecodeParms` that could set `/ColorTransform`,
+no mask), `bilevel` (1-bit CCITT, JBIG2 or `DeviceGray`, no `/Decode`, no soft mask), `decode`
+(a single image to decode at native size through its colour space: ICC-based and calibrated
+images, whose profile or gamma can change what the page shows, are never copied as stored),
+`render` (inline, masked or soft-masked images, unusual encodings, an XObject whose data is an
+external file (`/F`), or resources that define `DefaultGray`, `DefaultRGB` or `DefaultCMYK`:
+render the region). The class
 reads the dictionary only: a copier must still check the bytes (for `jpeg`: a baseline SOF
 whose component count matches the colour space and whose size matches `/Width` and
 `/Height`), since a hostile dictionary can say anything.

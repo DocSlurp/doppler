@@ -189,8 +189,10 @@ the prefix) gets one after `page`; then the converter's sealed picture markers a
 their links, and the seal is removed. Since a Markdown renderer decodes escapes, entities and
 percent signs in a link (`page&#45;0001`, `page\-0001`, `page%2D0001`, `./`), the link syntax
 of the PDF's text is broken as well: a zero-width space goes between `]` and `(` and between
-`]` and `:` (inline links, images, reference definitions), and after the `<` of an HTML tag that
-can load or link a URL (`<img`, `<a`, `<source`, `<svg`, `<image`, ...). Only the converter can
+`]` and `:` (inline links, images, reference definitions), and after the `<` of every HTML tag
+(any element can load a URL: `<img src>`, `<table background>`, `style="...url(...)"`,
+`<mglyph src>`), except table markup as the converter writes it (`<table>`, `<tr>`, `<td>`, ...
+with no attribute but `dir="rtl"`, `rowspan` and `colspan`, which loads nothing). Only the converter can
 therefore put a link, an image path or a `doppler:` comment into the Markdown. A marker whose
 note was dropped (past 100,000 images in a document) keeps the neutral `doppler-image:<id>`
 form: it has no manifest entry and no file. A caller should parse markers only from runs made with
@@ -218,10 +220,12 @@ The link's extension is decided at conversion from the image's dictionary and pl
 when its pixels are what the page shows: single, upright (`orient="0"`) and with nothing else
 showing over it (`overlaid="0"`: no redaction box, white-out, visible text, image patch,
 shading, annotation or later drawing over it, no clip or page edge cutting it, no
-non-rectangular clip, soft mask, blend mode or opacity). Such a scan whose stream is a JPEG to
-copy (sole `DCTDecode`, 8 bits, grey or RGB, no `/Decode`, masks or colour transform) is `.jpg`;
-a bilevel one (CCITT, JBIG2, 1 bpc, no `/Decode`) `.png`; any other with a reference the raster
-format. Every other scan (tiled, layered, turned, covered, clipped, inline, or from a producer
+non-rectangular clip, soft mask, blend mode or opacity, not inside a transparency group). Such
+a scan whose stream is a JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`,
+no `/Decode`, masks, colour transform or `Default` colour spaces) is `.jpg`; a bilevel one
+(CCITT, JBIG2, 1 bpc, `DeviceGray`, no `/Decode`) `.png`; any other with a reference the raster
+format (an ICC-based or calibrated scan is decoded through its colour space, so its profile
+shapes the file as it shapes the page). Every other scan (tiled, layered, turned, covered, clipped, inline, or from a producer
 without those attributes) is rendered, in the raster format, so the file shows what the page
 shows, redactions included. `--scan-pages` says what to do with scans:
 

@@ -6047,6 +6047,7 @@ void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
     gsDepth = 0;
     oddClipDepth = -1;
     softMaskDepth = -1;
+    transparencyGroupDepth = 0;
     if (facts) {
         facts->startPage(currentPage, text->getPageWidth(), text->getPageHeight());
     }
@@ -6193,6 +6194,21 @@ void TextOutputDev::clipToStrokePath(GfxState *state)
     noteClip(state, false);
 }
 
+// Gfx::drawForm resets the fill and stroke opacity, the blend mode and the soft mask before a
+// transparency group's content, and applies them only when the group is composited, which this
+// device never sees: an image inside a group may be invisible however plainly it is drawn
+void TextOutputDev::beginTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, GfxColorSpace * /*blendingColorSpace*/, bool /*isolated*/, bool /*knockout*/, bool /*forSoftMask*/)
+{
+    ++transparencyGroupDepth;
+}
+
+void TextOutputDev::endTransparencyGroup(GfxState * /*state*/)
+{
+    if (transparencyGroupDepth > 0) {
+        --transparencyGroupDepth;
+    }
+}
+
 void TextOutputDev::skippedSoftMask(GfxState * /*state*/)
 {
     if (softMaskDepth < 0) {
@@ -6240,13 +6256,24 @@ void TextOutputDev::overpaintPath(GfxState *state, bool stroke)
         return;
     }
     if (stroke) {
-        // half the pen either side, more at mitred corners; a zero width is a hairline
-        const double w = state->getTransformedLineWidth();
-        const double grow = std::isfinite(w) ? 0.5 * std::max(w, 1.0) * std::max(1.0, std::min(state->getMiterLimit(), 10.0)) + 1.0 : INFINITY;
-        x0 -= grow;
-        y0 -= grow;
-        x1 += grow;
-        y1 += grow;
+        // half the pen either side along each device axis: the pen circle under the CTM is an
+        // ellipse whose x extent is r * |(a, c)| and y extent r * |(b, d)| (an RMS width
+        // undercounts a pen the CTM stretches along one axis); more at mitred corners (up to the
+        // miter limit) and square caps (sqrt 2); a zero width is a hairline
+        const std::array<double, 6> &m = state->getCTM();
+        const double r = 0.5 * std::fabs(state->getLineWidth());
+        const double miter = state->getLineJoin() == GfxState::LineJoinMitre ? state->getMiterLimit() : 1.0;
+        const double factor = std::max(M_SQRT2, miter);
+        const double growX = std::max(r * std::hypot(m[0], m[2]), 0.5) * factor + 1.0;
+        const double growY = std::max(r * std::hypot(m[1], m[3]), 0.5) * factor + 1.0;
+        if (!std::isfinite(growX) || !std::isfinite(growY)) {
+            text->noteOverpaint(NAN, NAN, NAN, NAN);
+            return;
+        }
+        x0 -= growX;
+        y0 -= growY;
+        x1 += growX;
+        y1 += growY;
     }
     double cx0, cy0, cx1, cy1;
     state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
@@ -6270,14 +6297,30 @@ void TextOutputDev::overpaintGlyph(GfxState *state, double x, double y, double d
     if ((render & 3) == 3 || !text->watchingOverpaint()) {
         return;
     }
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    // a Type 3 glyph is a content stream this device does not run: it may paint anywhere the
+    // clip allows, whatever its FontMatrix, FontBBox and advance say
+    const GfxFont *font = state->getFont().get();
+    if (!font || font->getType() == fontType3) {
+        text->noteOverpaint(cx0, cy0, cx1, cy1);
+        return;
+    }
     // the glyph's box in user space: its advance, and a font size up from a quarter below the
-    // baseline (a generous em box), any glyph whatever its Unicode value
+    // baseline (a generous em box), any glyph whatever its Unicode value; and the font's
+    // bounding box (text space units) about the origin, for glyphs drawn outside the em
     double upX, upY;
     state->textTransformDelta(0, state->getFontSize(), &upX, &upY);
-    const double ux[4] = { x - 0.25 * upX, x + dx - 0.25 * upX, x + upX, x + dx + upX };
-    const double uy[4] = { y - 0.25 * upY, y + dy - 0.25 * upY, y + upY, y + dy + upY };
-    double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    const std::array<double, 4> &bb = font->getFontBBox();
+    const double fs = state->getFontSize(), hs = state->getHorizScaling();
+    double bx[4], by[4];
     for (int i = 0; i < 4; ++i) {
+        state->textTransformDelta(bb[i & 1 ? 2 : 0] * fs * hs, bb[i & 2 ? 3 : 1] * fs, &bx[i], &by[i]);
+    }
+    const double ux[8] = { x - 0.25 * upX, x + dx - 0.25 * upX, x + upX, x + dx + upX, x + bx[0], x + bx[1], x + bx[2], x + bx[3] };
+    const double uy[8] = { y - 0.25 * upY, y + dy - 0.25 * upY, y + upY, y + dy + upY, y + by[0], y + by[1], y + by[2], y + by[3] };
+    double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    for (int i = 0; i < 8; ++i) {
         double tx, ty;
         state->transform(ux[i], uy[i], &tx, &ty);
         if (!std::isfinite(tx) || !std::isfinite(ty)) {
@@ -6289,8 +6332,6 @@ void TextOutputDev::overpaintGlyph(GfxState *state, double x, double y, double d
         x1 = std::max(x1, tx);
         y1 = std::max(y1, ty);
     }
-    double cx0, cy0, cx1, cy1;
-    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
     x0 = std::max(x0, cx0);
     y0 = std::max(y0, cy0);
     x1 = std::min(x1, cx1);
@@ -6416,12 +6457,13 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     image.dpiX = sideX > 0 ? width / (sideX / 72.0) : 0;
     image.dpiY = sideY > 0 ? height / (sideY / 72.0) : 0;
     // drawn plainly: whole (no clip or page edge cuts more than a point or 0.5% of a side), no
-    // non-rectangular clip, and no soft mask, blend mode, opacity or transfer function
+    // non-rectangular clip, no transparency group around it, and no soft mask, blend mode,
+    // opacity or transfer function
     {
         const double tolX = std::max(1.0, 0.005 * (ux1 - ux0)), tolY = std::max(1.0, 0.005 * (uy1 - uy0));
         const bool whole = x0 - ux0 <= tolX && ux1 - x1 <= tolX && y0 - uy0 <= tolY && uy1 - y1 <= tolY;
         const bool plainPaint = state->getFillOpacity() >= 1.0 && state->getBlendMode() == gfxBlendNormal && state->getTransfer().empty();
-        image.overlaid = !(whole && plainPaint && oddClipDepth < 0 && softMaskDepth < 0);
+        image.overlaid = !(whole && plainPaint && oddClipDepth < 0 && softMaskDepth < 0 && transparencyGroupDepth == 0);
     }
     text->addImage(image, remainingDocImages);
 }

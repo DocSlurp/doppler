@@ -214,11 +214,16 @@ def test_overlaid(d):
         image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 6
         image("/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", GRAY, compress=True),  # 7: a patch
         t.stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Group << /S /Transparency >>", "0 g 0 0 612 792 re f"),  # 8: mask group
+        # 9: the scan inside a transparency group (drawForm resets opacity and blend mode inside)
+        t.stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Group << /S /Transparency >> /Resources << /XObject << /S 6 0 R >> >>", "q 612 0 0 792 0 0 cm /S Do Q"),
+        # 10, 11: a Type 3 font whose glyph paints far from its origin and em box
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [1 0 0 1 0 0] /CharProcs << /a 11 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [1000] /Resources << >> >>",
+        t.stream("", "1000 0 d0 -5300 0 5000 792 re f"),
     ]
     shading = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 612 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
     res = (
-        "<< /Font << /F1 4 0 R >> /XObject << /S 6 0 R /P 7 0 R >> /Shading << /Sh %s >> "
-        "/ExtGState << /Half << /ca 0.5 >> /Mul << /BM /Multiply >> /Mask << /SMask << /S /Luminosity /G 8 0 R >> >> >> >>" % shading
+        "<< /Font << /F1 4 0 R /T3 10 0 R >> /XObject << /S 6 0 R /P 7 0 R /G 9 0 R >> /Shading << /Sh %s >> "
+        "/ExtGState << /Half << /ca 0.5 >> /Zero << /ca 0 >> /Mul << /BM /Multiply >> /Mask << /SMask << /S /Luminosity /G 8 0 R >> >> >> >>" % shading
     )
     scan = b"q 612 0 0 792 0 0 cm /S Do Q\n"
     ocr = b"BT 3 Tr /F1 11 Tf 72 700 Td (Scanned words of the page) Tj ET\n"
@@ -242,13 +247,22 @@ def test_overlaid(d):
         "blend": (b"q /Mul gs " + scan + b"Q\n", "1"),
         "soft-mask": (b"q /Mask gs " + scan + b"Q\n", "1"),
         "annotation": (scan, "1"),
+        # a transparency group around the scan: the group's /ca 0 (or blend mode, or soft mask)
+        # applies when it is composited, which a text device never sees
+        "group-ca0": (b"q /Zero gs /G Do Q\n", "1"),
+        "group": (b"/G Do\n", "1"),
+        # a Type 3 glyph whose origin is off the page but whose charproc paints over the scan
+        "type3-glyph": (scan + b"BT /T3 1 Tf 5300 0 Td (a) Tj ET\n", "1"),
+        # a stroke under a CTM that stretches the pen 10^8 times more along x than y: drawn from
+        # off the page, its ink covers the scan
+        "anisotropic-stroke": (scan + b"q 1 J 0 j 1 M 10000 0 0 0.0001 0 0 cm 0 G 1 w 0.53 0 m 0.53 7920000 l S Q\n", "1"),
     }
     for name, (content, want) in cases.items():
         extra = ""
         if name == "annotation":
             # a square annotation's appearance painted over the scan
-            objs_a = objs + [t.stream("/Type /XObject /Subtype /Form /BBox [0 0 500 200]", "0 g 0 0 500 200 re f")]  # 9
-            extra = "/Annots [<< /Type /Annot /Subtype /Square /Rect [50 300 550 500] /AP << /N 9 0 R >> >>]"
+            objs_a = objs + [t.stream("/Type /XObject /Subtype /Form /BBox [0 0 500 200]", "0 g 0 0 500 200 re f")]  # 12
+            extra = "/Annots [<< /Type /Annot /Subtype /Square /Rect [50 300 550 500] /AP << /N 12 0 R >> >>]"
             pdf = t.simple_page_pdf(content, resources=res, extra_objects=objs_a, page_extra=extra)
         else:
             pdf = t.simple_page_pdf(content, resources=res, extra_objects=objs)
@@ -308,6 +322,111 @@ def test_jpeg_metadata(d):
     pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q", resources="<< /XObject << /A 6 0 R >> >>", extra_objects=[image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", nested)])
     rc, r, _ = copy(d.write("nested.pdf", pdf), [("p1.1", 1, "6.0")])
     t.check(r["p1.1"][0] == "err:jpeg", "a JPEG with another JPEG inside is refused", r["p1.1"][:4])
+
+
+def icc_gray(trc):
+    """A minimal ICC v2 grey display profile whose kTRC is the curve <trc> (16-bit entries)."""
+    import struct
+
+    desc = b"desc" + b"\0" * 4 + struct.pack(">I", 2) + b"x\0" + b"\0" * 8 + b"\0" * 3 + b"\0" * 67
+    wtpt = b"XYZ " + b"\0" * 4 + struct.pack(">iii", int(0.9642 * 65536), 65536, int(0.8249 * 65536))
+    curv = b"curv" + b"\0" * 4 + struct.pack(">I", len(trc)) + b"".join(struct.pack(">H", v) for v in trc)
+    tags = [(b"desc", desc), (b"wtpt", wtpt), (b"kTRC", curv)]
+    off = 128 + 4 + 12 * len(tags)
+    table, body = struct.pack(">I", len(tags)), b""
+    for sig, data in tags:
+        while (off + len(body)) % 4:
+            body += b"\0"
+        table += sig + struct.pack(">II", off + len(body), len(data))
+        body += data
+    size = 128 + len(table) + len(body)
+    head = struct.pack(">I", size) + b"lcms" + bytes([2, 0x10, 0, 0]) + b"mntrGRAYXYZ " + b"\0" * 12 + b"acspAPPL" + b"\0" * 24 + struct.pack(">iii", int(0.9642 * 65536), 65536, int(0.8249 * 65536)) + b"\0" * 48
+    assert len(head) == 128
+    return head + table + body
+
+
+def test_color_spaces(d):
+    # stored samples are copied only in a Device space: an ICC profile (here a constant-white
+    # curve, which renders the page white), CalGray, or a DefaultGray of the resources can make
+    # a viewer show something else, so those are decoded through their colour space or rendered
+    objs = [
+        image("/Width 160 /Height 200 /ColorSpace [/ICCBased 9 0 R] /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 6
+        image("/Width 160 /Height 200 /ColorSpace [/CalGray << /WhitePoint [0.9505 1 1.089] /Gamma 2.2 >>] /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 7
+        image("/Width 64 /Height 40 /ColorSpace [/ICCBased 9 0 R] /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 8
+        t.stream("/N 1 /Alternate /DeviceGray", icc_gray([0xFFFF, 0xFFFF])),  # 9
+        image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", GRAY_JPEG),  # 10
+    ]
+    content = b"q 200 0 0 250 0 0 cm /A Do Q q 200 0 0 250 200 0 cm /B Do Q q 100 0 0 60 400 0 cm /C Do Q"
+    res = "<< /XObject << /A 6 0 R /B 7 0 R /C 8 0 R >> >>"
+    path = d.write("icc.pdf", t.simple_page_pdf(content, resources=res, extra_objects=objs))
+    _, images = attributes(path)
+    classes = [re.search(r' copy="(\w+)"', i).group(1) for i in images]
+    t.check(classes == ["decode", "decode", "decode"], "ICCBased DCT, CalGray DCT, ICCBased CCITT: copy=decode, not jpeg or bilevel", images)
+    rc, r, _ = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0"), ("p1.3", 1, "8.0")])
+    t.check([r[k][1] for k in ("p1.1", "p1.2", "p1.3")] == ["gray8", "gray8", "gray8"], "the copies are decoded through the colour space (never the stored JPEG)", {k: v[:4] for k, v in r.items()})
+    # a Device space that a DefaultGray of the resources replaces: rendered
+    res = "<< /ColorSpace << /DefaultGray [/ICCBased 9 0 R] >> /XObject << /A 10 0 R >> >>"
+    path = d.write("default-gray.pdf", t.simple_page_pdf(b"q 612 0 0 792 0 0 cm /A Do Q", resources=res, extra_objects=objs))
+    _, images = attributes(path)
+    t.check(len(images) == 1 and ' copy="render"' in images[0], "DeviceGray under a DefaultGray: copy=render", images)
+
+
+def test_jpeg_structure(d):
+    # a copy must be a JPEG a decoder accepts, not only one framed as segments: a Huffman table
+    # that is not a prefix code, a quantisation table id past 3, a scan naming a component the
+    # frame lacks, or a sequential scan with a spectral range other than 0..63 is err:jpeg
+    def mutate(marker, at, value):
+        k = GRAY_JPEG.index(bytes([0xFF, marker]))
+        b = bytearray(GRAY_JPEG)
+        b[k + at] = value
+        return bytes(b)
+
+    bad = [
+        mutate(0xC4, 5 + 1, 3),  # DHT: three codes of length 1 (with the counts after, still framed)
+        mutate(0xDB, 4, 0x07),  # DQT: table id 7
+        mutate(0xDA, 5, 0x09),  # SOS: component 9
+        mutate(0xDA, 5 + 2 + 1, 62),  # SOS: Se 62 in a baseline scan
+    ]
+    objs = [image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", data) for data in bad]
+    content = b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, 6 + k) for k in range(len(bad)))
+    res = "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (6 + k, 6 + k) for k in range(len(bad)))
+    path = d.write("bad-jpeg.pdf", t.simple_page_pdf(content, resources=res, extra_objects=objs))
+    rc, r, _ = copy(path, [("p1.%d" % (k + 1), 1, "%d.0" % (6 + k)) for k in range(len(bad))])
+    got = [r["p1.%d" % (k + 1)][0] for k in range(len(bad))]
+    t.check(rc == 0 and got == ["err:jpeg"] * len(bad), "bogus Huffman table, DQT id, SOS component, baseline Se: err:jpeg", got)
+
+
+def test_jbig2_regions(d):
+    # the page size alone does not bound a JBIG2 decode: a 10x10 page with a 60000x60000 generic
+    # region (some 150 bytes) is refused before decoding; a region that fits is decoded
+    import struct
+
+    def seg(num, typ, data):
+        return struct.pack(">IBBBI", num, typ, 0, 1, len(data)) + data
+
+    page = seg(0, 48, struct.pack(">IIIIBH", 10, 10, 0, 0, 0, 0))
+
+    def region(w, h):
+        return seg(1, 38, struct.pack(">IIIIB", w, h, 0, 0, 0) + bytes([0x08, 3, 0xFF, 0xFD, 0xFF, 2, 0xFE, 0xFE, 0xFE]) + b"\x00" * 64 + b"\xff\xac")
+
+    pattern = seg(1, 16, bytes([0, 255, 255]) + struct.pack(">I", 0xFFFFFFFF) + b"\x00" * 16)
+    objs = [
+        image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", page + region(60000, 60000)),  # 6
+        image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", page + pattern),  # 7
+        image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode /DecodeParms << /JBIG2Globals 9 0 R >>", page + region(10, 10)),  # 8
+        t.stream("", region(60000, 60000)),  # 9: globals with a huge region
+        image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", page + region(10, 10)),  # 10
+    ]
+    content = b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, n) for k, n in enumerate((6, 7, 8, 10)))
+    res = "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in (6, 7, 8, 10))
+    path = d.write("jbig2-regions.pdf", t.simple_page_pdf(content, resources=res, extra_objects=objs))
+    import time
+
+    start = time.monotonic()
+    rc, r, _ = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0"), ("p1.3", 1, "8.0"), ("p1.4", 1, "10.0")])
+    secs = time.monotonic() - start
+    got = [r[k][0] for k in ("p1.1", "p1.2", "p1.3", "p1.4")]
+    t.check(rc == 0 and got == ["err:decode", "err:decode", "err:decode", "ok"] and secs < 10, "JBIG2 region or pattern dictionary larger than the page (in the stream or its globals): refused before decoding", (got, secs))
 
 
 def test_codec_sizes(d):
@@ -390,6 +509,9 @@ with t.TempDir() as d:
     test_overlaid(d)
     test_jpeg_metadata(d)
     test_codec_sizes(d)
+    test_color_spaces(d)
+    test_jpeg_structure(d)
+    test_jbig2_regions(d)
     test_ccitt_black(d)
     test_reachable_shallow(d)
 t.finish()

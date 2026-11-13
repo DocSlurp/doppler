@@ -63,8 +63,10 @@ pub(crate) fn seal() -> String {
 /// a link (`page&#45;0001`, `page\-0001`, `page%2D0001`, `./`), no spelling of a path can be
 /// matched reliably; so the syntax that makes a link is broken too: a zero-width space goes
 /// between `]` and `(` (an inline link or image) and between `]` and `:` (a reference
-/// definition), and after the `<` of an HTML tag that can load or link a URL (`<img`, `<a`,
-/// `<source`, `<svg`, ...). Then the converter's own sealed picture markers are expanded:
+/// definition), and after the `<` of every HTML tag (`<img`, `<a`, `<table background=...>`,
+/// `<p style=...>`: any element can load a URL), except table markup as the converter writes it
+/// (attribute-free, or `dir="rtl"`, `rowspan`, `colspan`). Then the converter's own sealed
+/// picture markers are expanded:
 /// `expand` maps a marker's id (`pN.M`, `pN.gK`) to its link (`None` keeps
 /// `doppler-image:<id>`). Last, the seal goes, leaving the converter's other markers exactly as
 /// documented. Only expansion can therefore put a link, and an image path, into the Markdown.
@@ -87,8 +89,15 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
             i += 1;
             continue;
         }
-        // an HTML tag that loads or links a URL
-        if bytes[i] == b'<' && url_tag_at(bytes, i + 1) {
+        // an HTML tag: any element can load a URL through some attribute (`background=`,
+        // `style="...url(...)"`, `<mglyph src=...>`, ...), so every tag is broken except the
+        // table markup the converter writes itself (attribute-free, or `dir`, `rowspan`,
+        // `colspan` with plain values)
+        if bytes[i] == b'<' && tag_start_at(bytes, i + 1) {
+            if let Some(len) = own_table_tag_at(bytes, i) {
+                i += len;
+                continue;
+            }
             out.push_str(&md[from..i + 1]);
             out.push('\u{200b}');
             from = i + 1;
@@ -149,23 +158,54 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
     out.replace(seal, "")
 }
 
-/// HTML elements whose attributes can load or link a URL (`src`, `href`, `srcset`, `data`,
-/// `poster`, `action`, ...).
-const URL_TAGS: [&str; 22] = [
-    "a", "area", "audio", "base", "embed", "form", "frame", "iframe", "image", "img", "input", "link", "meta",
-    "object", "picture", "script", "source", "style", "svg", "track", "use", "video",
-];
-
-/// Whether `b[i..]` is the name of one of [`URL_TAGS`] (any case, optionally after a `/`) ended
-/// by something that is not a letter, digit or `-` (or the end).
-fn url_tag_at(b: &[u8], i: usize) -> bool {
-    let start = if b.get(i) == Some(&b'/') { i + 1 } else { i };
-    let name_len = b[start.min(b.len())..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'-').count();
-    if name_len == 0 || name_len > 8 {
-        return false;
+/// Whether `b[i..]` (just after a `<`) starts an HTML tag: an ASCII letter, or `/` and one.
+fn tag_start_at(b: &[u8], i: usize) -> bool {
+    match b.get(i) {
+        Some(c) if c.is_ascii_alphabetic() => true,
+        Some(b'/') => b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()),
+        _ => false,
     }
-    let name = &b[start..start + name_len];
-    URL_TAGS.iter().any(|t| t.as_bytes().eq_ignore_ascii_case(name))
+}
+
+/// The length of the tag at `b[i..]` (from its `<`) when it is table markup as the converter
+/// writes it: `<table>`, `<thead>`, `<tbody>`, `<tr>`, `<th>`, `<td>` or their closing tags,
+/// with no attribute other than `dir="rtl"`, `rowspan="N"` and `colspan="N"` (digits). Such a
+/// tag loads nothing, whether the converter or the PDF's text wrote it.
+fn own_table_tag_at(b: &[u8], i: usize) -> Option<usize> {
+    const TAGS: [&[u8]; 6] = [b"table", b"thead", b"tbody", b"tr", b"th", b"td"];
+    let mut k = i + 1;
+    let closing = b.get(k) == Some(&b'/');
+    if closing {
+        k += 1;
+    }
+    let name_len = b[k.min(b.len())..].iter().take_while(|c| c.is_ascii_alphabetic()).count();
+    if !TAGS.iter().any(|t| *t == &b[k..k + name_len]) {
+        return None;
+    }
+    k += name_len;
+    loop {
+        match b.get(k) {
+            Some(b'>') => return Some(k + 1 - i),
+            Some(b' ') if !closing => {
+                k += 1;
+                let rest = &b[k..];
+                let value_at = if rest.starts_with(b"dir=\"rtl\"") {
+                    k += 9;
+                    continue;
+                } else if rest.starts_with(b"rowspan=\"") || rest.starts_with(b"colspan=\"") {
+                    k + 9
+                } else {
+                    return None;
+                };
+                let digits = b[value_at.min(b.len())..].iter().take_while(|c| c.is_ascii_digit()).count();
+                if digits == 0 || digits > 6 || b.get(value_at + digits) != Some(&b'"') {
+                    return None;
+                }
+                k = value_at + digits + 1;
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// Whether `b[i..]` is four or more ASCII digits, then `/image-` or `/figure-` (any case).

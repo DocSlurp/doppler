@@ -271,8 +271,10 @@ when turned clockwise, other when mirrored or skewed; page rotation included) an
 (0 when nothing else shows over the image: no later fill, stroke, shading,
 pattern, visible glyph, image or annotation appearance overlaps it, no clip or
 page edge cuts it, no non-rectangular clip applies, and it is not drawn through
-a soft mask, blend mode, opacity below 1 or transfer function; 1 otherwise, and
-for every image past the first 64 drawn plainly on a page).
+a soft mask, blend mode, opacity below 1 or transfer function, nor inside a
+transparency group; a stroke counts its pen along each device axis, and a
+Type 3 glyph may paint anywhere within the clip; 1 otherwise, and for every
+image past the first 64 drawn plainly on a page).
 The PDF page number is
 .I number
 on

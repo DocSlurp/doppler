@@ -145,7 +145,8 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   classifier. `pdftomarkdown` places such pages as `page-scan` (`![page N scan](...)` first)
   and, with `--images-dir`, copies the pixels of an upright scan with nothing over it through
   `pdfregions` copy jobs (a JPEG without its metadata, bilevel as 1-bit PNG) instead of
-  rendering; a redaction box, white-out, clip or annotation over a scan makes it rendered;
+  rendering; a redaction box, white-out, clip, annotation or transparency group over or around
+  a scan makes it rendered, and an ICC-based or calibrated scan is decoded through its profile;
   see [Page scans](docslurp/doppler-md/README.md#page-scans).
 - The scan test's thresholds are options of all three tools: `-scan-min-coverage F`
   (0.85), `-scan-max-words N` (20) and `-scan-layer-overlap F` (0.5) in pdfpagefacts and

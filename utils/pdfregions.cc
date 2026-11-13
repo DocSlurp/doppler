@@ -1305,6 +1305,16 @@ static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height
     unsigned char transform = 0;
     size_t i = 2;
     bool frame = false, scan = false;
+    // what a decoder checks of the tables, frame and scans (libjpeg refuses a file that breaks
+    // any of these: "Bogus Huffman table", "Invalid SOS parameters", ...): the copy must be a
+    // JPEG that decodes, not just one framed as segments
+    bool progressive = false;
+    unsigned quantDefined = 0; // bit per DQT table id
+    struct Component
+    {
+        int id, h, v, tq;
+    };
+    std::vector<Component> components;
     size_t headerEnd = 0; // where the canonical APP segments go: right after SOI
     headerEnd = out->size();
     while (i < end - 2) {
@@ -1358,16 +1368,111 @@ static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height
             if (precision != 8 || w != width || h != height || nc != comps || len != 8 + 3 * static_cast<size_t>(nc)) {
                 return false;
             }
+            for (int c = 0; c < nc; ++c) {
+                const unsigned char *cs = seg + 10 + 3 * c;
+                const Component comp { cs[0], cs[1] >> 4, cs[1] & 15, cs[2] };
+                if (comp.h < 1 || comp.h > 4 || comp.v < 1 || comp.v > 4 || comp.tq > 3) {
+                    return false;
+                }
+                for (const Component &other : components) {
+                    if (other.id == comp.id) {
+                        return false;
+                    }
+                }
+                components.push_back(comp);
+            }
+            progressive = marker == 0xC2;
             frame = true;
             out->insert(out->end(), seg, seg + 2 + len);
         } else if (marker == 0xDA) {
-            if (!frame) {
+            if (!frame || len < 6) {
+                return false;
+            }
+            const int ns = seg[4];
+            if (ns < 1 || ns > 4 || len != 6 + 2 * static_cast<size_t>(ns)) {
+                return false;
+            }
+            int blocks = 0;
+            for (int c = 0; c < ns; ++c) {
+                const int id = seg[5 + 2 * c], td = seg[6 + 2 * c] >> 4, ta = seg[6 + 2 * c] & 15;
+                const Component *comp = nullptr;
+                for (const Component &k : components) {
+                    comp = k.id == id ? &k : comp;
+                }
+                for (int e = 0; e < c; ++e) {
+                    if (seg[5 + 2 * e] == id) {
+                        return false;
+                    }
+                }
+                if (!comp || td > 3 || ta > 3 || !(quantDefined >> comp->tq & 1)) {
+                    return false;
+                }
+                blocks += comp->h * comp->v;
+            }
+            if (ns > 1 && blocks > 10) {
+                return false; // sampling factors too large for an interleaved scan
+            }
+            const unsigned char *tail = seg + 5 + 2 * ns;
+            const int ss = tail[0], se = tail[1], ah = tail[2] >> 4, al = tail[2] & 15;
+            if (progressive) {
+                if (se > 63 || ss > se || (ss == 0 && se != 0) || (ss > 0 && ns != 1) || ah > 13 || al > 13 || (ah != 0 && ah != al + 1)) {
+                    return false;
+                }
+            } else if (ss != 0 || se != 63 || ah != 0 || al != 0) {
                 return false;
             }
             scan = true;
             out->insert(out->end(), seg, seg + 2 + len);
-        } else if (marker == 0xDB || marker == 0xC4 || marker == 0xDD) {
-            // tables and the restart interval
+        } else if (marker == 0xDB) {
+            // quantisation tables: Pq (8 or 16 bit) and Tq, then 64 entries each
+            for (size_t k = 4; k < 2 + len;) {
+                const int pq = seg[k] >> 4, tq = seg[k] & 15;
+                const size_t size = 1 + 64 * (pq ? 2 : 1);
+                if (pq > 1 || tq > 3 || k + size > 2 + len) {
+                    return false;
+                }
+                quantDefined |= 1u << tq;
+                k += size;
+            }
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xC4) {
+            // Huffman tables: Tc and Th, 16 code counts that form a prefix code (no code of all
+            // ones, as libjpeg requires), at most 256 values (DC values at most 15)
+            for (size_t k = 4; k < 2 + len;) {
+                if (k + 17 > 2 + len) {
+                    return false;
+                }
+                const int tc = seg[k] >> 4, th = seg[k] & 15;
+                if (tc > 1 || th > 3) {
+                    return false;
+                }
+                size_t total = 0;
+                long code = 0;
+                for (int l = 1; l <= 16; ++l) {
+                    const int count = seg[k + l];
+                    total += count;
+                    code += count;
+                    if (count > 0 && code >= (1L << l)) {
+                        return false;
+                    }
+                    code <<= 1;
+                }
+                if (total > 256 || k + 17 + total > 2 + len) {
+                    return false;
+                }
+                for (size_t v = 0; tc == 0 && v < total; ++v) {
+                    if (seg[k + 17 + v] > 15) {
+                        return false;
+                    }
+                }
+                k += 17 + total;
+            }
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xDD) {
+            // the restart interval
+            if (len != 4) {
+                return false;
+            }
             out->insert(out->end(), seg, seg + 2 + len);
         } else {
             return false; // anything else (other frames, arithmetic coding, DNL, extensions)
@@ -1469,14 +1574,24 @@ static bool jpxSize(const std::vector<unsigned char> &data, uint64_t *width, uin
     return true;
 }
 
-// The page size of an embedded JBIG2 stream (PDF form: segments without the file header): its
-// page information segment, which must come within the first segments. False when there is
-// none, its height is unknown (striped, 0xffffffff) or a segment before it has an unknown length.
-static bool jbig2PageSize(const std::vector<unsigned char> &d, uint64_t *width, uint64_t *height)
+// The segments of an embedded JBIG2 stream (PDF form: segments without the file header), or of
+// its JBIG2Globals. Every segment header is read, to the end: the page information segment gives
+// the page size (the first one, *width and *height, when pageInfo is set), and every region
+// segment (generic, refinement, text, halftone: immediate or intermediate) must fit in
+// maxW x maxH, and a pattern dictionary's collective bitmap in maxW * maxH pixels. The page
+// size alone does not bound the decode: a 1000x1000 page can carry a 60000x60000 generic region
+// that the decoder allocates and fills. False when a header is cut short, a segment's length is
+// unknown (0xffffffff), or a size does not fit (and, with pageInfo, when there is no page
+// information or its height is unknown).
+static bool jbig2Segments(const std::vector<unsigned char> &d, bool pageInfo, uint64_t maxW, uint64_t maxH, uint64_t *width, uint64_t *height)
 {
     const size_t n = d.size();
     size_t at = 0;
-    for (int seg = 0; seg < 64 && at + 11 <= n; ++seg) {
+    bool sized = false;
+    while (at < n) {
+        if (at + 11 > n) {
+            break; // padding: too short for a segment header, so nothing the decoder reads
+        }
         const uint32_t number = be32(d.data() + at);
         const unsigned char flags = d[at + 4];
         const int type = flags & 0x3f;
@@ -1489,6 +1604,8 @@ static bool jbig2PageSize(const std::vector<unsigned char> &d, uint64_t *width, 
             }
             refs = be32(d.data() + p) & 0x1fffffff;
             p += 4 + (refs + 8) / 8;
+        } else if (refs > 4) {
+            return false; // 5 and 6 are invalid counts
         } else {
             p += 1;
         }
@@ -1503,24 +1620,63 @@ static bool jbig2PageSize(const std::vector<unsigned char> &d, uint64_t *width, 
         }
         const uint32_t length = be32(d.data() + p);
         p += 4;
-        if (type == 48) {
-            if (p + 8 > n || length < 8) {
-                return false;
-            }
-            const uint32_t w = be32(d.data() + p), h = be32(d.data() + p + 4);
-            if (w == 0 || h == 0 || h == 0xffffffffu) {
-                return false;
-            }
-            *width = w;
-            *height = h;
-            return true;
-        }
         if (length == 0xffffffffu || length > n - p) {
             return false;
         }
+        switch (type) {
+        case 48: // page information
+            if (length < 8) {
+                return false;
+            }
+            if (pageInfo && !sized) {
+                const uint32_t w = be32(d.data() + p), h = be32(d.data() + p + 4);
+                if (w == 0 || h == 0 || h == 0xffffffffu) {
+                    return false;
+                }
+                *width = w;
+                *height = h;
+                sized = true;
+                maxW = std::min<uint64_t>(maxW, w);
+                maxH = std::min<uint64_t>(maxH, h);
+            }
+            break;
+        case 4: // text regions
+        case 6:
+        case 7:
+        case 20: // halftone regions
+        case 22:
+        case 23:
+        case 36: // generic regions
+        case 38:
+        case 39:
+        case 40: // generic refinement regions
+        case 42:
+        case 43: {
+            // region segment information: width, height, x, y, flags
+            if (length < 17 || (pageInfo && !sized)) {
+                return false;
+            }
+            if (be32(d.data() + p) > maxW || be32(d.data() + p + 4) > maxH) {
+                return false;
+            }
+            break;
+        }
+        case 16: { // pattern dictionary: flags, HDPW, HDPH, GRAYMAX
+            if (length < 7) {
+                return false;
+            }
+            const uint64_t pw = d[p + 1], ph = d[p + 2], patterns = uint64_t(be32(d.data() + p + 3)) + 1;
+            if (static_cast<double>(patterns) * pw * ph > static_cast<double>(maxW) * static_cast<double>(maxH)) {
+                return false;
+            }
+            break;
+        }
+        default:
+            break;
+        }
         at = p + length;
     }
-    return false;
+    return !pageInfo || sized;
 }
 
 // A copy job: the image XObject job.ref, which must be named in the page's resources (directly
@@ -1612,7 +1768,31 @@ void Renderer::copyImage(const Job &job)
         bool longer = false;
         uint64_t w = 0, h = 0;
         int ncomps = 1;
-        const bool sized = readPrefix(str->getNextStream(), kind == strJPX ? maxCopyBytes : 1 << 20, &head, &longer) && (kind == strJPX ? jpxSize(head, &w, &h, &ncomps) : jbig2PageSize(head, &w, &h));
+        bool sized = readPrefix(str->getNextStream(), maxCopyBytes, &head, &longer);
+        if (kind == strJPX) {
+            sized = sized && jpxSize(head, &w, &h, &ncomps);
+        } else {
+            // every segment of the stream and of its globals, read whole (a stream past
+            // -max-copy-bytes is refused rather than scanned in part)
+            sized = sized && !longer && jbig2Segments(head, true, UINT64_MAX, UINT64_MAX, &w, &h);
+            if (sized && w == static_cast<uint64_t>(width) && h == static_cast<uint64_t>(height)) {
+                Object parms = dict->lookup("DecodeParms");
+                if (parms.isNull()) {
+                    parms = dict->lookup("DP");
+                }
+                if (parms.isArray() && parms.arrayGetLength() == 1) {
+                    parms = parms.arrayGet(0);
+                }
+                Object globals = parms.isDict() ? parms.dictLookup("JBIG2Globals") : Object::null();
+                if (globals.isStream()) {
+                    std::vector<unsigned char> g;
+                    bool gLonger = false;
+                    sized = readPrefix(globals.getStream(), maxCopyBytes, &g, &gLonger) && !gLonger && jbig2Segments(g, false, w, h, &w, &h);
+                } else if (!globals.isNull()) {
+                    sized = false;
+                }
+            }
+        }
         if (!sized) {
             emitError(job, "decode");
             return;

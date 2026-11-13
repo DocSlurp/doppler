@@ -120,15 +120,20 @@ const char *imageCopyName(ImageCopy c)
 
 ImageCopy classifyImageCopy(const ImageDictInfo &info)
 {
-    if (info.inlineImg || info.softMask || info.mask || info.external) {
+    // Default colour spaces replace Device ones under the page's resources, which a copy job
+    // does not see: rendered
+    if (info.inlineImg || info.softMask || info.mask || info.external || info.defaultSpaces) {
         return ImageCopy::Render;
     }
-    const bool grayOrRgb = info.color == ImageColor::Gray || info.color == ImageColor::RGB || info.color == ImageColor::ICC1 || info.color == ImageColor::ICC3;
+    // stored samples are copied only in a Device space: an ICC profile (or a CalGray/CalRGB
+    // gamma and matrix) can make a viewer show something else entirely (a constant-white curve
+    // hides the scan); those are decoded through their colour space instead
+    const bool grayOrRgb = (info.color == ImageColor::Gray || info.color == ImageColor::RGB) && !info.calibrated;
     if (info.filter == ImageFilter::DCT && info.filters == 1 && info.bpc == 8 && grayOrRgb && !info.decode && !info.colorTransform && !info.imageMask) {
         return ImageCopy::Jpeg;
     }
     const bool oneBit = info.bpc == 1 || info.imageMask || info.filter == ImageFilter::CCITT || info.filter == ImageFilter::JBIG2;
-    const bool grayish = info.imageMask || info.color == ImageColor::Gray || info.color == ImageColor::ICC1 || info.color == ImageColor::None;
+    const bool grayish = info.imageMask || (info.color == ImageColor::Gray && !info.calibrated) || info.color == ImageColor::None;
     if (oneBit && grayish && (info.bpc == 1 || info.bpc == 0) && !info.decode) {
         return ImageCopy::Bilevel;
     }

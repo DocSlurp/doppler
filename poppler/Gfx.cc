@@ -4438,13 +4438,23 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
         }
         return ImageColor::Other;
     };
+    // CalGray and CalRGB (a name or [/CalGray << ... >>]), one level through the resources
+    auto calibratedOf = [](const Object &c) {
+        const Object family = c.isArray() && c.arrayGetLength() >= 1 ? c.arrayGet(0) : Object::null();
+        return c.isName("CalGray") || c.isName("CalRGB") || family.isName("CalGray") || family.isName("CalRGB");
+    };
+    if (resources) {
+        info.defaultSpaces = !resources->lookupColorSpace("DefaultGray").isNull() || !resources->lookupColorSpace("DefaultRGB").isNull() || !resources->lookupColorSpace("DefaultCMYK").isNull();
+    }
     Object cs = lookup("ColorSpace", "CS");
     if (!cs.isNull()) {
         info.color = colorOf(cs);
+        info.calibrated = calibratedOf(cs);
         // an inline image may name a colour space of the resources (one level)
         if (inlineImg && resources && cs.isName() && info.color == ImageColor::Other) {
             Object named = resources->lookupColorSpace(cs.getNameString());
             info.color = named.isNull() ? ImageColor::Other : colorOf(named);
+            info.calibrated = calibratedOf(named);
         }
     } else if (info.imageMask) {
         info.color = ImageColor::None;

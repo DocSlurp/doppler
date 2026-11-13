@@ -393,15 +393,39 @@ fn escaped_entity_and_percent_spellings_of_a_path_cannot_make_a_link() {
         assert!(!md.contains(tag), "{tag}: {md}");
     }
     assert!(md.contains("]\u{200b}(images/page&#45;0001") && md.contains("<\u{200b}img src="), "{md}");
-    // words that only look alike stay: a closing bracket before text, a comparison, a table tag
-    let body = line(100.0, "see [1] (above) and x<y, 3 <b> 4, <table> and <abbr>");
+    // any other tag can load a URL through an attribute (background=, style url(), mglyph src)
+    let forged = [
+        "<table background=\"images/page&#45;0001/image&#45;001.jpg\">",
+        "<p style=\"background:url(images/page&#45;0001/image&#45;001.jpg)\">",
+        "<body background=x> <td background=y> <td colspan=\"2\" style=z>",
+        "<math><mglyph src=\"images/page&#45;0001/image&#45;001.jpg\"/></math>",
+        "</td><TABLE BACKGROUND=w>",
+    ];
+    let body: String = forged.iter().enumerate().map(|(k, f)| line(100.0 + 20.0 * k as f64, f)).collect();
+    let (md, _) = convert(&page(3, &body), true);
+    for tag in [
+        "<table background",
+        "<p style",
+        "<body",
+        "<td background",
+        "<td colspan=\"2\" style",
+        "<math",
+        "<mglyph",
+        "<TABLE",
+    ] {
+        assert!(!md.contains(tag), "{tag}: {md}");
+    }
+    assert!(md.contains("<\u{200b}table background=") && md.contains("<\u{200b}mglyph"), "{md}");
+    // what stays: a closing bracket before text, a `<` not before a letter, and table markup
+    // as the converter writes it (which loads nothing)
+    let body =
+        line(100.0, "see [1] (above) and 3 < 4, <table dir=\"rtl\"><tr><td rowspan=\"2\">x</td></tr></table>, x<y");
     let (md, _) = convert(&page(3, &body), true);
     assert!(
         md.contains("[1] (above)")
-            && md.contains("x<y")
-            && md.contains("<b>")
-            && md.contains("<table>")
-            && md.contains("<abbr>"),
+            && md.contains("3 < 4")
+            && md.contains("<table dir=\"rtl\"><tr><td rowspan=\"2\">x</td></tr></table>")
+            && md.contains("x<\u{200b}y"),
         "{md}"
     );
 }

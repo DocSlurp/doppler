@@ -82,6 +82,8 @@ struct ImageDictInfo
     bool colorTransform = false; // /DecodeParms present and possibly setting /ColorTransform
     bool external = false; // an XObject with /F, /FFilter or /FDecodeParms (data in another file)
     bool inlineImg = false;
+    bool calibrated = false; // CalGray or CalRGB: their gamma and matrix change what the samples show
+    bool defaultSpaces = false; // the resources define DefaultGray, DefaultRGB or DefaultCMYK, which replace Device spaces
     ImageCopy copy = ImageCopy::Render;
 };
 

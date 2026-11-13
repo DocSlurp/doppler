@@ -169,7 +169,12 @@ SOF2 frame (8-bit, the image's size and component count), its scans and its
 final EOI are checked, rewritten without metadata: every APPn segment (Exif with
 its orientation and thumbnail, ICC, XMP) and every COM is dropped, a JFIF APP0
 and an Adobe APP14 are kept in canonical form (they decide how the samples
-decode); nothing is decoded. A stream without metadata comes back byte for byte.
+decode); nothing is decoded. Its tables and scans must be ones a decoder accepts
+(quantisation and Huffman table ids, Huffman counts that form a prefix code,
+scan components of the frame, the spectral range of a sequential or progressive
+scan), or the job is
+.BR err:jpeg .
+A stream without metadata comes back byte for byte.
 .I kind
 .B gray1
 (copy=bilevel) is the decoded 1-bit samples, ceil(width/8) bytes a row, 0
@@ -186,6 +191,10 @@ would really decode must be the image's: a JPEG 2000 codestream's SIZ (raw or in
 JP2 jp2c box), a JBIG2 page information segment, CCITT /Columns and /Rows;
 otherwise
 .BR err:pixels .
+Every segment header of a JBIG2 stream and of its JBIG2Globals is read: a region
+segment larger than the page, a pattern dictionary whose bitmaps exceed the
+page's pixels, a segment of unknown length or a header cut short is
+.BR err:decode .
 A codec under another filter is
 .BR err:decode .
 .SH OPTIONS
