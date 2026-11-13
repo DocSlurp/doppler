@@ -357,11 +357,23 @@ with t.TempDir() as d:
 
     # --- limits: timeout and memory --------------------------------------------------
     heavy = b"".join(b"%d %d m %d %d %d %d %d %d c S\n" % (i % 600, i % 780, i % 600 + 5, i % 780 + 9, i % 600 + 9, i % 780 + 2, i % 600 + 12, i % 780 + 6) for i in range(40000))
-    hpath = d.write("heavy.pdf", t.simple_page_pdf(heavy))
-    rc, out, err = regions(hpath, [("p1.%d" % i, 1, 0, 0, 100, 100, "svg", 0) for i in range(5000)], "-timeout", 1, timeout=60)
+    # page 1 is one small square, so its job's record is written well inside the 1 s
+    # wall-clock alarm even on a loaded host; page 2 is the 40,000 curves, 4999 SVG jobs (the
+    # 5000-job cap) that cannot finish in 1 s, so the alarm fires while records are flowing
+    hpath = d.write("heavy.pdf", t.build_pdf([
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 5 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        t.stream("", b"0 0 1 rg 10 10 50 50 re f\n"),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents 7 0 R >>",
+        t.stream("", heavy),
+    ]))
+    hjobs = [("p1.1", 1, 0, 0, 100, 100, "svg", 0)] + [("p2.%d" % i, 2, 0, 0, 100, 100, "svg", 0) for i in range(4999)]
+    rc, out, err = regions(hpath, hjobs, "-timeout", 1, timeout=60)
     recs = parse_records(out)
     t.check(rc == LIMIT and err.endswith(b"pdfregions: timeout\n"), "timeout: exit 3 with a fixed diagnostic", repr((rc, err)))
-    t.check(0 < len(recs) < 5000 and all(h[1] == "ok" and p.rstrip().endswith(b"</svg>") for h, p in recs), "timeout: records already written are complete", repr(len(recs)))
+    t.check(0 < len(recs) < len(hjobs) and recs[0][0][0] == "p1.1" and all(h[1] == "ok" and p.rstrip().endswith(b"</svg>") for h, p in recs), "timeout: records already written are complete", repr(len(recs)))
 
     # a full page at 600 dpi needs ~130 MB of bitmap: under a 64 MiB cap it fails cleanly
     rc, out, err = regions(path, [("p1.1", 1, 0, 0, 612, 792, "raster", 600), ("p1.2", 1, 100, 120, 244, 192, "raster", 72)], "-max-memory", 64, "-max-pixels", 50000000)

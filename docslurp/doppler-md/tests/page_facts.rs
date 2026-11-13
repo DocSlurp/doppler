@@ -1,7 +1,10 @@
 //! `pdftomarkdown --page-facts FILE` / `--page-facts-fd N`: the facts pdftotext writes on the
 //! conversion's pass are byte-identical to `pdfpagefacts` for the same range and level, and
 //! the Markdown does not change. Needs the DocSlurp pdftotext and pdfpagefacts (`$PDFTOTEXT`,
-//! `$PDFPAGEFACTS`, else `../../build/utils/`); skipped (passing) without them.
+//! `$PDFPAGEFACTS`, else `../../build/utils/`); skipped (passing) without them, unless
+//! `DOPPLER_REQUIRE_INTEGRATION` is set (tests/toolchain).
+
+mod toolchain;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -19,7 +22,7 @@ fn tools() -> Option<(PathBuf, PathBuf)> {
         .unwrap_or(build.join("pdfpagefacts"));
     let usage = Command::new(&pdftotext).arg("-h").output().ok()?;
     if !String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd") || !facts.is_file() {
-        eprintln!("skipped: needs the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
+        toolchain::skip("page_facts", "the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
         return None;
     }
     Some((pdftotext, facts))
@@ -189,7 +192,9 @@ fn scan_thresholds_reach_the_facts_and_the_markdown() {
     // page 4's picture covers 200 x 150 of 612 x 792 (0.062) under 40 visible words
     let scan = ["--scan-min-coverage", "0.06", "--scan-max-words", "40", "--scan-layer-overlap", "0.05"];
     let f = s.0.join("thresholds.jsonl");
-    let mut args = vec!["--markers", "--page-facts", f.to_str().unwrap(), "--page-facts-level", "full"];
+    // --scan-pages image: page 4's scan has visible words, so the default (copy) would not mark it
+    let mut args =
+        vec!["--markers", "--scan-pages", "image", "--page-facts", f.to_str().unwrap(), "--page-facts-level", "full"];
     args.extend(scan);
     let out = md(&pdftotext, &args, &pdf);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));

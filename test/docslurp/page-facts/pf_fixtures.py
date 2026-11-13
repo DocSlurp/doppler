@@ -213,6 +213,75 @@ def vectors_pdf():
     )
 
 
+
+def bars_pdf():
+    """Bar charts drawn only with filled boxes (doppler#38), and box-heavy pages that are not charts."""
+    axis = "0 g 0.5 w 100 300 m 400 300 l S 100 300 m 100 520 l S 96 400 m 100 400 l S\n"
+    # tick labels: a scale left of the plot (bar charts have one; redactions and blank forms do not)
+    axis += "".join("BT /F1 8 Tf 84 %d Td (%s) Tj ET\n" % (y, v) for y, v in ((297, "0"), (397, "50"), (497, "100")))
+    vertical = "0.16 0.62 0.56 rg 110 300 30 80 re f 160 300 30 130 re f 210 300 30 50 re f 260 300 30 170 re f\n" + axis
+    haxis = "0 g 0.5 w 100 380 m 100 540 l S 100 380 m 420 380 l S\n"
+    haxis += "".join("BT /F1 8 Tf %d 370 Td (%s) Tj ET\n" % (x, v) for x, v in ((98, "0"), (198, "100"), (298, "200")))
+    horizontal = "0.48 0.38 1 rg 100 400 200 20 re f 100 440 120 20 re f 100 480 280 20 re f\n" + haxis
+    # a shaded table: cells of different widths on one row, each holding words, on a rule
+    table = "0 g 0.5 w 72 300 m 540 300 l S\n0.85 0.85 0.85 rg 72 300 128 20 re f 200 300 200 20 re f 400 300 140 20 re f\n"
+    table += "0 g " + "".join("BT /F1 10 Tf %d 306 Td (%s) Tj ET\n" % (x, w) for x, w in ((80, "Region"), (210, "Revenue"), (410, "Growth")))
+    # zebra stripes: rows of one length on a shared left edge, beside a rule
+    zebra = "0 g 0.5 w 72 200 m 72 560 l S\n0.95 0.95 0.95 rg " + "".join("72 %d 468 15 re f " % (200 + 30 * k) for k in range(6)) + "\n"
+    # highlighted text: boxes behind words, on a rule
+    highlight = "0 g 0.5 w 72 380 m 540 380 l S\n1 1 0 rg 72 380 78 20 re f 160 380 100 30 re f 270 380 30 10 re f\n0 g "
+    highlight += "".join("BT /F1 10 Tf %d 385 Td (%s) Tj ET\n" % (x, w) for x, w in ((75, "launch"), (165, "expansion"), (272, "go")))
+    # cost (council M4): 1,320 runs of three 2 pt boxes (thicker than the 1.5 pt the producer reads as a rule) that pass the
+    # spread test, each with its own axis, plus 4,000 short strokes: past the 64-run cap, and every check is reached
+    many = "0.2 0.4 0.8 rg "
+    for row in range(66):
+        y = 90 + 9 * row
+        for run in range(20):
+            x = 40 + 27 * run
+            many += "%d %d 2 3 re f %d %d 2 5 re f %d %d 2 4 re f\n" % (x, y, x + 3, y, x + 6, y)
+            # a scale left of each run: every number on the page at its own height, its value increasing with height
+            many += "".join("BT /F1 3 Tf %.2f %.2f Td (%d) Tj ET\n" % (x - 9, y + 1 + 2.5 * k + 0.05 * run, round((y + 2.5 + 2.5 * k + 0.05 * run) * 100)) for k in range(3))
+    many += "0 g 0.4 w " + "".join("%d %d m %d %d l S\n" % (40 + 27 * run - 1, 90 + 9 * row, 40 + 27 * run + 9, 90 + 9 * row) for row in range(66) for run in range(20))
+    many += "".join("%d 60 m %d 62 l S\n" % (30 + k % 500, 30 + k % 500) for k in range(4000))
+    # council M1/M2 negatives: a redacted table column (black boxes, ragged, by the column border), a redacted paragraph
+    redacted = "0 g 0.5 w 72 300 m 540 300 l S 72 300 m 72 500 l S 200 300 m 200 500 l S\n0 g " + "".join("202 %d %d 10 re f " % (310 + 30 * k, 60 + 23 * k) for k in range(6)) + "\n"
+    redacted += "".join("BT /F1 10 Tf 80 %d Td (Witness) Tj ET\n" % (310 + 30 * k) for k in range(6))
+    paragraph = "0.04 0.04 0.04 rg " + "".join("72 %d %d 11 re f " % (600 - 14 * k, 468 - 31 * k) for k in range(6)) + "\n0 g 0.5 w 72 520 m 540 520 l S\n"
+    # tinted form fields stacked on one left edge, each filled and stroked (B): its own outline is no axis
+    form = "0 G 0.5 w 0.88 0.93 1 rg " + "".join("200 %d %d 18 re B " % (500 - 30 * k, w) for k, w in enumerate((300, 120, 200, 80))) + "\n0 g "
+    form += "".join("BT /F1 10 Tf 100 %d Td (Name) Tj ET\n" % (504 - 30 * k) for k in range(4))
+    # a shaded two-level table header: a rowspan cell sharing its bottom edge with sub-header cells, every cell holding text
+    header = "0 g 0.5 w 72 500 m 540 500 l S 72 500 m 72 560 l S\n0.85 0.85 0.85 rg 72 500 100 40 re f 172 500 120 20 re f 292 500 120 20 re f 412 500 128 20 re f\n0 g "
+    header += "".join("BT /F1 8 Tf %d 504 Td (%s) Tj ET\n" % (x, w) for x, w in ((80, "Region"), (180, "Q1"), (300, "Q2"), (420, "Q3")))
+    # zebra rows holding text, and a narrower shaded note box on the same left edge
+    note = "0 g 0.5 w 72 200 m 72 560 l S\n0.95 0.95 0.95 rg " + "".join("72 %d 468 15 re f " % (200 + 30 * k) for k in range(6)) + "72 380 300 15 re f\n0 g "
+    note += "".join("BT /F1 8 Tf 76 %d Td (Bookings %d) Tj ET\n" % (204 + 30 * k, k) for k in range(6)) + "BT /F1 8 Tf 76 384 Td (Note: record year) Tj ET\n"
+    # yellow highlights behind 8 pt values in a ruled table
+    marks = "0 g 0.5 w 72 300 m 540 300 l S 72 300 m 72 420 l S\n1 1 0 rg " + "".join("%d 300 %d 12 re f " % (100 + 110 * k, 30 + 12 * k) for k in range(4)) + "\n0 g "
+    marks += "".join("BT /F1 8 Tf %d 303 Td (%d.5) Tj ET\n" % (102 + 110 * k, 10 + k) for k in range(4))
+    # bars with a drawn trend line: one cluster (joined into the drawing's), as doppler-md makes one figure
+    curve = "0 0 1 RG 1 w 110 380 m 150 420 190 360 230 430 c 270 400 300 460 330 410 c S\n"
+    # council r2: redactions in CMYK black, grey and navy, each a cell 1 pt inside the column rule (which spans the run)
+    def redactions(fill):
+        page = "0 g 0.5 w 72 300 m 540 300 l S 72 300 m 72 500 l S 200 300 m 200 500 l S\n" + fill + " " + "".join("201 %d %d 10 re f " % (310 + 30 * k, 60 + 23 * k) for k in range(6)) + "\n0 g "
+        return page + "".join("BT /F1 10 Tf 80 %d Td (Witness) Tj ET\n" % (310 + 30 * k) for k in range(6))
+    # a blank flattened form: tinted fields of different widths, 0.5 pt right of a divider that runs down the whole form
+    divider = "0 g 0.5 w 150 200 m 150 560 l S\n0.86 0.91 1 rg " + "".join("150.5 %d %d 18 re f " % (520 - 40 * k, w) for k, w in enumerate((330, 70, 200, 140, 260))) + "\n0 g "
+    divider += "".join("BT /F1 10 Tf 80 %d Td (Field) Tj ET\n" % (524 - 40 * k) for k in range(5))
+    # a black bar chart (common in print): bars filled 0 g, with its axes and scale
+    black = "0 g 110 300 30 80 re f 160 300 30 130 re f 210 300 30 50 re f 260 300 30 170 re f\n" + axis
+    combo = vertical + curve
+    return doc([{"content": vertical}, {"content": horizontal}, {"content": table}, {"content": zebra}, {"content": highlight}, {"content": many},
+                {"content": redacted}, {"content": paragraph}, {"content": form}, {"content": header}, {"content": note}, {"content": marks},
+                {"content": combo}, {"content": curve},
+                {"content": redactions("0 0 0 1 k")}, {"content": redactions("0.15 g")}, {"content": redactions("0.05 0.05 0.2 rg")}, {"content": divider},
+                {"content": black}])
+
+
+def curve_pdf():
+    """The trend line of bars_pdf's last page alone: its facts must not depend on the pages before it."""
+    return doc([{"content": "0 0 1 RG 1 w 110 380 m 150 420 190 360 230 430 c 270 400 300 460 330 410 c S\n"}])
+
 # --- E forms ------------------------------------------------------------------------
 
 
@@ -648,6 +717,221 @@ def multipage_pdf():
     )
 
 
+# --- issue 40: ruled grids, words inside images, image bytes per pixel ----------------------
+
+
+def _hlines(x0, x1, ys):
+    return "".join("%g %g m %g %g l S\n" % (x0, y, x1, y) for y in ys)
+
+
+def _vlines(xs, y0, y1):
+    return "".join("%g %g m %g %g l S\n" % (x, y0, x, y1) for x in xs)
+
+
+def _cells(xs, ys, label):
+    """A word in each cell of the grid with column lines <xs> and row lines <ys> (PDF space)."""
+    out = []
+    for r in range(len(ys) - 1):
+        for c in range(len(xs) - 1):
+            out.append("BT /F1 9 Tf %g %g Td (%s%d%d) Tj ET\n" % (xs[c] + 4, ys[r + 1] + 5, label, r, c))
+    return "".join(out)
+
+
+def grids_pdf():
+    """Ruled tables. Page 1: two tables, the second with a header cell merged across its three
+    columns (its column lines start below the header row). Page 2: two tables sharing a width,
+    told apart by the jump in rule spacing. Page 3: 72 small grids (the list holds 64).
+    Page 4: a table ruled only horizontally. Page 5: white rules only. Page 6: a table of
+    shaded row boxes with column rules."""
+    # page 1, table A: 4 x 4, PDF y 700..580; table B: header 450..430, body 430..370
+    ax, ay = [72, 172, 272, 372, 472], [700, 670, 640, 610, 580]
+    a = _hlines(72, 472, ay) + _vlines(ax, 580, 700) + _cells(ax, ay, "a")
+    bx, by = [72, 202, 332, 462], [450, 430, 410, 390, 370]
+    b = _hlines(72, 462, by) + _vlines([72, 462], 370, 450) + _vlines([202, 332], 370, 430)
+    b += "BT /F1 9 Tf 200 437 Td (Merged header) Tj ET\n" + _cells(bx, by[1:], "b")
+    # page 2: rules 20 apart, then a 70 point gap (under the 80 point row gap), then rules 20 apart
+    ys2 = [700, 680, 660, 640, 570, 550, 530, 510]
+    p2 = _hlines(72, 400, ys2) + _vlines([72, 236, 400], 640, 700) + _vlines([72, 236, 400], 510, 570) + words(4, y=300)
+    # page 3: 9 rows x 8 columns of 3-rule grids, 40 points wide, 85 points apart vertically
+    p3 = "".join(_hlines(20 + 72 * c, 60 + 72 * c, [770 - 85 * r, 765 - 85 * r, 760 - 85 * r]) for r in range(9) for c in range(8))
+    # page 4: booktabs-style rules, words in columns
+    p4 = _hlines(72, 472, [700, 680, 600]) + "".join("BT /F1 10 Tf %d %d Td (v%d) Tj ET\n" % (80 + 100 * (k % 4), 665 - 15 * (k // 4), k) for k in range(16))
+    # page 5: a white grid (separators on a coloured page): not rules a table reads
+    p5 = "1 1 1 RG\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 272, 472], 610, 700) + words(4, y=300)
+    # page 6: shaded row boxes (each a filled rectangle) with two column rules
+    p6 = "0.9 g\n" + "".join("72 %d 400 18 re f\n" % (700 - 30 * k) for k in range(4)) + "0 g\n" + _vlines([180, 290], 610, 718) + words(4, y=300)
+    return doc([{"content": "0.5 w\n" + a + b}, {"content": "0.5 w\n" + p2}, {"content": "0.5 w\n" + p3}, {"content": "0.5 w\n" + p4}, {"content": "0.5 w\n" + p5}, {"content": "0.5 w\n" + p6}])
+
+
+def _noise(n, seed=7):
+    """<n> deterministic bytes standing in for compressed image data (no '{', which doc() fills)."""
+    out = bytearray()
+    x = seed
+    while len(out) < n:
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        b = (x >> 16) & 0xFF
+        out.append(b if b != 0x7B else 0x7C)
+    return bytes(out)
+
+
+def image_words_pdf():
+    """Page 1: a 300 dpi JPEG scan under an invisible OCR layer of 300 words. Page 2: a photo
+    with a 6-word caption drawn over it and 20 words below it. Page 3: a JPEG scan next to a
+    flat chart (Flate). Page 4: an image whose /Length is an indirect object. Page 5: an inline
+    image (no bytes per pixel)."""
+    import zlib
+
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Scan {0} 0 R /Photo {1} 0 R /Jpeg {2} 0 R /Chart {3} 0 R /Ind {4} 0 R >> >>"
+    scan = image("/DCTDecode", 2550, 3300, "/DeviceRGB", 8)
+    photo = stream("/Type /XObject /Subtype /Image /Width 600 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(600 * 400 // 4))
+    jpeg = stream("/Type /XObject /Subtype /Image /Width 800 /Height 600 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(800 * 600 * 3 // 8, seed=11))
+    chart = stream("/Type /XObject /Subtype /Image /Width 800 /Height 600 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode", zlib.compress(b"\xff" * (800 * 600 * 3), 9))
+    data = _noise(5000, seed=3)
+    indirect = "<< /Type /XObject /Subtype /Image /Width 100 /Height 50 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length {5} 0 R >>\nstream\n" + data.decode("latin-1") + "\nendstream"
+    caption = "BT /F1 10 Tf 80 410 Td (Sunset over the harbour at dusk) Tj ET\n"
+    return doc(
+        [
+            {"content": "q 612 0 0 792 0 0 cm /Scan Do Q\n" + words(300, invisible=True), "resources": res},
+            {"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + caption + words(20, y=300), "resources": res},
+            {"content": "q 250 0 0 188 50 500 cm /Jpeg Do Q\nq 250 0 0 188 320 500 cm /Chart Do Q\n", "resources": res},
+            {"content": "q 200 0 0 100 72 500 cm /Ind Do Q\n", "resources": res},
+            {"content": "q 100 0 0 100 72 500 cm BI /W 2 /H 2 /CS /G /BPC 8 ID \x00\x80\x80\xff EI Q\n", "resources": res},
+        ],
+        extras=[scan, photo, jpeg, chart, indirect, str(len(data))],
+    )
+
+
+def _raw_image(length_entry, data, w=100, h=50):
+    """An image XObject body with a /Length entry as given (or none) over <data>."""
+    return "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode %s >>\nstream\n" % (w, h, length_entry) + data.decode("latin-1") + "\nendstream"
+
+
+def lengths_pdf(break_xref=False):
+    """One image per page, 5000 bytes each, under /Length: 5000; 4995 (short); missing; 0;
+    10^12; 5005 (past endstream); 5000 by reference. With <break_xref>, a first page draws a
+    form XObject whose cross-reference offset is wrong, so a whole run rebuilds the table before
+    the other pages are read and a single-page run does not."""
+    data = _noise(5000, seed=5)
+    entries = ["/Length 5000", "/Length 4995", "", "/Length 0", "/Length 1000000000000", "/Length 5005", "/Length {7} 0 R"]
+    names = " ".join("/I%d {%d} 0 R" % (k, k) for k in range(len(entries)))
+    res = "<< /XObject << %s /Bad {8} 0 R >> >>" % names
+    pages = [{"content": "q 200 0 0 100 72 500 cm /I%d Do Q\n" % k, "resources": res} for k in range(len(entries))]
+    if break_xref:
+        pages.insert(0, {"content": "/Bad Do\n", "resources": res})
+    extras = [_raw_image(e, data) for e in entries] + ["5000", stream("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", "0 0 5 5 re f")]
+    pdf = doc(pages, extras=extras)
+    if break_xref:
+        # point the form's xref entry at the wrong place (the start of the file's header)
+        num = 4 + 2 * len(pages) + 8
+        xref = pdf.rindex(b"xref\n0 ")
+        at = xref + len(b"xref\n0 %d\n" % (int(pdf[xref + 7 : pdf.index(b"\n", xref + 5)]),)) + 20 * num
+        pdf = pdf[:at] + b"%010d" % 3 + pdf[at + 10 :]
+    return pdf
+
+
+def grid_caps_pdf():
+    """Page 1: a word of size 5000 (outside the body-size bins) and a ruled table. Page 2: 256
+    one-letter words of distinct large sizes, then 200 words of 10 points and the table: the
+    body size is still 10. Page 3: 4,100 horizontal rules (the grid search takes 4,096). Page 4:
+    20,005 tiny fills (the page's rule cap), then the table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 272, 472], 610, 700)
+    big = "BT /F1 5000 Tf 0 0 Td (x) Tj ET\n"
+    decoys = "".join("BT /F1 %g Tf 10 10 Td 3 Tr (x) Tj ET\n" % (100 + 0.5 * k) for k in range(256))
+    many = "0.5 w\n" + "".join("72 %.2f m 472 %.2f l S\n" % (780 - 0.18 * k, 780 - 0.18 * k) for k in range(4100))
+    tiny = "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": big + words(20, y=300) + table}, {"content": decoys + words(200, y=500) + table}, {"content": many}, {"content": tiny + table}])
+
+
+# --- issue 43: thin rules per grid, words centred inside images -----------------------------
+
+
+def grid_rules_pdf():
+    """Page 1: a 3 x 4 table ruled cell by cell (each cell a stroked rectangle). Page 2: a zebra
+    table of shaded row boxes and no rules. Page 3: shaded rows with two column lines (no outer
+    sides). Page 4: a table in a 4-point frame with thin inner rules (the frame is too thick to
+    count). Page 5: a fully ruled table with a stray underline in one cell and a white rule.
+    Page 6: a ruled table, then 20,005 tiny fills (the page's rule cap): no rule counts."""
+    xs, ys = [72, 172, 272, 372, 472], [700, 670, 640, 610]
+    p1 = "".join("%g %g %g %g re S\n" % (xs[c], ys[r + 1], xs[c + 1] - xs[c], ys[r] - ys[r + 1]) for r in range(3) for c in range(4)) + _cells(xs, ys, "c")
+    zebra = "0.85 g\n" + "".join("72 %d 400 18 re f\n" % (700 - 30 * k) for k in range(5)) + "0 g\n"
+    p2 = zebra + words(4, y=300)
+    p3 = zebra + "0.5 w\n" + _vlines([205, 338], 580, 718) + words(4, y=300)
+    frame = "4 w\n72 580 400 120 re S\n0.5 w\n" + _hlines(72, 472, [670, 640, 610]) + _vlines([172, 272, 372], 580, 700)
+    p4 = frame + _cells(xs, [700, 670, 640, 610, 580], "f")
+    p5 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + _cells(xs, ys, "u") + "0.6 w\n80 676 m 140 676 l S\n1 1 1 RG\n72 655 m 472 655 l S\n"
+    p6 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": "0.5 w\n" + p1}, {"content": p2}, {"content": p3}, {"content": p4}, {"content": p5}, {"content": p6}])
+
+
+def grid_split_pdf():
+    """Ruled tables whose connected thin rules the grid search does not see as one box (council,
+    issue 43). Page 1: column lines through two blocks of rules told apart by a jump in spacing
+    (one walker grid, two grid-search grids). Page 2: a 118-point row between two ruled blocks,
+    column lines through all of it. Page 3: the left column line rises to a 20-point rule above
+    the table. Page 4: the column lines drop to a 10-point rule below the last row. Page 5: a
+    table ruled only horizontally with one short vertical tick that touches nothing. Page 6:
+    5,001 short dashes, then a ruled table (the layout walker reads 5,000 rules a page and never
+    sees the table). Page 7: 4,990 dashes, then the same table (the walker sees it)."""
+    ys1 = [700, 680, 660, 640, 570, 550, 530, 510]
+    p1 = _hlines(72, 400, ys1) + _vlines([72, 236, 400], 510, 700)
+    ys2 = [700, 680, 660, 542, 522, 502]
+    p2 = _hlines(72, 400, ys2) + _vlines([72, 236, 400], 502, 700)
+    ys3 = [700, 680, 660, 640]
+    p3 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 640, 700) + _vlines([72], 700, 730) + _hlines(62, 82, [730])
+    p4 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 600, 700) + _hlines(230, 242, [600])
+    p5 = _hlines(72, 400, [700, 680, 660, 640, 620]) + _vlines([120], 645, 655)
+    def dashes(n):
+        return "".join("%d %d m %d %d l S\n" % (20 + 5 * (k % 110), 100 + 2 * (k // 110), 22 + 5 * (k % 110), 100 + 2 * (k // 110)) for k in range(n))
+
+    table = _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5, dashes(5001) + table, dashes(4990) + table)])
+
+
+def grid_rebuilt_pdf():
+    """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
+    doc line does, and pdftotext never does) rebuilds the cross-reference table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
+
+
+def grid_reopened_pdf():
+    """A ruled table on 2 pages of a file whose startxref is wrong: poppler rebuilds the
+    cross-reference table at open, as every run of it does."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    pdf = doc([{"content": table}, {"content": table}])
+    at = pdf.rindex(b"startxref\n") + len(b"startxref\n")
+    end = pdf.index(b"\n", at)
+    return pdf[:at] + b"%d" % (int(pdf[at:end]) + 7) + pdf[end:]
+
+
+def grid_titled_pdf():
+    """A ruled table in a file whose document information /Title names a missing object: only
+    pdftotext's XHTML header reads it (and rebuilds the table), never the page facts."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], extras=["<< /Title 99 0 R >>"], trailer_extra="/Info {0} 0 R")
+
+
+def grid_far_pdf():
+    """A ruled table at the foot of a 2 x 10^9-point page (displayed y near 2 x 10^9): past 10^9
+    points, no counts."""
+    y = 400
+    table = "0.5 w\n" + "".join("72 %d m 472 %d l S\n" % (v, v) for v in (y, y - 30, y - 60)) + "".join("%d %d m %d %d l S\n" % (x, y - 60, x, y) for x in (72, 272, 472))
+    return doc([{"content": table, "mediabox": (0, 0, 612, 2000000000)}])
+
+
+def caption_straddle_pdf():
+    """A photo (PDF y 400..600) with a caption line whose words straddle its bottom edge with
+    their centres inside, a line straddling it with centres outside, and a line well below."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Photo {0} 0 R >> >>"
+    photo = stream("/Type /XObject /Subtype /Image /Width 600 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(600 * 400 // 4))
+    # 4 words on a baseline at the photo's edge: boxes cross it, centres inside
+    text = "BT /F1 10 Tf 80 400 Td (Harbour at golden hour) Tj ET\n"
+    # 4 words 5 points lower: boxes cross the edge, centres below it
+    text += "BT /F1 10 Tf 200 395 Td (Photo by the crew) Tj ET\n"
+    text += words(10, y=300)
+    return doc([{"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + text, "resources": res}], extras=[photo])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -655,6 +939,8 @@ ALL = {
     "fonts": fonts_pdf,
     "images": images_pdf,
     "vectors": vectors_pdf,
+    "bars": bars_pdf,
+    "bars_curve": curve_pdf,
     "forms": forms_pdf,
     "forms_xfa_static": lambda: forms_pdf("static"),
     "forms_xfa_dynamic": lambda: forms_pdf("dynamic"),
@@ -670,4 +956,16 @@ ALL = {
     "table_then_stream": lambda: xref_stream_pdf("table-then-stream"),
     "clipped_text": clipped_text_pdf,
     "copy_class": copy_class_pdf,
+    "grids": grids_pdf,
+    "image_words": image_words_pdf,
+    "lengths": lengths_pdf,
+    "lengths_rebuilt": lambda: lengths_pdf(break_xref=True),
+    "grid_caps": grid_caps_pdf,
+    "grid_rules": grid_rules_pdf,
+    "caption_straddle": caption_straddle_pdf,
+    "grid_split": grid_split_pdf,
+    "grid_rebuilt": grid_rebuilt_pdf,
+    "grid_far": grid_far_pdf,
+    "grid_reopened": grid_reopened_pdf,
+    "grid_titled": grid_titled_pdf,
 }

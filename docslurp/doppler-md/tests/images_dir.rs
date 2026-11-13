@@ -1,11 +1,13 @@
 //! `pdftomarkdown --images-dir`: needs the DocSlurp pdftotext with `-images` (`$PDFTOTEXT` or
 //! `../../build/utils/pdftotext`) and python3 for the stand-in renderer
-//! (tests/fixtures/fake_pdfregions.py); skipped (passing) without them.
+//! (tests/fixtures/fake_pdfregions.py); skipped (passing) without them, unless
+//! `DOPPLER_REQUIRE_INTEGRATION` is set (tests/toolchain).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 mod manifest_file;
+mod toolchain;
 use manifest_file::manifest;
 
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
@@ -108,7 +110,7 @@ fn run(pdftotext: &Path, args: &[&str], mode: &str) -> Output {
 
 fn setup(tag: &str) -> Option<(PathBuf, Scratch, String)> {
     let Some(p) = pdftotext() else {
-        eprintln!("skipped: needs the DocSlurp pdftotext with -images and python3");
+        toolchain::skip(tag, "the DocSlurp pdftotext with -images and python3");
         return None;
     };
     let s = Scratch::new(tag);
@@ -241,7 +243,7 @@ fn the_manifest_lists_every_link_and_every_file() {
     let settings = m["settings_sha256"].as_str().unwrap();
     assert!(settings.len() == 64 && settings.bytes().all(|b| b.is_ascii_hexdigit()), "{settings}");
     let header = format!(
-        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
+        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"copy\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
     );
     let file = |f: &str| std::fs::read(d.join(f)).unwrap();
     let webp = file(PICTURE);
@@ -472,7 +474,7 @@ fn the_real_renderer_extracts_the_pictures_and_figures() {
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/utils/pdfregions"));
     if !real.is_file() {
-        eprintln!("skipped: no real pdfregions");
+        toolchain::skip("real", "the real pdfregions (PDFREGIONS_REAL, else ../../build/utils/pdfregions)");
         return;
     }
     let plain = run(&p, &["--markers", &pdf], "ok");

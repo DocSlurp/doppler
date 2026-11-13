@@ -98,12 +98,20 @@ image links (with --markers or --images-dir; they shape the Markdown):
                               gets none; the manifest names it: repeat_of), or keep (its own
                               file) (default skip)
   --scan-pages MODE           a full-page scan (images cover --scan-min-coverage of the page,
-                              at most --scan-max-words visible words): image (default) starts the page
-                              with ![page N scan](images/page-0012/image-001.jpg), then its OCR
-                              text; the file is the scan's own JPEG (.jpg), a bilevel scan as
-                              1-bit .png, else decoded or rendered (--raster-format). render:
-                              always rendered (--raster-format). skip: placed as any picture,
-                              never extracted
+                              at most --scan-max-words visible words). copy (default): a scan
+                              that can be copied as its own bytes (copyable, upright, a JPEG or
+                              bilevel stream) starts the page with
+                              ![page N scan](images/page-0012/image-001.jpg), then its OCR text;
+                              the file is its JPEG (.jpg) or 1-bit .png. Any other scan (JPEG
+                              2000, Flate, a visible page number, tiles, layers, turned,
+                              covered or overlaid, after a rebuilt xref) gets no marker and no
+                              file: its page image comes from the host's page rendering. A
+                              copyable scan before a rebuilt xref found later keeps its marker
+                              with no file (not-extracted, copy, error xref): render that page
+                              too.
+                              image: as copy, but other scans are decoded or rendered
+                              (--raster-format) by Doppler. render: always rendered. skip:
+                              placed as any picture, never extracted
 
 image extraction (implies --markers; files where the links point: DIR/page-0012/image-003.webp,
 DIR/page-0012/figure-001.svg, and DIR/manifest.jsonl, written last, listing every image and
@@ -139,9 +147,10 @@ closed once the Markdown is complete, before extraction):
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
-  --scan-dpi N                rendered scans (tiles, layers, turned, covered, --scan-pages
-                              render): 36 to 300 (200)
-  --scan-max-dpi N            a decoded scan finer than this is scaled down to it (300)
+  --scan-dpi N                rendered scans (--scan-pages image: tiles, layers, turned,
+                              covered; --scan-pages render): 36 to 300 (200)
+  --scan-max-dpi N            --scan-pages image: a decoded scan finer than this is scaled down
+                              to it (300)
   --scan-max N                most scan files per batch (1000); --scan-max-bytes N (1GiB) per
                               batch. Scans have their own budget, apart from --images-max and
                               --images-max-bytes; a scan over it is not-extracted (budget) and the
@@ -775,10 +784,15 @@ fn convert(
         eprintln!("pdftomarkdown: --images-plan-out: {e}");
         code = Some(6);
     }
-    if let Some(dir) = out_dir.as_mut()
-        && written.is_ok()
-        && report.page_found()
-    {
+    let extract = out_dir.is_some() && written.is_ok() && report.page_found();
+    // a resume range past the converted pages: nothing extracted, the folder unchanged
+    let range = if extract { resume_range(images, previous, opts.first_page, report.parse.pages) } else { Ok(()) };
+    if let Err(e) = range {
+        close_stdout();
+        eprintln!("pdftomarkdown: {e}");
+        *out_dir = None;
+        code = Some(2);
+    } else if let Some(dir) = out_dir.as_mut().filter(|_| extract) {
         // the Markdown is complete and its links final: EOF on stdout says so, before the
         // images are extracted (the report and exit status still come after)
         close_stdout();
@@ -832,6 +846,20 @@ fn close_stdout() {
         }
         Err(e) => eprintln!("pdftomarkdown: cannot close stdout: {e}"),
     }
+}
+
+/// A resume's `--images-resume-pages` against the converted pages (from `first`, `converted` of
+/// them): a range past them is refused like one outside `--images-pages` (exit 2).
+fn resume_range(
+    images: &Settings,
+    previous: Option<&resume::Previous>,
+    first: Option<u32>,
+    converted: usize,
+) -> Result<(), String> {
+    let Some(_) = previous else { return Ok(()) };
+    let first = first.unwrap_or(1).max(1);
+    let last = first.saturating_add(u32::try_from(converted).unwrap_or(u32::MAX).saturating_sub(1));
+    images.check_resume_range(first, last)
 }
 
 /// SHA-256 (hex) of the PDF, for the manifest.
@@ -936,6 +964,11 @@ fn extract_from_plan(
     let parse = doppler_md::ParseReport { pages: converted, ..Default::default() };
     let mut report = doppler_md::Report { images: notes, parse, ..Default::default() };
     let Some(dir) = out_dir.as_mut() else { return ExitCode::from(2) };
+    if let Err(e) = resume_range(images, previous, pages.0, converted) {
+        eprintln!("pdftomarkdown: {e}");
+        *out_dir = None;
+        return ExitCode::from(2);
+    }
     let r = source_sha256(file).and_then(|sha| {
         doppler_md::extract::extract(
             &mut report,

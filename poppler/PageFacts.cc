@@ -19,6 +19,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <string_view>
 #ifndef _WIN32
@@ -322,7 +323,7 @@ namespace {
 // fixed vocabularies; bit i of a mask is name i, and the names are sorted, so a mask prints
 // as a sorted list
 constexpr const char *warningNames[] = { "bad-content-stream", "broken-image", "internal-error", "io-error",       "limit-hit",     "missing-font", "non-finite",
-                                         "out-of-range",       "page-failed",  "syntax-error",   "syntax-warning", "unimplemented", "xref-repaired" };
+                                         "out-of-range",       "page-failed",  "syntax-error",   "syntax-warning", "unimplemented", "xref-repaired", "xref-repaired-earlier" };
 enum Warning : unsigned
 {
     wBadContent,
@@ -337,7 +338,8 @@ enum Warning : unsigned
     wSyntaxError,
     wSyntaxWarning,
     wUnimplemented,
-    wXrefRepaired
+    wXrefRepaired,
+    wXrefRepairedEarlier
 };
 constexpr const char *featureNames[] = { "acroform-empty",          "acroform-filled", "annotation-freetext", "annotation-highlight", "annotation-other", "annotation-text", "drawing-limit", "embedded-files", "encrypted-empty-password",
                                          "encrypted-user-password", "huge-page",       "javascript-present",  "layered-scan",         "link-internal",    "link-uri",        "no-tounicode",  "ocg-hidden",     "ocg-visible",
@@ -369,13 +371,23 @@ enum Feature : unsigned
     fXfaPresent
 };
 static_assert(sizeof(featureNames) / sizeof(featureNames[0]) == fXfaPresent + 1);
-static_assert(sizeof(warningNames) / sizeof(warningNames[0]) == wXrefRepaired + 1);
+static_assert(sizeof(warningNames) / sizeof(warningNames[0]) == wXrefRepairedEarlier + 1);
 
 constexpr double maxPoint = 1e9; // larger coordinates are clamped (out-of-range)
 constexpr double hugePagePt = 14400; // 200 inches: the PDF 1.x page size limit
 constexpr double rotatedContentShare = 0.2;
 constexpr uint64_t rotatedContentMinChars = 10;
 constexpr size_t maxItems = 32; // images and figure clusters listed per page
+constexpr size_t maxGrids = 64; // ruled grids listed per page
+constexpr size_t maxGridRules = 4096; // horizontal (and vertical) rules a page's grid search takes
+constexpr size_t maxGridWork = size_t(1) << 20; // group and column-rule visits of a page's grid search
+constexpr double wordInsideSlack = 1.0; // points a word box (or its centre) may pass an image's box and still lie inside
+constexpr double thinRuleMaxPt = 3.0; // a grid's thin rule: at most this thick (issue 43, the layout walker's measure)
+constexpr double thinRuleMinPt = 8.0; // and at least this long
+constexpr double thinRuleTouchPt = 2.5; // rules this close are one line, and lie on (or inside) a grid's box
+constexpr double outerSideShare = 0.8; // a box side carries a rule when thin rules cover this share of it
+constexpr size_t walkerMaxRules = 5000; // <rule> elements a page the layout walker reads (past them it sees fewer)
+constexpr int maxSizeBins = 8192; // half-point word sizes 0 to 4095.5 counted for a page's body size
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
 constexpr size_t maxAnnots = 10000; // annotations examined per page
@@ -481,6 +493,17 @@ public:
     {
         key(k);
         point(v);
+    }
+    // a non-negative measure with 6 decimals (bytes per pixel), at most maxPoint
+    void kmeasure(const char *k, double v)
+    {
+        key(k);
+        v = std::max(finite(v), 0.0);
+        if (v > maxPoint) {
+            v = maxPoint;
+            note(wOutOfRange);
+        }
+        number(v, 6);
     }
     void point(double v)
     {
@@ -589,6 +612,221 @@ private:
 
 PageFacts *activeFacts = nullptr;
 
+// A ruled grid: the rule-only stage of pdftomarkdown's ruled-table search (doppler-md
+// tables::ruled_tables, with its default parameters), so the facts name the same grids its
+// table conversion starts from. Horizontal rules (and the top and bottom edges of shaded row
+// boxes) are joined where collinear segments touch, grouped down the page while they overlap
+// and lie close, and split where the spacing jumps; the inner vertical rules crossing at least
+// half a group's height are its column lines. The text-dependent steps (a caption band that
+// splits two tables, header rows above the first rule, columns from word gutters) are not
+// taken, so a table ruled only horizontally has one column here.
+struct RuleGrid
+{
+    double x0, y0, x1, y1;
+    size_t rows, columns;
+};
+
+// <body>: the page's body text size (thresholds scale with it, as in pdftomarkdown). At most
+// maxGridRules horizontal and vertical rules are taken (in drawing order), maxGrids grids kept,
+// and maxGridWork open-group and column-rule visits made (grouping is O(h x open groups), and
+// a hostile page can keep thousands open); *truncated says a cap was hit, and the grids found
+// until then are returned.
+std::vector<RuleGrid> ruleGrids(const std::vector<TextRule> &rules, double pageW, double pageH, double body, bool *truncated)
+{
+    // doppler-md Params defaults: rule_min_len, rule_max_lum, rule_row_gap, rule_split
+    constexpr double ruleMinLen = 3.0, ruleMaxLum = 0.97, ruleRowGap = 8.0, ruleSplit = 2.5;
+    *truncated = false;
+    std::vector<RuleGrid> out;
+    if (rules.empty() || !std::isfinite(body) || !(body > 0)) {
+        return out;
+    }
+    struct H
+    {
+        double x0, x1, y;
+    };
+    struct V
+    {
+        double x, y0, y1;
+    };
+    std::vector<H> h;
+    std::vector<V> v;
+    // pdftotext -rules writes colours as bytes; pdftomarkdown's luminance reads them back
+    auto byte = [](double c) { return static_cast<int>(std::clamp(std::isfinite(c) ? c : 0.0, 0.0, 1.0) * 255.0 + 0.5) / 255.0; };
+    for (const TextRule &r : rules) {
+        if (!std::isfinite(r.xMin) || !std::isfinite(r.yMin) || !std::isfinite(r.xMax) || !std::isfinite(r.yMax)) {
+            continue;
+        }
+        const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
+        if (r.box) {
+            // shaded rows and headers: their top and bottom edges separate rows; skip page backgrounds
+            if (w >= 0.5 * body && w < 0.95 * pageW && hh < 0.5 * pageH) {
+                if (h.size() + 2 > maxGridRules) {
+                    *truncated = true;
+                    continue;
+                }
+                h.push_back({ r.xMin, r.xMax, r.yMin });
+                h.push_back({ r.xMin, r.xMax, r.yMax });
+            }
+        } else if (0.2126 * byte(r.r) + 0.7152 * byte(r.g) + 0.0722 * byte(r.b) > ruleMaxLum) {
+            continue;
+        } else if (w >= hh && w >= 0.5 * body) {
+            if (h.size() >= maxGridRules) {
+                *truncated = true;
+                continue;
+            }
+            h.push_back({ r.xMin, r.xMax, 0.5 * (r.yMin + r.yMax) });
+        } else if (hh > w && hh >= 0.8 * body) {
+            if (v.size() >= maxGridRules) {
+                *truncated = true;
+                continue;
+            }
+            v.push_back({ 0.5 * (r.xMin + r.xMax), r.yMin, r.yMax });
+        }
+    }
+    std::ranges::stable_sort(v, [](const V &a, const V &b) { return a.x < b.x; });
+    // join collinear segments that touch (cell borders drawn cell by cell)
+    std::ranges::stable_sort(h, [](const H &a, const H &b) {
+        const double ya = std::nearbyint(a.y), yb = std::nearbyint(b.y);
+        return ya < yb || (ya == yb && a.x0 < b.x0);
+    });
+    std::vector<H> joined;
+    for (const H &r : h) {
+        if (!joined.empty() && std::fabs(joined.back().y - r.y) <= 1.0 && r.x0 <= joined.back().x1 + 2.0) {
+            joined.back().x1 = std::max(joined.back().x1, r.x1);
+        } else {
+            joined.push_back(r);
+        }
+    }
+    h.clear();
+    for (const H &r : joined) {
+        if (r.x1 - r.x0 >= ruleMinLen * body) {
+            h.push_back(r);
+        }
+    }
+    std::ranges::stable_sort(h, [](const H &a, const H &b) { return a.y < b.y; });
+    // group down the page: a rule joins the first open group whose last rule is within the gap
+    // and whose span overlaps it by 0.8 of the narrower one
+    struct Group
+    {
+        double x0, x1;
+        std::vector<double> ys;
+    };
+    std::vector<Group> groups;
+    std::vector<size_t> open;
+    const double gap = ruleRowGap * body;
+    size_t work = maxGridWork;
+    auto spend = [&](size_t n) {
+        if (n > work) {
+            *truncated = true;
+            return false;
+        }
+        work -= n;
+        return true;
+    };
+    for (const H &r : h) {
+        if (!spend(open.size() + 1)) {
+            groups.clear(); // grouping cut short: no grid from a partial grouping
+            return out;
+        }
+        std::optional<size_t> hit;
+        std::erase_if(open, [&](size_t gi) {
+            const Group &g = groups[gi];
+            if (!(r.y - g.ys.back() <= gap)) {
+                return true;
+            }
+            if (!hit) {
+                const double ov = std::min(r.x1, g.x1) - std::max(r.x0, g.x0);
+                if (ov >= 0.8 * std::min(r.x1 - r.x0, g.x1 - g.x0)) {
+                    hit = gi;
+                }
+            }
+            return false;
+        });
+        if (hit) {
+            Group &g = groups[*hit];
+            g.ys.push_back(r.y);
+            g.x0 = std::min(g.x0, r.x0);
+            g.x1 = std::max(g.x1, r.x1);
+        } else {
+            open.push_back(groups.size());
+            groups.push_back({ r.x0, r.x1, { r.y } });
+        }
+    }
+    auto median = [](std::vector<double> m) {
+        std::ranges::sort(m);
+        const size_t n = m.size();
+        return n % 2 ? m[n / 2] : 0.5 * (m[n / 2 - 1] + m[n / 2]);
+    };
+    auto keep = [&](double x0, double x1, const std::vector<double> &ys) {
+        if (ys.size() < 2) {
+            return true;
+        }
+        const double y0 = ys.front(), y1 = ys.back();
+        // inner vertical rules across at least half the height, 2 points apart, are column lines
+        const auto lo = std::ranges::partition_point(v, [&](const V &r) { return r.x <= x0 + 2.0; });
+        const auto hi = std::partition_point(lo, v.end(), [&](const V &r) { return r.x < x1 - 2.0; });
+        if (!spend(static_cast<size_t>(hi - lo) + 1)) {
+            return false;
+        }
+        std::vector<double> xs;
+        for (auto it = lo; it != hi; ++it) {
+            if (std::min(it->y1, y1) - std::max(it->y0, y0) > 0.5 * (y1 - y0)) {
+                xs.push_back(std::round(it->x * 10.0) / 10.0);
+            }
+        }
+        std::ranges::sort(xs);
+        size_t lines = 0;
+        double last = -INFINITY;
+        for (double x : xs) {
+            if (x - last > 2.0) {
+                ++lines;
+                last = x;
+            }
+        }
+        const size_t columns = lines + 1;
+        // a grid: at least two rows of rules, or one row split by a column line
+        if (ys.size() < 3 && columns < 2) {
+            return true;
+        }
+        if (out.size() >= maxGrids) {
+            *truncated = true;
+            return false;
+        }
+        out.push_back({ x0, y0, x1, y1, ys.size() - 1, columns });
+        return true;
+    };
+    // split a group where the rule spacing jumps (two tables sharing a width)
+    for (const Group &g : groups) {
+        std::vector<double> sorted = g.ys;
+        std::ranges::sort(sorted);
+        std::vector<double> ys;
+        for (double y : sorted) {
+            if (ys.empty() || y - ys.back() > 1.5) {
+                ys.push_back(y);
+            }
+        }
+        std::vector<double> gaps;
+        for (size_t i = 1; i < ys.size(); ++i) {
+            gaps.push_back(ys[i] - ys[i - 1]);
+        }
+        const double limit = gaps.empty() ? 0.0 : ruleSplit * median(gaps);
+        std::vector<double> cur;
+        for (size_t i = 0; i < ys.size(); ++i) {
+            if (i > 0 && ys[i] - ys[i - 1] > limit && gaps.size() >= 3) {
+                if (!keep(g.x0, g.x1, cur)) {
+                    return out;
+                }
+                cur.clear();
+            }
+            cur.push_back(ys[i]);
+        }
+        if (!keep(g.x0, g.x1, cur)) {
+            return out;
+        }
+    }
+    return out;
+}
+
 // The distinct (row, column) pairs of a page's rules that cross: a horizontal rule at row y
 // (its rounded middle) and a vertical one at column x cross when x lies within the horizontal
 // rule's span and y within the vertical one's (both grown by 1.5). <ys> and <xs> are the
@@ -671,6 +909,212 @@ size_t countRuleCrossings(const std::vector<const TextRule *> &hs, const std::ve
         }
     }
     return crossings;
+}
+
+// Issue 43: the thin rules of each ruled grid, as a reader that finds ruled grids from
+// connected thin rules (the layout walker's ruled_grids) counts them. A thin rule is a rule
+// pdftotext -rules writes as <rule> (a stroked line, or a fill at most 1.5 pt thin; never a
+// <box>, whatever its colour), at the 0.01 pt the XHTML writes, at most thinRuleMaxPt thick and
+// at least thinRuleMinPt long. Rules of the two directions whose boxes come within
+// thinRuleTouchPt join one set (union-find over the page, as the walker does); a set with two
+// distinct horizontal lines and three vertical ones is a walker grid.
+//
+// A grid's rules are the thin rules whose centre line lies in its box grown by thinRuleTouchPt
+// and whose span overlaps that box. When some of them belong to a set holding both directions,
+// the grid stands for the one with the most rules there (on a tie, the one holding the topmost
+// horizontal rule): it is counted (connected) only when every rule of that set is in the box and
+// no other grid stands for it, and is otherwise left uncounted (known false). When none does, all
+// of them are counted (not connected). hRules and vRules count distinct lines (centres more than
+// thinRuleTouchPt apart, clustered from the lowest as the walker's _distinct does), outerSides
+// the box sides that the counted rules (centre within thinRuleTouchPt of the side, assigned to
+// the nearer side) cover for outerSideShare of their length. *unlisted counts the walker grids no
+// counted grid stands for.
+struct ThinRule
+{
+    double x0, y0, x1, y1, c; // c: the centre across (y of a horizontal rule, x of a vertical one)
+};
+
+struct GridRules
+{
+    uint64_t hRules = 0, vRules = 0, outerSides = 0;
+    bool connected = false, known = false;
+};
+
+// <th> sorted by centre y, <tv> by centre x (each at most maxGridRules long). At most
+// maxGridWork rule visits (the touch tests and each grid's candidate rules); false when they run
+// out, and nothing is then counted.
+bool thinRuleGrids(const std::vector<RuleGrid> &grids, const std::vector<ThinRule> &th, const std::vector<ThinRule> &tv, std::vector<GridRules> *out, uint64_t *unlisted)
+{
+    constexpr double t = thinRuleTouchPt;
+    size_t work = maxGridWork;
+    auto spend = [&work](size_t n) {
+        if (n > work) {
+            work = 0;
+            return false;
+        }
+        work -= n;
+        return true;
+    };
+    const size_t nh = th.size(), n = nh + tv.size();
+    auto rule = [&](size_t i) -> const ThinRule & { return i < nh ? th[i] : tv[i - nh]; };
+    // the walker's meet: the two boxes within t of each other
+    auto meet = [](const ThinRule &a, const ThinRule &b) { return a.x0 - t <= b.x1 && b.x0 - t <= a.x1 && a.y0 - t <= b.y1 && b.y0 - t <= a.y1; };
+    std::vector<size_t> parent(n);
+    std::iota(parent.begin(), parent.end(), size_t(0));
+    auto find = [&parent](size_t i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    };
+    // a vertical rule that can meet horizontal <r> has its centre within t + thinRuleMaxPt / 2 of
+    // r's span (plus a margin for the rounding of a centre); meet() decides
+    constexpr double reach = t + 0.5 * thinRuleMaxPt + 0.01;
+    for (size_t i = 0; i < nh; ++i) {
+        const ThinRule &r = th[i];
+        auto it = std::ranges::partition_point(tv, [&](const ThinRule &o) { return o.c < r.x0 - reach; });
+        for (; it != tv.end() && it->c <= r.x1 + reach; ++it) {
+            if (!spend(1)) {
+                return false;
+            }
+            if (meet(r, *it)) {
+                const size_t a = find(i), b = find(nh + static_cast<size_t>(it - tv.begin()));
+                if (a != b) {
+                    parent[std::max(a, b)] = std::min(a, b); // a set's root is its first rule
+                }
+            }
+        }
+    }
+    // per set (by root): its rules and its distinct horizontal and vertical lines
+    std::vector<size_t> root(n), size(n, 0);
+    std::vector<uint64_t> hLines(n, 0), vLines(n, 0);
+    std::vector<double> last(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        root[i] = find(i);
+        ++size[root[i]];
+        uint64_t &lines = i < nh ? hLines[root[i]] : vLines[root[i]];
+        // th and tv are sorted by c, and a set's horizontal rules all come before its vertical ones
+        if (lines == 0 || rule(i).c - last[root[i]] > t) {
+            ++lines;
+            last[root[i]] = rule(i).c;
+        }
+    }
+    auto both = [&](size_t r) { return hLines[r] > 0 && vLines[r] > 0; };
+    // the share of [a, b] the union of <spans> covers
+    auto covers = [](std::vector<std::pair<double, double>> &spans, double a, double b) {
+        if (!(b > a)) {
+            return false;
+        }
+        std::ranges::sort(spans);
+        double covered = 0, end = a;
+        for (const auto &[s0, s1] : spans) {
+            const double lo = std::max(s0, end), hi = std::min(s1, b);
+            if (hi > lo) {
+                covered += hi - lo;
+                end = hi;
+            }
+        }
+        return covered >= outerSideShare * (b - a);
+    };
+    out->assign(grids.size(), {});
+    std::vector<size_t> chosen(grids.size(), n); // the set each grid stands for (n: none)
+    for (size_t g = 0; g < grids.size(); ++g) {
+        const RuleGrid &grid = grids[g];
+        const double bx0 = grid.x0 - t, by0 = grid.y0 - t, bx1 = grid.x1 + t, by1 = grid.y1 + t;
+        const auto h0 = std::ranges::partition_point(th, [&](const ThinRule &r) { return r.c < by0; });
+        const auto h1 = std::partition_point(h0, th.end(), [&](const ThinRule &r) { return r.c <= by1; });
+        const auto v0 = std::ranges::partition_point(tv, [&](const ThinRule &r) { return r.c < bx0; });
+        const auto v1 = std::partition_point(v0, tv.end(), [&](const ThinRule &r) { return r.c <= bx1; });
+        if (!spend(static_cast<size_t>((h1 - h0) + (v1 - v0)))) {
+            return false;
+        }
+        std::vector<size_t> members; // indices, horizontal ones first, each run sorted by c
+        for (auto it = h0; it != h1; ++it) {
+            if (it->x1 >= bx0 && it->x0 <= bx1) {
+                members.push_back(static_cast<size_t>(it - th.begin()));
+            }
+        }
+        for (auto it = v0; it != v1; ++it) {
+            if (it->y1 >= by0 && it->y0 <= by1) {
+                members.push_back(nh + static_cast<size_t>(it - tv.begin()));
+            }
+        }
+        // the set with both directions that has the most rules here (on a tie, the lowest root)
+        std::vector<size_t> roots;
+        for (size_t i : members) {
+            if (both(root[i])) {
+                roots.push_back(root[i]);
+            }
+        }
+        std::ranges::sort(roots);
+        size_t best = n, bestCount = 0;
+        for (size_t i = 0; i < roots.size();) {
+            size_t k = i;
+            while (k < roots.size() && roots[k] == roots[i]) {
+                ++k;
+            }
+            if (k - i > bestCount) {
+                best = roots[i];
+                bestCount = k - i;
+            }
+            i = k;
+        }
+        GridRules &gr = (*out)[g];
+        if (best != n) {
+            chosen[g] = best;
+            gr.connected = true;
+            gr.known = bestCount == size[best]; // every rule of the set lies in this grid's box
+            std::erase_if(members, [&](size_t i) { return root[i] != best; });
+        } else {
+            gr.known = true;
+        }
+        std::array<std::vector<std::pair<double, double>>, 4> sides; // top, bottom, left, right
+        double lastC = 0;
+        bool horizontal = true;
+        uint64_t lines = 0;
+        for (size_t i : members) {
+            const ThinRule &r = rule(i);
+            if ((i < nh) != horizontal) {
+                gr.hRules = lines;
+                horizontal = false;
+                lines = 0;
+            }
+            if (lines == 0 || r.c - lastC > t) {
+                ++lines;
+                lastC = r.c;
+            }
+            const double s0 = horizontal ? grid.y0 : grid.x0, s1 = horizontal ? grid.y1 : grid.x1;
+            const double d0 = std::fabs(r.c - s0), d1 = std::fabs(r.c - s1);
+            const std::pair<double, double> span = horizontal ? std::pair { r.x0, r.x1 } : std::pair { r.y0, r.y1 };
+            if (d0 <= t && d0 <= d1) {
+                sides[horizontal ? 0 : 2].push_back(span);
+            } else if (d1 <= t) {
+                sides[horizontal ? 1 : 3].push_back(span);
+            }
+        }
+        (horizontal ? gr.hRules : gr.vRules) = lines;
+        gr.outerSides = covers(sides[0], grid.x0, grid.x1) + covers(sides[1], grid.x0, grid.x1) + covers(sides[2], grid.y0, grid.y1) + covers(sides[3], grid.y0, grid.y1);
+    }
+    // a set two grids stand for is counted by neither (one walker grid split in two)
+    for (size_t g = 0; g < grids.size(); ++g) {
+        for (size_t k = g + 1; k < grids.size(); ++k) {
+            if (chosen[g] != n && chosen[g] == chosen[k]) {
+                (*out)[g].known = (*out)[k].known = false;
+            }
+        }
+    }
+    std::vector<bool> described(n, false);
+    for (size_t g = 0; g < grids.size(); ++g) {
+        if (chosen[g] != n && (*out)[g].known) {
+            described[chosen[g]] = true;
+        }
+    }
+    *unlisted = 0;
+    for (size_t i = 0; i < n; ++i) {
+        *unlisted += root[i] == i && hLines[i] >= 2 && vLines[i] >= 3 && !described[i];
+    }
+    return true;
 }
 
 bool startsWith(const char *s, const char *prefix)
@@ -1016,6 +1460,433 @@ struct FormCache
     bool exhausted = false;
 };
 
+
+// Bar charts drawn only with filled boxes (doppler#38), which the producer writes as box rules and never as graphics. The
+// same rule as doppler-md `vector::bar_regions` (the figures pdftomarkdown makes), constant for constant:
+// - a run is at least kMinBars boxes whose bases (the bottom edge of vertical bars, the left edge of horizontal ones) are
+//   within kBarBaseTolerance points, with gaps of at most kMaxBarGap times the widest bar so far;
+// - its lengths differ (kMinBarSpread: shaded rows and zebra stripes are one length);
+// - few hold a word's centre (kMaxBarTextShare: shaded cells and highlights hold them);
+// - a stroked axis lies along the baseline (within kBarAxisReach points) and spans kBarAxisSpan of the run: a box's own
+//   outline or a cell border beside one box is not an axis (form fields);
+// - a scale: at least kBarScaleMin numbers beside the run, increasing along its value axis (redactions and blank form
+//   fields have none; they come in every colour, and black bar charts are common, so colour does not decide);
+// - white fills (backgrounds), boxes over a quarter of the page and the header and footer bands are never bars.
+// A run takes in the boxes stacked on it (along its orientation, until nothing changes); runs that overlap are one cluster.
+// At most kMaxBarBoxes boxes and kMaxBarRuns runs a page. Bar detection has its own per-page budget (kBarBudget): it never
+// spends the document's drawing budget, so no page can blind later pages' getGraphics. Over a cap or the budget, the
+// page's limitHit is set and no more comparisons are made.
+constexpr size_t kMaxBarBoxes = 4000;
+constexpr size_t kMaxBarRuns = 64;
+constexpr size_t kMaxBarWords = 100000;
+constexpr size_t kMaxScaleNumbers = 20000;
+constexpr size_t kBarScaleMin = 3;
+constexpr double kBarScaleAcross = 120;
+constexpr double kBarScaleAlong = 40;
+constexpr size_t kBarBudget = 8000000;
+constexpr size_t kMinBars = 3;
+constexpr double kMaxBarGap = 3.0;
+constexpr double kMinBarSpread = 1.15;
+constexpr double kMaxBarTextShare = 0.34;
+constexpr double kBarFurnitureBand = 0.09;
+constexpr double kBarBaseTolerance = 0.5;
+constexpr double kBarAxisReach = 2.0;
+constexpr double kBarAxisSpan = 0.8;
+constexpr int kBarStackRounds = 4;
+constexpr double kBarRuleReach = 12; // points: an axis or tick a little way off the bars is still the chart's
+
+struct BarBox
+{
+    double x0, y0, x1, y1;
+};
+
+struct BarLine
+{
+    double at, lo, hi;
+};
+
+struct WordCentre
+{
+    double x, y;
+};
+
+struct ScaleNumber
+{
+    double x0, y0, x1, y1, v;
+};
+
+// A tick label's number, as doppler-md `scale_number`: an optional sign (-, U+2212 or +), digits with optional thousands
+// commas and one decimal point, an optional %; at most 16 characters.
+bool scaleNumber(const Unicode *text, int length, double *value)
+{
+    if (length <= 0 || length > 16) {
+        return false;
+    }
+    int end = length, i = 0;
+    if (text[end - 1] == '%') {
+        --end;
+    }
+    bool neg = false;
+    if (i < end && (text[i] == '-' || text[i] == 0x2212)) {
+        neg = true;
+        ++i;
+    } else if (i < end && text[i] == '+') {
+        ++i;
+    }
+    char digits[20];
+    int n = 0;
+    bool dot = false, prevDigit = false, any = false;
+    for (; i < end; ++i) {
+        const Unicode c = text[i];
+        if (c >= '0' && c <= '9') {
+            digits[n++] = char(c);
+            prevDigit = any = true;
+        } else if (c == ',' && prevDigit && !dot) {
+            prevDigit = false;
+        } else if (c == '.' && !dot) {
+            dot = true;
+            prevDigit = false;
+            digits[n++] = '.';
+        } else {
+            return false;
+        }
+    }
+    if (!any || !prevDigit) {
+        return false;
+    }
+    digits[n] = 0;
+    const double v = std::strtod(digits, nullptr);
+    if (!std::isfinite(v)) {
+        return false;
+    }
+    *value = neg ? -v : v;
+    return true;
+}
+
+bool spend(size_t *budget, size_t n, bool *hit)
+{
+    if (*budget < n) {
+        *budget = 0;
+        *hit = true;
+        return false;
+    }
+    *budget -= n;
+    return true;
+}
+
+// White (a background), on 8-bit channels as doppler-md reads the producer's #rrggbb.
+bool barFillExcluded(double r, double g, double b)
+{
+    auto c = [](double v) { return std::isfinite(v) ? std::lround(std::clamp(v, 0.0, 1.0) * 255) : 0L; };
+    return c(r) == 255 && c(g) == 255 && c(b) == 255;
+}
+
+// Whether a run (its union `u`) has a scale: kBarScaleMin numbers beside it increasing along its value axis (up for vertical
+// bars, from labels left or right of the plot; right for horizontal bars, from labels below or above it). As doppler-md
+// `bar_scale`; every number looked at is charged.
+bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, size_t *budget, bool *hit)
+{
+    std::vector<std::pair<double, double>> seq;
+    for (int side = 0; side < 2; ++side) {
+        seq.clear();
+        for (const ScaleNumber &n : nums) {
+            if (!spend(budget, 1, hit)) {
+                return false;
+            }
+            const double cx = (n.x0 + n.x1) / 2, cy = (n.y0 + n.y1) / 2;
+            bool keep;
+            if (vertical) {
+                keep = cy >= u.y0 - kBarScaleAlong && cy <= u.y1 + 12
+                        && (side == 0 ? (n.x1 <= u.x0 + 4 && n.x1 >= u.x0 - kBarScaleAcross) : (n.x0 >= u.x1 - 4 && n.x0 <= u.x1 + kBarScaleAcross));
+            } else {
+                keep = cx >= u.x0 - 12 && cx <= u.x1 + kBarScaleAlong
+                        && (side == 0 ? (n.y0 >= u.y1 - 4 && n.y0 <= u.y1 + kBarScaleAcross) : (n.y1 <= u.y0 + 4 && n.y1 >= u.y0 - kBarScaleAcross));
+            }
+            if (keep) {
+                seq.push_back({ vertical ? -cy : cx, n.v });
+            }
+        }
+        if (seq.size() < kBarScaleMin) {
+            continue;
+        }
+        std::stable_sort(seq.begin(), seq.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        bool increasing = true;
+        for (size_t k = 1; k < seq.size() && increasing; ++k) {
+            increasing = seq[k].second > seq[k - 1].second;
+        }
+        if (increasing) {
+            return true;
+        }
+    }
+    return false;
+}
+
+BarBox barUnion(const BarBox &a, const BarBox &b)
+{
+    return { std::min(a.x0, b.x0), std::min(a.y0, b.y0), std::max(a.x1, b.x1), std::max(a.y1, b.y1) };
+}
+
+// `words` sorted by x. Returns clusters to add; joins into `drawings` (getGraphics' clusters) any it overlaps.
+std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, const std::vector<ScaleNumber> &nums, double pageW, double pageH,
+                                     std::vector<TextGraphic> &drawings, size_t *runBudget, bool *limitHit)
+{
+    std::vector<TextGraphic> out;
+    if (!(pageW > 0) || !(pageH > 0) || !std::isfinite(pageW * pageH)) {
+        return out;
+    }
+    // this page's budget: kBarBudget, or what the run has left if less; what it spends comes off the run's
+    size_t budgetLeft = std::min(kBarBudget, *runBudget);
+    size_t *budget = &budgetLeft;
+    struct Charge
+    {
+        size_t start;
+        size_t *left, *run;
+        ~Charge() { *run -= std::min(*run, start - *left); }
+    } charge { budgetLeft, budget, runBudget };
+    if (budgetLeft == 0) {
+        *limitHit = true;
+        return out;
+    }
+    const double area = pageW * pageH, band = kBarFurnitureBand * pageH;
+    std::vector<BarBox> filled;
+    std::vector<BarBox> strokes;
+    std::vector<BarLine> across, down;
+    for (const TextRule &r : rules) {
+        if (r.imageMask) {
+            continue;
+        }
+        const BarBox b { r.xMin, r.yMin, r.xMax, r.yMax };
+        const double w = b.x1 - b.x0, h = b.y1 - b.y0;
+        if (!std::isfinite(w) || !std::isfinite(h)) {
+            continue;
+        }
+        if (!r.box) {
+            strokes.push_back(b);
+            if (h <= kBarAxisReach && w > h) {
+                across.push_back({ (b.y0 + b.y1) / 2, b.x0, b.x1 });
+            } else if (w <= kBarAxisReach && h > w) {
+                down.push_back({ (b.x0 + b.x1) / 2, b.y0, b.y1 });
+            }
+            continue;
+        }
+        if (barFillExcluded(r.r, r.g, r.b) || !(w > 0) || !(h > 0) || w * h >= 0.25 * area || b.y1 <= band || b.y0 >= pageH - band) {
+            continue;
+        }
+        if (filled.size() < kMaxBarBoxes) {
+            filled.push_back(b);
+        }
+    }
+    if (filled.size() < kMinBars || !spend(budget, 4 * filled.size() + 2 * (strokes.size() + words.size()) + 1, limitHit)) {
+        return out;
+    }
+    auto byAt = [](const BarLine &a, const BarLine &b) { return a.at < b.at; };
+    std::sort(across.begin(), across.end(), byAt);
+    std::sort(down.begin(), down.end(), byAt);
+    std::vector<std::pair<BarBox, bool>> found;
+    bool full = false;
+    // the spread first (cheapest), then words, then the axis; every comparison charged
+    auto consider = [&](const std::vector<BarBox> &run, bool vertical) {
+        if (full || run.size() < kMinBars || !spend(budget, run.size(), limitHit)) {
+            return;
+        }
+        double lo = INFINITY, hi = 0;
+        BarBox u { INFINITY, INFINITY, -INFINITY, -INFINITY };
+        for (const BarBox &b : run) {
+            const double len = vertical ? b.y1 - b.y0 : b.x1 - b.x0;
+            lo = std::min(lo, len);
+            hi = std::max(hi, len);
+            u = barUnion(u, b);
+        }
+        if (!(lo > 0) || hi < kMinBarSpread * lo) {
+            return;
+        }
+        const size_t limit = size_t(std::floor(kMaxBarTextShare * double(run.size())));
+        size_t withText = 0;
+        for (const BarBox &b : run) {
+            auto it = std::lower_bound(words.begin(), words.end(), b.x0, [](const WordCentre &w, double x) { return w.x < x; });
+            bool held = false;
+            for (; it != words.end(); ++it) {
+                if (!spend(budget, 1, limitHit)) {
+                    return;
+                }
+                if (it->x > b.x1) {
+                    break;
+                }
+                if (b.y0 <= it->y && it->y <= b.y1) {
+                    held = true;
+                    break;
+                }
+            }
+            if (held && ++withText > limit) {
+                return;
+            }
+        }
+        const std::vector<BarLine> &lines = vertical ? across : down;
+        const double at = vertical ? u.y1 : u.x0, from = vertical ? u.x0 : u.y0, to = vertical ? u.x1 : u.y1;
+        auto first = std::lower_bound(lines.begin(), lines.end(), at - kBarAxisReach, [](const BarLine &l, double v) { return l.at < v; });
+        for (auto it = first; it != lines.end() && it->at <= at + kBarAxisReach; ++it) {
+            if (!spend(budget, 1, limitHit)) {
+                return;
+            }
+            if (std::min(it->hi, to) - std::max(it->lo, from) >= kBarAxisSpan * (to - from)) {
+                if (!barScale(u, vertical, nums, budget, limitHit)) {
+                    return;
+                }
+                found.push_back({ u, vertical });
+                if (found.size() >= kMaxBarRuns) {
+                    full = true;
+                    *limitHit = true;
+                }
+                return;
+            }
+        }
+    };
+    for (const bool vertical : { true, false }) {
+        auto base = [&](const BarBox &b) { return vertical ? b.y1 : b.x0; };
+        auto along = [&](const BarBox &b) { return vertical ? b.x0 : b.y0; };
+        std::vector<size_t> order(filled.size());
+        for (size_t i = 0; i < order.size(); ++i) {
+            order[i] = i;
+        }
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return base(filled[a]) < base(filled[b]); });
+        size_t start = 0;
+        while (start < order.size() && !full && *budget > 0) {
+            // a baseline: bases within kBarBaseTolerance of its first
+            const double first = base(filled[order[start]]);
+            size_t end = start + 1;
+            while (end < order.size() && base(filled[order[end]]) - first <= kBarBaseTolerance) {
+                ++end;
+            }
+            std::sort(order.begin() + start, order.begin() + end, [&](size_t a, size_t b) { return along(filled[a]) < along(filled[b]); });
+            std::vector<BarBox> run;
+            double thick = 0;
+            for (size_t k = start; k < end; ++k) {
+                const BarBox &b = filled[order[k]];
+                const double t = vertical ? b.x1 - b.x0 : b.y1 - b.y0;
+                if (!run.empty()) {
+                    const double gap = vertical ? b.x0 - run.back().x1 : b.y0 - run.back().y1;
+                    if (gap < -0.5 || gap > kMaxBarGap * std::max(thick, t)) {
+                        consider(run, vertical);
+                        run.clear();
+                        thick = 0;
+                    }
+                }
+                run.push_back(b);
+                thick = std::max(thick, t);
+            }
+            consider(run, vertical);
+            start = end;
+        }
+    }
+    // a run takes in the boxes stacked on it, and runs that now overlap are one cluster
+    std::vector<BarBox> merged;
+    for (auto [r, vertical] : found) {
+        for (int round = 0; round < kBarStackRounds; ++round) {
+            if (!spend(budget, filled.size() + 1, limitHit)) {
+                break;
+            }
+            const BarBox before = r;
+            for (const BarBox &b : filled) {
+                const bool stacked = vertical ? (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 <= r.y1 + 1 && b.y1 >= r.y0 - 1)
+                                              : (b.y0 >= r.y0 - 1 && b.y1 <= r.y1 + 1 && b.x0 <= r.x1 + 1 && b.x1 >= r.x0 - 1);
+                if (stacked) {
+                    r = barUnion(r, b);
+                }
+            }
+            if (r.x0 == before.x0 && r.y0 == before.y0 && r.x1 == before.x1 && r.y1 == before.y1) {
+                break;
+            }
+        }
+        if (!spend(budget, merged.size() + 1, limitHit)) {
+            break;
+        }
+        bool joined = false;
+        for (BarBox &o : merged) {
+            if (std::min(o.x1, r.x1) > std::max(o.x0, r.x0) && std::min(o.y1, r.y1) > std::max(o.y0, r.y0)) {
+                o = barUnion(o, r);
+                joined = true;
+                break;
+            }
+        }
+        if (!joined) {
+            merged.push_back(r);
+        }
+    }
+    for (BarBox r : merged) {
+        if (!spend(budget, filled.size() + strokes.size() + drawings.size() + 1, limitHit)) {
+            break;
+        }
+        TextGraphic g {};
+        // painted paths: the boxes inside the cluster's box (1 point of slack) ...
+        for (const BarBox &b : filled) {
+            if (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 >= r.y0 - 1 && b.y1 <= r.y1 + 1) {
+                ++g.paths;
+            }
+        }
+        // ... and the stroked rules near it (axes, ticks, gridlines: within kBarRuleReach points, at most twice the cluster's
+        // size, so a frame or a column rule is not taken), which also grow the cluster's box, as doppler-md grows a figure
+        const BarBox core = r;
+        const double reach = std::max(core.x1 - core.x0, core.y1 - core.y0);
+        for (const BarBox &st : strokes) {
+            const bool near = st.x1 >= core.x0 - kBarRuleReach && st.x0 <= core.x1 + kBarRuleReach && st.y1 >= core.y0 - kBarRuleReach && st.y0 <= core.y1 + kBarRuleReach;
+            if (near && std::max(st.x1 - st.x0, st.y1 - st.y0) <= 2 * reach) {
+                ++g.paths;
+                r = barUnion(r, st);
+            }
+        }
+        // a bar chart with a drawn trend line or curve is one figure, as in doppler-md: joined with every drawing cluster
+        // it overlaps, repeated until no other overlaps the grown box (council r2 N3/L3), so clusters never overlap
+        size_t into = drawings.size();
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (size_t k = 0; k < drawings.size(); ++k) {
+                if (!spend(budget, 1, limitHit)) {
+                    break;
+                }
+                TextGraphic &d = drawings[k];
+                if (k == into || !(std::min(d.xMax, r.x1) > std::max(d.xMin, r.x0) && std::min(d.yMax, r.y1) > std::max(d.yMin, r.y0))) {
+                    continue;
+                }
+                r = barUnion(r, { d.xMin, d.yMin, d.xMax, d.yMax });
+                if (into == drawings.size()) {
+                    into = k;
+                    d.paths += g.paths;
+                } else {
+                    TextGraphic &t = drawings[into];
+                    t.paths += d.paths;
+                    t.segments += d.segments;
+                    t.curves += d.curves;
+                    t.directions |= d.directions;
+                    drawings.erase(drawings.begin() + std::ptrdiff_t(k));
+                    if (k < into) {
+                        --into;
+                    }
+                    --k;
+                }
+                grew = true;
+            }
+            if (*budget == 0) {
+                break;
+            }
+        }
+        if (into < drawings.size()) {
+            TextGraphic &t = drawings[into];
+            t.xMin = r.x0;
+            t.yMin = r.y0;
+            t.xMax = r.x1;
+            t.yMax = r.y1;
+            continue;
+        }
+        g.xMin = r.x0;
+        g.yMin = r.y0;
+        g.xMax = r.x1;
+        g.yMax = r.y1;
+        out.push_back(g);
+    }
+    return out;
+}
+
 } // namespace
 
 //------------------------------------------------------------------------
@@ -1045,6 +1916,22 @@ struct PageFacts::State
     bool fontsTruncated = false;
     const TextFontInfo *lastInfo = nullptr;
     const FontSeen *lastFont = nullptr;
+    // word boxes and whether each is visible (images-detail: words inside each listed image)
+    struct WordBox
+    {
+        double x0, y0, x1, y1;
+        bool visible;
+    };
+    std::vector<WordBox> wordBoxes;
+    // word centres (vectors: bar charts hold few words; at most kMaxBarWords a page) and the page's numbers (bar scales)
+    std::vector<WordCentre> wordCentres;
+    std::vector<ScaleNumber> scaleNumbers;
+    bool barWordsTruncated = false;
+    // characters by word size in half points (vectors: the body size the grid search scales
+    // with), the sizes in first-seen order, and whether a size fell outside the bins
+    std::vector<uint64_t> sizeChars; // maxSizeBins, allocated once
+    std::vector<int> sizeOrder;
+    bool sizeOutOfRange = false;
 
     // vectors
     uint64_t paths = 0, filled = 0, stroked = 0;
@@ -1071,6 +1958,12 @@ struct PageFacts::State
         std::vector<uint64_t> cells = std::move(charCells), inv = std::move(invisibleCells);
         std::vector<FontSeen> fontBuffer = std::move(fonts);
         std::vector<AnnotDraw> drawBuffer = std::move(draws);
+        std::vector<WordBox> wordBuffer = std::move(wordBoxes);
+        std::vector<uint64_t> charsBuffer = std::move(sizeChars);
+        std::vector<int> orderBuffer = std::move(sizeOrder);
+        for (int bin : orderBuffer) {
+            charsBuffer[bin] = 0; // only the bins this page touched
+        }
         FormCache formCache = std::move(formObjects);
         const unsigned formGeneration = formObjectsGeneration;
         *this = State();
@@ -1081,6 +1974,11 @@ struct PageFacts::State
         inv.clear();
         fontBuffer.clear();
         drawBuffer.clear();
+        wordBuffer.clear();
+        orderBuffer.clear();
+        wordBoxes = std::move(wordBuffer);
+        sizeChars = std::move(charsBuffer);
+        sizeOrder = std::move(orderBuffer);
         charCells = std::move(cells);
         invisibleCells = std::move(inv);
         fonts = std::move(fontBuffer);
@@ -1213,7 +2111,12 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kenum("pdfVersion", version);
     }
     j.kbool("linearized", doc->isLinearized());
-    j.kenum("xref", xref->getReconstructionCount() > 0 ? "repaired" : "ok");
+    // the doc line's own reads below (outlines, names, page labels) can rebuild the table too:
+    // "ok" written here is turned into "repaired" at the end if they did
+    const int reconstructionsAtXref = xref->getReconstructionCount();
+    openReconstructions = reconstructionsAtXref;
+    const size_t xrefAt = j.s.size();
+    j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
     if (xref->isEncrypted()) {
         bool emptyWorks = !passwordGiven;
         if (passwordGiven) {
@@ -1340,8 +2243,16 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kmask("unusualFeatures", features, featureNames, fXfaPresent + 1);
     j.close();
+    if (reconstructionsAtXref == 0 && xref->getReconstructionCount() > 0) {
+        const size_t ok = j.s.find("\"ok\"", xrefAt);
+        if (ok != std::string::npos) {
+            j.s.replace(ok, 4, "\"repaired\"");
+        }
+    }
     j.s += '\n';
     docXref = xref;
+    // rebuilds while the document was opened and its doc line read happen for every page range
+    docReconstructions = xref->getReconstructionCount();
     return j.s;
 }
 
@@ -1577,7 +2488,51 @@ void PageFacts::onWord(const TextWord *word)
 {
     double x0, y0, x1, y1;
     word->getBBox(&x0, &y0, &x1, &y1);
-    st->textGrid.mark(x0, y0, x1, y1, st->pageW, st->pageH);
+    State &s = *st;
+    s.textGrid.mark(x0, y0, x1, y1, s.pageW, s.pageH);
+    if (wants(ImagesDetail)) {
+        // visible as TextPage counts it (getInvisibleWordCount)
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible() });
+    }
+    if (wants(Vectors) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
+        if (s.wordCentres.size() < kMaxBarWords) {
+            s.wordCentres.push_back({ (x0 + x1) / 2, (y0 + y1) / 2 });
+        } else {
+            s.barWordsTruncated = true;
+        }
+        double v;
+        const int n = word->getLength();
+        if (s.scaleNumbers.size() < kMaxScaleNumbers && n > 0 && n <= 16) {
+            Unicode text[16];
+            for (int i = 0; i < n; ++i) {
+                text[i] = *word->getChar(i);
+            }
+            if (scaleNumber(text, n, &v)) {
+                s.scaleNumbers.push_back({ x0, y0, x1, y1, v });
+            }
+        }
+    }
+    if (wants(Vectors)) {
+        // pdftomarkdown's body size: the most common size rounded to half a point, by characters
+        // (a size outside the bins makes the body size uncertain: gridsTruncated)
+        const double size = word->getFontSize();
+        if (size != 0) {
+            const double half = std::nearbyint(size * 2.0); // NaN and infinities fail the range test
+            if (half >= 0 && half < maxSizeBins) {
+                if (s.sizeChars.empty()) {
+                    s.sizeChars.assign(maxSizeBins, 0);
+                }
+                const int bin = static_cast<int>(half);
+                if (s.sizeChars[bin] == 0) {
+                    s.sizeOrder.push_back(bin);
+                }
+                // never 0 once touched, so the first-seen order is kept
+                s.sizeChars[bin] += static_cast<uint64_t>(std::max(word->getLength(), 1));
+            } else {
+                s.sizeOutOfRange = true;
+            }
+        }
+    }
 }
 
 void PageFacts::onPath(const GfxState *state, bool filled)
@@ -1949,6 +2904,23 @@ void PageFacts::endPage(const TextPage &text)
             masks += im.stencil;
             inlines += im.info.inlineImg;
         }
+        // words whose box lies inside each listed image's box (within wordInsideSlack points),
+        // and words whose box centre does (issue 43), [visible, invisible]
+        const size_t listed = std::min(images.size(), maxItems);
+        std::array<std::array<uint64_t, 2>, maxItems> wordsInside {}, centredInside {};
+        for (const State::WordBox &w : s.wordBoxes) {
+            const double cx = 0.5 * w.x0 + 0.5 * w.x1, cy = 0.5 * w.y0 + 0.5 * w.y1; // NaN fails every test
+            for (size_t i = 0; i < listed; ++i) {
+                const TextImage &im = images[i];
+                const double ix0 = im.xMin - wordInsideSlack, iy0 = im.yMin - wordInsideSlack, ix1 = im.xMax + wordInsideSlack, iy1 = im.yMax + wordInsideSlack;
+                if (w.x0 >= ix0 && w.y0 >= iy0 && w.x1 <= ix1 && w.y1 <= iy1) {
+                    ++wordsInside[i][w.visible ? 0 : 1];
+                }
+                if (cx >= ix0 && cy >= iy0 && cx <= ix1 && cy <= iy1) {
+                    ++centredInside[i][w.visible ? 0 : 1];
+                }
+            }
+        }
         j.kint("maskCount", masks);
         j.kint("inlineCount", inlines);
         j.kopen("items", '[');
@@ -1980,6 +2952,15 @@ void PageFacts::endPage(const TextPage &text)
                 j.kint("obj", static_cast<uint64_t>(im.ref.num));
             }
             j.kenum("copy", imageCopyName(im.info.copy));
+            j.kint("visibleWordsInside", wordsInside[i][0]);
+            j.kint("invisibleWordsInside", wordsInside[i][1]);
+            j.kint("visibleWordsCentredInside", centredInside[i][0]);
+            j.kint("invisibleWordsCentredInside", centredInside[i][1]);
+            // encoded bytes over samples, from the stream's length (never decoded)
+            const double samples = double(std::max(im.pixelWidth, 0)) * double(std::max(im.pixelHeight, 0));
+            if (!im.info.inlineImg && im.info.encodedBytes >= 0 && samples > 0) {
+                j.kmeasure("bytesPerPixel", double(im.info.encodedBytes) / samples);
+            }
             j.close();
         }
         j.close(']');
@@ -2048,7 +3029,16 @@ void PageFacts::endPage(const TextPage &text)
             }
         }
         bool graphicsLimit = false;
-        const std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
+        std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
+        // Bar charts drawn only with filled boxes (doppler#38), after the drawing clusters (their list order is unchanged);
+        // a bar cluster overlapping a drawing cluster is joined into it. Its own per-page budget (never graphicsBudget).
+        std::sort(s.wordCentres.begin(), s.wordCentres.end(), [](const WordCentre &a, const WordCentre &b) { return a.x < b.x; });
+        if (s.barWordsTruncated) {
+            graphicsLimit = true; // a page over kMaxBarWords: the text test saw only the first words
+        }
+        for (const TextGraphic &g : barClusters(text.getRules(), s.wordCentres, s.scaleNumbers, pageW, pageH, clusters, &barBudget, &graphicsLimit)) {
+            clusters.push_back(g);
+        }
         const int vectorCells = s.vectorGrid.count();
         j.kopen("vectors");
         j.kint("paths", s.paths);
@@ -2080,6 +3070,109 @@ void PageFacts::endPage(const TextPage &text)
         }
         j.close(']');
         j.kbool("clustersTruncated", clusters.size() > maxItems);
+        double body = 10.0; // pdftomarkdown's default without text
+        uint64_t bodyChars = 0;
+        for (int bin : s.sizeOrder) {
+            if (s.sizeChars[bin] > bodyChars) {
+                body = bin / 2.0;
+                bodyChars = s.sizeChars[bin];
+            }
+        }
+        bool gridsTruncated = false;
+        const std::vector<RuleGrid> grids = ruleGrids(text.getRules(), pageW, pageH, body, &gridsTruncated);
+        // the grids came from a partial rule list (the page's rule cap), or from a body size
+        // that ignored words of a size outside the bins: incomplete, said so
+        gridsTruncated = gridsTruncated || text.getRulesPageTruncated() || s.sizeOutOfRange;
+        // each grid's thin rules (thinRuleGrids), from the rules at the 0.01 pt the XHTML
+        // writes (rounded as its %.2f is); absent from every grid (with unlistedRuledGrids, and
+        // gridsTruncated set) when the page's rule list is partial, the table was rebuilt, the walker would read fewer
+        // rules than the page has (past walkerMaxRules, or past the run's rule budget), a thin
+        // rule's extent or centre is not finite, more than maxGridRules thin rules run either
+        // way, or the maxGridWork visits run out: counts from part of the rules could be wrong
+        std::vector<ThinRule> th, tv;
+        // a cross-reference table rebuilt after open (by the doc line's reads, or by any fetch
+        // before this point) can make an object resolve to another body than a run that never
+        // rebuilt it sees, so the rules here may not be the ones such a run writes; a rebuild at
+        // open is every run's. Without the doc line (never: both callers write it) fail closed.
+        bool thinComplete = !text.getRulesPageTruncated() && docXref && docXref->getReconstructionCount() == openReconstructions;
+        if (thinComplete) {
+            auto at01 = [](double v) {
+                // what printf's %.2f writes, read back (both round the exact binary value)
+                char buf[400];
+                const auto [end, ec] = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::fixed, 2);
+                double back = NAN;
+                if (ec == std::errc()) {
+                    std::from_chars(buf, end, back);
+                }
+                return back;
+            };
+            // the walker reads the <rule>s the XHTML writes, at most walkerMaxRules a page: on a
+            // page with more non-box rules, or with any past the run's rule budget (which the
+            // XHTML leaves out), it sees fewer than these facts would count
+            size_t written = 0;
+            for (const TextRule &r : text.getRules()) {
+                if (r.box) {
+                    continue;
+                }
+                if (r.pastDocumentCap || ++written > walkerMaxRules) {
+                    thinComplete = false;
+                    break;
+                }
+                ThinRule k { at01(r.xMin), at01(r.yMin), at01(r.xMax), at01(r.yMax), 0 };
+                if (!std::isfinite(k.x0) || !std::isfinite(k.y0) || !std::isfinite(k.x1) || !std::isfinite(k.y1)) {
+                    thinComplete = false; // never skipped: the walker would read it
+                    break;
+                }
+                const double w = k.x1 - k.x0, hh = k.y1 - k.y0;
+                std::vector<ThinRule> *into = nullptr;
+                if (hh <= thinRuleMaxPt && w >= thinRuleMinPt) {
+                    k.c = 0.5 * (k.y0 + k.y1);
+                    into = &th;
+                } else if (w <= thinRuleMaxPt && hh >= thinRuleMinPt) {
+                    k.c = 0.5 * (k.x0 + k.x1);
+                    into = &tv;
+                }
+                if (!into) {
+                    continue;
+                }
+                if (!std::isfinite(w) || !std::isfinite(hh) || !std::isfinite(k.c) || std::fabs(k.c) > maxPoint) {
+                    thinComplete = false; // an extent or centre past finite range: fail closed, never skip
+                    break;
+                }
+                if (into->size() >= maxGridRules) {
+                    thinComplete = false;
+                    break;
+                }
+                into->push_back(k);
+            }
+            std::ranges::stable_sort(th, {}, &ThinRule::c);
+            std::ranges::stable_sort(tv, {}, &ThinRule::c);
+        }
+        std::vector<GridRules> perGrid;
+        uint64_t unlisted = 0;
+        thinComplete = thinComplete && thinRuleGrids(grids, th, tv, &perGrid, &unlisted);
+        gridsTruncated = gridsTruncated || !thinComplete;
+        j.kopen("grids", '[');
+        for (size_t i = 0; i < grids.size(); ++i) {
+            const RuleGrid &g = grids[i];
+            j.open();
+            j.kbox("bbox", g.x0, g.y0, g.x1, g.y1);
+            j.kint("rows", g.rows);
+            j.kint("columns", g.columns);
+            j.kratio("coverage", area > 0 ? (g.x1 - g.x0) * (g.y1 - g.y0) / area : 0.0);
+            if (thinComplete && perGrid[i].known) {
+                j.kint("hRules", perGrid[i].hRules);
+                j.kint("vRules", perGrid[i].vRules);
+                j.kint("outerSides", perGrid[i].outerSides);
+                j.kbool("connected", perGrid[i].connected);
+            }
+            j.close();
+        }
+        j.close(']');
+        j.kbool("gridsTruncated", gridsTruncated);
+        if (thinComplete) {
+            j.kint("unlistedRuledGrids", unlisted);
+        }
         const bool limit = s.pathLimit || text.getRulesPageTruncated() || graphicsLimit;
         j.kbool("limitHit", limit);
         j.close();
@@ -2269,6 +3362,11 @@ void PageFacts::endPage(const TextPage &text)
 std::string PageFacts::finishPage(int pageNum, double ms)
 {
     State &s = *st;
+    // an earlier page of the run rebuilt the table: an object with two bodies in the file can
+    // now resolve to the other one, so this page's facts may differ from a run of it alone
+    if (s.reconstructionsAtBegin > docReconstructions) {
+        s.warnings |= 1u << wXrefRepairedEarlier;
+    }
     if (docXref && docXref->getReconstructionCount() != s.reconstructionsAtBegin) {
         s.warnings |= 1u << wXrefRepaired;
     }
@@ -2288,7 +3386,7 @@ std::string PageFacts::finishPage(int pageNum, double ms)
         s.features = 0;
         ++failed;
     }
-    j.kmask("parseWarnings", s.warnings, warningNames, wXrefRepaired + 1);
+    j.kmask("parseWarnings", s.warnings, warningNames, wXrefRepairedEarlier + 1);
     j.kmask("unusualFeatures", s.features, featureNames, fXfaPresent + 1);
     if (timing) {
         j.kpt("factsMs", ms);

@@ -130,11 +130,17 @@ Tests: `test/docslurp/pagecount/`.
 
 ## Page facts
 
-Per-page facts for routing pages (text layer, scans, images and their encodings, fonts, odd
-characters, vector drawing and rules, forms, annotations, optional content) and one document
+Per-page facts for routing pages (text layer, scans, images and their encodings, the words
+inside each image (whole box and by centre) and its bytes per pixel, fonts, odd characters,
+vector drawing and rules, the ruled grids pdftomarkdown's table search starts from with each
+grid's thin-rule lines and outer sides, forms, annotations, optional
+content) and one document
 line, as JSON lines (schema `doppler-page-facts/1`). Every field and value:
 [docslurp/page-facts/README.md](docslurp/page-facts/README.md); JSON Schema beside it;
-benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
+benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md). The thin-rule and
+centre counts are checked against DocSlurp's layout walker by
+`test/docslurp/page-facts/test_walker_parity.py` (configure with `-DDOCSLURP_OSS_DIR=` a
+docslurp-oss checkout; skipped without one).
 
 - **With a conversion:** `pdftomarkdown --stream --page-facts FILE FILE.pdf` (or
   `--page-facts-fd N`; `--page-facts-level full`, `--page-facts-include LIST`). pdftotext
@@ -144,7 +150,9 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   `-max-pages`, `-timeout`, and a Landlock + seccomp sandbox entered after the file is opened
   and before it is parsed (`utils/Confine`, shared with pdfregions; `-confine require` by
   default). Exit 0 ok, 1 cannot open, 2 needs a password, 3 limit, 5 cannot confine, 99 usage.
-- The three write byte-identical lines for the same input, range and level. Facts are
+- The three write byte-identical lines for the same input, range and level (except with
+  `-glyphs`, which `--math` adds, or when pdftotext's XHTML header rebuilds the cross-reference
+  table: see the README). Facts are
   deterministic (timing only with `-timing`) and page-local (`-f p -l p` gives a page the
   same line as a whole run). They never contain document text, paths, URIs or field values,
   except the capped, sanitised and untrusted `producer`/`creator`.

@@ -160,7 +160,67 @@ def rule_grid(pages=500, n=512):
     return d.pages([content] * pages)
 
 
+def thin_rule_mesh(pages=20, n=2400):
+    """Pages of n horizontal and n vertical thin rules that all cross (issue 43), under the
+    layout walker's 5,000 rules a page: the thin-rule search's union-find would visit n x n
+    pairs; it stops at its visit cap (2^20)."""
+    ops = ["0.1 w"]
+    for i in range(n):
+        ops.append("5 %.3f m 600 %.3f l S" % (10 + i * 0.32, 10 + i * 0.32))
+    for i in range(n):
+        ops.append("%.3f 5 m %.3f 785 l S" % (5 + i * 0.245, 5 + i * 0.245))
+    d = Doc()
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content] * pages)
+
+
+def rule_budget(pages=11, n=19000):
+    """<pages> pages of <n> one-point square fills (thin rules to pdftotext -rules), past the run's
+    200,000-rule budget, then a page with a ruled 3 x 4 table."""
+    d = Doc()
+    noise = d.stream("\n".join("%d %d 1 1 re f" % (5 + (k % 600), 5 + 2 * (k // 600)) for k in range(n)), compress=True)
+    table = ["0.5 w"] + ["72 %d m 472 %d l S" % (y, y) for y in (700, 670, 640, 610)] + ["%d 610 m %d 700 l S" % (x, x) for x in (72, 172, 272, 372, 472)]
+    last = d.stream("\n".join(table), compress=True)
+    return d.pages([noise] * pages + [last])
+
+
 FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+
+def rule_spread(pages=50, bands=6):
+    """Pages whose text is half a point high (the grid search scales its thresholds with the body
+    size: rules 1.5 points long, a 4-point row gap) under bands of 4 rows of 165 rules 1.6
+    points long. Rows are 1.1 points apart and rules 2.1 apart along a row, so none are joined;
+    each row is 0.9 points right of the last, so no rule overlaps another's group enough to
+    join it: every band keeps 660 groups open, and a grouping that visits every open group is
+    quadratic (about 220,000 visits a band)."""
+    ops = ["BT /F1 0.5 Tf 100 100 Td (aaaa bbbb cccc) Tj ET", "0.1 w"]
+    for b in range(bands):
+        for r in range(4):
+            y = 760 - 10 * b - 1.1 * r
+            for k in range(165):
+                x = 5 + 3.7 * k + 0.9 * r
+                ops.append("%.2f %.2f m %.2f %.2f l S" % (x, y, x + 1.6, y))
+    d = Doc()
+    font = d.add(FONT)
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >>" % font)
+
+
+def words_over_images(pages=20, images=32, words=60000):
+    """Pages of <images> image draws under <words> one-letter words: every word is tested against
+    every listed image."""
+    d = Doc()
+    font = d.add(FONT)
+    im = d.stream(b"\xff\xd8x\xff\xd9", "/Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode")
+    ops = ["q 18 0 0 24 %d %d cm /Im Do Q" % (10 + 19 * (k % 32), 20 + 25 * (k // 32)) for k in range(images)]
+    line = " ".join("a" for _ in range(100))
+    for k in range(words // 100):
+        ops.append("BT /F1 4 Tf %d %d Td (%s) Tj ET" % (5, 780 - (k % 190) * 4, line))
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >> /XObject << /Im %d 0 R >>" % (font, im))
+
+
 
 
 def oc_marked(kind, sections, operands=9990):
@@ -266,6 +326,16 @@ def cpu_run(cmd, pass_fds=(), timeout=300):
     return p.returncode, p.stdout, (r1.ru_utime - r0.ru_utime) + (r1.ru_stime - r0.ru_stime)
 
 
+def plain_cpu(*args):
+    """Plain pdftotext on ARGS: (exit code or None after 60 s wall, stdout, CPU seconds). The
+    bounds below are on CPU, not wall time: they guard against superlinear work, which a busy
+    host's scheduling would otherwise hide or fake."""
+    try:
+        return cpu_run([os.path.join(BIN, "pdftotext"), "-q"] + list(args), timeout=60)
+    except subprocess.TimeoutExpired:
+        return None, b"(timed out)", 60.0
+
+
 def pdftotext_facts(path, *extra):
     """pdftotext with the facts at level full on a descriptor: (exit code, facts, CPU s)."""
     out = os.path.join(os.path.dirname(path), "facts.jsonl")
@@ -313,9 +383,8 @@ with t.TempDir() as d:
         kind = "form" if form else "image"
         path = d.write("ocmd-%s.pdf" % kind, ocmd_chain(depth=22, form=form))
         ls = bounded("/OC /VE of 22 shared levels on an %s" % kind, path, factor=3.0)
-        start = time.monotonic()
-        subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, os.devnull], timeout=120)
-        t.check(time.monotonic() - start < 3, "/OC /VE of 22 shared levels on an %s: plain pdftotext is fast" % kind, "%.2f s" % (time.monotonic() - start))
+        _, _, secs = plain_cpu(path, os.devnull)
+        t.check(secs < 3, "/OC /VE of 22 shared levels on an %s: plain pdftotext is fast" % kind, "%.2f CPU-s" % secs)
         if not form:
             t.check(page(ls, 1)["images"]["imageCount"] == 1, "deep /VE of shown groups: the image is visible")
     ls = bounded("/OC /VE /And of 12000 operands", d.write("ocmd-wide.pdf", ocmd_wide()))
@@ -344,7 +413,7 @@ with t.TempDir() as d:
     t.check(v["figureClusters"] == 129 and not v["limitHit"], "chained cells merge into one figure, isolated dots stay apart", repr((v["figureClusters"], v["limitHit"])))
 
     # 5. the rule-grid score is a sweep, not every row against every column (was 13x the pass)
-    ls = bounded("500 pages of a 512 x 512 rule grid", d.write("grid.pdf", rule_grid()))
+    ls = ls_grid = bounded("500 pages of a 512 x 512 rule grid", d.write("grid.pdf", rule_grid()))
     v = page(ls, 1)["vectors"]
     t.check(v["ruleGridScore"] == 1 and v["hRules"] == 512 and v["vRules"] == 512, "a full rule grid scores 1", repr((v["ruleGridScore"], v["hRules"], v["vRules"])))
     ls = [json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "vectors", d.write("grid-small.pdf", rule_grid(pages=1, n=3))])[1].decode().splitlines()]
@@ -357,14 +426,10 @@ with t.TempDir() as d:
     #    operand budget, past which sections count as visible with limit-hit. Plain pdftotext too.
     for kind, sections in (("ve", 8000), ("ocgs", 5000), ("direct", 60000), ("xobject", 5000)):
         path = d.write("oc-%s.pdf" % kind, oc_marked(kind, sections))
-        start = time.monotonic()
-        try:
-            text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
-        except subprocess.TimeoutExpired:
-            text = "(timed out)"
-        secs = time.monotonic() - start
-        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 s" % (sections, kind), "%.2f s" % secs)
-        print("  oc %s x %d: pdftotext %.2f s" % (kind, sections, secs))
+        _, text, secs = plain_cpu(path, "-")
+        text = text.decode()
+        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 CPU-s" % (sections, kind), "%.2f CPU-s" % secs)
+        print("  oc %s x %d: pdftotext %.2f CPU-s" % (kind, sections, secs))
         if secs >= 3:
             continue
         ls = bounded("%d sections over one %s OCMD" % (sections, kind), path)
@@ -393,14 +458,10 @@ with t.TempDir() as d:
     # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
     #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit
     path = d.write("nested-mc.pdf", nested_marked(100000))
-    start = time.monotonic()
-    try:
-        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
-    except subprocess.TimeoutExpired:
-        text = "(timed out)"
-    secs = time.monotonic() - start
-    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 s, all text", "%.2f s %r" % (secs, text[:80]))
-    print("  100,000 nested BMC: pdftotext %.2f s" % secs)
+    _, text, secs = plain_cpu(path, "-")
+    text = text.decode()
+    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 CPU-s, all text", "%.2f CPU-s %r" % (secs, text[:80]))
+    print("  100,000 nested BMC: pdftotext %.2f CPU-s" % secs)
     if secs < 3:
         ls = bounded("100,000 nested BMC", path)
         t.check("limit-hit" in page(ls, 1)["parseWarnings"], "nesting past the cap: limit-hit", repr(page(ls, 1)["parseWarnings"]))
@@ -413,20 +474,41 @@ with t.TempDir() as d:
     #     image whose /Filter names a 50,000-entry array, drawn 20,000 times a page, ran past
     #     120 s in plain pdftotext -bbox-layout)
     path = d.write("filter-names.pdf", filter_names())
-    start = time.monotonic()
-    try:
-        rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, os.devnull], timeout=60).returncode
-    except subprocess.TimeoutExpired:
-        rc = None
-    secs = time.monotonic() - start
-    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 s", "%.2f s, rc %r" % (secs, rc))
-    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f s" % secs)
+    rc, _, secs = plain_cpu("-bbox-layout", path, os.devnull)
+    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 CPU-s", "%.2f CPU-s, rc %r" % (secs, rc))
+    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f CPU-s" % secs)
     if secs < 3:
         ls = bounded("50,000-name /Filter x 40,000 Do", path)
         t.check("limit-hit" in page(ls, 1)["parseWarnings"], "a refused filter chain: limit-hit", repr(page(ls, 1)["parseWarnings"]))
     for n, shown in ((16, True), (17, False)):
         text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", d.write("hex%d.pdf" % n, hex_chain(n)), "-"], capture_output=True, timeout=60).stdout.decode()
         t.check(("chained" in text) == shown, "%d ASCIIHex filters: %s" % (n, "decoded" if shown else "refused"), repr(text[:60]))
+
+    # 9. ruled grids (issue 40): the grid search takes at most 4,096 rules a direction and a
+    #    fixed number of group visits a page, however the rules are laid out
+    v = page(ls_grid, 1)["vectors"]
+    t.check(len(v["grids"]) == 1 and v["grids"][0]["rows"] == 255 and v["grids"][0]["columns"] == 256, "a 512 x 512 rule grid: one grid", repr(v["grids"])[:300])
+    ls = bounded("50 pages of 3,960 short rules that never share a group", d.write("spread.pdf", rule_spread()))
+    v = page(ls, 1)["vectors"]
+    t.check(v["gridsTruncated"] and v["grids"] == [], "rules spread past the page: the grid search stops at its cap", repr((v["hRules"], v["gridsTruncated"], v["grids"][:2])))
+
+    t.check(all("hRules" in g for g in page(ls_grid, 1)["vectors"]["grids"]), "a 512 x 512 rule grid: thin-rule counts within the visit cap", repr(page(ls_grid, 1)["vectors"]["grids"])[:300])
+    # issue 43: the thin-rule union-find visits at most 2^20 rule pairs a page
+    ls = bounded("20 pages of 2,400 x 2,400 crossing thin rules", d.write("mesh.pdf", thin_rule_mesh()))
+    v = page(ls, 1)["vectors"]
+    t.check(v["gridsTruncated"] and v["grids"] and not any("hRules" in g for g in v["grids"]) and "unlistedRuledGrids" not in v, "a 2,400 x 2,400 thin-rule mesh: the visit cap, no rule counts, gridsTruncated", repr((v["gridsTruncated"], v["grids"][:1])))
+    # the run's rule budget (200,000): the XHTML leaves later rules out, so a reader of it sees
+    # none of a later page's table; the facts must not count it either
+    budget = d.write("budget.pdf", rule_budget())
+    ls = bounded("11 pages of 19,000 rules, then a ruled table", budget)
+    v = page(ls, 12)["vectors"]
+    t.check(v["gridsTruncated"] and v["grids"] and not any("hRules" in g for g in v["grids"]), "a table past the run's rule budget: no rule counts, gridsTruncated", repr((v["gridsTruncated"], v["grids"][:1])))
+
+    # 10. words inside images (issue 40): words x listed images, both bounded per page
+    ls = bounded("20 pages of 32 images under 60,000 words", d.write("words-images.pdf", words_over_images()))
+    items = page(ls, 1)["images"]["items"]
+    t.check(len(items) == 32 and sum(i["visibleWordsInside"] for i in items) > 0, "words over images: counted per listed image", repr([i["visibleWordsInside"] for i in items])[:200])
+    t.check(sum(i["visibleWordsCentredInside"] for i in items) >= sum(i["visibleWordsInside"] for i in items), "words over images: centred counts at least the whole-box ones", repr([i["visibleWordsCentredInside"] for i in items])[:200])
 
     # 8. pdftotext -timeout: exit code 6, whole facts lines, no run line
     slow = d.write("slow.pdf", error_dense(pages=40))

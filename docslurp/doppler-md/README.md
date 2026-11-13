@@ -83,7 +83,8 @@ byte-identical.
   so the id does not change with the layout around it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
   one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
   body sizes, transitively) are one figure with one marker, at its first image. A full-page
-  scan is a `page-scan` (see [Page scans](#page-scans)). No marker for
+  scan copied as its own bytes is a `page-scan` (see [Page scans](#page-scans)); with the
+  default `--scan-pages copy` any other scan is a `background`. No marker for
   a page background under a text layer (one picture, or a figure of pieces such as the strips
   or tiles of a scan, covering 85% of the page), an image in the header or footer band, a sliver, a
   duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
@@ -152,7 +153,7 @@ A link is the image's path relative to the images folder, after a prefix:
 |---|---|---|
 | picture `p12.3` | `page-0012/image-003.webp` (`.png` with `--raster-format png`) | `images/page-0012/image-003.webp` |
 | vector figure `p12.g1` | `page-0012/figure-001.svg` (`.webp`/`.png` with `--vector-format`) | `images/page-0012/figure-001.svg` |
-| page scan `p12.1` | `page-0012/image-001.jpg` (a JPEG copied unchanged), `.png` (bilevel), else as a picture | `images/page-0012/image-001.jpg` |
+| page scan `p12.1` | `page-0012/image-001.jpg` (a JPEG copied unchanged), `.png` (bilevel), else (`--scan-pages image` or `render`) as a picture | `images/page-0012/image-001.jpg` |
 
 Numbers are 1-based and zero-padded to at least 4 digits for the page and 3 for the index
 (page 12345 is `page-12345`). Only `src/extract/layout.rs` maps ids to paths. The link depends
@@ -208,7 +209,9 @@ manifest lists.
 A page is a scan when pdftotext says so (`scan="single|tiled|layered" scanImage="K"` on
 `<page>`, from the classifier it shares with page facts: images cover at least 85% of the page
 (`--scan-min-coverage`) on a 64 x 64 grid and at most `--scan-max-words` (20) words are
-visible; render mode 3 OCR text is invisible). Its scan image `pN.K` is placed `page-scan` before anything else (no
+visible; render mode 3 OCR text is invisible). With the default `--scan-pages copy`, only a
+scan that can be copied as its own bytes (below) becomes a page scan; any other scan gets no
+marker and no file (see the table below). A page scan's image `pN.K` is placed `page-scan` before anything else (no
 `background`, `watermark` or `block` for it), and the page's Markdown starts with
 
     ![page 12 scan](images/page-0012/image-001.jpg)
@@ -264,7 +267,12 @@ A document whose cross-reference table poppler rebuilt from a scan of the file (
 to another object body than a page draws. pdftotext marks the page where it noticed
 (`xrefRebuilt="1"`, no `copyable="1"` from there on) and the end of the document
 (`<xref rebuilt="1"/>`); scans to decode are rendered instead (same link), and a JPEG or
-bilevel scan linked before the mark is not extracted (`reason: copy`, `error: xref`).
+bilevel scan linked before the mark is not extracted (`reason: copy`, `error: xref`). With the
+default `--scan-pages copy` the links are final at conversion, so a JPEG or bilevel scan that
+was copyable before the mark keeps its page-scan marker but gets no file and no render
+(`not-extracted`, `reason: copy`, `error: xref`); scans from the mark on are not copyable and get
+no marker (`unlinked`, `reason: scan-not-copyable`). A host renders the page for such a
+`not-extracted` / `copy` page scan as it does for a `scan-not-copyable` one.
 pdfregions refuses a copy job (`err:copy`) in a document whose table it rebuilt. Every other scan (tiled, layered,
 turned, clipped, inline, covered by anything, or from a producer without those attributes) is
 rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,
@@ -277,9 +285,33 @@ copied scan's page. `--scan-pages` says what to do with scans:
 
 | `--scan-pages` | Markdown | File |
 |---|---|---|
-| `image` (default) | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
+| `copy` (default) | `![page N scan](...)` first for a scan copied as its own bytes: a single, upright scan on a page that passed the allow-list (`copyable="1"`) whose stream is a JPEG to copy (`copy="jpeg"`) or bilevel (`copy="bilevel"`); every other scan (`decode`: JPEG 2000, Flate and other samples; not copyable: a visible page number, a stamp, a box; tiled, layered, turned, covered or overlaid; on or after the page where the cross-reference table was found rebuilt) is placed `background`, with no marker. A copyable scan before a rebuild found later keeps its marker | the JPEG stream or 1-bit PNG, as for `image`; nothing for any other scan (`unlinked`, `reason: scan-not-copyable`): its page image comes from the host's page rendering (DocSlurp's `render-images` stage). A page scan whose copy is refused (a rebuilt table found after its page: `not-extracted`, `reason: copy`, `error: xref`) has a marker and no file; the host renders that page too |
+| `image` | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
 | `render` | the same, always the raster format | rendered at `--scan-dpi` (200, 36..300) |
 | `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
+
+The choice in `copy` is made at conversion from pdftotext's `copyable=`/`copy=`/`orient=`/
+`overlaid=` (the links are final before extraction) and is cheap: a copy is a few milliseconds a
+page, where decoding a JPEG 2000 or Flate scan to WebP or rendering one at `--scan-dpi` costs
+seconds a page on one core (see the performance notes below), and duplicates the page images
+the host renders anyway. On real scanned books nearly every scan has something beside it (a
+printed page number, a layer, a mask) or is JPEG 2000, so with the default nearly no scan
+yields a Doppler file; `--scan-pages image` restores Doppler-side decoding and rendering of
+those scans (today's behaviour before `copy` became the default).
+
+What `copy` leaves to the host, besides the scans themselves:
+
+- **A picture on a tiled or layered scan.** Such a scan groups the page's other images of at
+  least 1% of the page with it; under `copy` they all become the page's backdrop, so a real
+  photo printed on that page gets no Doppler image of its own (`unlinked`,
+  `scan-not-copyable`). The host's rendering of the page shows it.
+- **A refused copy.** A page scan whose copy fails (`not-extracted`, `reason: copy`, for
+  example `error: xref` after a rebuilt table) keeps its marker with no file; the host renders
+  that page, as for `scan-not-copyable`.
+
+`copy` does no decoding or rendering for anything placed as a scan. An image pdftotext does not
+make a scan (a stencil mask as the scan image, or a page whose image list was truncated) is not
+one: it is placed as any picture and, when marked, rendered as one.
 
 A copy is checked twice: pdfregions answers a copy job only for an image named in that page's
 resources (directly or through forms at most 4 deep) whose dictionary still gives the same
@@ -319,13 +351,30 @@ most 30 characters); anything else is a usage error (exit 2) before anything run
 whole-document `--images-dir`, this 8-core machine under other load; wall, CPU of the process
 tree, peak RSS):
 
-| Book | `--scan-pages image` (copy) | `--scan-pages render` (150 dpi WebP) | before (scans rendered as pictures) |
+| Book | `--scan-pages copy` (default) or `image`: copied | `--scan-pages render` (150 dpi WebP) | before (scans rendered as pictures) |
 |---|---|---|---|
 | grey DCT, 0.94 MB a page | 4.2 s, 4.8 CPU-s, 23 MiB: 500 `.jpg` (the stored bytes), about 7,200 pages a minute | 94.5 s, 124.5 CPU-s, 114 MiB: 500 `.webp` | failed after 21.9 s (`output limit`), 0 files |
 | CCITT G4, 0.11 MB a page | 8.3 s, 9.6 CPU-s, 23 MiB: 500 1-bit `.png` (decode 7.7 CPU-s, PNG 1.1 s), about 3,600 pages a minute | 91.9 s, 122.6 CPU-s, 115 MiB: 500 `.webp` | failed after 24.8 s (`output limit`), 0 files |
 
 ("Before" is the previous release with `--params '{"watermarks": false}'`, since it otherwise
 called a text-less scan repeated at one size a watermark and extracted nothing.)
+
+**Real scanned books, `copy` against `image`** (2026-11-13; first 100 pages, `--images-dir`,
+one job pinned to one core with `taskset`, this 8-core machine at a load average of 85 to 110
+from other work, so wall times are about 4x a quiet core's; CPU of the process tree, peak RSS
+of its largest process):
+
+| Book | `copy` (default) | `image` |
+|---|---|---|
+| Internet Archive JPX MRC (layered) | 0.49 CPU-s, 20 MiB, 0 files | 39.3 CPU-s, 133 MiB, 43 of 100 scans before the 170 s deadline (6.9 MB) |
+| CCITT G4, `/Decode [1 0]` (copy class `decode`) | 1.10 CPU-s, 21 MiB, 0 files | 32.2 CPU-s, 126 MiB, 51 of 100 scans before the deadline (17.9 MB) |
+| Google Books JBIG2 (1 page a scan, the rest pictures) | 2.23 CPU-s, 39 MiB, 11 files | 2.57 CPU-s, 45 MiB, 12 files |
+
+Over the first 100 pages of each of the 49 books of a burn corpus, 3,590 pages are scans and
+124 (3.5%) can be copied: 100 bilevel pages of one book and 24 JPEGs. The rest are layered or
+not copyable (3,057, rendered by `image`) or `decode` (409, mostly 1-bit JBIG2/CCITT with an
+inverted `/Decode`). A copyable JPEG 2000 scan (2221 x 2923) costs 1.27 CPU-s a page to decode
+and encode with `image`, 0.79 CPU-s to render with `render`, and nothing with `copy`.
 
 **The copy allow-list** (2026-11-12; a 500-page grey DCT book, 2550 x 3300, 0.65 MB a page,
 45 lines of invisible OCR text a page, median of 5 interleaved runs): every page is still
@@ -635,11 +684,11 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`); an encode that ends past it (or past `--images-deadline`) is dropped and its image is `timeout` (`deadline`), so one encode overruns by at most its own time |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
-| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; exit 5 while any image is left |
+| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; earlier batch lines outside the range are kept; a range outside `--images-pages` is refused (exit 2); exit 5 while any image is left |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
-| `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
-| `--scan-dpi N` | `200` | rendered scans (tiled, layered, turned, not copyable, `--scan-pages render`), 36..300 |
-| `--scan-max-dpi N` | `300` | a decoded scan finer than this is scaled down to it |
+| `--scan-pages copy\|image\|skip\|render` | `copy` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
+| `--scan-dpi N` | `200` | rendered scans with `--scan-pages image` (tiled, layered, turned, not copyable) or `render`, 36..300 |
+| `--scan-max-dpi N` | `300` | with `--scan-pages image`, a decoded scan finer than this is scaled down to it |
 | `--scan-max N` | `1000` | most scan files per batch; past it a scan is `not-extracted` (`budget`) and the batch goes on |
 | `--scan-max-bytes N` | `1GiB` | most scan bytes per batch, likewise |
 
@@ -714,7 +763,7 @@ else escaped `\uXXXX`), each line ending in `\n` and at most 64 KiB with it, key
 order, the lines in this order:
 
 ```
-{"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"image","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
+{"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"copy","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
 {"type":"image","id":"p1.1","page":1,"bbox":[72.00,222.00,272.00,372.00],"kind":"picture","fate":"block","obj":[6,0],"path":"page-0001/image-001.webp","link":"images/page-0001/image-001.webp","status":"extracted","format":"webp","source":"render","bytes":5468,"sha256":"…","width":417,"height":312}
 {"type":"batch","pages":[1,64],"status":"ok","cut_page":null}
 {"type":"end","complete":true,"resumable":false,"totals":{"images":1,…,"batches":1,"batches_cut":0},"images":1,"batches":1,"sha256":"…"}
@@ -725,13 +774,26 @@ repeat: the conversion settings an images plan is bound to, `-f`/`-l`, the link 
 formats and their encoder settings, `--images-dpi`, `--images-min-side`, `--images-pages`,
 `--images-max-file-bytes`, `--svg-*`, `--scan-dpi`, `--scan-max-dpi`; not the budgets, batch
 size, time limits or confinement), `link_prefix`, `pages` (`--images-pages` as `[A,B]`, null
-when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`,
+when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages` (`copy`, the default, `image`,
+`skip` or `render`; `copy` is a new value under the same `doppler-images/3` schema, so a host
+that validates the header and the `reason` values strictly needs a matching contract change
+before it accepts a `copy` manifest, and should pass `--scan-pages` explicitly), `scan_dpi`, `scan_max_dpi`,
 `batch_pages`, `deadline_ms` (the effective `--images-deadline`) and `resumes` (how many
 `--images-resume` runs rewrote it). Then one **image** line per image (below), then one
-**batch** line per batch of this run (a resume lists its own): `pages` `[A,B]`, `status` `ok`,
-`budget`, `doc_budget`, `timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the
-first page with an image the batch did not get to (null for `ok`). The **end** line, last:
-`complete` (every batch finished and no image was left by a stopped batch), `resumable` (some
+**batch** line per batch, in page order: `pages` `[A,B]` (the batch's pages; on an
+`--images-resume-pages` resume, clipped to that range), `status` `ok`, `budget`, `doc_budget`,
+`timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the first page with an image
+the batch did not get to (null for `ok`); no other key. A resume lists its own lines and keeps
+each earlier line that still says something no other line does: its own lines claim their
+pages, then each earlier line (stopped ones first, narrower first) is kept when its range holds
+a page with an image no kept line has claimed (for a stopped line, one with an image still
+stopped there), and claims its pages. So a narrowed resume keeps the earlier record of the pages
+it left, a whole resume replaces every earlier line, and a stopped line whose images were all
+retried, or that left none (a `renderer` stop after every image was answered), goes, so
+`complete` can become true. Lines of one run never overlap; lines of different runs may (which
+run wrote a line is not recorded), and no two lines share a range.
+The **end** line, last:
+`complete` (every batch line `ok` and no image was left by a stopped batch), `resumable` (some
 image may still be extracted by a resume), `totals`, then `images` and `batches` (the number of
 image and batch lines) and `sha256`, the SHA-256 (lowercase hex) of every byte of the file
 before the end line. A reader refuses a manifest whose first line is not a `doppler-images/3`
@@ -746,7 +808,9 @@ altered manifest is never taken for a whole one. The Rust reader is
 (`[num,gen]` of the image object, or null: with `sha256`, a key for deduplicating across runs),
 `path` and `link` (null when unlinked; a repeat's are its first placement's), `status`
 (`extracted`, `not-extracted`, `unlinked` for a fate without a link), `reason` for
-`not-extracted` (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`,
+`not-extracted` and, with the single value `scan-not-copyable`, for an `unlinked` `background`
+entry of a scan `--scan-pages copy` left to the host (every other `unlinked` entry has no
+`reason`); for `not-extracted` it is one of (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`,
 `scan-pages` (`--scan-pages skip`), `copy` (a scan copy that failed its checks: `error` `jpeg`,
 `size`, `kind`, or the renderer's `copy`, `copysize`, `pixels`, `decode`), `error`
 for a per-image renderer or record error, and the batch stops `budget`, `doc_budget`,
@@ -801,7 +865,13 @@ DIR.
 the same conversion options or `--images-plan PLAN`, and the same image options (the budgets,
 `--images-batch-pages`, the time limits and `--images-confine` may change). DIR's
 `manifest.jsonl` is read one line at a time and must be whole (a `doppler-images/3` header, its
-end line, matching counts and hash: a truncated or altered one is refused), name the same PDF
+end line, matching counts and hash: a truncated or altered one is refused), hold only lines
+this program would write (known statuses and reasons; batch lines with exactly `type`,
+`pages`, `status` and `cut_page`, an `ok` with no `cut_page` or a `cut_page` within their own
+`pages`, a range with a page that has an image, no two with the same range, and no more batch
+lines than pages with images, which bounds what a forged manifest can make a resume hold; the
+manifest's hash is not keyed, so these refuse damage and mistakes, not a deliberate forgery),
+name the same PDF
 (`source_sha256`) and settings (`settings_sha256`) and list exactly this conversion's images at
 the same paths; otherwise nothing is touched and the exit status is **2** (also for a DIR
 without a manifest, and for a version 2 `manifest.json` or any other schema: extract again). Only the
@@ -810,10 +880,11 @@ document ceilings less the bytes DIR holds; every other entry stays as it was. F
 paths the Markdown already links, so the Markdown (written to stdout again when converting)
 never changes; they are created new, never replacing a file (one in the way is a hard
 failure). The manifest is then written whole to a temporary name, synced, and renamed over the
-old one in one step, with each entry's new status, the resume's own batches and `resumes` one
-more. Exit status **0** when nothing is left (`complete`), **5** when the resume
-stopped too; a resume with nothing to do changes nothing and exits 0 (5 if the manifest still
-lists images a stopped batch left that are not resumable, such as `renderer`). A hard failure
+old one in one step, with each entry's new status, the resume's own batches beside the
+earlier batch lines it keeps (above), and `resumes` one more. Exit status **0** when nothing is left (`complete`), **5** when the resume
+stopped too; a resume with nothing to do changes nothing and exits as the manifest's `complete`
+says: 0, or 5 if it lists images a stopped batch left that are not resumable (such as
+`renderer`) or a batch line that is not `ok`. A hard failure
 (exit **6**) keeps the old manifest and every file that was there, and removes only the files
 and page folders the resume made. Content repeats are compared within one run only: a resumed
 figure whose pixels repeat one extracted earlier gets its own file rather than
@@ -823,7 +894,13 @@ figure whose pixels repeat one extracted earlier gets its own file rather than
 the files of entries it keeps (a host that keeps them in object storage hands back only
 the manifest), the document ceilings count the bytes the manifest records for them, and the
 folder ends up with only the files this resume wrote, beside the replaced manifest.
-`--images-resume-pages A-B` limits one resume to the resumable images of those pages.
+`--images-resume-pages A-B` limits one resume to the resumable images of those pages; its own
+batch lines are clipped to the range and the manifest keeps the earlier lines that still
+describe the pages it left (above), so a host driving a series of range resumes keeps the whole
+record, and the end line's `batches`, `totals.batches`, `totals.batches_cut` and `complete`
+count those lines. A range that does not meet `--images-pages` (when given) is a usage error
+(exit 2) before anything is read; one past the converted pages is refused with exit 2 once they are
+known (when converting, the Markdown is still written; DIR is unchanged).
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
@@ -1088,6 +1165,11 @@ for the measured baseline and scoring coverage.
   `tests/pdftomarkdown.rs` runs `pdftomarkdown --strict` against the pipe when `$PDFTOTEXT` (or
   `../../build/utils/pdftotext`) is the DocSlurp pdftotext with `-compact-layout`, and is
   skipped otherwise.
+- The suites that need the DocSlurp utils (`tests/images_batches.rs`, `images_dir.rs`,
+  `page_facts.rs`, `page_info.rs`, `page_scans.rs`) print `skipped:` and pass without them, unless
+  `DOPPLER_REQUIRE_INTEGRATION` is `1`, `true` or `on`: then a missing toolchain fails the test
+  (`tests/toolchain`). No CI job sets it yet; run them so after building the utils:
+  `PDFTOTEXT=../../build/utils/pdftotext DOPPLER_REQUIRE_INTEGRATION=1 cargo test --release`.
 - `python3 -I scripts/check_pipeline.py --pdftotext /path/to/pdftotext --converter target/release/doppler-md`:
   check producer rule completeness through the real XHTML-to-Markdown pipeline.
 - `scripts/parity.sh [GOLDEN_DIR [SET]]`: byte-identical output against `doppler_md.py` on the

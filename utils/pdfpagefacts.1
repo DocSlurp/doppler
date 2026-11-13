@@ -1,5 +1,5 @@
 .\" Copyright 2026 DocSlurp
-.TH pdfpagefacts 1 "12 November 2026"
+.TH pdfpagefacts 1 "13 November 2026"
 .SH NAME
 pdfpagefacts \- page facts of a PDF as JSON lines, for routing pages
 .SH SYNOPSIS
@@ -18,8 +18,12 @@ nothing.
 .PP
 Facts describe each page's geometry, its text layer (characters and words, visible and
 invisible, coverage), images (count, coverage, scan detection, and per image the codec,
-bits, colour space, masks and copy class), fonts, odd characters, vector drawing (paths,
-rules, a grid score, shadings, patterns, clips, figure clusters), form fields, annotations
+bits, colour space, masks, copy class, the visible and invisible words inside it (whole box,
+and by word centre) and its encoded bytes per pixel, from the stream's declared length when it is consistent, never
+decoded), fonts, odd characters, vector drawing (paths, rules, a grid score, the ruled grids pdftomarkdown's table
+search starts from with their boxes, rows and columns and, per grid, its distinct thin
+horizontal and vertical rule lines and how many of its four sides carry one, shadings, patterns, clips, figure
+clusters), form fields, annotations
 and optional content, plus document-level facts (version, encryption, xref state,
 structure, forms, layers) and a stable vocabulary of
 .I unusualFeatures
@@ -32,7 +36,8 @@ docslurp/page-facts/doppler-page-facts-1.schema.json.
 and
 .B "pdftomarkdown \-\-page\-facts"
 compute the same facts on their own pass: for the same input, range, level and include list
-the three write byte-identical lines. Without
+the three write byte-identical lines (except where pdftotext reads more: \-glyphs, or a
+rebuild by its XHTML header's document information reads). Without
 .B \-timing
 the output is the same on every run, and a page's line does not depend on which other pages
 were processed.
@@ -63,8 +68,10 @@ basic (the default): geometry, text counts, layer and coverage, image totals and
 detection, parse warnings and features; full: every family.
 .TP
 .BI \-include " list"
-Families added to basic, comma-separated: fonts, oddtext, images-detail, vectors, forms,
-annots, ocg, structure.
+Families added to basic, comma-separated: fonts, oddtext, images-detail (per-image items,
+words inside and centred inside, bytes per pixel), vectors (including ruled grids and their
+thin-rule counts), forms, annots, ocg,
+structure.
 .TP
 .BI \-opw " password"
 Owner password.

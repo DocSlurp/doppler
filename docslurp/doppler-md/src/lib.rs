@@ -1270,7 +1270,8 @@ impl<'p> Converter<'p> {
             .find(|n| n.fate == images::Fate::PageScan)
             .map(|n| images::scan_marker(number, &n.id, &self.seal));
         self.report.images.extend(notes);
-        if !page.graphics.is_empty() {
+        // vector drawing, or filled boxes that may be bar charts (vector::bar_regions)
+        if !page.graphics.is_empty() || page.rules.iter().any(|r| r.boxed) {
             let raster: Vec<(images::Figure, String)> = figures
                 .iter()
                 .map(|f| {

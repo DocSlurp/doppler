@@ -11,12 +11,13 @@
 //! document ceilings less what DIR already holds; every other entry is kept as it was. Files go
 //! to the paths the Markdown already links (so the Markdown never changes), are created new
 //! (an existing file is never replaced) and the manifest is replaced atomically, with `resumes`
-//! one more. A resume with nothing to do changes nothing.
+//! one more; the earlier batch lines that still describe a page no newer line covers are kept
+//! (see `merge_batches`). A resume with nothing to do changes nothing.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use super::manifest::{Kind, Line, NAME, Reader};
-use super::{Entry, Status};
+use super::{Batch, Entry, STOPS, Status};
 
 /// The reasons an image may be extracted by a resume: its batch stopped (a budget, a time
 /// limit, the abort rule), not anything about the image itself.
@@ -47,9 +48,11 @@ const REASONS: [&str; 16] = [
 const FORMATS: [&str; 4] = ["webp", "png", "svg", "jpg"];
 const SOURCES: [&str; 3] = ["render", "copy", "decode"];
 
-/// An earlier run's manifest: each image's entry and path, by id, and its resume count.
+/// An earlier run's manifest: each image's entry and path, by id, its batch lines (a resume
+/// carries forward those of batches it does not run again) and its resume count.
 pub struct Previous {
     pub(super) entries: HashMap<String, (Entry, Option<String>)>,
+    pub(super) batches: Vec<Batch>,
     pub resumes: u64,
 }
 
@@ -59,11 +62,21 @@ fn known(set: &[&'static str], v: &str) -> Option<&'static str> {
 
 /// Reads DIR's `manifest.jsonl` from `r` one line at a time, refusing one that is not
 /// `doppler-images/3`, is truncated or altered (end line, counts, hash), names another PDF or
-/// other settings, or is not one this program wrote.
+/// other settings, or is not one this program would write. A batch line must be well formed
+/// (exactly `type`, `pages`, `status` and `cut_page`) and consistent: `ok` with no `cut_page`, a
+/// `cut_page` within its own `pages`, a range that holds a page with an image (so within the
+/// document), and no two lines with the same range. There are at most as many batch lines as
+/// pages with images: every line this program writes claims such a page no other line claims
+/// (see `merge_batches`), whatever `--images-batch-pages` each run used. Lines of different runs
+/// may overlap, and nothing says which run wrote a line, so overlaps within one run are not
+/// told apart from those (the cap above bounds them).
 pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str) -> Result<Previous, String> {
     let mut lines = Reader::new(r);
     let mut resumes = 0;
     let mut entries = HashMap::new();
+    let mut batches: Vec<Batch> = Vec::new();
+    // the pages with an image (the image lines come first)
+    let mut pages: BTreeSet<u32> = BTreeSet::new();
     let bad = |id: &str, what: &str| format!("{NAME}: image {id:?}: {what}");
     // the first problem with a line's contents is reported once the whole file has been read
     // and checked (end line, counts, hash): a damaged file is refused as damaged
@@ -88,6 +101,12 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                 }
                 Kind::Image => {
                     let id = im["id"].as_str().ok_or_else(|| format!("{NAME}: an image without an id"))?;
+                    let page = im["page"]
+                        .as_u64()
+                        .and_then(|p| u32::try_from(p).ok())
+                        .filter(|p| *p > 0)
+                        .ok_or_else(|| bad(id, "bad page"))?;
+                    pages.insert(page);
                     let reason = im["reason"].as_str();
                     let status = match im["status"].as_str() {
                         Some("extracted") => Status::Extracted,
@@ -124,7 +143,46 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                         return Err(bad(id, "listed twice"));
                     }
                 }
-                Kind::Batch | Kind::End => {}
+                Kind::Batch => {
+                    let bad = || format!("{NAME}: a bad batch line");
+                    let keys = ["type", "pages", "status", "cut_page"];
+                    let fields = im.as_object().ok_or_else(bad)?;
+                    if fields.len() != keys.len() || !keys.iter().all(|k| fields.contains_key(*k)) {
+                        return Err(bad());
+                    }
+                    let page =
+                        |v: &serde_json::Value| v.as_u64().and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0);
+                    let range = match im["pages"].as_array().map(Vec::as_slice) {
+                        Some([a, b]) => match (page(a), page(b)) {
+                            (Some(a), Some(b)) if a <= b => (a, b),
+                            _ => return Err(bad()),
+                        },
+                        _ => return Err(bad()),
+                    };
+                    let status = im["status"]
+                        .as_str()
+                        .and_then(|v| if v == "ok" { Some("ok") } else { known(&STOPS, v) })
+                        .ok_or_else(bad)?;
+                    let cut_page = match &im["cut_page"] {
+                        serde_json::Value::Null => None,
+                        v => Some(page(v).ok_or_else(bad)?),
+                    };
+                    let (a, b) = range;
+                    if (status == "ok" && cut_page.is_some()) || cut_page.is_some_and(|c| c < a || c > b) {
+                        return Err(format!("{NAME}: a batch line whose cut_page is not one of its pages"));
+                    }
+                    if pages.range(a..=b).next().is_none() {
+                        return Err(format!("{NAME}: a batch line for pages {a}-{b}, which have no image"));
+                    }
+                    if batches.len() >= pages.len() {
+                        return Err(format!("{NAME}: more batch lines than pages with images"));
+                    }
+                    if batches.iter().any(|b| b.pages == range) {
+                        return Err(format!("{NAME}: two batch lines for pages {a}-{b}"));
+                    }
+                    batches.push(Batch { pages: range, status, cut_page });
+                }
+                Kind::End => {}
             }
             Ok(())
         })();
@@ -132,7 +190,7 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
     }
     match first {
         Some(e) => Err(e),
-        None => Ok(Previous { entries, resumes }),
+        None => Ok(Previous { entries, batches, resumes }),
     }
 }
 
@@ -155,19 +213,42 @@ mod tests {
         ))
         .unwrap();
         w.image(
-            "\"id\":\"p1.1\",\"status\":\"extracted\",\"path\":\"page-0001/image-001.webp\",\"format\":\"webp\",\
+            "\"id\":\"p1.1\",\"page\":1,\"status\":\"extracted\",\"path\":\"page-0001/image-001.webp\",\"format\":\"webp\",\
              \"source\":\"render\",\"bytes\":7,\"sha256\":\"ab\",\"width\":3,\"height\":4",
         )
         .unwrap();
         w.image(
-            "\"id\":\"p2.1\",\"status\":\"not-extracted\",\"reason\":\"budget\",\"path\":\"page-0002/image-001.webp\",\
+            "\"id\":\"p2.1\",\"page\":2,\"status\":\"not-extracted\",\"reason\":\"budget\",\"path\":\"page-0002/image-001.webp\",\
              \"format\":\"webp\",\"bytes\":0",
         )
         .unwrap();
-        w.image("\"id\":\"p3.1\",\"status\":\"not-extracted\",\"reason\":\"min_side\",\"path\":null").unwrap();
+        w.image("\"id\":\"p3.1\",\"page\":3,\"status\":\"not-extracted\",\"reason\":\"min_side\",\"path\":null").unwrap();
         w.batch("\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2").unwrap();
         let out = w.finish("\"complete\":false,\"resumable\":true,\"totals\":{\"images\":3,\"batches\":1}").unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    /// [`manifest`]'s header and images with these batch lines.
+    fn with_batches(batches: &[&str]) -> String {
+        let base = manifest("doppler-images/3", "aa", "ss");
+        let mut w = Writer::new(Vec::new());
+        for l in base.lines() {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            let fields = &l[l.find(",").unwrap() + 1..l.len() - 1];
+            match v["type"].as_str().unwrap() {
+                "header" => w.header(fields).unwrap(),
+                "image" => w.image(fields).unwrap(),
+                _ => {}
+            }
+        }
+        for b in batches {
+            w.batch(b).unwrap();
+        }
+        let end = format!(
+            "\"complete\":false,\"resumable\":true,\"totals\":{{\"images\":3,\"batches\":{}}}",
+            batches.len()
+        );
+        String::from_utf8(w.finish(&end).unwrap()).unwrap()
     }
 
     /// The same lines with a fresh hash (a forged but whole manifest).
@@ -193,6 +274,9 @@ mod tests {
         assert!(p.entries["p2.1"].0.resumable());
         assert!(!p.entries["p3.1"].0.resumable());
         assert_eq!(p.entries["p2.1"].0.format, None);
+        // the batch lines are kept (a resume carries forward those it does not run again)
+        let b: Vec<_> = p.batches.iter().map(|b| (b.pages, b.status, b.cut_page)).collect();
+        assert_eq!(b, [((1, 64), "budget", Some(2))]);
     }
 
     #[test]
@@ -216,5 +300,37 @@ mod tests {
         let twice = rehash(&ok.replace("\"p3.1\"", "\"p2.1\""));
         assert!(read(twice.as_bytes(), "aa", "ss").err().unwrap().contains("twice"));
         assert!(read(rehash(&ok).as_bytes(), "aa", "ss").is_ok());
+        // a batch line this program would not write
+        let batch = "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2";
+        let refused = |lines: &str| read(rehash(&ok.replace(batch, lines)).as_bytes(), "aa", "ss").err();
+        for bad in [
+            // malformed
+            "\"pages\":[2,1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[0,64],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"forged\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":\"2\"",
+            // a key this program does not write (the host's validator refuses it too)
+            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
+            // inconsistent: ok with a cut_page, a cut_page outside the line, pages with no image
+            "\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":2",
+            "\"pages\":[1,2],\"status\":\"budget\",\"cut_page\":3",
+            "\"pages\":[4,64],\"status\":\"budget\",\"cut_page\":null",
+            "\"pages\":[4000000000,4000000000],\"status\":\"budget\",\"cut_page\":null",
+        ] {
+            let e = refused(bad).unwrap();
+            assert!(e.contains("batch"), "{bad}: {e}");
+        }
+        // a missing cut_page (null when the batch finished) is refused too
+        assert!(refused("\"pages\":[1,64],\"status\":\"ok\"").is_some());
+        // two lines for one range are refused; overlapping ranges (of different runs) are not
+        let lines = |batches: &[&str]| read(with_batches(batches).as_bytes(), "aa", "ss");
+        let line = |a: u32, b: u32| format!("\"pages\":[{a},{b}],\"status\":\"ok\",\"cut_page\":null");
+        assert!(lines(&[batch, batch]).err().unwrap().contains("two batch lines"));
+        assert_eq!(lines(&[batch, &line(2, 3)]).unwrap().batches.len(), 2);
+        // no more batch lines than pages with images (three here)
+        let (l1, l2, l3, l4) = (line(1, 1), line(2, 2), line(3, 3), line(1, 3));
+        assert_eq!(lines(&[&l1, &l2, &l3]).unwrap().batches.len(), 3);
+        assert!(lines(&[&l1, &l2, &l3, &l4]).err().unwrap().contains("more batch lines"));
     }
 }

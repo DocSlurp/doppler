@@ -10,6 +10,7 @@ string (URIs, field names, file names) reaches the output.
 import json
 import os
 import subprocess
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -184,6 +185,160 @@ with t.TempDir() as d:
     t.check(v3["shadings"] == 1 and v3["patterns"] == 1 and v3["clips"] == 1, "shading, pattern and clip counted", repr(v3))
     t.check(v4["limitHit"] and v4["paths"] == 100000 and "drawing-limit" in page(ls, 4)["unusualFeatures"] and "limit-hit" in page(ls, 4)["parseWarnings"], "drawing-limit at 100000 paths", repr(v4))
 
+    # --- D ruled grids (issue 40) --------------------------------------------------------------------------
+    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165, "hRules": 6, "vRules": 6, "outerSides": 4, "connected": True}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
+    t.check(v2["grids"] == [] and v3["grids"] == [] and not v2["gridsTruncated"], "chart and shading pages: no grid", repr((v2["grids"], v3["grids"])))
+    ls = lines(facts(paths["grids"], "-level", "full")[1])
+    g = [page(ls, n)["vectors"] for n in range(1, 7)]
+    shape = [[(x["rows"], x["columns"]) for x in v["grids"]] for v in g]
+    t.check(shape[0] == [(4, 4), (4, 3)] and [x["bbox"] for x in g[0]["grids"]] == [[72, 92, 472, 212], [72, 342, 462, 422]], "two ruled tables, one with a merged header: 4 x 4 and 4 rows x 3 columns", repr(g[0]["grids"]))
+    t.check(all(0 < x["coverage"] < 1 for x in g[0]["grids"]) and g[0]["grids"][0]["coverage"] == 0.099, "grid coverage: the box over the page", repr(g[0]["grids"]))
+    t.check(shape[1] == [(3, 2), (3, 2)], "two tables sharing a width: split where the rule spacing jumps", repr(g[1]["grids"]))
+    t.check(len(g[2]["grids"]) == 64 and g[2]["gridsTruncated"] and not g[2]["limitHit"], "72 grids: 64 listed, gridsTruncated", repr((len(g[2]["grids"]), g[2]["gridsTruncated"])))
+    t.check(shape[3] == [(2, 1)], "a table ruled only horizontally: one column", repr(g[3]["grids"]))
+    t.check(shape[4] == [] and not g[4]["gridsTruncated"], "white rules: no grid", repr(g[4]["grids"]))
+    t.check(shape[5] == [(7, 3)], "shaded row boxes with column rules: their edges are row lines", repr(g[5]["grids"]))
+    basic = page(lines(facts(paths["grids"])[1]), 1)
+    t.check("vectors" not in basic, "basic: no grids")
+
+    # --- D thin rules per grid (issue 43) ------------------------------------------------------------------
+    rules = [(x["rows"], x["columns"], x["hRules"], x["vRules"], x["outerSides"]) for v in g for x in v["grids"]]
+    t.check(rules[:2] == [(4, 4, 5, 5, 4), (4, 3, 5, 4, 4)], "two ruled tables: hRules rows + 1, vRules columns + 1, four outer sides", repr(rules[:2]))
+    t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[5]["grids"]] == [(0, 2, 0)], "shaded rows with column rules: the shading is not rules, vRules 2, no outer side", repr(g[5]["grids"]))
+    t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[3]["grids"]] == [(3, 0, 2)], "booktabs-style rules: 3 horizontal lines, top and bottom sides", repr(g[3]["grids"]))
+    t.check(all("hRules" in x and not x["connected"] for x in g[2]["grids"]), "72 grids (list truncated at 64): the listed grids keep their rule counts", repr(g[2]["grids"][:2]))
+    ls = lines(facts(paths["grid_rules"], "-level", "full")[1])
+    gr = [page(ls, n)["vectors"]["grids"] for n in range(1, 6)]
+    shape = [[(x["rows"], x["columns"], x["hRules"], x["vRules"], x["outerSides"]) for x in v] for v in gr]
+    t.check(shape[0] == [(3, 1, 4, 5, 4)], "a 3 x 4 table ruled cell by cell: the grid search sees 1 column, the thin rules 4 + 1 and 5 lines, 4 sides", repr(gr[0]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[1]] == [(0, 0, 0)], "a zebra table of shaded rows, no rules: hRules and vRules 0", repr(gr[1]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[2]] == [(0, 2, 0)], "zebra with column lines only: outerSides 0, vRules 2", repr(gr[2]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[3]] == [(3, 3, 0)], "a 4-point frame: too thick to be a thin rule; the inner rules count, no outer side", repr(gr[3]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[4]] == [(5, 5, 4)], "a stray underline in a cell is not connected (not counted); a white rule joined to the grid is", repr(gr[4]))
+    t.check(not any(page(ls, n)["vectors"]["gridsTruncated"] for n in range(1, 6)) and all(page(ls, n)["vectors"]["unlistedRuledGrids"] == 0 for n in range(1, 6)), "grid_rules pages 1-5: no truncation, no unlisted ruled grid")
+    t.check([[x["connected"] for x in v] for v in gr[:5]] == [[True], [False], [False], [True], [True]], "connected: set where the counts are one joined set of both directions", repr(gr[:5]))
+    t.check("unlistedRuledGrids" not in page(lines(facts(paths["grid_rules"], "-level", "full")[1]), 6)["vectors"], "the page's rule cap: no unlistedRuledGrids")
+    t.check(page(lines(facts(paths["grids"], "-level", "full")[1]), 5)["vectors"]["unlistedRuledGrids"] == 1, "white rules: no grid listed, the walker's white grid unlisted (1)")
+    ls = lines(facts(paths["grid_split"], "-level", "full")[1])
+    for n, what in ((1, "column lines through two blocks split by spacing"), (2, "a 118-point row inside one ruled set"), (3, "a column line rising to a rule above the table"), (4, "column lines dropping to a rule below it")):
+        v = page(ls, n)["vectors"]
+        t.check(v["grids"] and not any("hRules" in x for x in v["grids"]) and v["unlistedRuledGrids"] == 1 and not v["gridsTruncated"], "%s: the set crosses the grid's box, so no counts, and it is unlisted" % what, repr(v["grids"]))
+    v = page(ls, 5)["vectors"]
+    t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
+    ls = lines(facts(paths["grid_rebuilt"], "-level", "full")[1])
+    v = page(ls, 1)["vectors"]
+    t.check(doc_line(ls)["xref"] == "repaired" and v["gridsTruncated"] and v["grids"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "a table rebuilt by the doc line's reads: doc xref repaired, no counts, gridsTruncated", repr((doc_line(ls)["xref"], v["grids"])))
+    v = page(lines(facts(paths["grid_far"], "-level", "full")[1]), 1)["vectors"]
+    t.check(v["gridsTruncated"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "rules past 10^9 points: no counts, gridsTruncated", repr(v))
+    # a rebuild at open is every run's: counts kept; the XHTML (with -rules alone) marks the pages
+    ls = lines(facts(paths["grid_reopened"], "-level", "full")[1])
+    t.check(doc_line(ls)["xref"] == "repaired" and all([(g["hRules"], g["vRules"]) for g in page(ls, n)["vectors"]["grids"]] == [(4, 5)] and not page(ls, n)["vectors"]["gridsTruncated"] for n in (1, 2)), "a table in a file rebuilt at open: counted", repr([page(ls, n)["vectors"]["grids"] for n in (1, 2)]))
+    rules_only = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", paths["grid_reopened"], "-"], capture_output=True, timeout=60).stdout
+    t.check(rules_only.count(b'xrefRebuilt="1"') == 2, "pdftotext -rules (no -images): pages drawn after a rebuild say xrefRebuilt", repr(rules_only[:300]))
+    # a rebuild only the XHTML header makes: the separate facts run cannot see it, the XHTML says so
+    ls = lines(facts(paths["grid_titled"], "-level", "full")[1])
+    t.check(doc_line(ls)["xref"] == "ok" and [(g["hRules"], g["vRules"]) for g in page(ls, 1)["vectors"]["grids"]] == [(4, 5)], "/Title naming a missing object: the facts never read it (counted)", repr(page(ls, 1)["vectors"]["grids"]))
+    rules_only = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", paths["grid_titled"], "-"], capture_output=True, timeout=60).stdout
+    t.check(b'xrefRebuilt="1"' in rules_only, "/Title naming a missing object: pdftotext -rules marks the page xrefRebuilt", repr(rules_only[:300]))
+    ls = lines(facts(paths["grid_split"], "-level", "full")[1])
+    v6, v7 = page(ls, 6)["vectors"], page(ls, 7)["vectors"]
+    t.check(v6["gridsTruncated"] and v6["grids"] and not any("hRules" in x for x in v6["grids"]) and "unlistedRuledGrids" not in v6, "5,001 rules before a table (past the walker's 5,000): no counts, gridsTruncated", repr(v6["grids"]))
+    t.check(not v7["gridsTruncated"] and [(x["hRules"], x["vRules"], x["connected"]) for x in v7["grids"]] == [(4, 5, True)] and v7["unlistedRuledGrids"] == 0, "4,990 rules before a table: counted", repr(v7["grids"]))
+    capped = page(lines(facts(paths["grid_rules"], "-level", "full")[1]), 6)["vectors"]
+    t.check(capped["gridsTruncated"] and capped["limitHit"] and [(x["rows"], x["columns"]) for x in capped["grids"]] == [(3, 4)] and not any("hRules" in x for x in capped["grids"]), "the page's rule cap: the grid listed without rule counts, gridsTruncated", repr(capped["grids"]))
+    ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
+    caps = [page(ls, n)["vectors"] for n in range(1, 5)]
+    t.check(all("hRules" in x for x in caps[0]["grids"] + caps[1]["grids"]), "a body size outside the bins: the counts stand (they do not use the body size)", repr(caps[0]["grids"]))
+
+    # --- C words inside images and bytes per pixel (issue 40) ------------------------------------------------
+    ls = lines(facts(paths["image_words"], "-level", "full")[1])
+    w1, w2, w3, w4, w5 = (page(ls, n) for n in range(1, 6))
+    it1 = w1["images"]["items"][0]
+    t.check(it1["invisibleWordsInside"] == w1["text"]["wordCount"] == 300 and it1["visibleWordsInside"] == 0, "scan with an invisible OCR layer: invisibleWordsInside is the page's word count", repr((it1, w1["text"]["wordCount"])))
+    it2 = w2["images"]["items"][0]
+    t.check(it2["visibleWordsInside"] == 6 and it2["invisibleWordsInside"] == 0 and w2["text"]["wordCount"] == 26, "photo with a caption over it: the caption's 6 words inside, the 20 below not", repr(it2))
+    jpeg, chart = w3["images"]["items"]
+    t.check(jpeg["filter"] == "dct" and chart["filter"] == "flate" and jpeg["bytesPerPixel"] == 0.375 and chart["bytesPerPixel"] < 0.01 and jpeg["bytesPerPixel"] > 30 * chart["bytesPerPixel"], "JPEG scan next to a flat chart: bytes per pixel far apart", repr((jpeg, chart)))
+    t.check(jpeg["visibleWordsInside"] == 0 and jpeg["invisibleWordsInside"] == 0, "no words: zero inside")
+    t.check(w4["images"]["items"][0]["bytesPerPixel"] == 1, "an indirect /Length: 5000 bytes over 100 x 50", repr(w4["images"]["items"]))
+    t.check("bytesPerPixel" not in w5["images"]["items"][0] and w5["images"]["items"][0]["inline"], "an inline image: no bytes per pixel", repr(w5["images"]["items"]))
+    rc, out, _ = facts("-", "-level", "full", stdin=open(paths["image_words"], "rb").read())
+    t.check(rc == 0 and out == facts(paths["image_words"], "-level", "full")[1], "stdin: the same bytes per pixel and words inside")
+    basic = page(lines(facts(paths["image_words"])[1]), 1)
+    t.check("items" not in basic["images"], "basic: no image items")
+    t.check(it1["invisibleWordsCentredInside"] == 300 and it1["visibleWordsCentredInside"] == 0 and it2["visibleWordsCentredInside"] == 6 and it2["invisibleWordsCentredInside"] == 0, "words centred inside: the OCR layer's 300 and the caption's 6, as the whole-box counts here", repr((it1, it2)))
+    t.check(jpeg["visibleWordsCentredInside"] == 0 and chart["invisibleWordsCentredInside"] == 0, "no words: zero centred inside")
+    straddle = page(lines(facts(paths["caption_straddle"], "-level", "full")[1]), 1)
+    it = straddle["images"]["items"][0]
+    t.check(straddle["text"]["wordCount"] == 18 and (it["visibleWordsInside"], it["visibleWordsCentredInside"], it["invisibleWordsCentredInside"]) == (0, 4, 0), "a caption straddling the photo's bottom edge: 4 words centred inside, 0 wholly inside; the line with centres below and the 10 words under it not counted", repr(it))
+    # bytesPerPixel only from a declared /Length that is the file's own and ends at endstream
+    ls = lines(facts(paths["lengths"], "-level", "full")[1])
+    got = [page(ls, n)["images"]["items"][0].get("bytesPerPixel") for n in range(1, 8)]
+    t.check(got == [1, None, None, None, None, None, 1], "/Length 5000, short, missing, 0, 10^12, past endstream, by reference: only the true ones", repr(got))
+    # a cross-reference table rebuilt by an earlier page does not change a later page's value
+    whole = lines(facts(paths["lengths_rebuilt"], "-level", "full")[1])
+    t.check("xref-repaired" in page(whole, 1)["parseWarnings"], "lengths_rebuilt: page 1 rebuilds the table", repr(page(whole, 1)["parseWarnings"]))
+    ok = True
+    for n in range(2, 9):
+        alone = page(lines(facts(paths["lengths_rebuilt"], "-level", "full", "-f", str(n), "-l", str(n))[1]), n)
+        a, b = dict(page(whole, n)), dict(alone)
+        rebuilt = "xref-repaired-earlier" in a["parseWarnings"] or "xref-repaired" in a["parseWarnings"]
+        a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
+        # and a page read after a rebuild has no thin-rule counts (gridsTruncated, issue 43):
+        # checked on those pages, then left out of the comparison
+        if rebuilt and a.get("vectors") is not None:
+            va = a["vectors"]
+            ok = ok and va["gridsTruncated"] and "unlistedRuledGrids" not in va and not any("hRules" in g for g in va.get("grids", []))
+            for v in (va, b.get("vectors") or {}):
+                v.pop("gridsTruncated", None), v.pop("unlistedRuledGrids", None)
+                for g in v.get("grids", []):
+                    for k in ("hRules", "vRules", "outerSides", "connected"):
+                        g.pop(k, None)
+        ok = ok and a == b
+    t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings (and, on rebuilt pages, the withheld thin-rule counts) equal its single-page run")
+    t.check(all("xref-repaired-earlier" in page(whole, n)["parseWarnings"] for n in range(2, 9)) and "xref-repaired-earlier" not in page(whole, 1)["parseWarnings"], "pages read after a mid-run rebuild: xref-repaired-earlier", repr([page(whole, n)["parseWarnings"] for n in range(1, 9)]))
+    t.check(all("xref-repaired-earlier" not in page(lines(facts(paths["lengths_rebuilt"], "-f", str(n), "-l", str(n))[1]), n)["parseWarnings"] for n in (2, 5)), "a single-page run without a rebuild: no xref-repaired-earlier")
+    t.check(all("xref-repaired-earlier" not in l.get("parseWarnings", []) for n in paths for l in lines(facts(paths[n])[1]) if n != "lengths_rebuilt"), "intact fixtures: no xref-repaired-earlier")
+    t.check([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)] == got, "after a mid-run xref rebuild: the same bytes per pixel", repr([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)]))
+
+    # the grid list says when it is incomplete
+    ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
+    c = [page(ls, n)["vectors"] for n in range(1, 5)]
+    t.check(c[0]["gridsTruncated"] and len(c[0]["grids"]) == 1, "a word size outside the body-size bins: gridsTruncated", repr(c[0]))
+    t.check(not c[1]["gridsTruncated"] and [(g["rows"], g["columns"]) for g in c[1]["grids"]] == [(3, 2)], "256 decoy sizes: the body size is still the text's, the table found", repr(c[1]["grids"]))
+    t.check(c[2]["gridsTruncated"] and c[2]["hRules"] == 4100, "4,100 horizontal rules: the grid search's rule cap, gridsTruncated", repr((c[2]["gridsTruncated"], c[2]["hRules"])))
+    t.check("unlistedRuledGrids" not in c[2] and not any("hRules" in x for x in c[2]["grids"]), "4,100 thin horizontal rules (under 5,000 on the page): the thin-rule cap, no counts", repr(c[2]["grids"][:1]))
+    t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
+
+    # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
+    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1), ("grid_split", 7)):
+        whole = lines(facts(paths[name], "-level", "full")[1])
+        ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
+        t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)
+
+    # --- D vectors: bar charts drawn only with filled boxes (doppler#38) ---------------------------------------
+    started = time.monotonic()
+    ls = lines(facts(paths["bars"], "-level", "full")[1])
+    took = time.monotonic() - started
+    bp = [page(ls, n) for n in range(1, 20)]
+    bv = [p["vectors"] for p in bp]
+    t.check(bv[0]["figureClusters"] == 1 and bv[0]["clusters"][0]["paths"] >= 6, "vertical bars: one cluster, bars and axis rules as paths", repr(bv[0]))
+    t.check(bv[1]["figureClusters"] == 1, "horizontal bars: one cluster", repr(bv[1]))
+    t.check([v["figureClusters"] for v in bv[2:5]] == [0, 0, 0], "shaded table, zebra rows, highlights: no cluster", repr([v["figureClusters"] for v in bv[2:5]]))
+    t.check(bv[5]["figureClusters"] == 64 and bv[5]["limitHit"] and took < 20, "1,320 bar runs on one page: the 64-run cap is reached, limitHit, bounded", repr((bv[5]["figureClusters"], bv[5]["limitHit"], took)))
+    t.check([v["figureClusters"] for v in bv[6:12]] == [0] * 6,
+            "redacted table and paragraph, form fields, a rowspan header, zebra rows with a note box, highlights behind 8 pt values: no cluster",
+            repr([v["figureClusters"] for v in bv[6:12]]))
+    t.check(bv[12]["figureClusters"] == 1, "bars with a trend line: one cluster, joined into the drawing's", repr(bv[12]))
+    # council M1/M2: bar detection has its own per-page budget, so the stress page leaves later pages' drawing facts alone
+    alone = page(lines(facts(paths["bars_curve"], "-level", "full")[1]), 1)["vectors"]
+    t.check(bv[13]["figureClusters"] == alone["figureClusters"] and not bv[13]["limitHit"] and not bv[12]["limitHit"],
+            "a page after the stress page: the same drawing facts as alone", repr((bv[13], alone)))
+    t.check([v["figureClusters"] for v in bv[14:18]] == [0] * 4,
+            "council r2: redactions in CMYK black, grey and navy beside a column rule, a blank form beside a divider: no cluster (no scale)",
+            repr([v["figureClusters"] for v in bv[14:18]]))
+    t.check(bv[18]["figureClusters"] == 1, "a black bar chart with its scale: one cluster (colour does not decide)", repr(bv[18]))
+
     # --- E forms -----------------------------------------------------------------------------------------------
     for name, xfa in (("forms", "none"), ("forms_xfa_static", "static"), ("forms_xfa_dynamic", "dynamic")):
         ls = lines(facts(paths[name], "-level", "full")[1])
@@ -258,10 +413,36 @@ with t.TempDir() as d:
             ref = facts(path, "-level", level)[1]
             images = level == "full"
             rc, xhtml, got = pdftotext_facts(path, "-page-facts-level", level, images=images)
-            t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
-            t.check(xhtml == pdftotext_plain(path, images=images), "%s %s: XHTML unchanged by facts" % (name, level))
+            if name == "grid_titled":
+                # documented exception (README): pdftotext's XHTML header reads /Title after the
+                # doc line and rebuilds the table, which pdfpagefacts never does; that run's page
+                # says xref-repaired-earlier and (full) withholds the thin-rule counts
+                fd_lines, pf_lines = lines(got), lines(ref)
+                fd_page, pf_page = page(fd_lines, 1), page(pf_lines, 1)
+                t.check("xref-repaired-earlier" in fd_page["parseWarnings"] and not pf_page["parseWarnings"] and (level != "full" or (fd_page["vectors"]["gridsTruncated"] and not any("hRules" in g for g in fd_page["vectors"]["grids"]))), "%s %s: the header's rebuild: pdftotext's facts flag it and withhold the counts" % (name, level), "%r\n%r" % (fd_page, pf_page))
+                # and nothing else differs
+                fd_page["parseWarnings"] = [w for w in fd_page["parseWarnings"] if w != "xref-repaired-earlier"]
+                if level == "full":
+                    for v in (fd_page["vectors"], pf_page["vectors"]):
+                        v.pop("gridsTruncated"), v.pop("unlistedRuledGrids", None)
+                        for g in v["grids"]:
+                            for k in ("hRules", "vRules", "outerSides", "connected"):
+                                g.pop(k, None)
+                t.check(fd_lines == pf_lines, "%s %s: every other field and line the same" % (name, level), "%r\n%r" % (fd_lines, pf_lines))
+            else:
+                t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
+            plain = pdftotext_plain(path, images=images)
+            if name == "grid_rebuilt" and level == "full":
+                # documented exception (README, page locality): the doc line's read of a missing
+                # /Outlines object rebuilds the cross-reference table before pdftotext draws the
+                # page, which a run without facts never does; the XHTML says so (xrefRebuilt) and
+                # is otherwise unchanged, and the facts withhold the thin-rule counts
+                marked = xhtml.replace(b' xrefRebuilt="1"', b"").replace(b'  <xref rebuilt="1"/>\n', b"")
+                t.check(xhtml != plain and b'xrefRebuilt="1"' in xhtml and marked == plain, "%s %s: XHTML differs from a run without facts only by the rebuild markers" % (name, level))
+            else:
+                t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))
             if images:
-                t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == ref, "%s: same facts with -images -glyphs" % name)
+                t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == got, "%s: same facts with -images -glyphs (as the same pdftotext run without them)" % name)
     t.check(facts(paths["multipage"], "-level", "full", "-f", "2", "-l", "4")[1] == pdftotext_facts(paths["multipage"], "-page-facts-level", "full", "-f", "2", "-l", "4")[2], "a page range: same lines")
 
     # --- pdftotext -images: scan and image attributes ---------------------------------------------------------------------------------
@@ -334,6 +515,11 @@ with t.TempDir() as d:
     t.check(rc == 1 and lines(out)[0].get("error") == "open-failed" and b"missing" not in err and b"missing" not in out, "cannot open: exit 1, error line, no path echoed", repr((rc, out, err)))
     rc, out, err = facts(d.write("garbage.pdf", b"not a pdf at all"))
     t.check(rc == 1 and lines(out)[0]["type"] == "doc" and "error" in lines(out)[0], "not a PDF: exit 1 with an error doc line", repr((rc, out)))
+    # an odd-length UTF-16 /Producer (half a code unit at the end): pdftotext's HTML meta header
+    # used to read past the string and abort (found by the mutation fuzz)
+    odd = d.write("odd-producer.pdf", fx.doc([{"content": fx.words(3)}], extras=["<< /Producer <FEFF00410042> /Creator <FEFF0041004200> >>"], trailer_extra="/Info {0} 0 R"))
+    p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", odd, "-"], capture_output=True, timeout=60)
+    t.check(p.returncode == 0 and b'content="AB"' in p.stdout, "pdftotext: an odd-length UTF-16 /Creator ends its meta string, no abort", repr((p.returncode, p.stdout[:400])))
     rc, out, _ = facts("-", stdin=open(paths["multipage"], "rb").read())
     t.check(rc == 0 and out == facts(paths["multipage"])[1], "stdin (-) gives the same lines")
     rc, out, err = facts(paths["geometry"], "-max-pages", "2")

@@ -17,6 +17,66 @@ python3 docslurp/page-facts/bench.py --bin build/utils \
   /usr/share/doc/ghostscript/Ghostscript.pdf FILE.pdf ...
 ```
 
+## Issue #43: thin rules per grid, words centred inside images
+
+Measured 2026-11-13 on the same inputs (the Ghostscript manual, the three poppler-test files and
+bench.py's synthetic sets), interleaving master (dd02511ee) and this branch (e50929235), median of
+21 runs with bench.py's C harness, CPU user+sys, on the shared 8-thread host at load average 6-10.
+Same A/B method as #40: `pdftotext -bbox-layout -wordmeta -rules -compact-layout` (the pass),
+the pass with `-page-facts-fd` at `full`, and `pdfpagefacts -level full`.
+
+| input | full vs pass, master | full vs pass, #43 | pass + full CPU, #43 vs master | pdfpagefacts full, #43 vs master |
+|---|---:|---:|---:|---:|
+| Ghostscript.pdf (477 pp) | +8.5 % | +10.6 % | +1.3 % | -0.0 % |
+| ClarityOCGs.pdf | +3.5 % | +3.2 % | +0.9 % | +0.3 % |
+| checkbox_issue_159.pdf | +2.9 % | -0.2 % | -4.0 % | +1.2 % |
+| type3.pdf | +3.7 % | -3.8 % | +5.1 % | -1.0 % |
+| synthetic text, 500 pp | +16.5 % | +15.6 % | +1.0 % | -2.7 % |
+| synthetic scans + OCR layer, 300 pp | +18.5 % | +20.7 % | -2.2 % | +1.6 % |
+| synthetic MRC scans, 100 pp | +11.3 % | +9.4 % | +4.0 % | +1.9 % |
+
+No CPU this benchmark can tell from noise. The facts-only measure (`pdfpagefacts full`) is -2.7 %
+to +1.9 % (Ghostscript -0.0 %, 0.728 s both). The pass with facts on Ghostscript is +1.3 %
+(1.072 s against 1.058 s), while the bare pass, which this change does not touch, moved -0.7 %
+between the same two builds; the 14-19 ms files move ±5 % run to run (an earlier round on a busier
+host gave -4.6 % to +2.8 %). What the fields cost: at `vectors`, each page's non-box rules are
+rounded to 0.01 pt (`to_chars`/`from_chars`, four a rule) and the thin ones sorted; pages with
+both directions get a sorted sweep for touching pairs and a union-find over at most 8,192 rules,
+and each grid a run of its candidate rules (at most 2^20 visits a page in all); at
+`images-detail`, a second test of each word's centre against at most 32 images. Hostile cases
+are in `test_cost_bounds.py` (a 2,400 x 2,400 crossing mesh: the visit cap; 11 pages of 19,000
+rules then a table: the run's rule budget), within the bounds there.
+
+## Issue #40: grids, words inside images, bytes per pixel
+
+Measured 2026-11-13 on the same inputs (the Ghostscript manual, the three poppler-test files and
+bench.py's synthetic sets), interleaving master (f4355280e) and this branch, median of 21 runs
+with bench.py's C harness, CPU user+sys. The host was much busier than for the tables below
+(load average 30-55 on 8 threads), so absolute CPU is about twice theirs; the comparison is
+between builds run alternately on the same load. Script: an A/B driver over `bench.run`
+(`pdftotext` pass, `+ -page-facts-fd basic`, `+ -page-facts-fd full`, `pdfpagefacts -level full`).
+
+| input | full vs pass, master | full vs pass, #40 | pass + full CPU, #40 vs master | pdfpagefacts full, #40 vs master |
+|---|---:|---:|---:|---:|
+| Ghostscript.pdf (477 pp) | +9.1 % | +9.4 % | -0.5 % | +0.8 % |
+| ClarityOCGs.pdf | +3.6 % | +2.1 % | +0.1 % | +0.4 % |
+| checkbox_issue_159.pdf | +3.4 % | +2.9 % | -1.4 % | +2.4 % |
+| type3.pdf | +1.4 % | +2.7 % | +0.2 % | +1.2 % |
+| synthetic text, 500 pp | +13.1 % | +13.3 % | +0.3 % | +1.5 % |
+| synthetic scans + OCR layer, 300 pp | +13.1 % | +13.5 % | -0.4 % | -2.4 % |
+| synthetic MRC scans, 100 pp | +16.5 % | +13.5 % | -1.4 % | -0.9 % |
+
+The new fields add no CPU this benchmark can tell from noise (-1.4 % to +0.3 % of the pass
+with facts at `full`; an earlier 15-run round gave -3.5 % to +3.1 %). The full-level overhead
+over the bare pass stays where master has it on the same load (Ghostscript +9.4 % against
+master's +9.1 %; the +6.0 % in the tables below was measured on a quieter host). What the
+fields cost: one box per word kept while `images-detail` is on (40 bytes), tested against at
+most 32 listed images at the end of the page; a half-point size histogram per word at
+`vectors`; the grid search over the page's rules (sorts plus the bounded grouping); and, once
+per image XObject, a 41-byte read after its declared `/Length`. Hostile cases are in
+`test_cost_bounds.py` (rules that never share a group: the 2^20-visit cap; 32 images under
+60,000 words a page), within the bounds there.
+
 ## Summary against the #32 targets
 
 | target | result |

@@ -221,6 +221,10 @@ elements with the same attributes.
 With \-rules, thin axis-aligned stencil image masks (Ghostscript draws TeX rules
 this way) are output as rules with
 .IR src="mask" .
+With \-rules or \-images, a page drawn after the cross-reference table was rebuilt (at open
+or by a fetch that met a broken entry) gets
+.IR xrefRebuilt="1" :
+an object may resolve to another body than a run that never rebuilt it reads.
 A page has at most 100000 glyph records and the document 4000000, a page table at
 most 1000 fonts. Glyph metadata is also limited to 64 document fonts, 256 KiB
 of decoded ToUnicode data per font and 8 MiB per document, 4096 mappings per
@@ -329,15 +333,20 @@ to the open descriptor
 .I fd
 (3 or more, open for writing, never standard output). The lines are byte-identical to
 .BR pdfpagefacts 's
-for the same range and level, and the text output does not change. Poppler's messages
+for the same range and level, except with \-glyphs (thin stencil masks become rules) or when
+the XHTML header's read of the document information rebuilds the cross-reference table; and
+the text output does not change, except on a damaged file whose catalog reads at level full
+rebuild the table or read an older section of it before the first page. Poppler's messages
 are also counted per page (by category) while facts are written.
 .TP
 .BI \-page\-facts\-level " basic|full"
 Page facts level (default basic).
 .TP
 .BI \-page\-facts\-include " list"
-Page facts families added to basic: fonts, oddtext, images-detail, vectors, forms, annots,
-ocg, structure (comma-separated).
+Page facts families added to basic: fonts, oddtext, images-detail (per-image items, words
+inside and centred inside, bytes per pixel), vectors (including ruled grids and their
+thin-rule counts), forms, annots, ocg, structure
+(comma-separated).
 .TP
 .B \-page\-facts\-timing
 Add factsMs to page lines, totalMs and peakRssKiB to the run line (not deterministic).
