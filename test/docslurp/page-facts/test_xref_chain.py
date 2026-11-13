@@ -79,7 +79,7 @@ with t.TempDir() as d:
         "zerow": ("zerow.py", ["65536", "1500", "1"]),
         "wide_pred": ("wide_pred.py", ["4800"]),
         "xrefstm_nest": ("xrefstm_nest.py", ["4000", "1000000"]),
-        "xrefstm_nest_main": ("xrefstm_nest.py", ["400", "1000000", "main"]),
+        "xrefstm_nest_main": ("xrefstm_nest.py", ["400", "1000000", "{out}", "main"]),
         "predchain": ("predchain.py", ["50", "1"]),
         "fullchain": ("fullchain.py", ["1100000", "10"]),
         "stale_objstm": ("stale_objstm.py", []),
@@ -119,7 +119,9 @@ with t.TempDir() as d:
         path = os.path.join(base, name + ".pdf")
         if gen:
             script, extra = gen
-            if script in OUT_SECOND:
+            if "{out}" in extra:
+                cmd = [sys.executable, "-I", os.path.join(GEN, script)] + [path if a == "{out}" else a for a in extra]
+            elif script in OUT_SECOND:
                 cmd = [sys.executable, "-I", os.path.join(GEN, script)] + extra + [path]
             elif script in OUT_FIRST:
                 cmd = [sys.executable, "-I", os.path.join(GEN, script), path] + extra
@@ -155,6 +157,7 @@ with t.TempDir() as d:
             # an intact file whose object stream holds a member nested past the parser's limit:
             # not refused (the cut is the stream's own, not the route's), the hidden image stays out
             t.check(b"<image " not in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-images", path, "-"])[0], "deepoc: the hidden image is not reported (a member's own depth cut is not a route-dependent parse)")
+        t.check(os.path.getsize(path) > 0 and rc in (0, 1, 2, 3), "%s: generated and opened" % name, repr((os.path.exists(path), rc)))
         if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest", "wide_pred", "widepred_old", "tail_eof", "manysec999") and rc == 0:
             dl = doc_line(pf)
             t.check(dl.get("xref") == "ok" and b"xref-repaired" not in pf and b'xrefRebuilt="1"' not in outs[0], "%s: not repaired, no page flagged" % name, repr((dl.get("xref"), pf[-400:])))
