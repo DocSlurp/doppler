@@ -52,8 +52,8 @@ dropped (`0.5`, `612`).
 | (basic) | page `geometry`, `text` counts, layer and coverage, `images` totals, `scan`, `parseWarnings`, `unusualFeatures`; doc `pageCount`, version, linearization, xref state, encryption |
 | `fonts` | page `fonts` |
 | `oddtext` | page `text` ratios (control, private use, U+FFFD, math, vertical, rotated, text over images) |
-| `images-detail` | page `images.items` (32 per page), mask and inline counts |
-| `vectors` | page `vectors` (paths, coverage, rules, grid score, shadings, patterns, clips, clusters) |
+| `images-detail` | page `images.items` (32 per page, with words inside and bytes per pixel), mask and inline counts |
+| `vectors` | page `vectors` (paths, coverage, rules, grid score, ruled grids, shadings, patterns, clips, clusters) |
 | `forms` | page `forms`; doc `acroForm`, `needAppearances`, `xfa` |
 | `annots` | page `annots` |
 | `ocg` | page `layers`; doc `ocgCount`, `ocgOffByDefault` |
@@ -197,6 +197,24 @@ reads the dictionary only: a copier must still check the bytes (for `jpeg`: a ba
 whose component count matches the colour space and whose size matches `/Width` and
 `/Height`), since a hostile dictionary can say anything.
 
+Each item also has (added within `/1`; absent from earlier builds):
+
+- `visibleWordsInside`, `invisibleWordsInside`: the page's words whose box lies inside the
+  image's `bbox` (each side may pass it by at most 1 point), visible and invisible as
+  `visibleWordCount` and `invisibleWordCount` count them. An OCR'd scan has about the page's
+  word count invisible inside its image; a picture with a caption drawn over it has a few
+  visible words; a plain photo none. A word straddling the image's edge counts for neither.
+- `bytesPerPixel`: the image stream's encoded bytes over `px` width x height, 4 decimals. The
+  bytes are the stream's `/Length` as the parser delimited the stream (when the file's
+  `endstream` disagrees with `/Length`, the parser's correction), never more than the file
+  holds after the stream's start; the data is never read or decoded. It counts the stored
+  bytes, whatever the filters (an ASCII85 wrapper inflates it; a JBIG2 image's `/JBIG2Globals`
+  are not counted). With `filter` and `dpi` it tells a photographic scan (DCT, a few tenths
+  of a byte per pixel) from flat or line art (Flate, hundredths or less). Absent for inline
+  images (their data is in the content stream) and for image data in an external file (`/F`).
+  It is what the file says, not a measurement of the picture: a crafted stream can pad its
+  data to claim any value up to the file's size.
+
 **Scan detection** (shared with `pdftotext -images`, which writes `scan="..." scanImage="K"`
 on `<page>`): `fullPageImage`, and at most 20 visible words. Then `single` when one image
 covers at least 0.85 of the page by itself; `layered` when that image has a `/SMask` or
@@ -235,7 +253,39 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
+| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`) |
+| `gridsTruncated` | more than 64 grids, or the grid search hit its rule or work cap: the list is incomplete |
 | `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far (`drawing-limit`) |
+
+**Ruled grids** are the grids pdftomarkdown's ruled-table search (`doppler-md`
+`tables::ruled_tables`) starts from, found from the rules alone with its default parameters,
+so a router can see where a table is and how big it is without a layout pass:
+
+- Rules are the page's rules as `pdftotext -rules` writes them (image-mask rules included),
+  dark ones only (luminance at most 0.97): horizontal ones at least half a body size wide,
+  vertical ones at least 0.8 of it tall; a shaded box (a filled rectangle under 0.95 of the
+  page's width and half its height) adds its top and bottom edges as horizontal rules.
+- Collinear horizontal segments that touch (within 1 point vertically and 2 along) are
+  joined, and those shorter than 3 body sizes dropped. Down the page, a rule joins the first
+  group whose last rule is at most 8 body sizes above it and that it overlaps by 0.8 of the
+  narrower of the two; a group is split where the gap between its rule rows (rows 1.5 points
+  apart are one) is more than 2.5 times their median, given at least three gaps.
+- `bbox` is the group's span by its first and last rule row; `rows` the bands between its
+  rule rows; `columns` one more than its inner column lines: vertical rules more than 2
+  points inside its sides crossing at least half its height, 2 points apart. A group is a grid
+  with at least three rule rows, or two and a column line. `coverage` is the box over the page.
+- The body size is the page's most common word size (half points, by characters; the first
+  seen on a tie), or 10 without words; pdftomarkdown takes it over the document, so on pages
+  whose text size differs from the document's the two can differ.
+- What pdftomarkdown then does with the text is not done here: it does not split two tables
+  at a single-cell caption band between them, add a header row above the first rule, or find
+  columns from word gutters, so a table ruled only horizontally has `columns` 1 here.
+- The order is the search's: by the first rule row of the group each grid was split from,
+  then down that group.
+- Cost: at most 4,096 horizontal and 4,096 vertical rules are taken (in drawing order), and at
+  most 2^20 open-group and column-rule visits are made a page; past either, or past 64 grids,
+  the grids found so far are listed and `gridsTruncated` is set (grouping cut short lists
+  none). This is the grid list's own flag: `limitHit` and `limit-hit` are unchanged by it.
 
 ### `forms` (`forms`)
 
@@ -335,7 +385,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
 
 ## Hostile input
 
-- Every list and string is capped (`truncated`, `itemsTruncated`, `clustersTruncated`).
+- Every list and string is capped (`truncated`, `itemsTruncated`, `clustersTruncated`,
+  `gridsTruncated`).
 - No document path, URI, field name or value, file name, font name or page text is ever
   written; the only document strings are `producer` and `creator` (sanitised, capped,
   escaped, marked untrusted) and `lang` (only when it is a language tag).
