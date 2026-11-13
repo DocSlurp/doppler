@@ -53,16 +53,24 @@ and
 .TP
 .I mode
 .B raster
-(Splash, RGB, composited on white) or
+(Splash, RGB, composited on white),
 .B svg
-(cairo SVG 1.2, unit pt).
+(cairo SVG 1.2, unit pt) or
+.B copy
+(an image XObject's own pixels, see COPY JOBS).
 .TP
 .I dpi
 36 to 600 for
 .BR raster ;
 any plain decimal for
 .B svg
-(ignored).
+(ignored). For
+.B copy
+the image's reference instead:
+.IB num . gen
+(num 1 to 9 digits without a leading zero, gen 0 to 65535), as
+.B pdftotext \-images
+writes ref="num gen".
 .PP
 At most 5000 jobs and 256 bytes per line. Every line is checked before
 anything is rendered: a malformed line, unsorted pages, too many jobs or a
@@ -96,7 +104,18 @@ and width, height and bytes are 0). Codes:
 (no such page),
 .B svgsize
 (the SVG exceeds
-.BR \-max\-svg\-bytes ).
+.BR \-max\-svg\-bytes ),
+and for copy jobs
+.B copy
+(not an image the page names, no copy class, or a page that fails the copy
+allow-list),
+.B copysize
+(over
+.BR \-max\-copy\-bytes ),
+.B jpeg
+(not a JPEG to copy) and
+.B decode
+(cannot decode).
 .PP
 A region overhanging the page is first cut to the page. A
 .B raster
@@ -136,6 +155,58 @@ so crops are pixel-identical to
 .BR pdftoppm ;
 cairo for
 .BR svg ).
+.SH COPY JOBS
+A
+.B copy
+job answers only for an image XObject named in that page's /XObject resources,
+directly or through form XObjects nested at most 4 deep (at most 10,000 entries
+searched), whose dictionary still has the copy class
+.B pdftotext \-images
+reports as copy=, and whose page passes the copy allow-list (poppler/ScanCopyAudit.h):
+pdfregions runs the page, its forms and annotations without drawing or decoding
+anything, and answers only when the one thing that paints on the page is that
+image, drawn once, upright and plainly, inside the clip and the CropBox, beside
+operators that paint nothing and invisible (render mode 3) text; anything else
+is
+.BR err:copy .
+.B pdftotext \-images
+writes copyable="1" for the same test on its own pass.
+Width and height are the image's /Width and /Height.
+.I kind
+.B jpeg
+(copy=jpeg) is the stored DCT stream once its SOI, its single SOF0, SOF1 or
+SOF2 frame (8-bit, the image's size and component count), its scans and its
+final EOI are checked, rewritten without metadata: every APPn segment (Exif with
+its orientation and thumbnail, ICC, XMP) and every COM is dropped, a JFIF APP0
+and an Adobe APP14 are kept in canonical form (they decide how the samples
+decode); nothing is decoded. Its tables and scans must be ones a decoder accepts
+(quantisation and Huffman table ids, Huffman counts that form a prefix code,
+scan components of the frame, the spectral range of a sequential or progressive
+scan), or the job is
+.BR err:jpeg .
+A stream without metadata comes back byte for byte.
+.I kind
+.B gray1
+(copy=bilevel) is the decoded 1-bit samples, ceil(width/8) bytes a row, 0
+black.
+.I kind
+.B gray8
+or
+.B rgb8
+(copy=decode) is the samples decoded once at native size through the colour
+space. Decoded copies are capped by
+.BR \-max\-copy\-pixels
+(8 times as many pixels for gray1). Before anything is decoded, the size the codec
+would really decode must be the image's: a JPEG 2000 codestream's SIZ (raw or in a
+JP2 jp2c box), a JBIG2 page information segment, CCITT /Columns and /Rows;
+otherwise
+.BR err:pixels .
+Every segment header of a JBIG2 stream and of its JBIG2Globals is read: a region
+segment larger than the page, a pattern dictionary whose bitmaps exceed the
+page's pixels, a segment of unknown length or a header cut short is
+.BR err:decode .
+A codec under another filter is
+.BR err:decode .
 .SH OPTIONS
 .TP
 .BI \-opw " password"
@@ -165,6 +236,15 @@ Largest SVG record (default 33554432); larger answers
 .BI \-max\-output\-bytes " number"
 Total bytes written to standard output (default 536870912). A record that would
 pass it is not written and the run exits with status 3.
+.TP
+.BI \-max\-copy\-bytes " number"
+Largest JPEG a copy job returns (default 67108864); larger answers
+.BR err:copysize .
+.TP
+.BI \-max\-copy\-pixels " number"
+Largest image a copy job decodes, in pixels (default 16777216, the raster cap;
+8 times that for 1-bit images); larger answers
+.BR err:pixels .
 .TP
 .B \-no\-images
 Draw no images; image data is never decoded (vector-only renders).

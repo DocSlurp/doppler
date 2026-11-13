@@ -177,22 +177,39 @@ static std::unique_ptr<Stream> wrapEOFStream(std::unique_ptr<Stream> str)
     return std::make_unique<EOFStream>(std::move(str));
 }
 
+// DocSlurp: the longest /Filter array a stream may have
+static constexpr int maxStreamFilters = 16;
+
 std::unique_ptr<Stream> Stream::addFilters(std::unique_ptr<Stream> str, Dict *dict, int recursion)
 {
     Object obj, obj2;
     Object params, params2;
     int i;
 
-    obj = dict->lookup("Filter", recursion);
-    if (obj.isNull()) {
-        obj = dict->lookup("F", recursion);
-    }
-    params = dict->lookup("DecodeParms", recursion);
-    if (params.isNull()) {
-        params = dict->lookup("DP", recursion);
-    }
+    // DocSlurp: a value given by reference is fetched through the table's stream-parameter
+    // cache (XRef::fetchStreamParam)
+    auto fetchOne = [dict, recursion](const char *key) {
+        const Object &raw = dict->lookupNF(key);
+        if (raw.isRef() && dict->getXRef()) {
+            return dict->getXRef()->fetchStreamParam(raw.getRef(), recursion);
+        }
+        return raw.fetch(dict->getXRef(), recursion);
+    };
+    auto lookup = [&fetchOne](const char *key, const char *abbrev) {
+        Object o = fetchOne(key);
+        if (o.isNull()) {
+            return fetchOne(abbrev);
+        }
+        return o;
+    };
+    obj = lookup("Filter", "F");
+    params = lookup("DecodeParms", "DP");
     if (obj.isName()) {
         str = makeFilter(obj.getNameString(), std::move(str), &params, recursion, dict);
+    } else if (obj.isArray() && obj.arrayGetLength() > maxStreamFilters) {
+        // DocSlurp: a filter chain longer than any real file needs is refused, not built
+        error(errSyntaxError, -1, "Too many stream filters; stream refused");
+        str = wrapEOFStream(std::move(str));
     } else if (obj.isArray()) {
         for (i = 0; i < obj.arrayGetLength(); ++i) {
             obj2 = obj.arrayGet(i, recursion);

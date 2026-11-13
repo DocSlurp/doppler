@@ -5,6 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod manifest_file;
+use manifest_file::manifest;
+
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
 
 fn pdftotext() -> Option<PathBuf> {
@@ -115,72 +118,238 @@ fn setup(tag: &str) -> Option<(PathBuf, Scratch, String)> {
     Some((p, s, pdf))
 }
 
+/// Every file under `dir`, as paths relative to it, sorted.
 fn files(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> =
-        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            let p = e.path();
+            if e.file_type().unwrap().is_dir() {
+                walk(base, &p, out);
+            } else {
+                out.push(p.strip_prefix(base).unwrap().to_str().unwrap().to_string());
+            }
+        }
+    }
+    let mut v = Vec::new();
+    walk(dir, dir, &mut v);
     v.sort();
     v
 }
 
+fn entry(m: &serde_json::Value, id: &str) -> serde_json::Value {
+    m["images"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap().clone()
+}
+
+const PICTURE: &str = "page-0001/image-001.webp";
+const FIGURE: &str = "page-0001/figure-001.svg";
+
 #[test]
-fn extracts_files_and_a_deterministic_manifest_without_changing_the_markdown() {
+fn extracts_files_where_the_links_point_without_changing_the_markdown() {
     let Some((p, s, pdf)) = setup("main") else { return };
     let plain = run(&p, &["--markers", &pdf], "ok");
     assert_eq!(plain.status.code(), Some(0));
+    let md = String::from_utf8(plain.stdout.clone()).unwrap();
+    // the links are the files' paths; page 2's picture repeats page 1's (one image object)
+    assert!(md.contains(&format!("![image](images/{PICTURE})")), "{md}");
+    assert!(md.contains(&format!("![image](images/{FIGURE})")), "{md}");
+    assert!(md.contains("![image](images/page-0001/image-002.webp)"), "{md}");
+    assert_eq!(md.split('\u{c}').nth(1).unwrap().matches(&format!("](images/{PICTURE})")).count(), 1, "{md}");
     let d1 = s.0.join("out1");
     let one = run(&p, &["--report", "--images-dir", d1.to_str().unwrap(), &pdf], "ok");
     let err = String::from_utf8_lossy(&one.stderr);
     assert_eq!(one.status.code(), Some(0), "{err}");
     assert_eq!(one.stdout, plain.stdout, "Markdown changed with --images-dir");
-    assert_eq!(files(&d1), ["manifest.json", "p1.1.webp", "p1.g1.svg"], "{err}");
-    let manifest = std::fs::read_to_string(d1.join("manifest.json")).unwrap();
-    // the 10 pt icon is under 24 px at 150 dpi; page 2's picture repeats page 1's
-    assert!(manifest.contains("\"skipped\":\"min_side\""), "{manifest}");
-    assert!(manifest.contains("\"skipped\":\"repeat\"") && !manifest.contains("repeat_of"), "{manifest}");
-    let m: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-    assert_eq!(m["totals"]["written"], 2);
-    assert!(err.contains("\"images_written\":2") && err.contains("\"file\":\"p1.1.webp\""), "{err}");
+    assert_eq!(files(&d1), ["manifest.jsonl", FIGURE, PICTURE], "{err}");
+    let m = manifest(&d1);
+    assert_eq!((m["schema"].as_str(), m["complete"].as_bool()), (Some("doppler-images/3"), Some(true)));
+    // the 10 pt icon is under 24 px at 150 dpi: linked, not extracted
+    let icon = entry(&m, "p1.2");
+    assert_eq!((icon["status"].as_str(), icon["reason"].as_str()), (Some("not-extracted"), Some("min_side")));
+    assert_eq!(icon["link"], "images/page-0001/image-002.webp");
+    let p2 = entry(&m, "p2.1");
+    assert_eq!(
+        (p2["status"].as_str(), p2["reason"].as_str(), p2["repeat_of"].as_str(), p2["path"].as_str()),
+        (Some("not-extracted"), Some("repeat"), Some("p1.1"), Some(PICTURE))
+    );
+    assert_eq!(m["totals"]["extracted"], 2);
+    assert!(err.contains("\"images_written\":2") && err.contains(&format!("\"file\":\"{PICTURE}\"")), "{err}");
     assert!(err.contains("\"images_confined\":true") && !err.contains("confined=1"), "{err}");
-    let svg = std::fs::read_to_string(d1.join("p1.g1.svg")).unwrap();
+    assert!(err.contains("\"images_complete\":true") && !err.contains("\"images_ms\""), "{err}");
+    // timings only when asked: they differ from run to run
+    let dt = s.0.join("out-timing");
+    let timed = run(&p, &["--report", "--report-timing", "--images-dir", dt.to_str().unwrap(), &pdf], "ok");
+    let terr = String::from_utf8_lossy(&timed.stderr);
+    assert!(terr.contains("\"images_ms\":{\"render\":") && terr.contains("\"images_cpu_ms\":{"), "{terr}");
+    let svg = std::fs::read_to_string(d1.join(FIGURE)).unwrap();
     assert!(svg.starts_with("<svg xmlns=") && !svg.contains("<g>"), "{svg}");
-    let webp = std::fs::read(d1.join("p1.1.webp")).unwrap();
+    let webp = std::fs::read(d1.join(PICTURE)).unwrap();
     assert_eq!(&webp[..4], b"RIFF");
+    // private: 0700 folders, 0600 files, whatever the umask
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |q: &Path| std::fs::metadata(q).unwrap().permissions().mode() & 0o777;
+    assert_eq!((mode(&d1), mode(&d1.join("page-0001"))), (0o700, 0o700));
+    for f in files(&d1) {
+        assert_eq!(mode(&d1.join(&f)), 0o600, "{f}");
+    }
     // a second run writes the same bytes
     let d2 = s.0.join("out2");
     assert_eq!(run(&p, &["--images-dir", d2.to_str().unwrap(), &pdf], "ok").status.code(), Some(0));
     for f in files(&d1) {
         assert_eq!(std::fs::read(d1.join(&f)).unwrap(), std::fs::read(d2.join(&f)).unwrap(), "{f}");
     }
-    // link: the repeat points to the first file; keep: it gets its own
+    // link: as skip (the manifest names the first placement either way)
     let d3 = s.0.join("out3");
-    assert_eq!(
-        run(&p, &["--images-dir", d3.to_str().unwrap(), "--images-repeats", "link", &pdf], "ok").status.code(),
-        Some(0)
-    );
-    let m3: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(d3.join("manifest.json")).unwrap()).unwrap();
-    let p2 = m3["images"].as_array().unwrap().iter().find(|e| e["id"] == "p2.1").unwrap().clone();
-    assert_eq!((p2["file"].is_null(), p2["repeat_of"].as_str(), p2["bytes"].as_u64()), (true, Some("p1.1"), Some(0)));
-    assert!(!files(&d3).contains(&"p2.1.webp".to_string()));
+    let r3 = run(&p, &["--images-dir", d3.to_str().unwrap(), "--images-repeats", "link", &pdf], "ok");
+    assert_eq!(r3.status.code(), Some(0));
+    assert_eq!(r3.stdout, plain.stdout);
+    assert_eq!(entry(&manifest(&d3), "p2.1")["repeat_of"], "p1.1");
+    // keep: the repeat has a link and a file of its own
     let d4 = s.0.join("out4");
-    assert_eq!(
-        run(&p, &["--images-dir", d4.to_str().unwrap(), "--images-repeats", "keep", &pdf], "ok").status.code(),
-        Some(0)
-    );
-    assert!(files(&d4).contains(&"p2.1.webp".to_string()));
-    // a smaller floor in points keeps the icon
+    let r4 = run(&p, &["--images-dir", d4.to_str().unwrap(), "--images-repeats", "keep", &pdf], "ok");
+    assert_eq!(r4.status.code(), Some(0));
+    assert!(files(&d4).contains(&"page-0002/image-001.webp".to_string()));
+    assert!(String::from_utf8_lossy(&r4.stdout).contains("](images/page-0002/image-001.webp)"));
+    assert_eq!(r4.stdout, run(&p, &["--markers", "--images-repeats", "keep", &pdf], "ok").stdout);
+    // a smaller floor in points keeps the icon; PNG pictures are .png links and files
     let d5 = s.0.join("out5");
-    assert_eq!(
-        run(
-            &p,
-            &["--images-dir", d5.to_str().unwrap(), "--images-min-side", "5pt", "--raster-format", "png", &pdf],
-            "ok"
-        )
-        .status
-        .code(),
-        Some(0)
+    let r5 = run(
+        &p,
+        &["--images-dir", d5.to_str().unwrap(), "--images-min-side", "5pt", "--raster-format", "png", &pdf],
+        "ok",
     );
-    assert!(files(&d5).contains(&"p1.1.png".to_string()), "{:?}", files(&d5));
+    assert_eq!(r5.status.code(), Some(0));
+    assert!(files(&d5).contains(&"page-0001/image-002.png".to_string()), "{:?}", files(&d5));
+    assert!(String::from_utf8_lossy(&r5.stdout).contains("](images/page-0001/image-001.png)"));
+}
+
+/// The manifest, field by field: every link of the Markdown has its entry, every file in the
+/// folder is listed, and the hashes are the files'.
+#[test]
+fn the_manifest_lists_every_link_and_every_file() {
+    let Some((p, s, pdf)) = setup("golden") else { return };
+    let d = s.0.join("out");
+    let r = run(&p, &["--images-dir", d.to_str().unwrap(), &pdf], "ok");
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    let sha = |bytes: &[u8]| -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let m = manifest(&d);
+    let text = std::fs::read_to_string(d.join("manifest.jsonl")).unwrap();
+    let source = sha(&std::fs::read(&pdf).unwrap());
+    let settings = m["settings_sha256"].as_str().unwrap();
+    assert!(settings.len() == 64 && settings.bytes().all(|b| b.is_ascii_hexdigit()), "{settings}");
+    let header = format!(
+        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
+    );
+    let file = |f: &str| std::fs::read(d.join(f)).unwrap();
+    let webp = file(PICTURE);
+    let svg = file(FIGURE);
+    let mut want = vec![
+        header,
+        format!(
+            "{{\"type\":\"image\",\"id\":\"p1.1\",\"page\":1,\"bbox\":[72.00,222.00,272.00,372.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"extracted\",\"format\":\"webp\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":417,\"height\":312}}",
+            webp.len(),
+            sha(&webp)
+        ),
+        "{\"type\":\"image\",\"id\":\"p1.2\",\"page\":1,\"bbox\":[400.00,82.00,410.00,92.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"page-0001/image-002.webp\",\"link\":\"images/page-0001/image-002.webp\",\"status\":\"not-extracted\",\"reason\":\"min_side\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}".to_string(),
+        format!(
+            "{{\"type\":\"image\",\"id\":\"p1.g1\",\"page\":1,\"bbox\":[210.00,452.00,390.00,632.00],\"kind\":\"vector\",\"fate\":\"block\",\"obj\":null,\"path\":\"{FIGURE}\",\"link\":\"images/{FIGURE}\",\"status\":\"extracted\",\"format\":\"svg\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":180,\"height\":180}}",
+            svg.len(),
+            sha(&svg)
+        ),
+        format!(
+            "{{\"type\":\"image\",\"id\":\"p2.1\",\"page\":2,\"bbox\":[300.00,442.00,500.00,592.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"not-extracted\",\"reason\":\"repeat\",\"repeat_of\":\"p1.1\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}}"
+        ),
+        "{\"type\":\"batch\",\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":null}".to_string(),
+    ];
+    // the end line: the counts, and the hash of every byte before it
+    let body: String = want.iter().map(|l| format!("{l}\n")).collect();
+    want.push(format!(
+        "{{\"type\":\"end\",\"complete\":true,\"resumable\":false,\"totals\":{{\"images\":4,\"linked\":4,\"extracted\":2,\"not_extracted\":2,\"unlinked\":0,\"bytes\":{},\"repeats\":1,\"fallbacks\":0,\"scans\":0,\"scan_bytes\":0,\"batches\":1,\"batches_cut\":0}},\"images\":4,\"batches\":1,\"sha256\":\"{}\"}}",
+        webp.len() + svg.len(),
+        sha(body.as_bytes())
+    ));
+    assert!(text.is_ascii() && text.ends_with('\n'), "{text}");
+    let got: Vec<&str> = text.lines().collect();
+    assert_eq!(got.len(), want.len(), "{text}");
+    for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert_eq!(g, w, "line {k}");
+    }
+    // every link of the Markdown has one entry (by id), every file one extracted entry
+    let md = String::from_utf8(r.stdout).unwrap();
+    let links: Vec<&str> = md.split("](").skip(1).map(|t| &t[..t.find(')').unwrap()]).collect();
+    assert_eq!(links.len(), 4, "{md}");
+    let all = m["images"].as_array().unwrap();
+    for l in &links {
+        assert!(all.iter().any(|e| e["link"] == *l), "{l}");
+    }
+    for f in files(&d).iter().filter(|f| *f != "manifest.jsonl") {
+        assert_eq!(all.iter().filter(|e| e["status"] == "extracted" && e["path"] == f.as_str()).count(), 1, "{f}");
+    }
+}
+
+#[test]
+fn link_prefixes_and_formats_shape_the_links_with_or_without_extraction() {
+    let Some((p, s, pdf)) = setup("prefix") else { return };
+    for (k, (args, picture, figure)) in [
+        (vec!["--images-link-prefix", ""], "page-0001/image-001.webp", "page-0001/figure-001.svg"),
+        (vec!["--images-link-prefix", "a/b/"], "a/b/page-0001/image-001.webp", "a/b/page-0001/figure-001.svg"),
+        (
+            vec!["--raster-format", "png", "--vector-format", "webp"],
+            "images/page-0001/image-001.png",
+            "images/page-0001/figure-001.webp",
+        ),
+        (vec!["--vector-format", "png"], "images/page-0001/image-001.webp", "images/page-0001/figure-001.png"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut a = vec!["--markers"];
+        a.extend(&args);
+        a.push(&pdf);
+        let plain = run(&p, &a, "ok");
+        assert_eq!(plain.status.code(), Some(0), "{k}: {}", String::from_utf8_lossy(&plain.stderr));
+        let md = String::from_utf8_lossy(&plain.stdout).to_string();
+        assert!(
+            md.contains(&format!("![image]({picture})")) && md.contains(&format!("![image]({figure})")),
+            "{k}: {md}"
+        );
+        let d = s.0.join(format!("out{k}"));
+        let mut a = vec!["--images-dir", d.to_str().unwrap()];
+        a.extend(&args);
+        a.push(&pdf);
+        let r = run(&p, &a, "ok");
+        assert_eq!(r.status.code(), Some(0), "{k}: {}", String::from_utf8_lossy(&r.stderr));
+        assert_eq!(r.stdout, plain.stdout, "{k}");
+        let prefix = &picture[..picture.find("page-").unwrap()];
+        for f in [picture, figure] {
+            assert!(d.join(&f[prefix.len()..]).is_file(), "{k}: {f} {:?}", files(&d));
+        }
+        assert_eq!(manifest(&d)["link_prefix"], prefix);
+    }
+    // bad prefixes, and link options without markers: exit 2 before anything runs
+    for bad in ["../x/", "/abs/", "x", "a b/", "a)b/", "a%b/", "http://x/", &format!("{}/", "a".repeat(128))] {
+        let r = run(&p, &["--markers", "--images-link-prefix", bad, &pdf], "ok");
+        assert_eq!(r.status.code(), Some(2), "{bad:?}");
+        assert!(r.stdout.is_empty());
+    }
+    let r = run(&p, &["--images-link-prefix", "a/", &pdf], "ok");
+    assert_eq!(r.status.code(), Some(2));
+    // the plan binds the link options
+    let plan = s.0.join("p.plan");
+    let one =
+        run(&p, &["--markers", "--images-link-prefix", "a/", "--images-plan-out", plan.to_str().unwrap(), &pdf], "ok");
+    assert_eq!(one.status.code(), Some(0));
+    let d = s.0.join("planned");
+    let two = run(&p, &["--images-plan", plan.to_str().unwrap(), "--images-dir", d.to_str().unwrap(), &pdf], "ok");
+    assert_eq!(two.status.code(), Some(2), "{}", String::from_utf8_lossy(&two.stderr));
+    let d = s.0.join("planned2");
+    let mut a = vec!["--images-link-prefix", "a/", "--images-plan", plan.to_str().unwrap()];
+    a.extend(["--images-dir", d.to_str().unwrap(), &pdf]);
+    assert_eq!(run(&p, &a, "ok").status.code(), Some(0));
+    assert_eq!(manifest(&d)["link_prefix"], "a/");
 }
 
 #[test]
@@ -207,12 +376,18 @@ fn refuses_existing_and_symlinked_folders_before_running() {
     assert!(!s.0.join("x").exists());
 }
 
+/// A renderer that crashes, hangs or a batch over its budget: the Markdown, the files written
+/// and the manifest stay (exit 5); a renderer that cannot start fails the extraction (exit 6,
+/// DIR removed).
 #[test]
-fn a_failing_renderer_removes_the_folder_and_keeps_the_markdown() {
+fn a_failing_renderer_keeps_what_was_written() {
     let Some((p, s, pdf)) = setup("fail") else { return };
     let plain = run(&p, &["--markers", &pdf], "ok");
-    for (mode, extra) in [("crash", vec![]), ("hang", vec!["--images-timeout", "1"]), ("ok", vec!["--images-max", "1"])]
-    {
+    for (mode, extra, status, written) in [
+        ("crash", vec![], "renderer", 1),
+        ("hang", vec!["--images-timeout", "1"], "timeout", 0),
+        ("ok", vec!["--images-max", "1"], "budget", 1),
+    ] {
         let d = s.0.join(format!("out-{mode}"));
         let mut args = vec!["--report", "--images-dir", d.to_str().unwrap()];
         args.extend(extra);
@@ -221,9 +396,28 @@ fn a_failing_renderer_removes_the_folder_and_keeps_the_markdown() {
         let err = String::from_utf8_lossy(&r.stderr);
         assert_eq!(r.status.code(), Some(5), "{mode}: {err}");
         assert_eq!(r.stdout, plain.stdout, "{mode}");
-        assert!(!d.exists(), "{mode}");
-        assert!(err.contains("\"images_error\""), "{err}");
+        let m = manifest(&d);
+        assert_eq!(m["complete"], false, "{mode}");
+        assert_eq!(m["batches"][0]["status"], status, "{mode}: {m}");
+        assert_eq!(m["batches"][0]["cut_page"], 1, "{mode}: {m}");
+        assert_eq!(m["totals"]["extracted"], written, "{mode}: {m}");
+        assert_eq!(files(&d).len(), written + 1, "{mode}");
+        assert!(m["images"].as_array().unwrap().iter().any(|e| e["reason"] == status), "{mode}: {m}");
+        assert!(err.contains("\"images_complete\":false") && !err.contains("\"images_error\""), "{err}");
     }
+    // cannot start: hard failure
+    let d = s.0.join("out-missing");
+    let r = Command::new(PDFTOMARKDOWN)
+        .args(["--report", "--images-dir", d.to_str().unwrap(), &pdf])
+        .env("PDFTOTEXT", &p)
+        .env("PDFREGIONS", s.0.join("no-such-renderer"))
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert_eq!(r.status.code(), Some(6), "{err}");
+    assert_eq!(r.stdout, plain.stdout);
+    assert!(!d.exists());
+    assert!(err.contains("\"images_error\""), "{err}");
 }
 
 #[test]
@@ -232,49 +426,42 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
     let d = s.0.join("mismatch");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), &pdf], "mismatch");
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
-    assert!(m.contains("\"error\":\"mismatch\""), "{m}");
+    let p1 = entry(&manifest(&d), "p1.1");
+    assert_eq!((p1["reason"].as_str(), p1["error"].as_str()), (Some("error"), Some("mismatch")));
+    // a refused SVG: a lossless PNG wrapped in an SVG, at the figure's .svg link
     let d = s.0.join("script");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), &pdf], "script");
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
-    assert!(m.contains("\"fallback\":\"svg_allowlist\"") && files(&d).contains(&"p1.g1.webp".to_string()), "{m}");
+    let fig = entry(&manifest(&d), "p1.g1");
+    assert_eq!((fig["fallback"].as_str(), fig["status"].as_str()), (Some("svg_allowlist"), Some("extracted")));
+    let svg = std::fs::read_to_string(d.join(FIGURE)).unwrap();
+    assert!(
+        svg.starts_with("<svg xmlns=") && svg.contains("data:image/png;base64,") && !svg.contains("script"),
+        "{svg}"
+    );
+    assert_eq!(files(&d), ["manifest.jsonl", FIGURE, PICTURE]);
+    // with --vector-format webp a refused figure is a lossless WebP, as linked
+    let d = s.0.join("bigsvg-webp");
+    let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--vector-format", "webp", &pdf], "ok");
+    assert_eq!(r.status.code(), Some(0));
+    assert!(files(&d).contains(&"page-0001/figure-001.webp".to_string()));
     // a file over --images-max-file-bytes is not written; the rest go on
     let d = s.0.join("filecap");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-max-file-bytes", "100", &pdf], "ok");
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
-    assert!(m.contains("\"error\":\"file_bytes\""), "{m}");
-    // link mode: when the first placement gets no file, no repeat points to it
-    let d = s.0.join("linkcap");
-    let r = run(
-        &p,
-        &["--images-dir", d.to_str().unwrap(), "--images-repeats", "link", "--images-max-file-bytes", "100", &pdf],
-        "ok",
-    );
-    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    let m: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(d.join("manifest.json")).unwrap()).unwrap();
-    let all = m["images"].as_array().unwrap();
-    for e in all {
-        if let Some(t) = e["repeat_of"].as_str() {
-            assert!(all.iter().any(|f| f["id"] == t && f["file"].is_string()), "{m}");
-        }
-    }
-    // page 2's picture is a repeat (same image object) of page 1's, which was too large
-    let p2 = all.iter().find(|e| e["id"] == "p2.1").unwrap();
-    assert_eq!(
-        (p2["error"].as_str(), p2["repeat_of"].is_null(), p2["file"].is_null()),
-        (Some("repeat_target"), true, true),
-        "{m}"
-    );
-    // pages: only page 2 is extracted
+    let m = manifest(&d);
+    assert_eq!(entry(&m, "p1.1")["reason"], "file_bytes");
+    // its repeat still names it: the caller sees that the shared file is missing
+    assert_eq!(entry(&m, "p2.1")["repeat_of"], "p1.1");
+    // pages: only page 2 is extracted; its picture repeats page 1's, whose file it writes
     let d = s.0.join("pages");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-pages", "2-2", &pdf], "ok");
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    assert_eq!(files(&d), ["manifest.json", "p2.1.webp"]);
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
-    assert!(m.contains("\"skipped\":\"pages\""), "{m}");
+    assert_eq!(files(&d), ["manifest.jsonl", PICTURE]);
+    let m = manifest(&d);
+    assert_eq!(entry(&m, "p1.1")["reason"], "pages");
+    let p2 = entry(&m, "p2.1");
+    assert_eq!((p2["status"].as_str(), p2["path"].as_str()), (Some("extracted"), Some(PICTURE)), "{m}");
 }
 
 /// The real pdfregions (`$PDFREGIONS_REAL`, else `../../build/utils/pdfregions`).
@@ -299,11 +486,11 @@ fn the_real_renderer_extracts_the_pictures_and_figures() {
     let err = String::from_utf8_lossy(&r.stderr);
     assert_eq!(r.status.code(), Some(0), "{err}");
     assert_eq!(r.stdout, plain.stdout);
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
-    assert!(files(&d).contains(&"p1.1.webp".to_string()) && files(&d).contains(&"p1.g1.svg".to_string()), "{m}\n{err}");
-    assert!(!m.contains("\"error\""), "{m}");
+    let m = std::fs::read_to_string(d.join("manifest.jsonl")).unwrap();
+    assert!(files(&d).contains(&PICTURE.to_string()) && files(&d).contains(&FIGURE.to_string()), "{m}\n{err}");
+    assert!(!m.contains("\"error\"") && m.contains("\"complete\":true"), "{m}");
     assert!(err.contains("\"images_confined\""), "{err}");
-    let svg = std::fs::read_to_string(d.join("p1.g1.svg")).unwrap();
+    let svg = std::fs::read_to_string(d.join(FIGURE)).unwrap();
     assert!(svg.contains("<path"), "{svg}");
 }
 
@@ -327,7 +514,9 @@ fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
         "Markdown changed with --images-plan-out"
     );
     let text = std::fs::read_to_string(&plan).unwrap();
-    assert!(text.starts_with("doppler-images-plan\t2\nsource\t"), "{text}");
+    assert!(text.starts_with("doppler-images-plan\t6\nsource\t"), "{text}");
+    // the converted page count, which scales the default --images-deadline as after a conversion
+    assert!(text.contains("\nversion\t") && text.contains("\nconverted\t2\n"), "{text}");
     let direct = s.0.join("direct");
     assert_eq!(
         run(&p, &["--stream", "--html", "--images-dir", direct.to_str().unwrap(), &pdf], "ok").status.code(),
@@ -371,7 +560,7 @@ fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
     refused(6, &["--stream", "--html", missing.to_str().unwrap()], plan_s, "missing.pdf");
 
     // tampered plans
-    let first_image = text.lines().nth(5).unwrap().to_string();
+    let first_image = text.lines().nth(6).unwrap().to_string();
     let fields: Vec<&str> = first_image.split('\t').collect();
     let id = String::from_utf8(
         (0..fields[0].len()).step_by(2).map(|i| u8::from_str_radix(&fields[0][i..i + 2], 16).unwrap()).collect(),

@@ -42,8 +42,11 @@
 #include "GfxState.h"
 #include "Object.h"
 #include "PopplerCache.h"
+#include "PageFactsHooks.h"
+#include "OptionalContent.h"
 
 #include <stack>
+#include <unordered_map>
 #include <vector>
 
 class PDFDoc;
@@ -75,6 +78,7 @@ class AnnotBorder;
 class AnnotColor;
 class Catalog;
 struct MarkedContentStack;
+class ScanCopyAudit;
 
 //------------------------------------------------------------------------
 
@@ -125,6 +129,7 @@ public:
     Object lookupXObjectNF(std::string_view name);
     Object lookupMarkedContentNF(std::string_view name);
     Object lookupColorSpace(std::string_view name);
+    bool definesDefaultSpaces() const; // DocSlurp: see Gfx.cc
     std::unique_ptr<GfxPattern> lookupPattern(std::string_view name, OutputDev *out, GfxState *state);
     std::unique_ptr<GfxShading> lookupShading(std::string_view name, OutputDev *out, GfxState *state);
     Object lookupGState(std::string_view name);
@@ -172,6 +177,15 @@ public:
 
     XRef *getXRef() { return xref; }
 
+    // Image dictionary facts (page facts, pdftotext -images, pdfregions copy jobs): dictionary
+    // lookups only, never the image data. <resources> resolves an inline image's named colour
+    // space, a mask's named colour space and Default colour spaces (may be null). <cache>, the
+    // document's ImageInfoCache (may be null), classifies colour spaces by reference; it never
+    // holds image facts (drawable, copy class) for this call. <limited> (may be null) is set when
+    // the cache's fetch budget refused a colour-space lookup for this image (its colour then
+    // reads as Other).
+    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache = nullptr, bool *limited = nullptr);
+
     // Interpret a stream or array of streams.
     enum class DisplayType
     {
@@ -209,6 +223,13 @@ public:
     void pushResources(Dict *resDict);
     void popResources();
 
+    // DocSlurp page facts: the operator table, by index (GfxOpTally counts by this index).
+    static int opCount();
+    static const char *opName(int index);
+    // Count the operators this Gfx executes into <tally> (nullptr: none, the default for a
+    // sub-page Gfx; a page's Gfx takes the device's OutputDev::getOpTally()).
+    void setOpTally(GfxOpTally *tally) { opTally = tally; }
+
 private:
     PDFDoc *doc;
     XRef *xref; // the xref table for this PDF file
@@ -237,6 +258,25 @@ private:
                   //   disabled
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
+    int mcDepth = 0; // DocSlurp: entries on mcStack
+    int mcOverflow = 0; // DocSlurp: open sections past maxMarkedContentDepth (not on mcStack)
+    bool mcDepthWarned = false; // DocSlurp: the nesting warning was given on this page
+    // DocSlurp: optional-content operands this page may evaluate, for drawing and (apart, so that
+    // facts never change what is drawn) for the facts paths
+    OCVisibilityBudget ocBudget, factsOcBudget;
+    GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
+    ScanCopyAudit *scanAudit = nullptr; // DocSlurp page-scan copies (OutputDev::getScanCopyAudit)
+    int ocLayerDepth = 0; // open BDC /OC sections
+    // DocSlurp page facts: the visibility of the /OC entries the facts paths (operator tally,
+    // image geometry) have evaluated on this page, by reference (at most 4096)
+    std::unordered_map<Ref, bool> factsOcVisible;
+    bool factsOcIsVisible(const Object &oc);
+    bool ocIsVisible(const Object *oc); // drawing: charged to ocBudget; a limit denies the scan copy
+    bool imageInfoLimitReported = false; // this page gave the ImageInfoCache limit-hit warning
+    // readImageDictInfo with the device's ImageInfoCache; <limited> as there, and a refused
+    // lookup gives the page's limit-hit warning (noteImageInfoLimit)
+    ImageDictInfo factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources, bool *limited = nullptr);
+    void noteImageInfoLimit();
 
     Parser *parser; // parser for page content stream(s)
 
@@ -356,7 +396,9 @@ private:
 
     // XObject operators
     void opXObject(Object args[], int numArgs);
-    void doImage(Object *ref, Stream *str, bool inlineImg);
+    // auditOnly: an image XObject run only for the scan-copy audit on a device that draws
+    // nothing (its data is never read; the audit counts it where it would be drawn)
+    void doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly = false);
     void reportImageGeometry(Dict *dict, Ref ref);
     void doForm(Object *str);
 

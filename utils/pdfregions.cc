@@ -33,6 +33,7 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #ifndef _WIN32
@@ -69,9 +70,15 @@
 #include "CairoOutputDev.h"
 #include "CairoFontEngine.h"
 #include "GfxState.h"
+#include "Gfx.h"
+#include "Stream.h"
+#include "XRef.h"
+#include "PageFactsHooks.h"
+#include "ScanCopyAudit.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "Win32Console.h"
+#include "Confine.h"
 
 enum ExitCode
 {
@@ -96,25 +103,35 @@ static bool printHelp = false;
 static char confineArg[16] = "auto";
 static char maxSvgBytesArg[32] = "33554432";
 static char maxOutputBytesArg[32] = "536870912";
+static char maxCopyBytesArg[32] = "67108864";
+static char maxCopyPixelsArg[32] = "16777216";
 static bool noImages = false;
 static char confineCheckPath[4096] = "";
 
-static const ArgDesc argDesc[] = { { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
-                                   { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
-                                   { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 2048)" },
-                                   { .arg = "-max-pixels", .kind = argString, .val = maxPixelsArg, .size = sizeof(maxPixelsArg), .usage = "largest raster crop in pixels (default 16777216)" },
-                                   { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 120)" },
-                                   { .arg = "-max-svg-bytes", .kind = argString, .val = maxSvgBytesArg, .size = sizeof(maxSvgBytesArg), .usage = "largest SVG record; larger is err:svgsize (default 33554432)" },
-                                   { .arg = "-max-output-bytes", .kind = argString, .val = maxOutputBytesArg, .size = sizeof(maxOutputBytesArg), .usage = "total stdout bytes; a record past it exits 3 (default 536870912)" },
-                                   { .arg = "-no-images", .kind = argFlag, .val = &noImages, .size = 0, .usage = "draw no images (vector-only renders; image data is never decoded)" },
-                                   { .arg = "-confine-check", .kind = argString, .val = confineCheckPath, .size = sizeof(confineCheckPath), .usage = "test aid: after confining, try to create this file, run a program and open a socket; report on stderr" },
-                                   { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write sandbox after opening the PDF: require, auto or off (default auto)" },
-                                   { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
-                                   { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   {} };
+static const ArgDesc argDesc[] = {
+    { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
+    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
+    { .arg = "-max-memory", .kind = argString, .val = maxMemoryArg, .size = sizeof(maxMemoryArg), .usage = "address-space limit in MiB, 0 for none (default 2048)" },
+    { .arg = "-max-pixels", .kind = argString, .val = maxPixelsArg, .size = sizeof(maxPixelsArg), .usage = "largest raster crop in pixels (default 16777216)" },
+    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the whole run in seconds, 0 for none (default 120)" },
+    { .arg = "-max-svg-bytes", .kind = argString, .val = maxSvgBytesArg, .size = sizeof(maxSvgBytesArg), .usage = "largest SVG record; larger is err:svgsize (default 33554432)" },
+    { .arg = "-max-output-bytes", .kind = argString, .val = maxOutputBytesArg, .size = sizeof(maxOutputBytesArg), .usage = "total stdout bytes; a record past it exits 3 (default 536870912)" },
+    { .arg = "-max-copy-bytes", .kind = argString, .val = maxCopyBytesArg, .size = sizeof(maxCopyBytesArg), .usage = "largest copied JPEG stream (copy jobs); larger is err:copysize (default 67108864)" },
+    { .arg = "-max-copy-pixels",
+      .kind = argString,
+      .val = maxCopyPixelsArg,
+      .size = sizeof(maxCopyPixelsArg),
+      .usage = "largest image decoded by a copy job, in pixels (8 times that for 1-bit images); larger is err:pixels (default 16777216)" },
+    { .arg = "-no-images", .kind = argFlag, .val = &noImages, .size = 0, .usage = "draw no images (vector-only renders; image data is never decoded)" },
+    { .arg = "-confine-check", .kind = argString, .val = confineCheckPath, .size = sizeof(confineCheckPath), .usage = "test aid: after confining, try to create this file, run a program and open a socket; report on stderr" },
+    { .arg = "-confine", .kind = argString, .val = confineArg, .size = sizeof(confineArg), .usage = "no-write sandbox after opening the PDF: require, auto or off (default auto)" },
+    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
+    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    {}
+};
 
 //------------------------------------------------------------------------
 // diagnostics and limits
@@ -230,155 +247,6 @@ static bool parseLimit(const char *text, long long minValue, long long maxValue,
 }
 
 //------------------------------------------------------------------------
-// confinement
-//------------------------------------------------------------------------
-
-// pdfregions never writes a file and never needs the network or another
-// program, but it decodes hostile images. Once the PDF is open (and
-// fontconfig has loaded its configuration and caches), the process drops
-// the ability to do any of that, so a decoder exploit cannot rewrite
-// pdftomarkdown's output folder or reach out:
-//  - PR_SET_NO_NEW_PRIVS;
-//  - Landlock: every filesystem write right is handled with no rule granting
-//    it (no writing, creating, removing, renaming or truncating files
-//    anywhere; reads stay allowed for fonts), TCP bind/connect denied, and
-//    abstract unix sockets and signals scoped to this process;
-//  - seccomp: execve/execveat, socket, ptrace, process_vm_readv/writev and
-//    open/openat with write or create flags fail with EPERM (openat2, whose
-//    flags a filter cannot read, with ENOSYS), as a second layer that also
-//    holds on kernels without Landlock.
-// Already open descriptors (stdout, the saved stderr) keep working.
-struct Confinement
-{
-    int landlockAbi = 0; // 0: not applied
-    bool seccomp = false;
-    bool confined() const { return landlockAbi > 0 && seccomp; }
-};
-
-#ifdef __linux__
-static int applyLandlock()
-{
-#    if defined(SYS_landlock_create_ruleset) && defined(SYS_landlock_restrict_self)
-    const long abi = syscall(SYS_landlock_create_ruleset, nullptr, 0, LANDLOCK_CREATE_RULESET_VERSION);
-    if (abi < 1) {
-        return 0;
-    }
-    struct landlock_ruleset_attr attr;
-    memset(&attr, 0, sizeof(attr));
-    attr.handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG
-            | LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM;
-    if (abi >= 2) {
-        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_REFER;
-    }
-    if (abi >= 3) {
-        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_TRUNCATE;
-    }
-#        ifdef LANDLOCK_ACCESS_FS_IOCTL_DEV
-    if (abi >= 5) {
-        attr.handled_access_fs |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
-    }
-#        endif
-#        ifdef LANDLOCK_ACCESS_NET_BIND_TCP
-    if (abi >= 4) {
-        attr.handled_access_net = LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP;
-    }
-#        endif
-#        ifdef LANDLOCK_SCOPE_SIGNAL
-    if (abi >= 6) {
-        attr.scoped = LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL;
-    }
-#        endif
-    const int fd = static_cast<int>(syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0));
-    if (fd < 0) {
-        return 0;
-    }
-    const long rc = syscall(SYS_landlock_restrict_self, fd, 0);
-    close(fd);
-    return rc == 0 ? static_cast<int>(abi) : 0;
-#    else
-    return 0;
-#    endif
-}
-
-static bool applySeccomp()
-{
-#    if defined(__x86_64__)
-    constexpr uint32_t arch = AUDIT_ARCH_X86_64;
-#    elif defined(__aarch64__)
-    constexpr uint32_t arch = AUDIT_ARCH_AARCH64;
-#    else
-    return false;
-#    endif
-#    if defined(__x86_64__) || defined(__aarch64__)
-    constexpr uint32_t eperm = SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA);
-    constexpr uint32_t enosys = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
-    constexpr uint32_t writeFlags = O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND;
-    const uint32_t denied[] = {
-        SYS_execve, SYS_execveat, SYS_socket, SYS_socketpair, SYS_connect, SYS_ptrace, SYS_process_vm_readv, SYS_process_vm_writev,
-#        ifdef SYS_creat
-        SYS_creat,
-#        endif
-    };
-    std::vector<sock_filter> f;
-    auto stmt = [&f](uint16_t code, uint32_t k) { f.push_back(BPF_STMT(code, k)); };
-    auto jump = [&f](uint16_t code, uint32_t k, uint8_t jt, uint8_t jf) { f.push_back(BPF_JUMP(code, k, jt, jf)); };
-    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
-    jump(BPF_JMP | BPF_JEQ | BPF_K, arch, 1, 0);
-    stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
-    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
-#        ifdef __x86_64__
-    // x32 syscalls on x86_64
-    jump(BPF_JMP | BPF_JGE | BPF_K, 0x40000000u, 0, 1);
-    stmt(BPF_RET | BPF_K, eperm);
-#        endif
-    for (uint32_t nr : denied) {
-        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1);
-        stmt(BPF_RET | BPF_K, eperm);
-    }
-#        ifdef SYS_openat2
-    jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat2, 0, 1);
-    stmt(BPF_RET | BPF_K, enosys);
-#        endif
-    // open(path, flags) / openat(dirfd, path, flags): deny write or create flags
-    auto openCheck = [&](uint32_t nr, int flagsArg) {
-        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 5);
-        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args) + 8 * flagsArg); // low 32 bits (little endian)
-        stmt(BPF_ALU | BPF_AND | BPF_K, writeFlags);
-        jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0);
-        stmt(BPF_RET | BPF_K, eperm);
-        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-    };
-#        ifdef SYS_open
-    openCheck(SYS_open, 1);
-    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
-#        endif
-    openCheck(SYS_openat, 2);
-    stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
-    struct sock_fprog prog = { static_cast<unsigned short>(f.size()), f.data() };
-    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog, 0, 0) == 0;
-#    endif
-}
-#endif
-
-static Confinement confine()
-{
-    Confinement c;
-#ifdef __linux__
-#    if WITH_FONTCONFIGURATION_FONTCONFIG
-    // load fontconfig's configuration and caches now; it may want to write a
-    // cache, which is not possible afterwards
-    FcInit();
-#    endif
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
-        return c;
-    }
-    c.landlockAbi = applyLandlock();
-    c.seccomp = applySeccomp();
-#endif
-    return c;
-}
-
-//------------------------------------------------------------------------
 // jobs
 //------------------------------------------------------------------------
 
@@ -386,6 +254,8 @@ enum class Mode
 {
     Raster,
     Svg,
+    // an image XObject's own pixels, by reference (no rendering): see Renderer::copyImage
+    Copy,
 };
 
 struct Job
@@ -395,7 +265,34 @@ struct Job
     double x0, y0, x1, y1;
     Mode mode;
     double dpi;
+    Ref ref = Ref::INVALID(); // copy jobs: the image XObject
 };
+
+// A copy job's object: <num>.<gen>, num [1-9][0-9]{0,8}, gen [0-9]{1,5} (at most 65535).
+static bool parseRef(const std::string &s, Ref *ref)
+{
+    const size_t dot = s.find('.');
+    if (dot == std::string::npos || dot == 0 || dot > 9 || s.size() - dot - 1 < 1 || s.size() - dot - 1 > 5 || s[0] == '0') {
+        return false;
+    }
+    long num = 0, gen = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (i == dot) {
+            continue;
+        }
+        if (s[i] < '0' || s[i] > '9') {
+            return false;
+        }
+        long &v = i < dot ? num : gen;
+        v = v * 10 + (s[i] - '0');
+    }
+    if (gen > 65535) {
+        return false;
+    }
+    ref->num = static_cast<int>(num);
+    ref->gen = static_cast<int>(gen);
+    return true;
+}
 
 // ^p[0-9]{1,9}\.g?[0-9]{1,6}$
 static bool validId(const std::string &s)
@@ -506,6 +403,10 @@ static bool parseJob(const std::string &line, Job *job)
         job->mode = Mode::Raster;
     } else if (f[6] == "svg") {
         job->mode = Mode::Svg;
+    } else if (f[6] == "copy") {
+        job->mode = Mode::Copy;
+        job->dpi = 0;
+        return parseRef(f[7], &job->ref);
     } else {
         return false;
     }
@@ -1090,9 +991,9 @@ public:
     {
         image(false, [&](OutputDev *d) { d->drawSoftMaskedImage(state, ref, str, width, height, colorMap, interpolate, maskStr, maskWidth, maskHeight, maskColorMap, maskInterpolate); });
     }
-    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref) override
+    void imageGeometry(GfxState *state, int width, int height, bool stencil, Ref ref, const ImageDictInfo &info) override
     {
-        each([&](OutputDev *d) { d->imageGeometry(state, width, height, stencil, ref); });
+        each([&](OutputDev *d) { d->imageGeometry(state, width, height, stencil, ref, info); });
     }
     void beginMarkedContent(const std::string &name, Dict *properties) override
     {
@@ -1222,10 +1123,47 @@ private:
     bool memory = false;
 };
 
+// The page-level check before a copy job (ScanCopyAudit.h): runs the page's content, its forms
+// and its annotations as the raster renders do (media box, page /Rotate, not printing), drawing
+// nothing and decoding no image, and records whether anything but one plain image XObject paints.
+// pdftotext -images runs the same allow-list on its own pass (copyable="1"); this is the
+// renderer's own check, so a job line cannot ask for a copy the page does not allow.
+class ScanAuditOutputDev : public OutputDev
+{
+public:
+    bool upsideDown() override { return true; }
+    bool useDrawChar() override { return false; }
+    bool interpretType3Chars() override { return false; }
+    bool needNonText() override { return false; }
+    bool needCharCount() override { return true; }
+    bool checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/, int /*rotate*/, bool /*useMediaBox*/, bool /*crop*/, int /*sliceX*/, int /*sliceY*/, int /*sliceW*/, int /*sliceH*/, bool /*printing*/,
+                        bool (* /*abortCheckCbk*/)(void *data), void * /*abortCheckCbkData*/, bool (* /*annotDisplayDecideCbk*/)(Annot *annot, void *user_data), void * /*annotDisplayDecideCbkData*/) override
+    {
+        page = pageA;
+        return true;
+    }
+    void startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/) override { audit.startPage(page, state); }
+    void clip(GfxState *state) override { audit.clip(state); }
+    void eoClip(GfxState *state) override { audit.clip(state); }
+    void clipToStrokePath(GfxState * /*state*/) override { audit.deny(ScanCopyAudit::Reason::Clip); }
+    void beginTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, GfxColorSpace * /*blendingColorSpace*/, bool /*isolated*/, bool /*knockout*/, bool /*forSoftMask*/) override
+    {
+        audit.deny(ScanCopyAudit::Reason::Group);
+    }
+    void setSoftMask(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, bool /*alpha*/, Function * /*transferFunc*/, const GfxColor & /*backdropColor*/) override { audit.deny(ScanCopyAudit::Reason::SoftMask); }
+    void skippedSoftMask(GfxState * /*state*/) override { audit.deny(ScanCopyAudit::Reason::SoftMask); }
+    ScanCopyAudit *getScanCopyAudit() override { return &audit; }
+
+    ScanCopyAudit audit;
+
+private:
+    Page *page = nullptr;
+};
+
 class Renderer
 {
 public:
-    Renderer(PDFDoc *docA, long long maxPixelsA, size_t maxSvgBytesA) : doc(docA), maxPixels(maxPixelsA), maxSvgBytes(maxSvgBytesA)
+    Renderer(PDFDoc *docA, long long maxPixelsA, size_t maxSvgBytesA, size_t maxCopyBytesA, long long maxCopyPixelsA) : doc(docA), maxPixels(maxPixelsA), maxSvgBytes(maxSvgBytesA), maxCopyBytes(maxCopyBytesA), maxCopyPixels(maxCopyPixelsA)
     {
         SplashColor white;
         white[0] = white[1] = white[2] = 255;
@@ -1256,6 +1194,7 @@ public:
 private:
     struct SvgCanvas;
     void renderRaster(const Job &job, const PixelRect &rect);
+    void copyImage(const Job &job);
     void renderSvg(const Job &job, const Region &r);
     bool beginSvg(SvgCanvas &c);
     const char *finishSvg(SvgCanvas &c, std::string *svg);
@@ -1265,6 +1204,8 @@ private:
     PDFDoc *doc;
     long long maxPixels;
     size_t maxSvgBytes;
+    size_t maxCopyBytes;
+    long long maxCopyPixels;
     std::unique_ptr<SplashOutputDev> splash;
     // Fonts are shared across SVG jobs; each job gets a fresh CairoOutputDev,
     // because a device reused across cairo surfaces keeps per-page cairo
@@ -1272,7 +1213,25 @@ private:
     FT_Library ftLib = nullptr;
     std::unique_ptr<CairoFontEngine> cairoFonts;
     std::vector<unsigned char> rowBuffer;
+    // the copy allow-list of the last page audited (copy jobs come sorted by page)
+    int auditedPage = 0;
+    ScanCopyAudit pageAudit;
+    // colour spaces by reference, classified once for every page audit and copy job
+    ImageInfoCache imageInfoCache;
+    bool pageCopyable(int pageNum, Ref ref);
 };
+
+bool Renderer::pageCopyable(int pageNum, Ref ref)
+{
+    if (auditedPage != pageNum) {
+        ScanAuditOutputDev dev;
+        dev.audit.setColorCache(&imageInfoCache);
+        doc->displayPage(&dev, pageNum, 72.0, 72.0, 0, true, false, false);
+        pageAudit = dev.audit;
+        auditedPage = pageNum;
+    }
+    return pageAudit.copyable(ref);
+}
 
 // Each crop is its own slice render, exactly as pdftoppm -r -x -y -W -H draws
 // it: the same box and rotation as pdftotext (media box, page /Rotate, no crop
@@ -1303,6 +1262,809 @@ void Renderer::renderRaster(const Job &job, const PixelRect &rect)
     if (rowBuffer.capacity() > (64u << 20)) {
         std::vector<unsigned char>().swap(rowBuffer);
     }
+}
+
+//------------------------------------------------------------------------
+// copy jobs: an image XObject's own pixels
+//------------------------------------------------------------------------
+
+// Forms nested deeper than this, entries past this many, are not searched for a copy job's image.
+static constexpr int copyMaxFormDepth = 4;
+static constexpr int copyMaxEntries = 10000;
+
+// Whether image XObject <target> is named in <resources>' /XObject, directly or inside the
+// resources of a form XObject named there (forms nested at most copyMaxFormDepth deep). Only
+// dictionaries are read. The search goes level by level, so each form is visited once, at the
+// shallowest depth it is named at; at most copyMaxEntries entries in all.
+static bool xobjectReachable(XRef *xref, Dict *resources, Ref target, std::set<Ref> *forms, int *budget)
+{
+    // names <target> directly; collects the forms it names that were not seen yet
+    auto scan = [&](Dict *res, bool nest, std::vector<Ref> *next) -> bool {
+        if (!res) {
+            return false;
+        }
+        const Object xobjects = res->lookup("XObject");
+        if (!xobjects.isDict()) {
+            return false;
+        }
+        Dict *dict = xobjects.getDict();
+        for (int i = 0; i < dict->getLength(); ++i) {
+            if (--*budget < 0) {
+                return false;
+            }
+            const Object &value = dict->getValNF(i);
+            if (!value.isRef()) {
+                continue;
+            }
+            if (value.getRef() == target) {
+                return true;
+            }
+            if (nest && forms->insert(value.getRef()).second) {
+                next->push_back(value.getRef());
+            }
+        }
+        return false;
+    };
+    std::vector<Ref> level;
+    if (scan(resources, copyMaxFormDepth > 0, &level)) {
+        return true;
+    }
+    for (int depth = 1; depth <= copyMaxFormDepth && !level.empty() && *budget >= 0; ++depth) {
+        std::vector<Ref> next;
+        for (const Ref r : level) {
+            const Object form = xref->fetch(r);
+            if (!form.isStream()) {
+                continue;
+            }
+            Dict *formDict = form.getStream()->getDict();
+            if (!formDict->lookup("Subtype").isName("Form")) {
+                continue;
+            }
+            const Object formResources = formDict->lookup("Resources");
+            if (formResources.isDict() && scan(formResources.getDict(), depth < copyMaxFormDepth, &next)) {
+                return true;
+            }
+        }
+        level = std::move(next);
+    }
+    return false;
+}
+
+// Checks a JPEG for a copy and rewrites it without metadata: SOI, a baseline, extended or
+// progressive Huffman frame (SOF0..2) of 8-bit samples with <comps> components and the image's
+// size, a scan, and EOI at the end (at most 64 bytes of padding after it are cut). The output
+// keeps the tables (DQT, DHT, DRI), the frame, the scans and their entropy-coded data, and one
+// canonical segment that decides how the samples decode as poppler decodes them: an Adobe APP14
+// (its colour transform) when the stream had one, else a JFIF APP0 (version 1.01, 1:1, no
+// thumbnail) when it had one libjpeg recognises, else neither (the component ids). Every other
+// APPn (Exif with its orientation and thumbnail, ICC, XMP, Photoshop) and every COM is dropped,
+// before the frame and between scans, so no document-supplied string or second image reaches
+// the file and viewers show the pixels as the PDF draws them.
+static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height, int comps, std::vector<unsigned char> *out)
+{
+    const size_t n = d.size();
+    if (n < 4 || d[0] != 0xFF || d[1] != 0xD8) {
+        return false;
+    }
+    // EOI ends the stream (padding of at most 64 bytes after it is cut)
+    size_t end = n;
+    const size_t floor = n > 66 ? n - 66 : 2;
+    while (end >= floor + 2 && !(d[end - 2] == 0xFF && d[end - 1] == 0xD9)) {
+        --end;
+    }
+    if (end < floor + 2) {
+        return false;
+    }
+    out->clear();
+    out->reserve(end);
+    out->insert(out->end(), { 0xFF, 0xD8 });
+    bool jfif = false, adobe = false;
+    unsigned char transform = 0;
+    size_t i = 2;
+    bool frame = false, scan = false;
+    // what a decoder checks of the tables, frame and scans (libjpeg refuses a file that breaks
+    // any of these: "Bogus Huffman table", "Invalid SOS parameters", ...): the copy must be a
+    // JPEG that decodes, not just one framed as segments
+    bool progressive = false;
+    unsigned quantDefined = 0; // bit per DQT table id
+    struct Component
+    {
+        int id, h, v, tq;
+    };
+    std::vector<Component> components;
+    size_t headerEnd = 0; // where the canonical APP segments go: right after SOI
+    headerEnd = out->size();
+    while (i < end - 2) {
+        if (d[i] != 0xFF) {
+            if (!scan) {
+                return false; // no data before the first scan
+            }
+            out->push_back(d[i++]);
+            continue;
+        }
+        const unsigned char marker = d[i + 1];
+        if (marker == 0xFF) {
+            ++i; // fill byte
+            continue;
+        }
+        if (scan && (marker == 0x00 || (marker >= 0xD0 && marker <= 0xD7))) {
+            // a stuffed 0xFF, or a restart marker, inside entropy-coded data
+            out->insert(out->end(), { 0xFF, marker });
+            i += 2;
+            continue;
+        }
+        if (marker == 0xD8 || marker == 0xD9 || (marker >= 0xD0 && marker <= 0xD7) || marker == 0x01 || marker == 0x00) {
+            return false; // no image inside, nothing before the scan, EOI only last
+        }
+        if (i + 4 > end) {
+            return false;
+        }
+        const size_t len = (static_cast<size_t>(d[i + 2]) << 8) | d[i + 3];
+        if (len < 2 || i + 2 + len > end) {
+            return false;
+        }
+        const unsigned char *seg = d.data() + i;
+        if (marker == 0xE0) {
+            // libjpeg takes an APP0 for JFIF only with at least 14 bytes of data (APP0_DATA_LEN)
+            jfif = jfif || (len >= 2 + 14 && !memcmp(seg + 4, "JFIF\0", 5));
+        } else if (marker == 0xEE) {
+            // and an APP14 for Adobe with at least 12 (APP14_DATA_LEN); the last one wins
+            if (len >= 2 + 12 && !memcmp(seg + 4, "Adobe", 5)) {
+                adobe = true;
+                transform = seg[15];
+            }
+        } else if ((marker >= 0xE1 && marker <= 0xEF) || marker == 0xFE) {
+            // other metadata: dropped
+        } else if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) {
+            // a frame: only Huffman baseline, extended and progressive, once, before any scan
+            if (frame || scan || len < 8) {
+                return false;
+            }
+            const int precision = seg[4];
+            const int h = (seg[5] << 8) | seg[6];
+            const int w = (seg[7] << 8) | seg[8];
+            const int nc = seg[9];
+            if (precision != 8 || w != width || h != height || nc != comps || len != 8 + 3 * static_cast<size_t>(nc)) {
+                return false;
+            }
+            for (int c = 0; c < nc; ++c) {
+                const unsigned char *cs = seg + 10 + 3 * c;
+                const Component comp { cs[0], cs[1] >> 4, cs[1] & 15, cs[2] };
+                if (comp.h < 1 || comp.h > 4 || comp.v < 1 || comp.v > 4 || comp.tq > 3) {
+                    return false;
+                }
+                for (const Component &other : components) {
+                    if (other.id == comp.id) {
+                        return false;
+                    }
+                }
+                components.push_back(comp);
+            }
+            progressive = marker == 0xC2;
+            frame = true;
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xDA) {
+            if (!frame || len < 6) {
+                return false;
+            }
+            const int ns = seg[4];
+            if (ns < 1 || ns > 4 || len != 6 + 2 * static_cast<size_t>(ns)) {
+                return false;
+            }
+            int blocks = 0;
+            for (int c = 0; c < ns; ++c) {
+                const int id = seg[5 + 2 * c], td = seg[6 + 2 * c] >> 4, ta = seg[6 + 2 * c] & 15;
+                const Component *comp = nullptr;
+                for (const Component &k : components) {
+                    comp = k.id == id ? &k : comp;
+                }
+                for (int e = 0; e < c; ++e) {
+                    if (seg[5 + 2 * e] == id) {
+                        return false;
+                    }
+                }
+                if (!comp || td > 3 || ta > 3 || !(quantDefined >> comp->tq & 1)) {
+                    return false;
+                }
+                blocks += comp->h * comp->v;
+            }
+            if (ns > 1 && blocks > 10) {
+                return false; // sampling factors too large for an interleaved scan
+            }
+            const unsigned char *tail = seg + 5 + 2 * ns;
+            const int ss = tail[0], se = tail[1], ah = tail[2] >> 4, al = tail[2] & 15;
+            if (progressive) {
+                if (se > 63 || ss > se || (ss == 0 && se != 0) || (ss > 0 && ns != 1) || ah > 13 || al > 13 || (ah != 0 && ah != al + 1)) {
+                    return false;
+                }
+            } else if (ss != 0 || se != 63 || ah != 0 || al != 0) {
+                return false;
+            }
+            scan = true;
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xDB) {
+            // quantisation tables: Pq (8 or 16 bit) and Tq, then 64 entries each
+            for (size_t k = 4; k < 2 + len;) {
+                const int pq = seg[k] >> 4, tq = seg[k] & 15;
+                const size_t size = 1 + 64 * (pq ? 2 : 1);
+                if (pq > 1 || tq > 3 || k + size > 2 + len) {
+                    return false;
+                }
+                quantDefined |= 1u << tq;
+                k += size;
+            }
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xC4) {
+            // Huffman tables: Tc and Th, 16 code counts that form a prefix code (no code of all
+            // ones, as libjpeg requires), at most 256 values (DC values at most 15)
+            for (size_t k = 4; k < 2 + len;) {
+                if (k + 17 > 2 + len) {
+                    return false;
+                }
+                const int tc = seg[k] >> 4, th = seg[k] & 15;
+                if (tc > 1 || th > 3) {
+                    return false;
+                }
+                size_t total = 0;
+                long code = 0;
+                for (int l = 1; l <= 16; ++l) {
+                    const int count = seg[k + l];
+                    total += count;
+                    code += count;
+                    if (count > 0 && code >= (1L << l)) {
+                        return false;
+                    }
+                    code <<= 1;
+                }
+                if (total > 256 || k + 17 + total > 2 + len) {
+                    return false;
+                }
+                for (size_t v = 0; tc == 0 && v < total; ++v) {
+                    if (seg[k + 17 + v] > 15) {
+                        return false;
+                    }
+                }
+                k += 17 + total;
+            }
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else if (marker == 0xDD) {
+            // the restart interval
+            if (len != 4) {
+                return false;
+            }
+            out->insert(out->end(), seg, seg + 2 + len);
+        } else {
+            return false; // anything else (other frames, arithmetic coding, DNL, extensions)
+        }
+        i += 2 + len;
+    }
+    if (!scan || i != end - 2) {
+        return false;
+    }
+    out->insert(out->end(), { 0xFF, 0xD9 });
+    // The colour transform must be the one poppler's DCTStream decodes with: an Adobe marker
+    // decides it there (any transform but 0 is YCbCr), but a viewer's libjpeg lets JFIF win
+    // over Adobe. So with Adobe, no JFIF: only the APP14 (its transform as 0 or 1); without it,
+    // JFIF exactly when libjpeg saw one (else the component ids decide, the same way in both).
+    std::vector<unsigned char> app;
+    if (adobe) {
+        app.insert(app.end(), { 0xFF, 0xEE, 0x00, 0x0E, 'A', 'd', 'o', 'b', 'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, static_cast<unsigned char>(transform ? 1 : 0) });
+    } else if (jfif) {
+        app.insert(app.end(), { 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00 });
+    }
+    out->insert(out->begin() + static_cast<std::ptrdiff_t>(headerEnd), app.begin(), app.end());
+    return true;
+}
+
+// Reads at most <limit> bytes of <str> (rewound and closed here) into <out>; false when the
+// stream cannot be read or is longer.
+static bool readPrefix(Stream *str, size_t limit, std::vector<unsigned char> *out, bool *longer)
+{
+    out->clear();
+    *longer = false;
+    if (!str || !str->rewind()) {
+        return false;
+    }
+    std::vector<unsigned char> buf(1 << 16);
+    int got;
+    while ((got = str->doGetChars(static_cast<int>(std::min<size_t>(buf.size(), limit + 1 - out->size())), buf.data())) > 0) {
+        out->insert(out->end(), buf.data(), buf.data() + got);
+        if (out->size() > limit) {
+            out->resize(limit);
+            *longer = true;
+            break;
+        }
+    }
+    str->close();
+    return true;
+}
+
+// The frame size of a JPEG stream (the first SOFn header after SOI, segments walked by their
+// lengths); false when there is none to read in <d>.
+static bool jpegFrameSize(const std::vector<unsigned char> &d, uint64_t *width, uint64_t *height)
+{
+    if (d.size() < 4 || d[0] != 0xFF || d[1] != 0xD8) {
+        return false;
+    }
+    size_t i = 2;
+    while (i + 4 <= d.size()) {
+        if (d[i] != 0xFF) {
+            return false;
+        }
+        const unsigned char marker = d[i + 1];
+        if (marker == 0xFF) {
+            ++i; // fill byte
+            continue;
+        }
+        if (marker == 0xD8 || marker == 0xD9 || marker == 0xDA || marker == 0x00 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+            return false; // a scan, an image or the end before any frame
+        }
+        const size_t len = (static_cast<size_t>(d[i + 2]) << 8) | d[i + 3];
+        if (len < 2 || i + 2 + len > d.size()) {
+            return false;
+        }
+        // SOF0..SOF15 but DHT (C4), JPG (C8) and DAC (CC)
+        if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+            if (len < 8) {
+                return false;
+            }
+            *height = (static_cast<uint64_t>(d[i + 5]) << 8) | d[i + 6];
+            *width = (static_cast<uint64_t>(d[i + 7]) << 8) | d[i + 8];
+            return true;
+        }
+        i += 2 + len;
+    }
+    return false;
+}
+
+static uint32_t be32(const unsigned char *p)
+{
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+// The size a JPEG 2000 stream really decodes to: its codestream's SIZ marker (image size minus
+// offset, and the component count), read from a raw codestream or from the jp2c box of a JP2
+// file. Boxes before jp2c are skipped (at most <data>, the first bytes of the stream). False when
+// no SIZ is found or it is malformed.
+static bool jpxSize(const std::vector<unsigned char> &data, uint64_t *width, uint64_t *height, int *comps)
+{
+    const size_t n = data.size();
+    size_t at = 0;
+    if (n >= 12 && be32(data.data()) == 12 && !memcmp(data.data() + 4, "jP  ", 4)) {
+        // JP2 boxes: find the contiguous codestream
+        bool found = false;
+        int boxes = 0;
+        while (at + 8 <= n && ++boxes <= 4096) {
+            uint64_t len = be32(data.data() + at);
+            size_t header = 8;
+            if (len == 1) {
+                if (at + 16 > n) {
+                    return false;
+                }
+                len = (static_cast<uint64_t>(be32(data.data() + at + 8)) << 32) | be32(data.data() + at + 12);
+                header = 16;
+            }
+            if (!memcmp(data.data() + at + 4, "jp2c", 4)) {
+                at += header;
+                found = true;
+                break;
+            }
+            if (len < header || len > n - at) {
+                return false; // to the end of the file, or past what was read
+            }
+            at += static_cast<size_t>(len);
+        }
+        if (!found) {
+            return false;
+        }
+    }
+    // SOC, then SIZ: Lsiz Rsiz Xsiz Ysiz XOsiz YOsiz XTsiz YTsiz XTOsiz YTOsiz Csiz
+    if (at + 42 > n || data[at] != 0xFF || data[at + 1] != 0x4F || data[at + 2] != 0xFF || data[at + 3] != 0x51) {
+        return false;
+    }
+    const unsigned char *siz = data.data() + at + 4;
+    const uint32_t xsiz = be32(siz + 4), ysiz = be32(siz + 8), xo = be32(siz + 12), yo = be32(siz + 16);
+    const int csiz = (siz[36] << 8) | siz[37];
+    if (xo >= xsiz || yo >= ysiz || csiz < 1) {
+        return false;
+    }
+    *width = xsiz - xo;
+    *height = ysiz - yo;
+    *comps = csiz;
+    return true;
+}
+
+// The segments of an embedded JBIG2 stream (PDF form: segments without the file header), or of
+// its JBIG2Globals. Every segment header is read, to the end: the page information segment gives
+// the page size (the first one, *width and *height, when pageInfo is set), and every region
+// segment (generic, refinement, text, halftone: immediate or intermediate) must fit in
+// maxW x maxH, and a pattern dictionary's collective bitmap in maxW * maxH pixels. The page
+// size alone does not bound the decode: a 1000x1000 page can carry a 60000x60000 generic region
+// that the decoder allocates and fills. False when a header is cut short, a segment's length is
+// unknown (0xffffffff), or a size does not fit (and, with pageInfo, when there is no page
+// information or its height is unknown).
+static bool jbig2Segments(const std::vector<unsigned char> &d, bool pageInfo, uint64_t maxW, uint64_t maxH, uint64_t *width, uint64_t *height)
+{
+    const size_t n = d.size();
+    size_t at = 0;
+    bool sized = false;
+    while (at < n) {
+        if (at + 11 > n) {
+            break; // padding: too short for a segment header, so nothing the decoder reads
+        }
+        const uint32_t number = be32(d.data() + at);
+        const unsigned char flags = d[at + 4];
+        const int type = flags & 0x3f;
+        size_t p = at + 5;
+        // referred-to segments: a count in the top 3 bits, or the long form
+        uint64_t refs = d[p] >> 5;
+        if (refs == 7) {
+            if (p + 4 > n) {
+                return false;
+            }
+            refs = be32(d.data() + p) & 0x1fffffff;
+            p += 4 + (refs + 8) / 8;
+        } else if (refs > 4) {
+            return false; // 5 and 6 are invalid counts
+        } else {
+            p += 1;
+        }
+        const size_t refSize = number <= 256 ? 1 : number <= 65536 ? 2 : 4;
+        if (refs > 4096) {
+            return false;
+        }
+        p += static_cast<size_t>(refs) * refSize;
+        p += (flags & 0x40) ? 4 : 1; // page association
+        if (p + 4 > n) {
+            return false;
+        }
+        const uint32_t length = be32(d.data() + p);
+        p += 4;
+        if (length == 0xffffffffu || length > n - p) {
+            return false;
+        }
+        switch (type) {
+        case 48: // page information
+            if (length < 8) {
+                return false;
+            }
+            if (pageInfo && !sized) {
+                const uint32_t w = be32(d.data() + p), h = be32(d.data() + p + 4);
+                if (w == 0 || h == 0 || h == 0xffffffffu) {
+                    return false;
+                }
+                *width = w;
+                *height = h;
+                sized = true;
+                maxW = std::min<uint64_t>(maxW, w);
+                maxH = std::min<uint64_t>(maxH, h);
+            }
+            break;
+        case 4: // text regions
+        case 6:
+        case 7:
+        case 20: // halftone regions
+        case 22:
+        case 23:
+        case 36: // generic regions
+        case 38:
+        case 39:
+        case 40: // generic refinement regions
+        case 42:
+        case 43: {
+            // region segment information: width, height, x, y, flags
+            if (length < 17 || (pageInfo && !sized)) {
+                return false;
+            }
+            if (be32(d.data() + p) > maxW || be32(d.data() + p + 4) > maxH) {
+                return false;
+            }
+            break;
+        }
+        case 16: { // pattern dictionary: flags, HDPW, HDPH, GRAYMAX
+            if (length < 7) {
+                return false;
+            }
+            const uint64_t pw = d[p + 1], ph = d[p + 2], patterns = uint64_t(be32(d.data() + p + 3)) + 1;
+            if (static_cast<double>(patterns) * pw * ph > static_cast<double>(maxW) * static_cast<double>(maxH)) {
+                return false;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        at = p + length;
+    }
+    return !pageInfo || sized;
+}
+
+// A copy job: the image XObject job.ref, which must be named in the page's resources (directly
+// or through forms) and whose dictionary must still give it a copy class (classifyImageCopy,
+// as pdftotext -images says copy=), answered without rendering:
+//  Jpeg     kind=jpeg: the stream's bytes as stored, unchanged (checked by checkJpeg; at most
+//           -max-copy-bytes), width and height its size;
+//  Bilevel  kind=gray1: its samples decoded once, packed rows of ceil(width/8) bytes, top row
+//           first, most significant bit first, 0 black (the PDF's sense, /Decode absent);
+//  Decode   kind=gray8 (a one-component grey space) or rgb8: its samples decoded once at
+//           native size through its colour space.
+// The page must pass the copy allow-list (ScanAuditOutputDev): the image is the only thing that
+// paints on it. Bilevel and Decode images at most -max-copy-pixels. Errors: copy (not such an
+// image, class Render, a page that does not pass, or a cross-reference table that was rebuilt
+// or changed), copysize, pixels, jpeg (the stream is not a JPEG to copy), decode.
+void Renderer::copyImage(const Job &job)
+{
+    XRef *xref = doc->getXRef();
+    // A reference resolves to one object body only while the cross-reference table stays as
+    // it is: a rebuilt table (at open, or when any fetch meets a broken entry, the page audit's
+    // included) may resolve job.ref to another body than the one the page draws. A document
+    // whose table was ever rebuilt is never copied, and the table must not change during the
+    // job (checked again before the record is written).
+    const unsigned int generation = xref->getGeneration();
+    auto xrefStable = [&] { return xref->getReconstructionCount() == 0 && xref->getGeneration() == generation; };
+    if (!xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
+    Page *page = doc->getPage(job.page);
+    std::set<Ref> forms;
+    int budget = copyMaxEntries;
+    if (!page || !xobjectReachable(xref, page->getResourceDict(), job.ref, &forms, &budget)) {
+        emitError(job, "copy");
+        return;
+    }
+    // the page shows exactly that image: nothing else paints, it is drawn plainly, once. The
+    // audit comes first, so the object fetched below is the one it saw drawn (unless the table
+    // changed, which refuses the job)
+    if (!pageCopyable(job.page, job.ref) || !xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
+    Object image = xref->fetch(job.ref);
+    if (!image.isStream() || !image.getStream()->getDict()->lookup("Subtype").isName("Image")) {
+        emitError(job, "copy");
+        return;
+    }
+    Stream *str = image.getStream();
+    Dict *dict = str->getDict();
+    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, nullptr, &imageInfoCache);
+    auto size = [dict](const char *key, const char *abbrev) {
+        Object o = dict->lookup(key);
+        if (o.isNull()) {
+            o = dict->lookup(abbrev);
+        }
+        return o.isInt() ? o.getInt() : 0;
+    };
+    const int width = size("Width", "W"), height = size("Height", "H");
+    if (info.copy == ImageCopy::Render || width < 1 || height < 1 || !xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
+    if (info.copy == ImageCopy::Jpeg) {
+        // the DCT filter's input: the stored (decrypted) bytes
+        Stream *raw = str->getKind() == strDCT ? str->getNextStream() : nullptr;
+        if (!raw || !raw->rewind()) {
+            emitError(job, "jpeg");
+            return;
+        }
+        std::vector<unsigned char> data;
+        std::vector<unsigned char> buf(1 << 16);
+        bool tooLarge = false;
+        int got;
+        while ((got = raw->doGetChars(static_cast<int>(buf.size()), buf.data())) > 0) {
+            if (data.size() + static_cast<size_t>(got) > maxCopyBytes) {
+                tooLarge = true;
+                break;
+            }
+            data.insert(data.end(), buf.data(), buf.data() + got);
+        }
+        raw->close();
+        if (tooLarge) {
+            emitError(job, "copysize");
+            return;
+        }
+        const int comps = info.color == ImageColor::Gray || info.color == ImageColor::ICC1 ? 1 : 3;
+        std::vector<unsigned char> clean;
+        if (!cleanJpeg(data, width, height, comps, &clean)) {
+            emitError(job, "jpeg");
+            return;
+        }
+        if (!xrefStable()) {
+            emitError(job, "copy");
+            return;
+        }
+        emitRecord(job, "ok", "jpeg", width, height, reinterpret_cast<const char *>(clean.data()), clean.size());
+        return;
+    }
+    // decoded samples: 8 bits (or more) a pixel, but packed 1-bit rows for a bilevel image,
+    // whose cap is 8 times the pixels for the same bytes
+    const long long pixelCap = info.copy == ImageCopy::Bilevel ? (maxCopyPixels > LLONG_MAX / 8 ? LLONG_MAX : maxCopyPixels * 8) : maxCopyPixels;
+    if (static_cast<long long>(width) * height > pixelCap) {
+        emitError(job, "pixels");
+        return;
+    }
+    // what the codec really decodes, before it decodes: a JPEG 2000 codestream's SIZ, a JBIG2
+    // page information segment, a CCITT stream's /Columns and /Rows, which must be the image's
+    // own size (a 100x100 image whose codestream is 16000x16000 would decode it all)
+    const StreamKind kind = str->getKind();
+    if (kind == strJPX || kind == strJBIG2) {
+        std::vector<unsigned char> head;
+        bool longer = false;
+        uint64_t w = 0, h = 0;
+        int ncomps = 1;
+        bool sized = readPrefix(str->getNextStream(), maxCopyBytes, &head, &longer);
+        if (kind == strJPX) {
+            sized = sized && jpxSize(head, &w, &h, &ncomps);
+        } else {
+            // every segment of the stream and of its globals, read whole (a stream past
+            // -max-copy-bytes is refused rather than scanned in part)
+            sized = sized && !longer && jbig2Segments(head, true, UINT64_MAX, UINT64_MAX, &w, &h);
+            if (sized && w == static_cast<uint64_t>(width) && h == static_cast<uint64_t>(height)) {
+                Object parms = dict->lookup("DecodeParms");
+                if (parms.isNull()) {
+                    parms = dict->lookup("DP");
+                }
+                if (parms.isArray() && parms.arrayGetLength() == 1) {
+                    parms = parms.arrayGet(0);
+                }
+                Object globals = parms.isDict() ? parms.dictLookup("JBIG2Globals") : Object::null();
+                if (globals.isStream()) {
+                    std::vector<unsigned char> g;
+                    bool gLonger = false;
+                    sized = readPrefix(globals.getStream(), maxCopyBytes, &g, &gLonger) && !gLonger && jbig2Segments(g, false, w, h, &w, &h);
+                } else if (!globals.isNull()) {
+                    sized = false;
+                }
+            }
+        }
+        if (!sized) {
+            emitError(job, "decode");
+            return;
+        }
+        if (w != static_cast<uint64_t>(width) || h != static_cast<uint64_t>(height) || ncomps > 4) {
+            emitError(job, "pixels");
+            return;
+        }
+    } else if (kind == strDCT) {
+        // a JPEG decoded (not copied): its frame must be the image's size, or a 100x100 image
+        // whose frame says 60000x60000 decodes something else than the render shows (and costs
+        // what such a frame costs)
+        std::vector<unsigned char> head;
+        bool longer = false;
+        uint64_t w = 0, h = 0;
+        if (!readPrefix(str->getNextStream(), maxCopyBytes, &head, &longer) || !jpegFrameSize(head, &w, &h)) {
+            emitError(job, "decode");
+            return;
+        }
+        if (w != static_cast<uint64_t>(width) || h != static_cast<uint64_t>(height)) {
+            emitError(job, "pixels");
+            return;
+        }
+    } else if (kind == strCCITTFax) {
+        Object parms = dict->lookup("DecodeParms");
+        if (parms.isNull()) {
+            parms = dict->lookup("DP");
+        }
+        if (parms.isArray() && parms.arrayGetLength() == 1) {
+            parms = parms.arrayGet(0);
+        }
+        const Object columns = parms.isDict() ? parms.dictLookup("Columns") : Object();
+        const Object rows = parms.isDict() ? parms.dictLookup("Rows") : Object();
+        const int cols = columns.isInt() ? columns.getInt() : 1728;
+        if (cols != width || (rows.isInt() && rows.getInt() != height)) {
+            emitError(job, "pixels");
+            return;
+        }
+    }
+    // a codec under another filter would decode unchecked: refused
+    int filters = 0;
+    for (Stream *inner = str->getNextStream(); inner; inner = inner->getNextStream()) {
+        const StreamKind k = inner->getKind();
+        if (k == strJPX || k == strJBIG2 || k == strDCT || k == strCCITTFax || ++filters > 16) {
+            emitError(job, "decode");
+            return;
+        }
+    }
+    if (info.copy == ImageCopy::Bilevel) {
+        // packed rows only from a stream whose bytes are 1-bit rows: a JPEG 2000 or DCT
+        // stream decodes to 8 bits a component (render reads it so), never to packed rows
+        if (kind == strJPX || kind == strDCT) {
+            emitError(job, "copy");
+            return;
+        }
+        const size_t rowBytes = (static_cast<size_t>(width) + 7) / 8;
+        std::vector<unsigned char> data(rowBytes * static_cast<size_t>(height), 0xFF);
+        if (!str->rewind()) {
+            emitError(job, "decode");
+            return;
+        }
+        // a short stream leaves the rest white
+        size_t at = 0;
+        int got;
+        while (at < data.size() && (got = str->doGetChars(static_cast<int>(std::min<size_t>(data.size() - at, 1 << 20)), data.data() + at)) > 0) {
+            at += static_cast<size_t>(got);
+        }
+        str->close();
+        if (!xrefStable()) {
+            emitError(job, "copy");
+            return;
+        }
+        emitRecord(job, "ok", "gray1", width, height, reinterpret_cast<const char *>(data.data()), data.size());
+        return;
+    }
+    // Decode: the colour space from the dictionary, or a JPX stream's own
+    int bits = info.bpc;
+    Object csObj = dict->lookup("ColorSpace");
+    if (csObj.isNull()) {
+        csObj = dict->lookup("CS");
+    }
+    GfxState state(72.0, 72.0, page->getMediaBox(), 0, true);
+    std::unique_ptr<GfxColorSpace> colorSpace;
+    if (str->getKind() == strJPX) {
+        StreamColorSpaceMode csMode = streamCSNone;
+        bool hasAlpha = false;
+        str->getImageParams(&bits, &csMode, &hasAlpha);
+        if (hasAlpha) {
+            emitError(job, "copy");
+            return;
+        }
+        if (csObj.isNull()) {
+            if (csMode == streamCSDeviceGray) {
+                colorSpace = std::make_unique<GfxDeviceGrayColorSpace>();
+            } else if (csMode == streamCSDeviceRGB) {
+                colorSpace = std::make_unique<GfxDeviceRGBColorSpace>();
+            } else if (csMode == streamCSDeviceCMYK) {
+                colorSpace = std::make_unique<GfxDeviceCMYKColorSpace>();
+            }
+        }
+    }
+    if (!colorSpace && !csObj.isNull()) {
+        colorSpace = GfxColorSpace::parse(nullptr, &csObj, nullptr, &state);
+    }
+    if (!colorSpace || bits < 1 || bits > 16) {
+        emitError(job, "decode");
+        return;
+    }
+    const GfxColorSpaceMode mode = colorSpace->getMode();
+    const bool gray = mode == csDeviceGray || mode == csCalGray || (mode == csICCBased && colorSpace->getNComps() == 1);
+    Object decode = dict->lookup("Decode");
+    if (decode.isNull()) {
+        decode = dict->lookup("D");
+    }
+    GfxImageColorMap colorMap(bits, &decode, std::move(colorSpace));
+    if (!colorMap.isOk()) {
+        emitError(job, "decode");
+        return;
+    }
+    const int comps = gray ? 1 : 3;
+    std::vector<unsigned char> data;
+    data.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * comps);
+    ImageStream imgStr(str, width, colorMap.getNumPixelComps(), colorMap.getBits());
+    if (!imgStr.rewind()) {
+        emitError(job, "decode");
+        return;
+    }
+    const size_t rowBytes = static_cast<size_t>(width) * comps;
+    for (int y = 0; y < height; ++y) {
+        unsigned char *line = imgStr.getLine();
+        unsigned char *out = data.data() + static_cast<size_t>(y) * rowBytes;
+        if (!line) {
+            // a short stream: the rest stays white
+            std::fill(out, data.data() + data.size(), 0xFF);
+            break;
+        }
+        if (gray) {
+            colorMap.getGrayLine(line, out, width);
+        } else {
+            colorMap.getRGBLine(line, out, width);
+        }
+    }
+    imgStr.close();
+    if (!xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
+    emitRecord(job, "ok", gray ? "gray8" : "rgb8", width, height, reinterpret_cast<const char *>(data.data()), data.size());
 }
 
 // cairo's output for one canvas; a discarded canvas drops what cairo writes when it finishes
@@ -1572,6 +2334,10 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
 
     for (size_t i = first; i < last; ++i) {
         const Job &job = jobs[i];
+        if (job.mode == Mode::Copy) {
+            copyImage(job);
+            continue;
+        }
         const std::optional<Region> region = clipToPage(job, w, h);
         if (!region) {
             emitError(job, "empty");
@@ -1611,11 +2377,14 @@ void Renderer::renderPage(const std::vector<Job> &jobs, size_t first, size_t las
 int main(int argc, char *argv[])
 {
     Win32Console win32Console(&argc, &argv);
+    closeInheritedDescriptors();
 
-    long long maxMemory = 0, maxPixels = 0, timeout = 0, maxSvgBytes = 0, maxOutput = 0;
+    long long maxMemory = 0, maxPixels = 0, timeout = 0, maxSvgBytes = 0, maxOutput = 0, maxCopyBytes = 0, maxCopyPixels = 0;
     const bool ok = parseArgs(argDesc, &argc, argv);
     const bool confineOk = strcmp(confineArg, "require") == 0 || strcmp(confineArg, "auto") == 0 || strcmp(confineArg, "off") == 0;
-    const bool limitsOk = confineOk && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout) && parseLimit(maxSvgBytesArg, 1, 1LL << 40, &maxSvgBytes) && parseLimit(maxOutputBytesArg, 1, 1LL << 50, &maxOutput);
+    const bool limitsOk = confineOk && parseLimit(maxMemoryArg, 0, 1LL << 30, &maxMemory) && parseLimit(maxPixelsArg, 1, 1LL << 30, &maxPixels) && parseLimit(timeoutArg, 0, 86400, &timeout)
+            && parseLimit(maxSvgBytesArg, 1, 1LL << 40, &maxSvgBytes) && parseLimit(maxOutputBytesArg, 1, 1LL << 50, &maxOutput) && parseLimit(maxCopyBytesArg, 1, 1LL << 32, &maxCopyBytes)
+            && parseLimit(maxCopyPixelsArg, 1, 1LL << 32, &maxCopyPixels);
     if (!ok || !limitsOk || argc != 2 || printVersion || printHelp) {
         fprintf(stderr, "pdfregions version %s\n", PACKAGE_VERSION);
         fprintf(stderr, "%s\n", popplerCopyright);
@@ -1728,7 +2497,7 @@ int main(int argc, char *argv[])
 #endif
 
     {
-        Renderer renderer(doc.get(), maxPixels, static_cast<size_t>(maxSvgBytes));
+        Renderer renderer(doc.get(), maxPixels, static_cast<size_t>(maxSvgBytes), static_cast<size_t>(maxCopyBytes), maxCopyPixels);
         for (size_t first = 0; first < jobs.size() && !outputFailed;) {
             size_t last = first + 1;
             while (last < jobs.size() && jobs[last].page == jobs[first].page) {

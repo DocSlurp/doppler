@@ -24,6 +24,8 @@ const MAX_DIAGNOSTICS: usize = 4096;
 pub enum Mode {
     Raster,
     Svg,
+    /// an image XObject's own pixels (`obj`): a JPEG without its metadata, 1-bit rows, or decoded samples
+    Copy,
 }
 
 /// One region to render.
@@ -34,6 +36,8 @@ pub struct Job {
     pub bbox: (f64, f64, f64, f64),
     pub mode: Mode,
     pub dpi: u32,
+    /// the image XObject of a copy job (`num`, `gen`)
+    pub obj: Option<(u32, u32)>,
 }
 
 impl Job {
@@ -47,11 +51,13 @@ impl Job {
 
     fn line(&self) -> String {
         let (x0, y0, x1, y1) = self.bbox;
-        let mode = match self.mode {
-            Mode::Raster => "raster",
-            Mode::Svg => "svg",
+        let (mode, last) = match (self.mode, self.obj) {
+            (Mode::Raster, _) => ("raster", self.dpi.to_string()),
+            (Mode::Svg, _) => ("svg", self.dpi.to_string()),
+            (Mode::Copy, Some((num, gen_))) => ("copy", format!("{num}.{gen_}")),
+            (Mode::Copy, None) => ("copy", "0.0".into()),
         };
-        format!("{}\t{}\t{x0:.3}\t{y0:.3}\t{x1:.3}\t{y1:.3}\t{mode}\t{}\n", self.id, self.page, self.dpi)
+        format!("{}\t{}\t{x0:.3}\t{y0:.3}\t{x1:.3}\t{y1:.3}\t{mode}\t{last}\n", self.id, self.page)
     }
 }
 
@@ -64,10 +70,33 @@ pub enum Outcome {
         data: Vec<u8>,
     },
     Svg(String),
+    /// a copy job's JPEG, metadata stripped (the image's declared size)
+    Jpeg {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    /// a copy job's 1-bit rows (`ceil(width / 8)` bytes each, 0 black)
+    Gray1 {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
+    /// a copy job's 8-bit grey samples
+    Gray8 {
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+    },
     /// the renderer's `err:<code>`, or `mismatch` / `svg_size` / `utf8` when the record does not
     /// fit the job
     Error(String),
 }
+
+/// `-max-copy-pixels`: the largest image a copy job decodes (the renderer's raster cap; 1-bit
+/// images get 8 times as many pixels). A page scan to decode that is larger is rendered at
+/// `--scan-dpi` instead, so decoded samples never cost more than a render.
+pub const MAX_COPY_PIXELS: u64 = 16_777_216;
 
 /// How to start the renderer.
 pub struct Renderer {
@@ -80,6 +109,8 @@ pub struct Renderer {
     /// `-max-svg-bytes` and `-max-output-bytes`
     pub max_svg_bytes: u64,
     pub max_output_bytes: u64,
+    /// `-max-copy-bytes`: the largest JPEG a copy job returns
+    pub max_copy_bytes: u64,
 }
 
 /// `$PDFREGIONS`, else `pdfregions` beside this executable, else `pdfregions` on `PATH`.
@@ -103,27 +134,70 @@ enum Msg {
     Done,
 }
 
+/// Why the caller stopped a run from its record callback.
+#[derive(Debug)]
+pub enum Halt {
+    /// a budget of the batch: stop rendering, keep what was written (the reason, for the
+    /// manifest)
+    Stop(&'static str),
+    /// a write failure: the extraction fails
+    Fatal(String),
+}
+
+/// Why a run ended before every job was answered and checked, or the renderer failed.
+#[derive(Debug)]
+pub enum RunError {
+    /// the renderer could not be started
+    Spawn(String),
+    /// the deadline passed
+    Timeout(String),
+    /// it crashed, exited non-zero, or broke the framing
+    Failed(String),
+    /// the record callback stopped the run
+    Halted(Halt),
+}
+
+impl RunError {
+    pub fn message(&self) -> String {
+        match self {
+            RunError::Spawn(m) | RunError::Timeout(m) | RunError::Failed(m) => m.clone(),
+            RunError::Halted(Halt::Stop(r)) => format!("stopped: {r}"),
+            RunError::Halted(Halt::Fatal(m)) => m.clone(),
+        }
+    }
+}
+
+/// How a run went: the result, whether the renderer said it was confined, and the time spent
+/// waiting for its records.
+pub struct RunResult {
+    pub result: Result<(), RunError>,
+    pub confined: Option<bool>,
+    pub wait: Duration,
+}
+
 impl Renderer {
-    /// Renders `jobs` (sorted by page), calling `each` with every record in job order. Fails
-    /// (killing the renderer) when it cannot run, breaks the framing, ends early, exits
-    /// non-zero, passes `deadline`, or when `each` fails.
+    /// Renders `jobs` (sorted by page), calling `each` with every record in job order. Records
+    /// passed to `each` before a failure stay the caller's: a run that breaks keeps them. Fails
+    /// (killing the renderer's process group) when it cannot run, breaks the framing, ends
+    /// early, exits non-zero, passes `deadline`, or when `each` halts.
     pub fn run(
         &self,
         jobs: &[Job],
         deadline: Instant,
         timeout_arg: u64,
-        each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<Option<bool>, String> {
+        each: &mut dyn FnMut(usize, Outcome) -> Result<(), Halt>,
+    ) -> RunResult {
+        let fail = |e: RunError| RunResult { result: Err(e), confined: None, wait: Duration::ZERO };
         if jobs.is_empty() {
-            return Ok(None);
+            return RunResult { result: Ok(()), confined: None, wait: Duration::ZERO };
         }
         if jobs.len() > MAX_JOBS {
-            return Err(format!("more than {MAX_JOBS} regions to render"));
+            return fail(RunError::Failed(format!("more than {MAX_JOBS} regions to render")));
         }
         if jobs.windows(2).any(|w| w[1].page < w[0].page) {
-            return Err("regions are not sorted by page".into());
+            return fail(RunError::Failed("regions are not sorted by page".into()));
         }
-        let mut child = Command::new(&self.exe)
+        let child = Command::new(&self.exe)
             .args(&self.passwords)
             .arg("-timeout")
             .arg(timeout_arg.to_string())
@@ -133,15 +207,28 @@ impl Renderer {
             .arg(self.max_svg_bytes.to_string())
             .arg("-max-output-bytes")
             .arg(self.max_output_bytes.to_string())
+            .arg("-max-copy-bytes")
+            .arg(self.max_copy_bytes.max(1).to_string())
+            .arg("-max-copy-pixels")
+            .arg(MAX_COPY_PIXELS.to_string())
             .arg(&self.file)
             // a group of its own, so the whole group can be killed at the deadline
             .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot run {}: {e}", self.exe.display()))?;
-        let result = self.drive(&mut child, jobs, deadline, each);
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
+            Err(e) => return fail(RunError::Spawn(format!("cannot run {}: {e}", self.exe.display()))),
+        };
+        let name = self.exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let diagnostics = child.stderr.take().map(|stderr| {
+            let n = name.clone();
+            std::thread::spawn(move || forward_diagnostics(stderr, &n))
+        });
+        let mut wait = Duration::ZERO;
+        let result = drive(&mut child, &name, jobs, deadline, each, &mut wait);
         if result.is_err() {
             if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
                 let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
@@ -149,63 +236,63 @@ impl Renderer {
             let _ = child.kill();
             let _ = child.wait();
         }
-        result
+        // stderr closes when the renderer is gone
+        let confined = diagnostics.and_then(|d| d.join().ok().flatten());
+        RunResult { result, confined, wait }
     }
+}
 
-    fn drive(
-        &self,
-        child: &mut Child,
-        jobs: &[Job],
-        deadline: Instant,
-        each: &mut dyn FnMut(usize, Outcome) -> Result<(), String>,
-    ) -> Result<Option<bool>, String> {
-        let name = self.exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (Some(mut stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            return Err("renderer pipes".into());
-        };
-        let lines: String = jobs.iter().map(Job::line).collect();
-        // writes may block until the renderer reads: a thread of their own; a renderer that
-        // exits early closes the pipe and the write fails, which is fine
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(lines.as_bytes());
-        });
-        let diag_name = name.clone();
-        let diagnostics = std::thread::spawn(move || forward_diagnostics(stderr, &diag_name));
-        let (tx, rx) = mpsc::sync_channel::<Msg>(2);
-        let expect: Vec<Job> = jobs.to_vec();
-        std::thread::spawn(move || read_records(stdout, &expect, &tx));
-        let mut answered = 0;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left) {
-                Ok(Msg::Record(k, outcome)) => {
-                    answered += 1;
-                    each(k, outcome)?;
-                }
-                Ok(Msg::Fatal(e)) => return Err(e),
-                Ok(Msg::Done) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => return Err(format!("{name} timed out")),
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{name} output ended")),
+fn drive(
+    child: &mut Child,
+    name: &str,
+    jobs: &[Job],
+    deadline: Instant,
+    each: &mut dyn FnMut(usize, Outcome) -> Result<(), Halt>,
+    wait: &mut Duration,
+) -> Result<(), RunError> {
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(RunError::Failed("renderer pipes".into()));
+    };
+    let lines: String = jobs.iter().map(Job::line).collect();
+    // writes may block until the renderer reads: a thread of their own; a renderer that
+    // exits early closes the pipe and the write fails, which is fine
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(lines.as_bytes());
+    });
+    let (tx, rx) = mpsc::sync_channel::<Msg>(2);
+    let expect: Vec<Job> = jobs.to_vec();
+    std::thread::spawn(move || read_records(stdout, &expect, &tx));
+    let mut answered = 0;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let t = Instant::now();
+        let msg = rx.recv_timeout(left);
+        *wait += t.elapsed();
+        match msg {
+            Ok(Msg::Record(k, outcome)) => {
+                answered += 1;
+                each(k, outcome).map_err(RunError::Halted)?;
             }
+            Ok(Msg::Fatal(e)) => return Err(RunError::Failed(e)),
+            Ok(Msg::Done) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err(RunError::Timeout(format!("{name} timed out"))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(RunError::Failed(format!("{name} output ended"))),
         }
-        debug_assert_eq!(answered, jobs.len());
-        // every job answered: the exit status must still be 0
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let confined = diagnostics.join().ok().flatten();
-                    return match status.code() {
-                        Some(0) => Ok(confined),
-                        Some(n) => Err(format!("{name} exited with status {n}")),
-                        None => Err(format!("{name} was killed by a signal")),
-                    };
-                }
-                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
-                Ok(None) => return Err(format!("{name} timed out")),
-                Err(e) => return Err(format!("waiting for {name}: {e}")),
+    }
+    debug_assert_eq!(answered, jobs.len());
+    // every job answered: the exit status must still be 0
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return match status.code() {
+                    Some(0) => Ok(()),
+                    Some(n) => Err(RunError::Failed(format!("{name} exited with status {n}"))),
+                    None => Err(RunError::Failed(format!("{name} was killed by a signal"))),
+                };
             }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            Ok(None) => return Err(RunError::Timeout(format!("{name} timed out"))),
+            Err(e) => return Err(RunError::Failed(format!("waiting for {name}: {e}"))),
         }
     }
 }
@@ -306,7 +393,9 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
             Some("mismatch".into())
         } else {
             Some(match code {
-                "pixels" | "render" | "empty" | "page" | "svgsize" => code.to_string(),
+                "pixels" | "render" | "empty" | "page" | "svgsize" | "copy" | "copysize" | "jpeg" | "decode" => {
+                    code.to_string()
+                }
                 _ => "renderer".to_string(),
             })
         }
@@ -322,6 +411,23 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
                     .then(|| "mismatch".to_string())
             }
             ("svg", Mode::Svg) => (bytes > MAX_SVG_INPUT).then(|| "svgsize".to_string()),
+            // a copy: the image's own size, which the caller checks against the image's
+            (kind @ ("jpeg" | "gray1" | "gray8" | "rgb8"), Mode::Copy) => {
+                let (w, h) = (width, height);
+                let need = match kind {
+                    "gray1" => w.div_ceil(8).checked_mul(h),
+                    "gray8" => w.checked_mul(h),
+                    "rgb8" => w.checked_mul(h).and_then(|n| n.checked_mul(3)),
+                    _ => Some(bytes),
+                };
+                (w == 0
+                    || h == 0
+                    || w > u64::from(u32::MAX)
+                    || h > u64::from(u32::MAX)
+                    || need != Some(bytes)
+                    || bytes == 0)
+                    .then(|| "mismatch".to_string())
+            }
             _ => Some("mismatch".into()),
         }
     };
@@ -339,12 +445,16 @@ fn read_record(r: &mut impl BufRead, job: &Job) -> Result<Outcome, String> {
     if data.len() as u64 != bytes {
         return Err("renderer output ended inside a record".into());
     }
-    Ok(match job.mode {
-        Mode::Raster => Outcome::Rgb { width: width as u32, height: height as u32, data },
-        Mode::Svg => match String::from_utf8(data) {
+    let (width, height) = (width as u32, height as u32);
+    Ok(match (job.mode, kind) {
+        (Mode::Svg, _) => match String::from_utf8(data) {
             Ok(s) => Outcome::Svg(s),
             Err(_) => Outcome::Error("utf8".into()),
         },
+        (Mode::Copy, "jpeg") => Outcome::Jpeg { width, height, data },
+        (Mode::Copy, "gray1") => Outcome::Gray1 { width, height, data },
+        (Mode::Copy, "gray8") => Outcome::Gray8 { width, height, data },
+        _ => Outcome::Rgb { width, height, data },
     })
 }
 
@@ -361,7 +471,7 @@ mod tests {
     use super::*;
 
     fn job(mode: Mode) -> Job {
-        Job { id: "p1.2".into(), page: 1, bbox: (10.0, 20.0, 82.0, 56.0), mode, dpi: 150 }
+        Job { id: "p1.2".into(), page: 1, bbox: (10.0, 20.0, 82.0, 56.0), mode, dpi: 150, obj: Some((17, 0)) }
     }
 
     fn parse(bytes: &[u8], job: &Job) -> Result<Outcome, String> {
@@ -398,6 +508,19 @@ mod tests {
         assert!(matches!(parse(b"p1.2\terr:boom\t-\t0\t0\t0\n", &j), Ok(Outcome::Error(e)) if e == "renderer"));
         let s = job(Mode::Svg);
         assert!(matches!(parse(b"p1.2\tok\tsvg\t0\t0\t6\n<svg/>", &s), Ok(Outcome::Svg(x)) if x == "<svg/>"));
+        // copy jobs: the line names the object; records carry the image's own size
+        let c = job(Mode::Copy);
+        assert_eq!(c.line(), "p1.2\t1\t10.000\t20.000\t82.000\t56.000\tcopy\t17.0\n");
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t3000\t4000\t4\nabcd", &c), Ok(Outcome::Jpeg { width: 3000, .. })));
+        assert!(matches!(parse(b"p1.2\tok\tgray1\t9\t2\t4\nabcd", &c), Ok(Outcome::Gray1 { width: 9, height: 2, .. })));
+        assert!(matches!(parse(b"p1.2\tok\tgray1\t9\t2\t3\nabc", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\tok\tgray8\t2\t2\t4\nabcd", &c), Ok(Outcome::Gray8 { .. })));
+        assert!(matches!(parse(b"p1.2\tok\trgb8\t1\t1\t3\nabc", &c), Ok(Outcome::Rgb { .. })));
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t0\t4\t4\nabcd", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\terr:copy\t-\t0\t0\t0\n", &c), Ok(Outcome::Error(e)) if e == "copy"));
+        // a copy kind is never an answer to a raster job, nor the reverse
+        assert!(matches!(parse(b"p1.2\tok\tjpeg\t1\t1\t4\nabcd", &j), Ok(Outcome::Error(e)) if e == "mismatch"));
+        assert!(matches!(parse(b"p1.2\tok\tsvg\t0\t0\t3\n<s>", &c), Ok(Outcome::Error(e)) if e == "mismatch"));
     }
 
     #[test]

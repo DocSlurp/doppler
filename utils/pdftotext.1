@@ -248,10 +248,51 @@ and
 for an image mask,
 .I ref="num gen"
 for an image XObject (its indirect object reference, so repeats of one image can be
-found; absent for inline images), and the PDF page number as
+found; absent for inline images), then what the image dictionary says:
+.I filter
+(the codec: dct, jpx, jbig2, ccitt, flate, lzw, rl, none or other),
+.I bpc
+(bits per component, 0 when not given),
+.I cs
+(gray, rgb, cmyk, indexed, lab, icc1, icc3, icc4, sep, devn, other or none),
+.I smask="1"
+with a /SMask or /Mask,
+.I decode="1"
+with /Decode,
+.I inline="1"
+for an inline image, and
+.I copy
+(jpeg, bilevel, decode or render: how its pixels can be taken out without rendering, see
+docslurp/page-facts/README.md), and last
+.I orient
+(0 when the image's rows and columns land on the page as stored; 90, 180 or 270
+when turned clockwise, other when mirrored or skewed; page rotation included) and
+.I overlaid
+(0 when nothing else shows over the image: no later fill, stroke, shading,
+pattern, visible glyph, image or annotation appearance overlaps it, no clip or
+page edge cuts it, no non-rectangular clip applies, and it is not drawn through
+a soft mask, blend mode, opacity below 1 or transfer function, nor inside a
+transparency group; a stroke counts its pen along each device axis, and a
+Type 3 glyph may paint anywhere within the clip; 1 otherwise, and for every
+image past the first 64 drawn plainly on a page), and on a single scan's image
+.I copyable="1"
+when its page passed the copy allow-list: the only thing that paints on the page
+is that one image XObject, drawn once, upright, plainly (no mask, soft mask,
+group, blend mode, opacity, transfer function or overprint, device colour only)
+and wholly inside the clip and the CropBox, beside invisible (render mode 3)
+text; any other operator that paints, visible text, a Type 3 font, a second
+image, an annotation that draws, a page group or a clip that is not a rectangle
+leaves it out (see poppler/ScanCopyAudit.h). Absent means render the page.
+The PDF page number is
 .I number
 on
-.BR <page> .
+.BR <page> ,
+and a page that is a scan gets
+.I scan
+(single, tiled or layered) and
+.I scanImage
+(the 1-based position of the covering image), last: its images cover at least 85% of it
+(\-scan\-min\-coverage) and at most 20 words are visible (\-scan\-max\-words).
 Only image dictionaries are read: image data is never decoded. Images under 2 points
 are dropped, a page keeps at most 2000 (past that it gets
 .IR imagesTruncated="1" )
@@ -280,6 +321,65 @@ added to one cell of a fixed 16 by 16 grid over the page, so memory and time per
 constant; the cells are merged where their boxes come within 3 points, giving at most 256
 clusters a page. A document writes at most 100000 (past that a page gets
 .IR graphicsTruncated="1" ).
+.TP
+.BI \-page\-facts\-fd " fd"
+With \-bbox-layout: also write page facts (JSON lines, schema doppler-page-facts/1: a doc
+line, one line per page, a run line; see pdfpagefacts(1) and docslurp/page-facts/README.md)
+to the open descriptor
+.I fd
+(3 or more, open for writing, never standard output). The lines are byte-identical to
+.BR pdfpagefacts 's
+for the same range and level, and the text output does not change. Poppler's messages
+are also counted per page (by category) while facts are written.
+.TP
+.BI \-page\-facts\-level " basic|full"
+Page facts level (default basic).
+.TP
+.BI \-page\-facts\-include " list"
+Page facts families added to basic: fonts, oddtext, images-detail, vectors, forms, annots,
+ocg, structure (comma-separated).
+.TP
+.B \-page\-facts\-timing
+Add factsMs to page lines, totalMs and peakRssKiB to the run line (not deterministic).
+.TP
+.BI \-timeout " seconds"
+Wall-clock limit for the run, 0 for none (the default). With
+.B \-timeout\-per\-page
+the limit is these seconds plus that many per page of the range (counted once the document is
+open), at most
+.BR \-timeout\-max " seconds"
+(0, the default: no cap). Past it pdftotext exits with 6 and the run line is missing. Page facts
+lines already written are whole, except that the last one can end without its newline when the
+limit falls while a write is blocked (a pipe whose reader stalled): a reader must drop an
+unterminated last line. pdftomarkdown does so before it commits its facts file, and passes
+.B \-timeout 60 \-timeout\-per\-page 1 \-timeout\-max 3600
+when page facts are requested.
+.TP
+.BI \-timeout\-per\-page " seconds"
+Seconds added to the
+.B \-timeout
+limit per page of the range (default 0).
+.TP
+.BI \-timeout\-max " seconds"
+Cap on the
+.B \-timeout
+limit with its per-page seconds, 0 for none (default 0).
+.TP
+.BI \-scan\-max\-words " number"
+A page with more visible words is not a scan, for page facts and \-images (default 20).
+.TP
+.BI \-scan\-min\-coverage " share"
+The share of the page one image, or the images together, must cover for a scan, in (0,1]
+(default 0.85).
+.TP
+.BI \-scan\-layer\-overlap " share"
+The share of the page a second image overlapping the scan must cover to make it layered, in
+(0,1] (default 0.5).
+.IP
+A share is a plain decimal number (0.8, .8, 1); anything else is a usage error. When any of
+the three \-scan options is not its default, the page facts doc line records all three
+.RI ( scanThresholds );
+with the defaults the output does not change.
 .TP
 .B \-cropbox
 Use the crop box rather than the media box with \-bbox, \-bbox-layout and \-tsv.
@@ -343,6 +443,14 @@ Error opening an output file.
 .TP
 3
 Error related to PDF permissions.
+.TP
+4
+The text output is complete, but the page facts (\-page\-facts\-fd) could not be written
+(for example, the reader closed the pipe; SIGPIPE does not stop the run).
+.TP
+6
+The run passed its time limit
+.RB ( \-timeout ).
 .TP
 99
 Other error.

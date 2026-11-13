@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use doppler_md::{Options, Params, TableFormat, to_markdown_report_with};
 
-const HTML: Options = Options { tables: TableFormat::Html, math: false, markers: false };
+const HTML: Options =
+    Options { tables: TableFormat::Html, math: false, markers: false, page_markers: false, first_page: None };
 
 fn pages(name: &str) -> Vec<String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/producer/{name}.xhtml"));

@@ -46,6 +46,7 @@
 #include "PopplerCache.h"
 #include "ProfileData.h"
 #include "GfxState.h"
+#include "PageFactsHooks.h"
 #include <memory>
 #include <unordered_map>
 #include <string>
@@ -59,6 +60,7 @@ class AnnotLink;
 class Catalog;
 class Page;
 class Function;
+class ScanCopyAudit;
 
 //------------------------------------------------------------------------
 // OutputDev
@@ -322,8 +324,24 @@ public:
     // though it does not draw non-text content? If so, Gfx calls imageGeometry() with the
     // image's CTM in <state> and its pixel size, and never reads the image data. <ref> is the
     // image XObject's indirect reference, or Ref::INVALID() for an inline image (or a direct one).
+    // <info> holds what the image dictionary says (filter, bits, colour space, masks); the
+    // image data is never read for it.
     virtual bool needImageGeometry() { return false; }
-    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/, Ref /*ref*/) { }
+    virtual void imageGeometry(GfxState * /*state*/, int /*width*/, int /*height*/, bool /*stencil*/, Ref /*ref*/, const ImageDictInfo & /*info*/) { }
+
+    // DocSlurp page facts: a tally Gfx keeps of the operators it executes on a page (asked
+    // once, when a page's Gfx is created; nullptr for none), and calls around the drawing of
+    // each annotation's appearance on a page.
+    virtual GfxOpTally *getOpTally() { return nullptr; }
+    // DocSlurp page-scan copies: the allow-list a page's Gfx reports its operators and
+    // annotations to (asked once, when a page's Gfx is created; nullptr for none). See
+    // ScanCopyAudit.h; the device itself reports clips, groups and soft masks to it.
+    virtual ScanCopyAudit *getScanCopyAudit() { return nullptr; }
+    // DocSlurp: the document-lifetime cache Gfx keeps image dictionary facts in for
+    // imageGeometry() (nullptr: Gfx reads them on every draw).
+    virtual ImageInfoCache *getImageInfoCache() { return nullptr; }
+    virtual void beginAnnot(Annot * /*annot*/) { }
+    virtual void endAnnot(Annot * /*annot*/) { }
 
     virtual void endMarkedContent(GfxState *state);
     virtual void beginMarkedContent(const std::string &name, Dict *properties);
@@ -358,6 +376,15 @@ public:
     virtual void paintTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/) { }
     virtual void setSoftMask(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, bool /*alpha*/, Function * /*transferFunc*/, const GfxColor & /*backdropColor*/) { }
     virtual void clearSoftMask(GfxState * /*state*/) { }
+
+    //----- paints a device without non-text content does not get (needNonText() is false)
+    // Gfx calls this where it skips a pattern fill or stroke of the current path (<path>) or a
+    // shading paint over the clip (not <path>), so such a device still learns that something
+    // was painted there.
+    virtual void skippedPaint(GfxState * /*state*/, bool /*path*/, bool /*stroke*/) { }
+    // Gfx calls this where it skips setting an ExtGState soft mask for such a device: painting
+    // until the graphics state is restored goes through that mask.
+    virtual void skippedSoftMask(GfxState * /*state*/) { }
 
     //----- links
     virtual void processLink(AnnotLink * /*link*/) { }

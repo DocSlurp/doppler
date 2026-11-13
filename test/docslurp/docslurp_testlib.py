@@ -18,7 +18,9 @@ Then build a PDF in memory, write it to a temp dir, and run a util against it:
 """
 
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -69,6 +71,84 @@ def simple_page_pdf(content, resources="<< /Font << /F1 4 0 R >> >>", extra_obje
     return build_pdf(objects)
 
 
+# Standard JPEG luminance DC Huffman table (ITU T.81 K.3): code lengths and symbols.
+_DC_BITS = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+_DC_VALS = list(range(12))
+
+
+def _huffman_codes(bits, vals):
+    codes, code, k = {}, 0, 0
+    for length in range(1, 17):
+        for _ in range(bits[length - 1]):
+            codes[vals[k]] = (code, length)
+            code += 1
+            k += 1
+        code <<= 1
+    return codes
+
+
+def jpeg(width, height, comps=1, level=None):
+    """A baseline JPEG (SOF0, no subsampling) built from DC terms only: every 8x8 block is one
+    flat level, ``level(bx, by, c) -> 0..255`` (default: a gradient on component 0, 128 on the
+    others), so any decoder gives exact blocks. Stdlib only, for fixtures that need a real
+    DCT stream (copy jobs, scans). ``comps`` is 1 (grey) or 3 (YCbCr, JFIF)."""
+    if level is None:
+        level = lambda bx, by, c: (bx * 37 + by * 23) % 200 + 28 if c == 0 else 128  # noqa: E731
+    dc = _huffman_codes(_DC_BITS, _DC_VALS)
+    out = bytearray(b"\xff\xd8")
+    # JFIF APP0 (density 1:1)
+    out += b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    # one quantisation table, all 16 (DC term = (level - 128) * 8 / 16)
+    out += b"\xff\xdb\x00\x43\x00" + bytes([16] * 64)
+    out += b"\xff\xc0" + (8 + 3 * comps).to_bytes(2, "big") + b"\x08" + height.to_bytes(2, "big") + width.to_bytes(2, "big") + bytes([comps])
+    for c in range(comps):
+        out += bytes([c + 1, 0x11, 0])
+    # DC table 0 (standard), AC table 0: one symbol, end of block, code "0"
+    out += b"\xff\xc4" + (3 + 16 + 12).to_bytes(2, "big") + b"\x00" + bytes(_DC_BITS) + bytes(_DC_VALS)
+    out += b"\xff\xc4" + (3 + 16 + 1).to_bytes(2, "big") + b"\x10" + bytes([1] + [0] * 15) + b"\x00"
+    out += b"\xff\xda" + (6 + 2 * comps).to_bytes(2, "big") + bytes([comps])
+    for c in range(comps):
+        out += bytes([c + 1, 0x00])
+    out += b"\x00\x3f\x00"
+    bits = []
+
+    def put(value, length):
+        for i in range(length - 1, -1, -1):
+            bits.append((value >> i) & 1)
+
+    pred = [0] * comps
+    for by in range((height + 7) // 8):
+        for bx in range((width + 7) // 8):
+            for c in range(comps):
+                coef = (max(0, min(255, int(level(bx, by, c)))) - 128) // 2
+                diff = coef - pred[c]
+                pred[c] = coef
+                size = abs(diff).bit_length()
+                code, length = dc[size]
+                put(code, length)
+                if size:
+                    put(diff if diff > 0 else diff + (1 << size) - 1, size)
+                bits.append(0)  # end of block
+    while len(bits) % 8:
+        bits.append(1)
+    for i in range(0, len(bits), 8):
+        byte = int("".join(map(str, bits[i : i + 8])), 2)
+        out.append(byte)
+        if byte == 0xFF:
+            out.append(0)
+    out += b"\xff\xd9"
+    return bytes(out)
+
+
+def ccitt_g4_white(width, height):
+    """A CCITT Group 4 (K -1) stream of an all-white image: each row repeats the imaginary
+    white reference line (one vertical-0 code, bit 1), then EOFB."""
+    bits = [1] * height + [0] * 11 + [1] + [0] * 11 + [1]
+    while len(bits) % 8:
+        bits.append(0)
+    return bytes(int("".join(map(str, bits[i : i + 8])), 2) for i in range(0, len(bits), 8))
+
+
 class TempDir:
     """Scratch directory under $TMPDIR (never hardcoded /tmp), removed on exit."""
 
@@ -105,6 +185,76 @@ class Utils:
         if check and proc.returncode != 0:
             raise AssertionError("%s exited %d\nstderr:\n%s" % (" ".join(cmd), proc.returncode, proc.stderr.decode(errors="replace")))
         return proc.stdout if binary else proc.stdout.decode("utf-8", errors="replace")
+
+
+def schema_errors(instance, schema, root=None, path="$"):
+    """Validate <instance> against the subset of JSON Schema (draft 2020-12) that the DocSlurp
+    schemas use: $ref (local), oneOf, type, enum, const, required, properties,
+    additionalProperties, propertyNames, items, minItems, maxItems, uniqueItems, minimum,
+    maximum, exclusiveMinimum, pattern, maxLength. Returns a list of error strings (empty when valid)."""
+    root = schema if root is None else root
+    if "$ref" in schema:
+        node = root
+        for part in schema["$ref"].lstrip("#/").split("/"):
+            node = node[part]
+        return schema_errors(instance, node, root, path)
+    errors = []
+    if "oneOf" in schema:
+        matches = [opt for opt in schema["oneOf"] if not schema_errors(instance, opt, root, path)]
+        if len(matches) != 1:
+            best = min((schema_errors(instance, opt, root, path) for opt in schema["oneOf"]), key=len)
+            return ["%s: matches %d of oneOf; closest: %s" % (path, len(matches), best[:3])]
+    kinds = {"object": dict, "array": list, "string": str, "boolean": bool}
+    t = schema.get("type")
+    if t == "integer":
+        if isinstance(instance, bool) or not isinstance(instance, int):
+            return ["%s: not an integer: %r" % (path, instance)]
+    elif t == "number":
+        if isinstance(instance, bool) or not isinstance(instance, (int, float)):
+            return ["%s: not a number: %r" % (path, instance)]
+    elif t is not None and not isinstance(instance, kinds[t]):
+        return ["%s: not %s: %r" % (path, t, instance)]
+    if "const" in schema and instance != schema["const"]:
+        errors.append("%s: %r != const %r" % (path, instance, schema["const"]))
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append("%s: %r not in enum" % (path, instance))
+    if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        if "minimum" in schema and instance < schema["minimum"]:
+            errors.append("%s: %r < %r" % (path, instance, schema["minimum"]))
+        if "maximum" in schema and instance > schema["maximum"]:
+            errors.append("%s: %r > %r" % (path, instance, schema["maximum"]))
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            errors.append("%s: %r <= %r" % (path, instance, schema["exclusiveMinimum"]))
+    if isinstance(instance, str):
+        if "pattern" in schema and not re.search(schema["pattern"], instance):
+            errors.append("%s: %r does not match %s" % (path, instance, schema["pattern"]))
+        if "maxLength" in schema and len(instance) > schema["maxLength"]:
+            errors.append("%s: longer than %d" % (path, schema["maxLength"]))
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            errors.append("%s: fewer than %d items" % (path, schema["minItems"]))
+        if "maxItems" in schema and len(instance) > schema["maxItems"]:
+            errors.append("%s: more than %d items" % (path, schema["maxItems"]))
+        if schema.get("uniqueItems") and len(set(json.dumps(i, sort_keys=True) for i in instance)) != len(instance):
+            errors.append("%s: items not unique" % path)
+        if "items" in schema:
+            for i, item in enumerate(instance):
+                errors += schema_errors(item, schema["items"], root, "%s[%d]" % (path, i))
+    if isinstance(instance, dict):
+        for key in schema.get("required", []):
+            if key not in instance:
+                errors.append("%s: missing %s" % (path, key))
+        props = schema.get("properties", {})
+        for key, value in instance.items():
+            if "propertyNames" in schema:
+                errors += schema_errors(key, schema["propertyNames"], root, "%s.<name %s>" % (path, key))
+            if key in props:
+                errors += schema_errors(value, props[key], root, "%s.%s" % (path, key))
+            elif schema.get("additionalProperties") is False:
+                errors.append("%s: unexpected %s" % (path, key))
+            elif isinstance(schema.get("additionalProperties"), dict):
+                errors += schema_errors(value, schema["additionalProperties"], root, "%s.%s" % (path, key))
+    return errors
 
 
 _failures = []

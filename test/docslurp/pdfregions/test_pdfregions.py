@@ -65,10 +65,12 @@ def figure_pdf(page_extra=""):
 def image_boxes(path):
     rc, out, _ = run("pdftotext", "-bbox-layout", "-images", path, "-")
     assert rc == 0
-    return [
-        (float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4)), m.group(5))
-        for m in re.finditer(rb'<image xMin="([-0-9.]+)" yMin="([-0-9.]+)" xMax="([-0-9.]+)" yMax="([-0-9.]+)" [^>]*?(?: ref="([0-9 ]+)")?/>', out)
-    ]
+    boxes = []
+    # attributes after the box may grow (pdftotext appends new ones last): read ref on its own
+    for m in re.finditer(rb'<image xMin="([-0-9.]+)" yMin="([-0-9.]+)" xMax="([-0-9.]+)" yMax="([-0-9.]+)"([^>]*)/>', out):
+        ref = re.search(rb' ref="([0-9 ]+)"', m.group(5))
+        boxes.append((float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4)), ref.group(1) if ref else None))
+    return boxes
 
 
 def ppm_crop(path, page, dpi, x, y, w, h):
