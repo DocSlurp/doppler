@@ -140,14 +140,17 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   except the capped, sanitised and untrusted `producer`/`creator`.
 - `pdftotext -images` also writes the scan verdict (`scan=`, `scanImage=` on `<page>`) and
   each image's dictionary facts (`filter=`, `bpc=`, `cs=`, `smask=`, `decode=`, `inline=`,
-  `copy=` on `<image>`, then `orient=` and `overlaid=`: how its pixels land on the page and
-  whether anything else shows over them), appended last; the facts and the XHTML use the same
-  classifier. `pdftomarkdown` places such pages as `page-scan` (`![page N scan](...)` first)
-  and, with `--images-dir`, copies the pixels of an upright scan with nothing over it through
-  `pdfregions` copy jobs (a JPEG without its metadata, bilevel as 1-bit PNG) instead of
-  rendering; a redaction box, white-out, clip, annotation or transparency group over or around
-  a scan makes it rendered, and an ICC-based or calibrated scan is decoded through its profile;
-  see [Page scans](docslurp/doppler-md/README.md#page-scans).
+  `copy=` on `<image>`, then `orient=`, `overlaid=` and `copyable="1"`: how its pixels land
+  on the page, whether the overpaint estimate saw anything over them, and whether the page
+  passed the copy allow-list), appended last; the facts and the XHTML use the same classifier.
+  `pdftomarkdown` places such pages as `page-scan` (`![page N scan](...)` first) and, with
+  `--images-dir`, copies the pixels of a scan through `pdfregions` copy jobs (a JPEG without
+  its metadata, bilevel as 1-bit PNG) instead of rendering it only when the page passes a
+  fail-closed allow-list (`poppler/ScanCopyAudit.h`): nothing on the page but that one image
+  paints (invisible OCR text and non-painting state are allowed), checked by pdftotext and
+  again by pdfregions. Anything else (a page number, a redaction box, a clip, an annotation, a
+  group, an ICC profile) renders the scan at `--scan-dpi` (200); see
+  [Page scans](docslurp/doppler-md/README.md#page-scans).
 - The scan test's thresholds are options of all three tools: `-scan-min-coverage F`
   (0.85), `-scan-max-words N` (20) and `-scan-layer-overlap F` (0.5) in pdfpagefacts and
   pdftotext, `--scan-min-coverage`, `--scan-max-words`, `--scan-layer-overlap` in

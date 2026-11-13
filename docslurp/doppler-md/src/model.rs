@@ -302,9 +302,11 @@ pub struct Image {
     pub obj: Option<(u32, u32)>,
     /// how its pixels can be taken out without rendering (`copy=`, from its dictionary only)
     pub copy: CopyClass,
-    /// a copy of its pixels shows what the page shows there: its rows and columns land on the
-    /// page as stored (`orient="0"`) and nothing else shows over it, cuts or masks it
-    /// (`overlaid="0"`). Either attribute missing reads as not, so an older producer renders.
+    /// a copy of its pixels shows what the page shows: its page passed the producer's copy
+    /// allow-list (`copyable="1"`: nothing but this one image paints on the page, drawn
+    /// plainly), its rows and columns land on the page as stored (`orient="0"`) and the overpaint
+    /// estimate saw nothing over it (`overlaid="0"`, an extra refusal). Any attribute missing
+    /// reads as not, so an older producer renders.
     pub copy_exact: bool,
     /// a render of its box shows its own pixels and nothing else, so another placement of the
     /// same object at the same size renders the same: [`Image::copy_exact`], not an image mask
@@ -410,7 +412,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 30] = [
+const KEYS: [&str; 31] = [
     "xMin",
     "yMin",
     "xMax",
@@ -441,6 +443,7 @@ const KEYS: [&str; 30] = [
     "scanImage",
     "overlaid",
     "smask",
+    "copyable",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -476,6 +479,7 @@ fn key_index(name: &str) -> Option<usize> {
         "scanImage" => 27,
         "overlaid" => 28,
         "smask" => 29,
+        "copyable" => 30,
         _ => return None,
     })
 }
@@ -821,6 +825,7 @@ const SCAN: usize = 26;
 const SCAN_IMAGE: usize = 27;
 const OVERLAID: usize = 28;
 const SMASK: usize = 29;
+const COPYABLE: usize = 30;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -1283,7 +1288,9 @@ impl ParseState {
                             Some("decode") => CopyClass::Decode,
                             _ => CopyClass::Render,
                         },
-                        copy_exact: a.0[ORIENT] == Some("0") && a.0[OVERLAID] == Some("0"),
+                        copy_exact: a.0[ORIENT] == Some("0")
+                            && a.0[OVERLAID] == Some("0")
+                            && a.0[COPYABLE] == Some("1"),
                         plain: a.0[ORIENT] == Some("0")
                             && a.0[OVERLAID] == Some("0")
                             && a.0[SMASK].is_none()

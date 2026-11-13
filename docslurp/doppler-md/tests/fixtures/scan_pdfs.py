@@ -9,7 +9,9 @@ G4 stream), so no binary fixture is checked in:
   scan.jpg    the JPEG stream embedded on pages 1 and 2
   redacted.pdf  scans a copy would un-redact: p1 the DCT scan under a black box, p2 a Flate
               scan under a black box, p3 the DCT scan with a white-out and visible text, p4
-              the DCT scan cut by a clip; p5 the plain DCT scan (copied)
+              the DCT scan cut by a clip; p5 the plain DCT scan (copied); p6 the DCT scan with an
+              invisible OCR layer and a visible page number (rendered: the accepted cost of the
+              copy allow-list)
   budget.pdf  p1 text with two block pictures, p2 and p3 the DCT scan (a figure budget of one
               must not stop the scans after it in the same batch)
   huge.pdf    a 4200 x 4200 Flate grey scan, past the copy cap (rendered instead)
@@ -77,7 +79,7 @@ with open(os.path.join(out, "scan.jpg"), "wb") as f:
     f.write(jpeg)
 
 
-# redacted.pdf: objects 1 catalog, 2 pages, 3..7 pages, 8 font, 9 the DCT scan, 10 a Flate
+# redacted.pdf: objects 1 catalog, 2 pages, 3..8 pages, 9 font, 9 the DCT scan, 10 a Flate
 # scan, 11.. contents
 small_w, small_h = 153, 198
 small = bytes((x * 255 // small_w) if c == 0 else 200 for y in range(small_h) for x in range(small_w) for c in range(3))
@@ -88,6 +90,7 @@ red_pages = [
     (b"q 612 0 0 792 0 0 cm /S Do Q\n1 g 50 300 500 200 re f BT 0 g /F1 24 Tf 200 390 Td (WITHHELD) Tj ET\n", "S"),
     (b"q 0 0 612 700 re W n 612 0 0 792 0 0 cm /S Do Q\n", "S"),
     (b"q 612 0 0 792 0 0 cm /S Do Q\n", "S"),
+    (b"q 612 0 0 792 0 0 cm /S Do Q\n" + ocr + b"BT 0 Tr /F1 9 Tf 300 20 Td (17) Tj ET\n", "S"),
 ]
 m = len(red_pages)
 red_font = 3 + m

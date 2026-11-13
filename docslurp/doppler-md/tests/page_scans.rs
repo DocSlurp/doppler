@@ -44,9 +44,9 @@ fn image(b: (f64, f64, f64, f64), px: (u32, u32), obj: u32, extra: &str) -> Stri
 
 const FULL: (f64, f64, f64, f64) = (0.0, 0.0, 612.0, 792.0);
 const DCT_DICT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\"";
-/// what pdftotext writes for an image with a copy class drawn upright with nothing over it
-const EXACT: &str = " orient=\"0\" overlaid=\"0\"";
-const DCT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\" orient=\"0\" overlaid=\"0\"";
+/// what pdftotext writes for a scan with a copy class drawn upright, alone on its page
+const EXACT: &str = " orient=\"0\" overlaid=\"0\" copyable=\"1\"";
+const DCT: &str = " filter=\"dct\" bpc=\"8\" cs=\"gray\" copy=\"jpeg\" orient=\"0\" overlaid=\"0\" copyable=\"1\"";
 
 fn page(number: u32, scan: Option<(&str, usize)>, body: &str) -> String {
     let scan = scan.map(|(k, i)| format!(" scan=\"{k}\" scanImage=\"{i}\"")).unwrap_or_default();
@@ -135,12 +135,20 @@ fn tiled_strips_are_one_scan_of_their_union() {
 
 #[test]
 fn turned_or_unreferenced_scans_are_rendered() {
-    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT} orient=\"90\" overlaid=\"0\""));
+    let turned = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT} orient=\"90\" overlaid=\"0\" copyable=\"1\""));
     let (md, _) = convert(&doc(&[page(1, Some(("single", 1)), &turned)]), ScanPages::Image);
     assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)");
-    // something shows over it (a redaction box, a clip, the page edge), or a producer that does
-    // not say: rendered, never copied
-    for extra in [" orient=\"0\" overlaid=\"1\"", " orient=\"0\"", " overlaid=\"0\"", ""] {
+    // its page did not pass the copy allow-list (no copyable="1": a page number, a redaction
+    // box, a clip), the overpaint estimate saw something over it, or a producer that does not
+    // say: rendered, never copied
+    for extra in [
+        " orient=\"0\" overlaid=\"0\"",
+        " orient=\"0\" overlaid=\"1\" copyable=\"1\"",
+        " orient=\"0\" copyable=\"1\"",
+        " overlaid=\"0\" copyable=\"1\"",
+        " orient=\"0\" overlaid=\"0\" copyable=\"0\"",
+        "",
+    ] {
         let im = image(FULL, (2550, 3300), 9, &format!("{DCT_DICT}{extra}"));
         let (md, report) = convert(&doc(&[page(1, Some(("single", 1)), &im)]), ScanPages::Image);
         assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.webp)", "{extra}");
@@ -303,14 +311,57 @@ fn whole_scanned_documents_are_copied_not_rendered() {
     assert_eq!(entry(&m, "p1.1")["fate"], "page-scan");
     // the decoded RGB scan was scaled to --scan-max-dpi (72: one pixel a point)
     assert_eq!((entry(&m, "p4.1")["width"].as_u64(), entry(&m, "p4.1")["height"].as_u64()), (Some(612), Some(792)));
-    // a rendered scan at --scan-dpi (150)
-    assert_eq!(entry(&m, "p5.1")["width"], 1275);
+    // a rendered scan at --scan-dpi (200 by default)
+    assert_eq!(entry(&m, "p5.1")["width"], 1700);
     // page 2 repeats page 1's object: its link is page 1's file
     assert_eq!(
         (entry(&m, "p2.1")["reason"].as_str(), entry(&m, "p2.1")["repeat_of"].as_str()),
         (Some("repeat"), Some("p1.1"))
     );
     assert_eq!(m["totals"]["scans"], 5);
+    // the default --images-deadline: 120 s plus 0.5 s for each of the 7 converted pages
+    assert_eq!(m["deadline_ms"], 123_500);
+}
+
+#[test]
+fn batches_stopped_by_a_budget_count_toward_the_abort() {
+    // one page a batch and no scan budget: the scans of pages 1 and 3 each stop their batch
+    // (budget), two failed batches in a row, so the rest is aborted without another renderer
+    let Some((t, r, s)) = fixtures("abort") else { return };
+    let pdf = s.0.join("scans.pdf");
+    let out = s.0.join("out");
+    let args =
+        ["--images-dir", out.to_str().unwrap(), "--images-batch-pages", "1", "--scan-max", "0", pdf.to_str().unwrap()];
+    let res = run(&t, &r, &args);
+    assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    let statuses: Vec<&str> = m["batches"].as_array().unwrap().iter().map(|b| b["status"].as_str().unwrap()).collect();
+    assert_eq!(statuses, ["budget", "budget", "aborted", "aborted", "aborted", "aborted"], "{m}");
+    for id in ["p1.1", "p3.1"] {
+        assert_eq!(entry(&m, id)["reason"], "budget", "{m}");
+    }
+    for id in ["p4.1", "p5.1", "p6.1", "p7.1"] {
+        let e = entry(&m, id);
+        assert_eq!((e["status"].as_str(), e["reason"].as_str()), (Some("not-extracted"), Some("aborted")), "{e}");
+    }
+    assert_eq!(m["totals"]["extracted"], 0);
+    // one batch stopped by a budget is not an abort: with no pictures' budget, only page 7's
+    // batch stops (the scans have their own budget) and nothing is aborted
+    let out = s.0.join("figures");
+    let args = [
+        "--images-dir",
+        out.to_str().unwrap(),
+        "--images-batch-pages",
+        "1",
+        "--images-max",
+        "0",
+        pdf.to_str().unwrap(),
+    ];
+    let res = run(&t, &r, &args);
+    assert_eq!(res.status.code(), Some(5), "{}", String::from_utf8_lossy(&res.stderr));
+    let m = manifest(&out);
+    assert!(m["batches"].as_array().unwrap().iter().all(|b| b["status"] != "aborted"), "{m}");
+    assert_eq!(entry(&m, "p7.1")["reason"], "budget", "{m}");
 }
 
 #[test]
@@ -391,6 +442,10 @@ fn scans_with_anything_over_them_are_rendered_not_copied() {
         (entry(&m, "p5.1")["source"].as_str(), entry(&m, "p5.1")["format"].as_str()),
         (Some("copy"), Some("jpg"))
     );
+    // a visible page number over an OCR'd scan: rendered too (the copy allow-list's accepted
+    // cost: only invisible text may share a copied scan's page)
+    let e = entry(&m, "p6.1");
+    assert_eq!((e["source"].as_str(), e["format"].as_str()), (Some("render"), Some("webp")), "{e}");
     // the rendered files show the black boxes: the middle of the band (x 300, y 400 in PDF
     // space, so 392 points from the top) is black, where the scan itself is not
     for page in [1, 2] {
@@ -438,7 +493,7 @@ fn a_scan_past_the_copy_cap_is_rendered_not_decoded() {
     let m = manifest(&out);
     let e = entry(&m, "p1.1");
     assert_eq!((e["status"].as_str(), e["source"].as_str()), (Some("extracted"), Some("render")), "{e}");
-    assert_eq!((e["width"].as_u64(), e["height"].as_u64()), (Some(1275), Some(1650)), "{e}");
+    assert_eq!((e["width"].as_u64(), e["height"].as_u64()), (Some(1700), Some(2200)), "{e}");
 }
 
 #[test]
@@ -466,6 +521,8 @@ fn an_encode_that_ends_past_the_deadline_is_dropped() {
     let e = entry(&m, "p1.1");
     assert_eq!((e["status"].as_str(), e["reason"].as_str()), (Some("not-extracted"), Some("deadline")), "{e}");
     assert!(!out.join("page-0001/image-001.webp").exists());
+    // an explicit --images-deadline is the effective one, in the manifest
+    assert_eq!(m["deadline_ms"], 1000);
 }
 
 /// The scan thresholds pass to pdftotext and join the images plan's settings digest: a plan

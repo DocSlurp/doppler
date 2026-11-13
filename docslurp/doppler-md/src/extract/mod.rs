@@ -22,9 +22,11 @@
 //! that batch's own budgets (`--images-max`, `--images-max-bytes`, `--images-timeout`). A
 //! batch that hits a budget, times out or whose renderer fails keeps the files it wrote; its
 //! other images are `not-extracted` with the reason, the batch records the page it was cut at,
-//! and the next batch goes on. Two failed batches in a row stop the rest (`aborted`), as do the
-//! document ceilings (`--images-doc-max-bytes`, `--images-deadline`). Only a write failure or
-//! a renderer that cannot be started fails the extraction: the caller removes the folder.
+//! and the next batch goes on. Two failed batches in a row (stopped by a budget, a timeout or
+//! the renderer: a document whose batches keep failing is not worth more work) stop the rest
+//! (`aborted`), as do the document ceilings (`--images-doc-max-bytes`, and `--images-deadline`,
+//! by default 120 s plus 0.5 s per converted page, at most an hour). Only a write failure or a
+//! renderer that cannot be started fails the extraction: the caller removes the folder.
 
 pub mod encode;
 pub mod layout;
@@ -233,6 +235,8 @@ pub fn extract(
 ) -> Result<Summary, String> {
     let start = Instant::now();
     let cpu_before = children_cpu_ms();
+    // the whole extraction's time: --images-deadline, else scaled with the converted pages
+    let doc_deadline = s.deadline_for(report.parse.pages);
     // the links the Markdown has (an images plan's notes get them here)
     layout::Linker::new(s.link_style()).assign(&mut report.images);
     let notes = &report.images;
@@ -338,7 +342,7 @@ pub fn extract(
         shared_keys,
         fallbacks: Vec::new(),
         deadline: start,
-        doc_deadline: s.deadline.map(|d| start + d),
+        doc_deadline: Some(start + doc_deadline),
         doc_full: false,
         timing: Timing::default(),
     };
@@ -376,7 +380,8 @@ pub fn extract(
             (a, b) => a.or(b),
         };
         let cut_page = batch.iter().filter(|(_, i)| run.entries[*i].stopped()).map(|(j, _)| j.page).min();
-        if matches!(status, "timeout" | "renderer") {
+        // a batch stopped by a budget counts as failed too: we do not pay for bad inputs
+        if matches!(status, "budget" | "timeout" | "renderer") {
             failed_in_a_row += 1;
         } else {
             failed_in_a_row = 0;
@@ -389,7 +394,7 @@ pub fn extract(
     }
     // the files first, then the manifest that lists them
     run.dir.sync()?;
-    let manifest = manifest(&run, source_sha256, &batches, complete);
+    let manifest = manifest(&run, source_sha256, &batches, complete, doc_deadline);
     run.dir.write("manifest.json", manifest.as_bytes())?;
     run.dir.sync_top()?;
     let written = run.written;
@@ -406,6 +411,7 @@ pub fn extract(
     report.images_written = Some(written);
     report.images_confined = confined;
     report.images_complete = Some(complete);
+    report.images_deadline_ms = Some(u64::try_from(doc_deadline.as_millis()).unwrap_or(u64::MAX));
     report.images_timing = s.report_timing.then_some(timing);
     Ok(Summary { written, complete })
 }
@@ -880,7 +886,7 @@ fn js(s: &str) -> String {
 /// `manifest.json` (version 2): the run's settings and batches, then one image per line,
 /// sorted by page, then pictures before vector figures, by index; then the totals. The same
 /// input gives the same bytes.
-fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -> String {
+fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool, deadline: Duration) -> String {
     let notes = run.notes;
     let s = run.s;
     let mut order: Vec<usize> = (0..run.entries.len()).collect();
@@ -889,7 +895,7 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -
     let mut out = String::new();
     let _ = write!(
         out,
-        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"complete\":{complete},\n\"batches\":[",
+        "{{\"version\":2,\"source_sha256\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"deadline_ms\":{},\"complete\":{complete},\n\"batches\":[",
         js(source_sha256),
         js(&s.link_prefix),
         s.dpi,
@@ -902,7 +908,8 @@ fn manifest(run: &Run, source_sha256: &str, batches: &[Batch], complete: bool) -
         js(s.scan_pages.as_str()),
         s.scan_dpi,
         s.scan_max_dpi,
-        s.batch_pages
+        s.batch_pages,
+        deadline.as_millis()
     );
     for (k, b) in batches.iter().enumerate() {
         out.push_str(if k == 0 { "\n" } else { ",\n" });

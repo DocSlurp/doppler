@@ -152,19 +152,23 @@ fn each_batch_has_its_own_renderer_and_budgets() {
     );
     let err = String::from_utf8_lossy(&r.stderr);
     assert_eq!(r.status.code(), Some(5), "{err}");
-    // one renderer per batch
-    assert_eq!(std::fs::read_to_string(&log).unwrap(), "1 2\n3 4\n5 6\n");
+    // one renderer per batch, each with a fresh budget; two batches stopped by their budget in
+    // a row abort the rest without a third renderer (we do not pay for bad inputs)
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "1 2\n3 4\n");
     let m = manifest(&d);
     assert_eq!(m["complete"], false);
-    let want: Vec<(String, Option<u64>)> = [2, 4, 6].iter().map(|c| ("budget".to_string(), Some(*c))).collect();
+    let want = vec![("budget".to_string(), Some(2)), ("budget".to_string(), Some(4)), ("aborted".to_string(), Some(5))];
     assert_eq!(batches(&m), want, "{m}");
-    // each batch wrote its first picture; the budget cut the second
-    for page in [1, 3, 5] {
+    // each batch that ran wrote its first picture; the budget cut the second
+    for page in [1, 3] {
         assert_eq!(status(&m, page).0, "extracted", "{page}");
         assert!(d.join(format!("page-{page:04}/image-001.webp")).is_file());
     }
-    for page in [2, 4, 6] {
+    for page in [2, 4] {
         assert_eq!(status(&m, page), ("not-extracted".into(), Some("budget".into())), "{page}");
+    }
+    for page in [5, 6] {
+        assert_eq!(status(&m, page), ("not-extracted".into(), Some("aborted".into())), "{page}");
     }
     assert!(err.contains("\"images_complete\":false"), "{err}");
     // the batches of the default size are one here, and nothing is cut

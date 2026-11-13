@@ -309,6 +309,9 @@ pub struct Report {
     pub images_notes_dropped: usize,
     /// whether image extraction finished every batch (`manifest.json` `complete`)
     pub images_complete: Option<bool>,
+    /// the time image extraction had in all (`--images-deadline`, or its default scaled with
+    /// the converted pages), in milliseconds (`manifest.json` `deadline_ms`)
+    pub images_deadline_ms: Option<u64>,
     /// where image extraction spent its time (`pdftomarkdown --images-dir`)
     pub images_timing: Option<extract::Timing>,
     /// the PDF page number of each page written, in order (only with [`Options::page_markers`])
@@ -447,6 +450,7 @@ impl Report {
             self.images_written.map(|n| format!(",\"images_written\":{n}")).unwrap_or_default()
                 + &self.images_confined.map(|c| format!(",\"images_confined\":{c}")).unwrap_or_default()
                 + &self.images_complete.map(|c| format!(",\"images_complete\":{c}")).unwrap_or_default()
+                + &self.images_deadline_ms.map(|d| format!(",\"images_deadline_ms\":{d}")).unwrap_or_default()
                 + &self.images_timing.as_ref().map(|t| format!(",{}", t.to_json())).unwrap_or_default()
                 + &self
                     .page_numbers

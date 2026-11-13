@@ -107,7 +107,8 @@ and width, height and bytes are 0). Codes:
 .BR \-max\-svg\-bytes ),
 and for copy jobs
 .B copy
-(not an image the page names, or no copy class),
+(not an image the page names, no copy class, or a page that fails the copy
+allow-list),
 .B copysize
 (over
 .BR \-max\-copy\-bytes ),
@@ -161,7 +162,16 @@ job answers only for an image XObject named in that page's /XObject resources,
 directly or through form XObjects nested at most 4 deep (at most 10,000 entries
 searched), whose dictionary still has the copy class
 .B pdftotext \-images
-reports as copy=. Width and height are the image's /Width and /Height.
+reports as copy=, and whose page passes the copy allow-list (poppler/ScanCopyAudit.h):
+pdfregions runs the page, its forms and annotations without drawing or decoding
+anything, and answers only when the one thing that paints on the page is that
+image, drawn once, upright and plainly, inside the clip and the CropBox, beside
+operators that paint nothing and invisible (render mode 3) text; anything else
+is
+.BR err:copy .
+.B pdftotext \-images
+writes copyable="1" for the same test on its own pass.
+Width and height are the image's /Width and /Height.
 .I kind
 .B jpeg
 (copy=jpeg) is the stored DCT stream once its SOI, its single SOF0, SOF1 or

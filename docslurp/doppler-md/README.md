@@ -216,23 +216,49 @@ groups the page's other images of at least 1% of the page with the scan image (`
 its box is their union. Other pictures on a scanned page keep their own placement.
 
 The link's extension is decided at conversion from the image's dictionary and placement
-(pdftotext's `copy=`, `orient=`, `overlaid=`; the data is never read). A scan is copied only
-when its pixels are what the page shows: single, upright (`orient="0"`) and with nothing else
-showing over it (`overlaid="0"`: no redaction box, white-out, visible text, image patch,
-shading, annotation or later drawing over it, no clip or page edge cutting it, no
-non-rectangular clip, soft mask, blend mode or opacity, not inside a transparency group). Such
-a scan whose stream is a JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`,
-no `/Decode`, masks, colour transform or `Default` colour spaces) is `.jpg`; a bilevel one
-(CCITT, JBIG2, 1 bpc, `DeviceGray`, no `/Decode`) `.png`; any other with a reference the raster
-format (an ICC-based or calibrated scan is decoded through its colour space, so its profile
-shapes the file as it shapes the page). Every other scan (tiled, layered, turned, covered, clipped, inline, or from a producer
-without those attributes) is rendered, in the raster format, so the file shows what the page
-shows, redactions included. `--scan-pages` says what to do with scans:
+(pdftotext's `copy=`, `orient=`, `overlaid=`, `copyable=`; the data is never read). A scan is
+copied only when its pixels are what the page shows, decided by an **allow-list**, not by
+looking for what might cover it: pdftotext writes `copyable="1"` on a single scan's image only
+when, on that page, the one thing that paints is that image and everything else the page runs
+is known not to paint or change how it looks (`poppler/ScanCopyAudit.h`):
+
+- allowed: `q`/`Q`/`cm`; path construction ended by `n`; clips that are axis-aligned
+  rectangles containing the scan; `BT`/`ET` and text state and positioning; text in render
+  mode 3 (invisible), or 7 after the scan, in a font that is not Type 3; marked content
+  (`BDC`/`BMC`/`EMC`/`MP`/`DP`) unless optional content hides the scan; colour, line and
+  rendering parameters; `gs` with only `LW LC LJ ML D RI FL SA SM Font Type OPM TK`, `OP`/`op`
+  false, `CA`/`ca` 1, `BM` Normal, `SMask` None, `AIS` false; form XObjects without a
+  transparency group whose content follows the same rules;
+- the scan itself: one image XObject drawn once, shown (no `/OC`), upright, wholly inside the
+  clip in force and the CropBox, full opacity, Normal blend, no transfer function or overprint,
+  no mask or soft mask, `DeviceGray`, `DeviceRGB`, `DeviceCMYK` or indexed over them (a stencil
+  mask only in black);
+- anything else, at any depth (forms, annotation appearances), makes the page not copyable:
+  any fill, stroke, shading, pattern or inline image, a second image, visible text in any
+  mode, a Type 3 font at all, a clip that is not such a rectangle, a soft mask, a blend mode,
+  an opacity below 1, a transparency group or page `/Group`, an annotation that draws an
+  appearance or a border, an ICC-based, calibrated, Lab, separation or `Default` colour space,
+  or a `gs` key not listed above.
+
+pdfregions runs the same allow-list again on its own pass before every copy job (`err:copy`
+otherwise), so both must agree; the earlier overpaint estimate (`overlaid="0"`) stays as one
+more refusal, never as the permission. A copyable, upright (`orient="0"`) scan whose stream is a
+JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`, no `/Decode`, masks or
+colour transform) is `.jpg`; a bilevel one (CCITT, JBIG2, 1 bpc, `DeviceGray`, no `/Decode`)
+`.png`; any other with a reference the raster format. Every other scan (tiled, layered,
+turned, clipped, inline, covered by anything, or from a producer without those attributes) is
+rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,
+redactions included.
+
+**Accepted cost:** a scan with anything visible beside it is rendered, not copied, even when
+that thing is harmless: a printed page number or header, a Bates stamp, a white background
+rectangle drawn first, a link with a border. Only invisible text (an OCR layer) may share a
+copied scan's page. `--scan-pages` says what to do with scans:
 
 | `--scan-pages` | Markdown | File |
 |---|---|---|
 | `image` (default) | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
-| `render` | the same, always the raster format | rendered at `--scan-dpi` (150, 36..300) |
+| `render` | the same, always the raster format | rendered at `--scan-dpi` (200, 36..300) |
 | `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
 
 A copy is checked twice: pdfregions answers a copy job only for an image named in that page's
@@ -247,7 +273,8 @@ here: serve it as `image/jpeg` with `nosniff`.
 
 Scans have their own budget per batch, apart from the pictures' and figures': `--scan-max`
 (1000 files) and `--scan-max-bytes` (1 GiB). A scan over it is `not-extracted`
-(`reason: budget`, the batch's `status: budget`, exit 5) and the rest of the batch goes on; a
+(`reason: budget`, the batch's `status: budget`, exit 5; the batch counts as failed toward the
+two-in-a-row abort) and the rest of the batch goes on; a
 picture or figure over its own budget likewise leaves the scans after it in the batch going, so
 a scanned book never starves the figures nor the reverse. The batch's renderer stops early only
 when both pools are spent. The document ceiling
@@ -465,13 +492,13 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-max N` | `500` | most files per batch; past it the batch stops (`budget`) |
 | `--images-max-bytes N` | `256MiB` | most bytes written per batch; past it the batch stops (`budget`) |
 | `--images-doc-max-bytes N` | `4GiB` | most bytes for the document; past it every later image is `doc_budget` |
-| `--images-deadline S` | none | time for the whole extraction; past it every later image is `deadline` |
+| `--images-deadline S` | 120 + 0.5 × pages, at most 3600 | time for the whole extraction (the default scales with the converted pages: 120.5 s for 1, 170 s for 100, 3600 s from 6960 on; a given value overrides); past it every later image is `deadline`, the files written stay, exit 5; the manifest's `deadline_ms` and the report's `images_deadline_ms` give the effective value |
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`); an encode that ends past it (or past `--images-deadline`) is dropped and its image is `timeout` (`deadline`), so one encode overruns by at most its own time |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 | `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
-| `--scan-dpi N` | `150` | rendered scans (tiled, layered, turned, `--scan-pages render`), 36..300 |
+| `--scan-dpi N` | `200` | rendered scans (tiled, layered, turned, not copyable, `--scan-pages render`), 36..300 |
 | `--scan-max-dpi N` | `300` | a decoded scan finer than this is scaled down to it |
 | `--scan-max N` | `1000` | most scan files per batch; past it a scan is `not-extracted` (`budget`) and the batch goes on |
 | `--scan-max-bytes N` | `1GiB` | most scan bytes per batch, likewise |
@@ -486,7 +513,7 @@ and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--st
 `--scan-layer-overlap`, compared by value) and the version; the extracting
 run must be given the same PDF and options (and the link options above: `--images-link-prefix`,
 `--images-repeats`, `--raster-format`, `--vector-format`, `--scan-pages`; the plan format is
-version 4, which adds each image's scan source), and refuses any difference, or a malformed plan (non-finite coordinates,
+version 6, which adds each image's scan source and the converted page count that scales the default `--images-deadline`), and refuses any difference, or a malformed plan (non-finite coordinates,
 invalid or repeated ids, an id on another page than its line or outside the range), with exit 2.
 A plan that cannot be written gives exit 6 after the Markdown.
 
@@ -541,7 +568,8 @@ temporary name in a directory opened without following links, then renamed with
 input gives the same bytes; a DIR without a manifest is garbage). It is the source of truth:
 every link of the Markdown has an entry, and every file in DIR is listed. First line:
 `version` (2), `source_sha256` (the PDF), `link_prefix`, `dpi`, `min_side_pt`, `repeats`,
-`scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`, `complete` (every batch finished); then `batches`, one per line:
+`scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`, `deadline_ms` (the effective
+`--images-deadline`), `complete` (every batch finished); then `batches`, one per line:
 `{"pages":[A,B],"status":S,"cut_page":N}`, `status` `ok`, `budget`, `doc_budget`, `timeout`,
 `deadline`, `renderer` or `aborted`, and `cut_page` the first page with an image the batch did
 not get to. Then `images`, sorted by page, pictures before figures, by index, one per line:
@@ -565,7 +593,7 @@ gets `-max-svg-bytes 8MiB` (larger: `err:svgsize`, raster fallback), `-max-copy-
 + 4 × `--scan-max-bytes` (64 MiB..64 GiB). Then `totals` (`images`, `linked`, `extracted`,
 `not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `scans`, `scan_bytes`, `batches`,
 `batches_cut`). `--report` gains `path` and `file` per image, `images_written`,
-`images_complete`, `images_confined`, with `--report-timing` (they change from run to run)
+`images_complete`, `images_deadline_ms`, `images_confined`, with `--report-timing` (they change from run to run)
 `images_ms` (`render`: the renderer processes' CPU;
 `webp`, `png`, `svg`: encoding and compaction on this thread; `wait`: blocked on the renderer;
 `copy`: checking and writing copied JPEGs; `decode`: converting and scaling decoded scans) and
@@ -584,7 +612,10 @@ go on. A batch that reaches `--images-max` or `--images-max-bytes`, times out, o
 renderer fails (crash, signal, any non-zero exit including 3 limit and 5 cannot confine,
 broken framing) keeps the files it wrote (a record is used only once whole), marks its other
 images `not-extracted` with the reason, records `cut_page`, and the next batch starts with a
-fresh budget. Two failed batches in a row (timeout or renderer) mark the rest `aborted`
+fresh budget. Two failed batches in a row mark the rest `aborted`: a failed batch is one whose
+`status` is `budget` (files, bytes or scan bytes, also when the batch went on past a scan or
+figure budget), `timeout` or `renderer`, since we do not pay for more work on bad inputs; an
+`ok` batch resets the count. The rest is marked `aborted`
 without starting another renderer; `--images-doc-max-bytes` and `--images-deadline` mark the
 rest `doc_budget` or `deadline`. Then the manifest is written, DIR is kept, and the exit status
 is **5** (`complete: false`). Only a hard failure removes DIR, with exit status **6**: a write

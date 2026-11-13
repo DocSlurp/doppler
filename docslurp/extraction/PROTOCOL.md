@@ -79,8 +79,20 @@ production.
   there, forms nested at most 4 deep, at most 10,000 resource entries searched. Only
   dictionaries are read to find it. Its dictionary is then classified again with the function
   behind pdftotext's `copy=` (`classifyImageCopy` over `Gfx::readImageDictInfo`), so a job
-  cannot ask for more than the producer reported. Width and height in the record are the
-  image's `/Width` and `/Height`:
+  cannot ask for more than the producer reported. Then the **page must pass the copy
+  allow-list** (`poppler/ScanCopyAudit.h`), which pdfregions runs itself: the page's content,
+  forms and annotations are run as the raster renders run them (media box, page `/Rotate`, not
+  printing) through a device that draws nothing and decodes no image, and the job is answered
+  only when the one thing that paints on the page is that image, drawn once, shown, upright,
+  plainly (no mask, soft mask, group, blend mode, opacity, transfer function or overprint;
+  device colour only) and wholly inside the clip in force and the CropBox; everything else on
+  the page must be an operator known not to paint (graphics and text state, path construction
+  ended by `n`, rectangular clips containing the image, marked content, colour, `gs` with
+  harmless keys, forms without a group) or text in render mode 3 (7 after the image) in a font
+  that is not Type 3. Anything else at any depth (a fill, stroke, shading, inline image, second
+  image, visible text, Type 3 font, other clip, page `/Group`, drawn annotation, ...) is
+  `err:copy`. pdftotext's `copyable="1"` is the same allow-list on its own pass, so a copy needs
+  both. Width and height in the record are the image's `/Width` and `/Height`:
   - `kind=jpeg` (class `jpeg`): the DCT filter's input (the stored bytes, decrypted), after
     checks: SOI first, one frame header SOF0, SOF1 or SOF2 (Huffman baseline, extended or
     progressive) of 8-bit samples with the image's size and as many components as its colour
@@ -106,8 +118,10 @@ production.
     bitmaps, and the codecs on the render path, stay bounded by `-max-memory` only.
   - Copy jobs use the decoders page rendering uses, inside the same confinement and limits;
     pdftomarkdown sends them only for page scans whose `copy=` is `jpeg`, `bilevel` or
-    `decode`, that are upright with nothing over them (`orient="0" overlaid="0"`) and single
-    (not tiled or layered); a `decode` scan over 16,777,216 pixels is rendered instead.
+    `decode`, whose page passed the allow-list (`copyable="1"`), that are upright
+    (`orient="0"`), that the overpaint estimate also clears (`overlaid="0"`, an extra refusal)
+    and single (not tiled or layered); a `decode` scan over 16,777,216 pixels is rendered
+    instead.
 - `kind=svg`: UTF-8 SVG, width/height fields 0; the root `<svg>` has `width`/`height` in pt and
   `viewBox` equal to the (cut) region (`x0 y0 x1-x0 y1-y0`, at most 6 decimals), so the figure
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
@@ -136,7 +150,8 @@ production.
 
 - `pdftotext`: placement and ids only (unchanged contract; plus `ref="num gen"` on `<image>`
   for an image XObject, so repeats of one object can be found; `filter= bpc= cs= smask=
-  decode= inline= copy=` from its dictionary, then `orient=` and `overlaid=` on every image; and
+  decode= inline= copy=` from its dictionary, then `orient=` and `overlaid=` on every image,
+  `copyable="1"` on a single scan's image whose page passed the copy allow-list; and
   `scan= scanImage=` on `<page>` for a full-page scan).
 - `pdfregions`: renders regions and copies images it can verify; no policy, no files.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records
@@ -170,7 +185,9 @@ production.
   `default-src 'none'; style-src 'unsafe-inline'; sandbox` (DocSlurp pins this with a test).
 - **Figures never fail the Markdown.** The Markdown is written (and stdout closed) before
   extraction starts. A batch that hits a budget, times out or whose renderer fails keeps the
-  files it wrote and the next batch goes on (two failed batches in a row stop the rest); the
+  files it wrote and the next batch goes on (two failed batches in a row, budget stops
+  included, stop the rest); the whole extraction has a deadline (`--images-deadline`, by
+  default 120 s + 0.5 s per converted page, at most 3600 s); the
   manifest says what is missing and why, and the exit status is 5 with the folder kept.
 - **Copy jobs move stored bytes out of the parser.** A copied JPEG is the document's own
   bytes: checked only for its markers, never decoded by pdftomarkdown. A copy job reaches only

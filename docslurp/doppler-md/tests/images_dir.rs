@@ -240,7 +240,7 @@ fn the_manifest_lists_every_link_and_every_file() {
     let text = std::fs::read_to_string(d.join("manifest.json")).unwrap();
     let source = sha(&std::fs::read(&pdf).unwrap());
     let head = format!(
-        "{{\"version\":2,\"source_sha256\":\"{source}\",\"link_prefix\":\"images/\",\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":150,\"scan_max_dpi\":300,\"batch_pages\":64,\"complete\":true,\n\"batches\":[\n{{\"pages\":[1,64],\"status\":\"ok\"}}\n],\n\"images\":["
+        "{{\"version\":2,\"source_sha256\":\"{source}\",\"link_prefix\":\"images/\",\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"complete\":true,\n\"batches\":[\n{{\"pages\":[1,64],\"status\":\"ok\"}}\n],\n\"images\":["
     );
     assert!(text.starts_with(&head), "{text}");
     let file = |f: &str| std::fs::read(d.join(f)).unwrap();
@@ -511,7 +511,9 @@ fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
         "Markdown changed with --images-plan-out"
     );
     let text = std::fs::read_to_string(&plan).unwrap();
-    assert!(text.starts_with("doppler-images-plan\t5\nsource\t"), "{text}");
+    assert!(text.starts_with("doppler-images-plan\t6\nsource\t"), "{text}");
+    // the converted page count, which scales the default --images-deadline as after a conversion
+    assert!(text.contains("\nversion\t") && text.contains("\nconverted\t2\n"), "{text}");
     let direct = s.0.join("direct");
     assert_eq!(
         run(&p, &["--stream", "--html", "--images-dir", direct.to_str().unwrap(), &pdf], "ok").status.code(),
@@ -555,7 +557,7 @@ fn a_plan_extracts_the_same_files_and_is_bound_to_its_conversion() {
     refused(6, &["--stream", "--html", missing.to_str().unwrap()], plan_s, "missing.pdf");
 
     // tampered plans
-    let first_image = text.lines().nth(5).unwrap().to_string();
+    let first_image = text.lines().nth(6).unwrap().to_string();
     let fields: Vec<&str> = first_image.split('\t').collect();
     let id = String::from_utf8(
         (0..fields[0].len()).step_by(2).map(|i| u8::from_str_radix(&fields[0][i..i + 2], 16).unwrap()).collect(),

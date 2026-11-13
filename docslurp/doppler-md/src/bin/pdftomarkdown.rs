@@ -106,17 +106,20 @@ closed once the Markdown is complete, before extraction):
   --images-dpi N              raster resolution, 36 to 600 (150)
   --images-batch-pages N      pages per extraction batch (64): one pdfregions each, with the
                               budgets below; a batch over budget keeps its files, the rest of
-                              it is not-extracted (manifest: reason, cut_page) and the next goes on
+                              it is not-extracted (manifest: reason, cut_page) and the next goes on;
+                              two failed batches in a row (budget, timeout, renderer) stop the rest
+                              (aborted)
   --images-max N              most files per batch (500); --images-max-bytes N (256MiB) per
                               batch; --images-max-file-bytes N (8MiB): that file only
   --images-timeout S          renderer time per batch (120)
   --images-doc-max-bytes N    most bytes for the document (4GiB); then the rest is not extracted
-  --images-deadline S         time for the whole extraction (none); then the rest is not extracted
+  --images-deadline S         time for the whole extraction (120 + 0.5 per converted page, at most
+                              3600); then the rest is not extracted (deadline)
   --images-confine MODE       pdfregions -confine: require, auto or off (auto)
   --images-pages A-B          extract only figures on pages A to B (all); the Markdown still
                               covers every converted page
-  --scan-dpi N                rendered scans (tiles, layers, turned, --scan-pages render): 36 to
-                              300 (150)
+  --scan-dpi N                rendered scans (tiles, layers, turned, covered, --scan-pages
+                              render): 36 to 300 (200)
   --scan-max-dpi N            a decoded scan finer than this is scaled down to it (300)
   --scan-max N                most scan files per batch (1000); --scan-max-bytes N (1GiB) per
                               batch. Scans have their own budget, apart from --images-max and
@@ -561,7 +564,7 @@ fn convert(
     if let Some((f, b)) = plan_out
         && written.is_ok()
         && report.page_found()
-        && let Err(e) = f.write(plan::write(&b, &report.images).as_bytes())
+        && let Err(e) = f.write(plan::write(&b, report.parse.pages, &report.images).as_bytes())
     {
         // the Markdown and report stand; the plan asked for is missing: exit status 6
         eprintln!("pdftomarkdown: --images-plan-out: {e}");
@@ -694,21 +697,23 @@ fn extract_from_plan(
         .map_err(|e| e.to_string())
         .and_then(|n| if n as u64 > plan::MAX_PLAN_BYTES { Err("too large".into()) } else { Ok(()) })
         .and_then(|()| plan::read(&text))
-        .and_then(|(bound, notes)| {
+        .and_then(|(bound, converted, notes)| {
             let this = binding(file, pages, settings.to_string())?;
             match this.mismatch(&bound) {
                 Some(m) => Err(format!("refused: the plan was {m}")),
-                None => Ok(notes),
+                None => Ok((converted, notes)),
             }
         });
-    let notes = match read {
+    let (converted, notes) = match read {
         Ok(n) => n,
         Err(e) => {
             eprintln!("pdftomarkdown: --images-plan: {e}");
             return ExitCode::from(2);
         }
     };
-    let mut report = doppler_md::Report { images: notes, ..Default::default() };
+    // the converted page count scales the default --images-deadline, as after the conversion
+    let parse = doppler_md::ParseReport { pages: converted, ..Default::default() };
+    let mut report = doppler_md::Report { images: notes, parse, ..Default::default() };
     let Some(dir) = out_dir.as_mut() else { return ExitCode::from(2) };
     let r = source_sha256(file).and_then(|sha| {
         doppler_md::extract::extract(&mut report, images, &sha, &renderer(file, images, passwords), dir)

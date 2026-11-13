@@ -274,7 +274,15 @@ page edge cuts it, no non-rectangular clip applies, and it is not drawn through
 a soft mask, blend mode, opacity below 1 or transfer function, nor inside a
 transparency group; a stroke counts its pen along each device axis, and a
 Type 3 glyph may paint anywhere within the clip; 1 otherwise, and for every
-image past the first 64 drawn plainly on a page).
+image past the first 64 drawn plainly on a page), and on a single scan's image
+.I copyable="1"
+when its page passed the copy allow-list: the only thing that paints on the page
+is that one image XObject, drawn once, upright, plainly (no mask, soft mask,
+group, blend mode, opacity, transfer function or overprint, device colour only)
+and wholly inside the clip and the CropBox, beside invisible (render mode 3)
+text; any other operator that paints, visible text, a Type 3 font, a second
+image, an annotation that draws, a page group or a clip that is not a rectangle
+leaves it out (see poppler/ScanCopyAudit.h). Absent means render the page.
 The PDF page number is
 .I number
 on

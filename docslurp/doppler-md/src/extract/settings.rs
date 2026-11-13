@@ -94,7 +94,8 @@ pub struct Settings {
     pub batch_pages: u32,
     /// `--images-doc-max-bytes`: most bytes written for the whole document
     pub doc_max_bytes: u64,
-    /// `--images-deadline`: time for the whole extraction (none: only the per-batch timeout)
+    /// `--images-deadline`: time for the whole extraction; none given: [`Settings::deadline_for`]
+    /// scales it with the converted pages
     pub deadline: Option<Duration>,
     /// `--scan-pages`
     pub scan_pages: ScanPages,
@@ -141,7 +142,7 @@ impl Default for Settings {
             doc_max_bytes: 4 << 30,
             deadline: None,
             scan_pages: ScanPages::Image,
-            scan_dpi: 150,
+            scan_dpi: 200,
             scan_max_dpi: 300,
             scan_max: 1000,
             scan_max_bytes: 1 << 30,
@@ -188,7 +189,22 @@ const WITH_VALUE: &[&str] = &[
 const LINK_FLAGS: &[&str] =
     &["--images-link-prefix", "--images-repeats", "--raster-format", "--vector-format", "--scan-pages"];
 
+/// The default `--images-deadline`: 120 s plus half a second per converted page.
+pub const DEADLINE_BASE: Duration = Duration::from_secs(120);
+pub const DEADLINE_PER_PAGE: Duration = Duration::from_millis(500);
+/// The default `--images-deadline` never exceeds this (an hour).
+pub const DEADLINE_CAP: Duration = Duration::from_secs(3600);
+
 impl Settings {
+    /// The time the whole extraction gets: `--images-deadline` when given, else 120 s plus
+    /// 0.5 s per converted page, at most 3600 s.
+    pub fn deadline_for(&self, pages: usize) -> Duration {
+        self.deadline.unwrap_or_else(|| {
+            let pages = u32::try_from(pages).unwrap_or(u32::MAX);
+            DEADLINE_BASE.saturating_add(DEADLINE_PER_PAGE.saturating_mul(pages)).min(DEADLINE_CAP)
+        })
+    }
+
     /// Whether `name` is one of these flags, and whether it takes a value.
     pub fn takes(name: &str) -> Option<bool> {
         if name == "--raster-lossless" || name == "--report-timing" {
@@ -411,7 +427,7 @@ mod tests {
         );
         assert_eq!(
             (s.scan_pages, s.scan_dpi, s.scan_max_dpi, s.scan_max, s.scan_max_bytes),
-            (ScanPages::Image, 150, 300, 1000, 1 << 30)
+            (ScanPages::Image, 200, 300, 1000, 1 << 30)
         );
     }
 
@@ -442,7 +458,7 @@ mod tests {
             ("--images-doc-max-bytes", Some("1G")),
             ("--images-deadline", Some("30")),
             ("--scan-pages", Some("render")),
-            ("--scan-dpi", Some("200")),
+            ("--scan-dpi", Some("250")),
             ("--scan-max-dpi", Some("400")),
             ("--scan-max", Some("7")),
             ("--scan-max-bytes", Some("5M")),
@@ -450,7 +466,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             (s.scan_pages, s.scan_dpi, s.scan_max_dpi, s.scan_max, s.scan_max_bytes),
-            (ScanPages::Render, 200, 400, 7, 5 << 20)
+            (ScanPages::Render, 250, 400, 7, 5 << 20)
         );
         assert_eq!(s.link_style().scans, ScanPages::Render);
         assert_eq!((s.link_prefix.as_str(), s.batch_pages, s.doc_max_bytes), ("a/b/", 8, 1 << 30));
@@ -476,6 +492,22 @@ mod tests {
             with(&[("--images-dir", Some("o")), ("--images-min-side", Some("30px"))]).unwrap().min_side,
             MinSide::Px(30.0)
         );
+    }
+
+    #[test]
+    fn deadline_scales_with_pages() {
+        let s = with(&[("--images-dir", Some("out"))]).unwrap();
+        assert_eq!(s.deadline_for(0), Duration::from_secs(120));
+        assert_eq!(s.deadline_for(1), Duration::from_millis(120_500));
+        assert_eq!(s.deadline_for(100), Duration::from_secs(170));
+        assert_eq!(s.deadline_for(6960), Duration::from_secs(3600));
+        assert_eq!(s.deadline_for(10_000), Duration::from_secs(3600), "capped at an hour");
+        assert_eq!(s.deadline_for(usize::MAX), Duration::from_secs(3600));
+        // an explicit value overrides, below or above the default
+        let s = with(&[("--images-dir", Some("out")), ("--images-deadline", Some("30"))]).unwrap();
+        assert_eq!((s.deadline_for(1), s.deadline_for(10_000)), (Duration::from_secs(30), Duration::from_secs(30)));
+        let s = with(&[("--images-dir", Some("out")), ("--images-deadline", Some("7200"))]).unwrap();
+        assert_eq!(s.deadline_for(10_000), Duration::from_secs(7200));
     }
 
     #[test]
