@@ -309,8 +309,11 @@ pub struct Report {
     pub parse: ParseReport,
     /// (0-based page index, reason) of every page read as plain lines
     pub degraded: Vec<(usize, Degraded)>,
-    /// lines plus layout work units charged to `max_doc_work`
+    /// lines plus layout work units charged to the document budget
     pub doc_work: u64,
+    /// the document budget at the last page read: `max_doc_work` plus `doc_work_per_page` per
+    /// page of the document up to it, at most `max_doc_work_total` (see [`Params::doc_work_limit`])
+    pub doc_work_limit: f64,
     /// the most layout work units one page used
     pub page_work_max: u64,
     /// per page, what the math reader did (empty without [`Options::math`])
@@ -486,7 +489,7 @@ impl Report {
                 "{{\"page_found\":{},\"pages\":{},\"unclosed_pages\":{},\"lines\":{},\"words\":{},",
                 "\"words_skipped\":{{\"missing_coord\":{},\"bad_number\":{},\"outside_line\":{},\"unclosed_line\":{}}},",
                 "\"unclosed_line_at_eof\":{},\"rules_skipped\":{},\"rules_truncated_pages\":[{}],",
-                "\"doc_work\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}{}{}{}}}"
+                "\"doc_work\":{},\"doc_work_limit\":{},\"page_work_max\":{},\"degraded\":[{}]{}{}{}{}{}}}"
             ),
             self.page_found(),
             r.pages,
@@ -501,6 +504,7 @@ impl Report {
             r.rules_skipped,
             rules_truncated_pages.join(","),
             self.doc_work,
+            json_number(self.doc_work_limit),
             self.page_work_max,
             degraded.join(","),
             self.body_json(),
@@ -732,8 +736,11 @@ pub struct RangeInfo {
     pub context_before: usize,
     pub context_after: usize,
     /// reasons the written pages may differ from a whole-document run (empty: identical,
-    /// provided the whole run's `doc_work` stays within `max_doc_work`)
+    /// provided the whole run degrades no page for the document budget)
     pub identity: Vec<&'static str>,
+    /// the document budget at the first page written (it only grows after it): the ranges of a
+    /// document are identical to the whole run when, for each range, its `doc_work` and that of
+    /// the ranges before it sum to at most this
     pub doc_work_limit: f64,
 }
 
@@ -957,6 +964,8 @@ impl<'p> Converter<'p> {
         self.report.parse = parse;
         self.report.pages_read = self.received;
         self.report.doc_work = self.spent;
+        self.report.doc_work_limit =
+            self.p.doc_work_limit((self.win.first_page as usize).saturating_sub(1) + self.received);
         self.report.body = self.body_info.clone();
         self.report
     }
@@ -1003,7 +1012,7 @@ impl<'p> Converter<'p> {
             context_before: w.skip.min(self.received),
             context_after: got_after,
             identity,
-            doc_work_limit: self.p.max_doc_work,
+            doc_work_limit: self.p.doc_work_limit(first_written),
         }
     }
 
@@ -1044,8 +1053,8 @@ impl<'p> Converter<'p> {
         } else if before && self.o.markers {
             // a leading context page is laid out (not written, not reported) only for what it
             // leaves open for the next page (continuation markers). Its work is charged to
-            // max_doc_work (a whole run charges it too, and more before it), so the range
-            // stays within the document budget
+            // the document budget (a whole run charges it too, and more before it), so the
+            // range stays within the document budget
             let report = std::mem::take(&mut self.report);
             let unsure = self.carry_unsure;
             self.write_page(local, page, &m, &mut |_, _| {});
@@ -1088,7 +1097,11 @@ impl<'p> Converter<'p> {
         }
         let drop = furniture(&page, fresh.as_ref().unwrap_or(m), &self.counts, self.counted, p);
         let n = page.lines.len();
-        let doc_left = p.max_doc_work - self.spent as f64 - n as f64;
+        // the budget grows with the pages of the document up to this one (the PDF's page
+        // number: a range or a stream sees what a whole run sees here)
+        let doc_left = p.doc_work_limit((self.win.first_page as usize).saturating_sub(1) + self.next)
+            - self.spent as f64
+            - n as f64;
         let early = if n as f64 > p.max_page_lines {
             Some(Degraded::PageLines)
         } else if page.rules.len() as f64 > p.max_page_rules {

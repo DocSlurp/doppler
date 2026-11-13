@@ -141,12 +141,12 @@ fn document_budget_degrades_the_remaining_pages() {
     let (_, r) = to_markdown_report(&x, &Params::default());
     assert!(r.degraded.is_empty());
     let per_page = r.doc_work / 3;
-    let p = Params { max_doc_work: (per_page * 2) as f64, ..Params::default() };
+    let p = Params { max_doc_work: (per_page * 2) as f64, doc_work_per_page: 0.0, ..Params::default() };
     let (md, r) = to_markdown_report(&x, &p);
     assert_eq!(r.degraded, vec![(2, Degraded::DocWork)]);
     assert_eq!(md[2], ["x"; 16].join("\n"));
     // a page that starts within the document budget but runs out inside it
-    let p = Params { max_doc_work: (per_page * 2 + 17) as f64, ..Params::default() };
+    let p = Params { max_doc_work: (per_page * 2 + 17) as f64, doc_work_per_page: 0.0, ..Params::default() };
     assert_eq!(to_markdown_report(&x, &p).1.degraded, vec![(2, Degraded::DocWork)]);
     let p = Params { max_page_work: 1.0, ..Params::default() };
     assert_eq!(to_markdown_report(&x, &p).1.degraded.len(), 3);
@@ -189,4 +189,82 @@ fn image_notes_are_capped_per_document() {
     assert_eq!(report.images.len(), doppler_md::MAX_DOC_IMAGES);
     assert_eq!(report.images_notes_dropped, 20_000);
     assert!(report.to_json().contains("\"images_notes_dropped\":20000"));
+}
+
+/// A two-column key/value page of `rows` rows (each row two one-word lines): its layout work
+/// grows with the square of the rows (every band re-follows the gutter), about 18,600 units at
+/// 105 rows.
+fn key_values(rows: usize) -> String {
+    let mut body = String::new();
+    for i in 0..rows {
+        let y = 50.0 + 12.0 * i as f64;
+        body += &format!("<flow><block><line>{}</line></block></flow>\n", word(50.0, y, &format!("k{i}")));
+        body += &format!("<flow><block><line>{}</line></block></flow>\n", word(300.0, y, &format!("v{i}")));
+    }
+    format!("<page width=\"612\" height=\"{}\">\n{body}</page>\n", 12.0 * rows as f64 + 100.0)
+}
+
+/// Converts `n` copies of `page` one page at a time (no document string is held): the report.
+fn many_pages(page: &str, n: usize, p: &Params, window: Option<usize>) -> doppler_md::Report {
+    let mut conv = doppler_md::Converter::new(p, doppler_md::Options::default(), window);
+    let mut parse = doppler_md::model::ParseReport::default();
+    let doc = format!("<doc>{page}</doc>");
+    for _ in 0..n {
+        for pg in doppler_md::model::parse_with(&doc, &mut parse, false) {
+            conv.push(pg, &mut |_, _| {});
+        }
+    }
+    parse.pages = n;
+    parse.page_closes = n;
+    conv.finish(parse, &mut |_, _| {})
+}
+
+#[test]
+fn the_document_budget_grows_with_its_pages() {
+    // 2,800 pages of moderate work (about 18,600 units each, near the densest long PDFs'
+    // average): 52 million units in all, more than the fixed 50 million budget used to allow
+    let one = key_values(105);
+    let p = Params::default();
+    let r = many_pages(&one, 2800, &p, Some(4));
+    assert!(r.doc_work as f64 > 5.0e7, "{}", r.doc_work);
+    assert!(r.degraded.is_empty(), "{:?}", &r.degraded[..r.degraded.len().min(3)]);
+    assert_eq!(r.doc_work_limit, 5.0e7 + 2.0e4 * 2800.0);
+    assert!(r.to_json().contains("\"doc_work_limit\":106000000,"), "{}", r.to_json());
+    // (a fixed budget of 50 million, as before, would have read the last pages as plain lines:
+    // the fixed-budget cut-off is checked in the test below)
+}
+
+#[test]
+fn a_hostile_document_stops_at_the_total_cap() {
+    // every page uses nearly its whole page budget, and the per-page credit covers that, so
+    // only max_doc_work_total stops it: the pages after are plain lines and listed
+    let one = key_values(105);
+    // a page's work in this run (furniture takes the repeated margin lines out)
+    let per = many_pages(&one, 60, &Params::default(), Some(4)).doc_work as f64 / 60.0;
+    let p = Params {
+        max_page_work: per * 1.05,
+        max_doc_work: per,
+        doc_work_per_page: per * 2.0,
+        max_doc_work_total: per * 20.5,
+        ..Params::default()
+    };
+    let r = many_pages(&one, 60, &p, Some(4));
+    let degraded: Vec<usize> = r.degraded.iter().map(|(i, _)| *i).collect();
+    let first = degraded.first().copied().expect("degraded pages");
+    assert!((19..=21).contains(&first), "{first}");
+    assert_eq!(degraded, (first..60).collect::<Vec<_>>());
+    assert!(r.degraded.iter().all(|(_, d)| *d == Degraded::DocWork));
+    // the page that runs out is charged what it used before it stopped
+    assert!(r.doc_work as f64 <= p.max_doc_work_total + per, "{} > {}", r.doc_work, p.max_doc_work_total);
+    assert_eq!(r.doc_work_limit, p.max_doc_work_total);
+    // the defaults: 50 million, 20,000 per page, at most 250 million (10,000 pages' growth)
+    let d = Params::default();
+    assert_eq!(d.doc_work_limit(1), 5.0e7 + 2.0e4);
+    assert_eq!(d.doc_work_limit(10_000), 2.5e8);
+    assert_eq!(d.doc_work_limit(usize::MAX), 2.5e8);
+    // without growth, the first page past the fixed budget is where it stops
+    let fixed = Params { doc_work_per_page: 0.0, max_doc_work: per * 5.5, ..p.clone() };
+    let r = many_pages(&one, 60, &fixed, Some(4));
+    let first = r.degraded.first().expect("degraded pages").0;
+    assert!((4..=6).contains(&first), "{first}");
 }

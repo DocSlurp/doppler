@@ -124,7 +124,7 @@ def doc(rng):
 def tight_params(rng):
     if rng.random() >= 0.2:
         return {}
-    return rng.choice([{'max_page_work': rng.randint(1, 400)}, {'max_doc_work': rng.randint(1, 600)},
+    return rng.choice([{'max_page_work': rng.randint(1, 400)}, {'max_doc_work': rng.randint(1, 600), 'doc_work_per_page': 0},
                        {'max_page_lines': rng.randint(0, 30)}, {'max_page_rules': rng.randint(0, 3)}])
 
 

@@ -92,7 +92,7 @@ byte-identical.
   marker for it. A page that runs out of layout work is written as plain lines with its block
   markers after the text, top to bottom, and those images' entries gain `"degraded": true`.
   Placing pictures and drawings has a page budget of its own (`max_page_work`, charged to
-  `max_doc_work`); a page that used it up is listed in `images_budget_pages`, and its remaining
+  the document budget); a page that used it up is listed in `images_budget_pages`, and its remaining
   pictures are marked between paragraphs and its remaining drawings left `small`.
 - **Vector figures.** `![image](doppler-image:pN.gK)`: a chart or diagram drawn with paths.
   `pdftotext -images` also writes `<graphic>` clusters of the drawing that is not axis-aligned
@@ -319,8 +319,8 @@ over the whole document with the same window:
    pdftotext reads pages 49 to 144 (clamped to the document); the context pages count towards
    repetition but are not written or reported (no Markdown, image notes, math or degraded
    entries). They are not laid out, except with `--markers`, where the pages before the range
-   are laid out for continuation markers and their work is charged to `max_doc_work` (and
-   `doc_work`), as in a whole run. The report's `pages`, `page_closes`, `lines`, `words`,
+   are laid out for continuation markers and their work is charged to the document budget
+   (and `doc_work`), as in a whole run. The report's `pages`, `page_closes`, `lines`, `words`,
    `rules_truncated_pages`, `glyphs_truncated_pages` and `page_info` cover only the range; the
    parser's skip counters (`words_missing_coord`, `words_bad_number`, `words_outside_line`,
    `words_unclosed_line`, `rules_skipped`, `images_skipped`, `graphics_skipped`,
@@ -329,7 +329,7 @@ over the whole document with the same window:
 3. Join the ranges' pages with form feeds.
 
 The report of a range has `"range":{"first_page":65,"context_before":4,"context_after":4,
-"identity":[...],"doc_work_limit":50000000}`. `identity` lists why its pages may still differ
+"identity":[...],"doc_work_limit":51300000}`. `identity` lists why its pages may still differ
 from the whole run:
 
 - `body`: the body was estimated from the range's own pages (no `--body-size` and
@@ -341,10 +341,13 @@ from the whole run:
 - `markers`: with `--markers`, a table that may run on from before the context (continuation
   markers and inherited table headers follow it page to page; the leading context pages are
   laid out, unwritten, to carry it).
-- `doc_work`: always for a range after page 1. The document-wide work budget (`max_doc_work`)
-  is spent page by page, and a range cannot see what the pages before it spent. The ranges are
-  identical when the sum of their `doc_work` stays within `doc_work_limit` (a whole run would
-  then degrade no page for it); otherwise compare the whole run's `degraded` entries.
+- `doc_work`: always for a range after page 1. The document work budget is spent page by
+  page, and a range cannot see what the pages before it spent. It is credited the pages before
+  it, though (the budget at a page depends on its page number, see [Work limits](#work-limits)),
+  so the range's `doc_work_limit` is the budget a whole run has at the range's first written
+  page. The ranges are identical to the whole run when, for every range, its `doc_work` plus
+  that of the ranges before it is at most its `doc_work_limit` (then the whole run degrades no
+  page for the budget either); otherwise compare the whole run's `degraded` entries.
 
 Measured locally on eight long PDFs (3,306 pages, 64-page ranges, `--context 4`, window 4 and
 the estimated body), every page was byte-identical to the whole run. Context costs pdftotext
@@ -500,9 +503,26 @@ the defaults; lossless output decodes to the same pixels).
 Layout and table analysis are superlinear on hostile pages (a grid of one-cell lines re-follows
 every column gutter through every later band). A page over `max_page_lines` or `max_page_rules`
 (20,000 each), or whose layout uses more than `max_page_work` units (10 million), is read as
-plain lines in poppler order, one per Markdown line, without layout, tables or headings. Once
-the document has used `max_doc_work` (50 million lines plus work units), the remaining pages are
-read the same way. Gutter-table detection counts too: each run of rows that reaches column
+plain lines in poppler order, one per Markdown line, without layout, tables or headings.
+
+The whole document has a budget of lines plus work units too. It grows with the document: at
+page N (the PDF's page number) it is
+
+    min(max_doc_work + doc_work_per_page * N, max_doc_work_total)
+    = min(50,000,000 + 20,000 * N, 250,000,000)
+
+Once the pages so far have spent it, the remaining pages are read the same way. Long PDFs use
+about 800 to 11,400 units a page on average (largest page 558,000), so a document degrades for
+the budget only beyond about 22,000 pages of the densest kind. Before 2026-11-12 the budget was a
+fixed 50 million, which the densest long PDFs measured (7,800 to 11,400 units a page) use up
+after 4,400 to 6,400 pages. The cap bounds a
+hostile document: about 7.5 s of layout CPU at the measured worst rate (30 ns per unit), against
+about 1.5 s at the old fixed budget (PERF-ALGO.md). Because the budget at a page depends only on
+its page number, a `--stream` or `--window` run and a range with context see the same budget at
+each page as a whole run. The report prints `doc_work` (spent) and `doc_work_limit` (the budget
+at the last page read).
+
+Gutter-table detection counts too: each run of rows that reaches column
 detection charges twice its word count. The largest page in the 258-input golden set has 303
 lines and uses 21,052 units (20,618 without the table charge), the largest document 59,725
 (54,463). Every degraded page is listed in the

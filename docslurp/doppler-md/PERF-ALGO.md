@@ -176,3 +176,55 @@ starts where it stopped) plus the column and grid work charged above. The rotate
 copies each rotated line once and scans the rules three times per rotation; the reframed layout
 shares the page budget, and a 19,800-line rotated page stays under the limits
 (`tests/rotated_borderless.rs`).
+
+## Document budget grows with the page count (2026-11-12)
+
+The document budget was a fixed `max_doc_work` (50 million lines plus work units). Measured on
+the long PDFs of a local public-domain corpus (not committed; pdftotext XHTML converted with
+`doppler-md --report`), real documents use far less per page than that allows a short document,
+but a long table-dense one runs out:
+
+| PDF (pages) | units / page | largest page |
+| --- | ---: | ---: |
+| scanned machine-tool catalogue (582) | 11,392 | 472,254 |
+| scanned instrument catalogue (532) | 10,361 | 233,833 |
+| scanned army pamphlet (566) | 7,843 | 148,905 |
+| NASA technical report (1,602) | 6,170 | 558,127 |
+| scanned technical manual (812) | 5,382 | 55,831 |
+| scanned dictionary (544) | 4,135 | 33,701 |
+| dynamics textbook (791) | 2,127 | 17,984 |
+| scanned ethnology report (832) | 1,975 | 10,598 |
+| scanned monograph (790) | 1,479 | 46,652 |
+
+At 7,800 to 11,400 units a page the fixed budget ran out after 4,400 to 6,400 pages. The budget
+at page N (the PDF's page number) is now `min(max_doc_work + doc_work_per_page * N,
+max_doc_work_total)`, 50 million plus 20,000 a page, at most 250 million. 20,000 is above every
+measured average and 500 times below `max_page_work`. The budget depends only on the page
+number, not on how far the parser has read ahead, so a whole run, a `--window`/`--stream` run and
+a range with context (credited the pages before it through `first_page`) see the same budget at
+each page; a range's report gives the budget at its first written page as `doc_work_limit`.
+
+Worst case. A hostile document spends as fast as the budget allows: every page up to
+`max_page_work`, at the worst measured rate (two-column key/value pages,
+`scripts/make_adversarial.py --pages`). Single runs, user+sys:
+
+| document | budget | layout units | degraded | CPU |
+| --- | --- | ---: | --- | ---: |
+| 40 pages of 20,000 lines | default (cap not reached: base spent by page 5, then 20,000 a page) | 50.8 M | 4 page_work, 36 doc_work | 2.6 s |
+| same | 250 M up front (the cap reached) | 250.0 M | 24 page_work, 16 doc_work | 8.5 s |
+| 4,000 pages of 18,600 units | default | 74.5 M | none | 3.4 s |
+| same | old fixed 50 M | 50.0 M | 1,316 doc_work (from page 2,685) | 3.0 s |
+
+Between the first two rows layout costs (8.54 - 2.56) s / 199 M units, 30 ns a unit, so the cap
+bounds a document's layout at about 7.5 s of CPU on this host (the old fixed budget about
+1.5 s), plus the linear cost of parsing and plain lines. A document that rides the per-page
+credit instead (pages of just under 20,000 units) costs under 1 ms of layout a page, less than
+pdftotext spends on such a page; it reaches the cap only after 10,000 pages.
+
+Output. With the defaults every document that did not reach the old budget converts
+byte-identically: the nine PDFs above and five whose text layer is empty or nearly so (whole run and
+`--window 4`, 28 conversions) give the same Markdown as before, with the same CPU (11.36 s
+before, 11.43 s after, single interleaved runs; noise). Tests: `tests/limits.rs` (a 2,800-page
+document over the old budget is not degraded; a hostile document stops at the cap and lists the
+pages after it) and `tests/stream.rs` (ranges with context are identical to a whole run that the
+per-page credit keeps from degrading, and their `doc_work` sums stay within `doc_work_limit`).

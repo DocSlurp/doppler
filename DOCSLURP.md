@@ -56,8 +56,9 @@ the body estimate. Sharding a long PDF into `-f`/`-l` ranges: take the body once
 (`pdftomarkdown --stream --estimate-body FILE.pdf`), then convert each range with
 `--stream --body-size .. --body-color ..` (the values exactly as printed; `--context` defaults
 to the window); the pages are byte-identical to a whole
-`--stream` run, and the report's `range.identity` lists what could still differ (sum the
-ranges' `doc_work` against `doc_work_limit`). See
+`--stream` run, and the report's `range.identity` lists what could still differ (the running
+sum of the ranges' `doc_work` against each range's `doc_work_limit`). The document work
+budget grows with the page count (50 million units plus 20,000 a page, at most 250 million). See
 [doppler-md](docslurp/doppler-md/README.md#streaming).
 
 `docslurp/doppler-md` builds `pdftomarkdown` (`cargo build --release` there), which runs this

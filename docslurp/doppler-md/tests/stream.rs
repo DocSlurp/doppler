@@ -399,7 +399,7 @@ fn the_document_work_budget_is_where_a_range_can_still_differ() {
     let w = 4;
     let whole_win = Window { furniture: Some(w), ..Window::default() };
     let full = converted(&doc, whole_win.clone(), Options::default(), &Params::default()).1;
-    let p = Params { max_doc_work: full.doc_work as f64 / 2.0, ..Params::default() };
+    let p = Params { max_doc_work: full.doc_work as f64 / 2.0, doc_work_per_page: 0.0, ..Params::default() };
     let (want, whole) = converted(&doc, whole_win.clone(), Options::default(), &p);
     assert!(whole.degraded.iter().any(|(_, d)| *d == doppler_md::Degraded::DocWork));
     let (f, l) = (n - 6, n - 1);
@@ -418,6 +418,52 @@ fn the_document_work_budget_is_where_a_range_can_still_differ() {
     let range = r.range.unwrap();
     assert_eq!(range.identity, ["doc_work"]);
     assert_eq!(range.doc_work_limit, p.max_doc_work);
+}
+
+#[test]
+fn the_document_budget_grows_with_the_page_number_in_a_range_too() {
+    // the budget at a page is max_doc_work plus doc_work_per_page for every page of the
+    // document up to it: a range after page 1 is credited the pages before it (first_page), so
+    // ranges with context are identical to a whole run that degrades nothing, even when the
+    // budget would run out without the credit
+    let mut rng = Rng(23);
+    let doc = book(&mut rng);
+    let n = doc.len();
+    let w = 4;
+    let whole_win = Window { furniture: Some(w), ..Window::default() };
+    let full = converted(&doc, whole_win.clone(), Options::default(), &Params::default()).1;
+    let total = full.doc_work as f64;
+    let p = Params { max_doc_work: total * 0.6, doc_work_per_page: total / n as f64, ..Params::default() };
+    let (want, whole) = converted(&doc, whole_win.clone(), Options::default(), &p);
+    assert!(whole.degraded.is_empty(), "{:?}", whole.degraded);
+    assert_eq!(whole.doc_work, full.doc_work);
+    assert_eq!(whole.doc_work_limit, p.doc_work_limit(n));
+    let fixed = Params { doc_work_per_page: 0.0, ..p.clone() };
+    assert!(!converted(&doc, whole_win.clone(), Options::default(), &fixed).1.degraded.is_empty());
+    let cuts = [1, n / 3 + 1, 2 * n / 3 + 1, n + 1];
+    let mut sum = 0;
+    for k in 0..3 {
+        let (f, l) = (cuts[k], cuts[k + 1] - 1);
+        let read = f.saturating_sub(w).max(1);
+        let win = Window {
+            body_size: Some(whole.body.size),
+            body_color: Some(whole.body.color.clone()),
+            skip: f - read,
+            emit: Some(l - f + 1),
+            after: w,
+            first_page: read as u32,
+            ..whole_win.clone()
+        };
+        let (got, r) = converted(&doc[read - 1..(l + w).min(n)], win, Options::default(), &p);
+        assert_eq!(got, want[f - 1..l], "pages {f}-{l}");
+        let range = r.range.expect("a range report");
+        assert_eq!(range.doc_work_limit, p.doc_work_limit(f));
+        // what a host checks: the work of this range and those before it is within the budget
+        // at its first page
+        sum += r.doc_work;
+        assert!(sum as f64 <= range.doc_work_limit, "pages {f}-{l}: {sum} > {}", range.doc_work_limit);
+    }
+    assert_eq!(sum, whole.doc_work);
 }
 
 #[test]
@@ -556,7 +602,7 @@ fn every_body_estimate_can_be_given_back() {
 #[test]
 fn leading_context_layout_is_charged_to_the_document_budget() {
     // with --markers the pages before a range are laid out for continuation markers: their
-    // work counts towards max_doc_work like a whole run's (without markers they are not laid out)
+    // work counts towards the document budget like a whole run's (without markers they are not laid out)
     let mut rng = Rng(5);
     let doc = book(&mut rng);
     let p = Params::default();

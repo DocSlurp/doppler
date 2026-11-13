@@ -54,6 +54,16 @@ macro_rules! params {
     (@get flag, $k:expr, $v:expr) => { truthy($k, $v) };
 }
 
+impl Params {
+    /// The document work budget at the `pages`-th page of the document (1-based, counted from
+    /// the PDF's first page): `max_doc_work + doc_work_per_page * pages`, at most
+    /// `max_doc_work_total`.
+    pub fn doc_work_limit(&self, pages: usize) -> f64 {
+        let grown = self.max_doc_work + self.doc_work_per_page * pages as f64;
+        if grown.is_nan() { self.max_doc_work_total } else { grown.min(self.max_doc_work_total) }
+    }
+}
+
 fn number(k: &str, v: &Value) -> Result<f64, String> {
     match v {
         Value::Number(n) => n.as_f64().filter(|x| x.is_finite()).ok_or_else(|| format!("{k}: not a finite number")),
@@ -196,8 +206,17 @@ params! {
     /// falls back to plain lines
     max_page_work: num = 1.0e7,
     /// lines plus layout work units over the whole document; once spent, the remaining pages
-    /// fall back to plain lines
+    /// fall back to plain lines. The budget a page sees is `max_doc_work` plus
+    /// `doc_work_per_page` for every page of the document up to and including it (counted from
+    /// the PDF's first page, so a range or a stream sees the same budget at a page as a whole
+    /// run), at most `max_doc_work_total`
     max_doc_work: num = 5.0e7,
+    /// added to the document budget per page; above the measured average (about 800 to 11,400
+    /// units per page on long PDFs, see PERF-ALGO.md) and far below `max_page_work`
+    doc_work_per_page: num = 2.0e4,
+    /// the document budget never exceeds this, however long the document (bounds the layout
+    /// CPU of a hostile document: see PERF-ALGO.md)
+    max_doc_work_total: num = 2.5e8,
     /// a header printed on several stacked lines becomes one header row
     merge_header_rows: flag = true,
     /// stacked header lines are at most this many font sizes apart
