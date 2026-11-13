@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::TableFormat;
 use crate::heading_levels::HeadingTable;
 use crate::images::Figure;
-use crate::layout::{Budget, Elem, regions_within};
+use crate::layout::{Budget, Elem, LINE_UNITS, SCAN_PER_UNIT, WORD_UNITS, regions_within};
 use crate::model::{Line, Page, Word};
 use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
@@ -95,6 +95,12 @@ impl PageLayout {
         // lines of a rotation read in their own frame are laid out there (sharing the budget)
         // and come back as one rendered element at their upright extent
         let (ids, groups) = crate::rotation::split(page, &ids, p);
+        // the linear work of each line and word laid out here (a rotation's lines are charged
+        // by its own layout)
+        let words: usize = ids.iter().map(|&i| page.lines[i].words.len()).sum();
+        if !budget.spend(ids.len().saturating_mul(LINE_UNITS).saturating_add(words.saturating_mul(WORD_UNITS))) {
+            return None;
+        }
         let mut rendered = Vec::with_capacity(groups.len());
         for g in groups {
             let no_drop = vec![false; g.page.lines.len()];
@@ -197,13 +203,22 @@ impl PageLayout {
 
     /// Sets the level of every heading of at least `heading_ratio` times the body by its size's
     /// rank in the document (see [`crate::heading_levels`]), in reading order.
-    pub(crate) fn relevel(&mut self, table: &mut HeadingTable, p: &Params) {
+    ///
+    /// Charges `budget` for each lookup (a binary search of the table) and for each size added (a
+    /// move of the smaller sizes). The page is laid out by then, so running out does not degrade
+    /// it; the units count towards the document budget.
+    pub(crate) fn relevel(&mut self, table: &mut HeadingTable, p: &Params, budget: &mut Budget) {
         for b in &mut self.blocks {
             if let Block::Text { heading, size, .. } = b
                 && *heading != 0
                 && *size > 0.0
             {
+                let known = table.len();
                 *heading = table.level(*size, p);
+                let search = (usize::BITS - known.leading_zeros()) as usize;
+                // a memory move of the smaller sizes, a few times cheaper per size than a scan
+                let moved = if table.len() > known { known / (4 * SCAN_PER_UNIT) } else { 0 };
+                budget.spend(1 + search + moved);
             }
         }
     }

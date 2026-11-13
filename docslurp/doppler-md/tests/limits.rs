@@ -268,3 +268,58 @@ fn a_hostile_document_stops_at_the_total_cap() {
     let first = r.degraded.first().expect("degraded pages").0;
     assert!((4..=6).contains(&first), "{first}");
 }
+
+/// `n` small ruled tables (three full-width rules, one vertical rule) down one page, as
+/// `make_adversarial.py ruled_many` writes them: every table scans the vertical rules of all.
+fn ruled_many(n: usize) -> String {
+    let rule = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        format!(r##"<rule xMin="{x0}" yMin="{y0}" xMax="{x1}" yMax="{y1}" color="#000000"/>"##)
+    };
+    let (mut body, mut rules) = (String::new(), String::new());
+    for i in 0..n {
+        let y = 50.0 + 120.0 * i as f64;
+        for k in 0..3 {
+            rules += &rule(50.0, y + 14.0 * k as f64, 550.0, y + 14.0 * k as f64 + 0.5);
+        }
+        rules += &rule(300.0, y, 300.5, y + 28.0);
+        for k in 0..2 {
+            let yy = y + 14.0 * k as f64 + 2.0;
+            body +=
+                &format!("<flow><block><line>{}{}</line></block></flow>\n", word(60.0, yy, "a"), word(310.0, yy, "b"));
+        }
+    }
+    format!("<doc><page width=\"612\" height=\"{}\">\n{body}{rules}</page></doc>\n", 120 * n + 100)
+}
+
+#[test]
+fn ruled_table_search_is_charged_for_the_rules_it_scans() {
+    // the vertical-rule scans are quadratic in the tables: their units grow with them, so a
+    // page budget stops the search on a page of many tables
+    let work = |n: usize| to_markdown_report(&ruled_many(n), &Params::default()).1.page_work_max as f64;
+    let (small, large) = (work(200), work(800));
+    assert!(large > 6.0 * small, "{small} -> {large}");
+    let p = Params { max_page_work: small * 2.0, ..Params::default() };
+    let (md, report) = to_markdown_report(&ruled_many(800), &p);
+    assert_eq!(report.degraded, [(0, Degraded::PageWork)]);
+    assert!(report.page_work_max as f64 <= p.max_page_work + 20_000.0, "{}", report.page_work_max);
+    assert!(md[0].lines().count() >= 1600);
+}
+
+#[test]
+fn a_style_size_outside_0_to_1_is_refused() {
+    for bad in ["-0.01", "1.5", "-1e300"] {
+        let mut p = Params::default();
+        let err = p.apply_json(&format!("{{\"style_size\": {bad}}}")).unwrap_err();
+        assert!(err.contains("style_size"), "{err}");
+    }
+    for good in ["0", "0.05", "1"] {
+        assert!(Params::default().apply_json(&format!("{{\"style_size\": {good}}}")).is_ok());
+    }
+    // the CLI exits 2, a usage error
+    let out = Command::new(env!("CARGO_BIN_EXE_doppler-md"))
+        .args(["--params", r#"{"style_size": -0.5}"#])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}

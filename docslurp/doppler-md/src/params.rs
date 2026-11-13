@@ -44,6 +44,12 @@ macro_rules! params {
                         _ => {}
                     }
                 }
+                // two sizes within `style_size` of each other are one size: a negative tolerance
+                // would make every size its own (and every heading a new rank), one over 1 would
+                // turn the size bands of the heading ranks around
+                if !(0.0..=1.0).contains(&self.style_size) {
+                    return Err(format!("--params: style_size must be from 0 to 1, not {}", self.style_size));
+                }
                 Ok(())
             }
         }
@@ -211,8 +217,8 @@ params! {
     /// the PDF's first page, so a range or a stream sees the same budget at a page as a whole
     /// run), at most `max_doc_work_total`
     max_doc_work: num = 5.0e7,
-    /// added to the document budget per page; above the measured average (about 800 to 11,400
-    /// units per page on long PDFs, see PERF-ALGO.md) and far below `max_page_work`
+    /// added to the document budget per page; within the range of the measured averages (about
+    /// 2,700 to 22,000 units per page on long PDFs, see PERF-ALGO.md), far below `max_page_work`
     doc_work_per_page: num = 2.0e4,
     /// the document budget never exceeds this, however long the document (bounds the layout
     /// CPU of a hostile document: see PERF-ALGO.md)

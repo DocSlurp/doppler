@@ -198,8 +198,9 @@ but a long table-dense one runs out:
 
 At 7,800 to 11,400 units a page the fixed budget ran out after 4,400 to 6,400 pages. The budget
 at page N (the PDF's page number) is now `min(max_doc_work + doc_work_per_page * N,
-max_doc_work_total)`, 50 million plus 20,000 a page, at most 250 million. 20,000 is above every
-measured average and 500 times below `max_page_work`. The budget depends only on the page
+max_doc_work_total)`, 50 million plus 20,000 a page, at most 250 million. 20,000 was above every
+measured average and is 500 times below `max_page_work` (the units of 2026-11-13 double the
+averages; see "Units and CPU" below). The budget depends only on the page
 number, not on how far the parser has read ahead, so a whole run, a `--window`/`--stream` run and
 a range with context (credited the pages before it through `first_page`) see the same budget at
 each page; a range's report gives the budget at its first written page as `doc_work_limit`.
@@ -228,3 +229,82 @@ before, 11.43 s after, single interleaved runs; noise). Tests: `tests/limits.rs`
 document over the old budget is not degraded; a hostile document stops at the cap and lists the
 pages after it) and `tests/stream.rs` (ranges with context are identical to a whole run that the
 per-page credit keeps from degrading, and their `doc_work` sums stay within `doc_work_limit`).
+
+## Units and CPU (2026-11-13)
+
+The limits are a bound on work units, not on time, so they bound CPU only as far as a unit
+costs about the same on every page. A review measured that it did not: two-column and grid pages
+cost 21 to 26 ns a unit, but pages of thousands of rules about 400 ns and pages of hundreds to
+thousands of small ruled tables 2 to 4 microseconds. Two kinds of work were not charged:
+
+- **The ruled-table search.** Sorting the lines and rules, matching each rule against the open
+  rule groups, each caption-band test (the vertical rules in the group's x range, then the
+  lines in the gap and their words), each group's member lookup, visual rows, column search
+  (the vertical rules in its x range again, then the rows' words), the row window's walks and
+  the band grid (every row tested for every band). With all vertical rules at one x, each of
+  n tables scans all n of them, so `ruled_many` is quadratic. Each is now charged as it runs
+  (`tables::ruled_tables`): elements that do real work one unit each, plain comparison scans
+  one unit per `SCAN_PER_UNIT` (8) elements.
+- **The linear work of every line.** Grouping into rows and paragraphs, style runs, list and
+  heading tests and rendering cost about 1 microsecond a line and 0.1 a word, against one unit
+  a line in the document budget and about one in the layout. A page of 19,000 short lines and
+  no rules costs as much per unit as the caption-rules page. Each page layout now charges
+  `LINE_UNITS` (40) a line and `WORD_UNITS` (4) a word up front.
+
+`--heading-levels rank` looked each heading up with a linear scan of the document's heading
+sizes, so 200 pages of 1,000 headings over 10,000 sizes cost 40% more than size mode (2.89 s
+against 2.06 s with `style_size` 0, which makes each size its own). The ranks are sorted (`lo`
+and `hi` both descend), so the lookup is now two binary searches whose result equals the scan's
+(a unit test compares them on random tables); with the same input it costs what size mode
+does (2.06 s and 2.06 s). Each lookup charges 1 plus log2 of the sizes, and each added size a
+move of the smaller ones (one unit per 32), to the page budget after layout (the page is not
+degraded; the units count towards the document). `--params` refuses a `style_size` outside 0 to
+1 (exit 2): a negative one makes every heading a new size, and one over 1 reverses the order
+the binary search needs.
+
+Measured with one-page and 20-page documents from `scripts/make_adversarial.py` (CPU of the
+whole run minus a run with `max_page_lines` 0, which parses and writes plain lines, divided by
+`doc_work`; median of 3; a shared host under heavy load, load average about 100 on 8 cores):
+
+| pattern | before: units | ns per unit | after: units | ns per unit |
+| --- | ---: | ---: | ---: | ---: |
+| `caption_rules`, 20 pages of 19,000 rules and lines | 691,720 | 1,066 | 17.2 M | 44 |
+| `caption_rules`, 2,000 | 4,000 | 1,276 | 108,000 | 38 |
+| `ruled_many`, 20 pages of 3,000 tables | 398,420 | 4,051 | 51.1 M (7 pages doc_work) | 22 |
+| `ruled_many`, 300 | 2,100 | 2,130 | 129,427 | 37 |
+| `rules`, 20 pages of a 3,000-row ruled table | 120,000 | 3,137 | 24.6 M | 17 |
+| plain lines, 20 pages of 19,000 one-word lines | 691,720 | 784 | 14.4 M | 40 |
+| plain lines, 20 pages of 5,000 ten-word lines | 182,140 | 1,550 | 6.75 M | 28 |
+| `twocol`, 20 pages of 3,000 rows | 50.4 M | 27 | 50.9 M | 27 |
+| `grid`, 150 x 30 | 10.0 M | 20 | 10.0 M | 19 |
+
+Every pattern is now within 17 to 44 ns a unit, about 2.5x apart. The hostile document of
+`--pages` (60 pages of 10,000 two-column rows) with the base set to the cap (250 million up
+front) costs 15.0 s, against 15.9 s before in the same conditions (8.5 s on the quieter host of
+2026-11-12); with the defaults 4.5 s. The difference the new charges make is that the cap now
+also bounds documents of pages that are only expensive linearly: before, a document of plain
+pages of short lines spent two units a line, so 250 million units allowed about 125 million lines
+of layout (minutes of CPU); now a line costs at least 45.
+
+Real documents. The 258 golden inputs give byte-identical Markdown (default, `--html`,
+`--markers --math` and `--heading-levels rank`) and degrade no page; the largest page goes
+from 21,052 to 29,571 units and the largest document from 59,725 to 1.8 million. The 49 PDFs of
+the local public-domain corpus (pdftotext XHTML, whole runs, default and `--html`) are
+byte-identical too, with no degraded page. Their averages rise:
+
+| PDF (pages) | units / page before | after | largest page after |
+| --- | ---: | ---: | ---: |
+| scanned atlas (114) | 18,600 | 31,914 | 206,668 |
+| scanned machine-tool catalogue (582) | 11,392 | 21,935 | 535,748 |
+| scanned instrument catalogue (532) | 10,360 | 20,779 | 275,017 |
+| scanned army pamphlet (566) | 7,843 | 15,559 | 168,841 |
+| NASA technical report (1,602) | 6,170 | 11,264 | 593,331 |
+| scanned technical manual (812) | 5,383 | 11,354 | 68,107 |
+| scanned dictionary (544) | 4,134 | 12,795 | 43,477 |
+| dynamics textbook (791) | 2,129 | 7,032 | 34,350 |
+
+The defaults stay (50 million plus 20,000 a page, at most 250 million): the cap, not the
+per-page credit, decides when the densest kind degrades, at about 11,400 pages (250 million at
+22,000 a page) where it was about 22,000. The cap is per run: ranges converted in parallel
+each get the whole budget, so a caller doing that bounds the document's total itself.
+

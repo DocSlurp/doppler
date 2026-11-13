@@ -542,28 +542,50 @@ every column gutter through every later band). A page over `max_page_lines` or `
 (20,000 each), or whose layout uses more than `max_page_work` units (10 million), is read as
 plain lines in poppler order, one per Markdown line, without layout, tables or headings.
 
+The limits count work units, not time. A unit is one element visited by a step of the layout:
+each line laid out (40 units) and word (4), each element of a region search, each band a
+gutter is followed through, each word of a row that reaches table detection, each rule,
+line and row a ruled-table search visits, and each heading looked up or added with
+`--heading-levels rank`. Plain comparison scans (a filter over rule or row coordinates) count
+one unit per eight elements. They are weighted so that a unit is about the same CPU on every
+measured pattern, within about 3x (PERF-ALGO.md, one run each on a shared host, layout CPU per
+unit of `doc_work`):
+
+| page pattern (`scripts/make_adversarial.py`) | ns per unit |
+| --- | ---: |
+| two-column key/value list (`twocol`) | 27 |
+| grid of one-cell lines (`grid`) | 19 |
+| full-width rules with one line in each gap (`caption_rules`, 2,000 to 19,000 rules) | 38 to 44 |
+| hundreds to thousands of small ruled tables (`ruled_many`, 300 to 3,000) | 22 to 37 |
+| one 3,000-row ruled table (`rules`) | 17 |
+| plain lines, 1 or 10 words each | 28 to 32 |
+
 The whole document has a budget of lines plus work units too. It grows with the document: at
 page N (the PDF's page number) it is
 
     min(max_doc_work + doc_work_per_page * N, max_doc_work_total)
     = min(50,000,000 + 20,000 * N, 250,000,000)
 
-Once the pages so far have spent it, the remaining pages are read the same way. Long PDFs use
-about 800 to 11,400 units a page on average (largest page 558,000), so a document degrades for
-the budget only beyond about 22,000 pages of the densest kind. Before 2026-11-12 the budget was a
-fixed 50 million, which the densest long PDFs measured (7,800 to 11,400 units a page) use up
-after 4,400 to 6,400 pages. The cap bounds a
-hostile document: about 7.5 s of layout CPU at the measured worst rate (30 ns per unit), against
-about 1.5 s at the old fixed budget (PERF-ALGO.md). Because the budget at a page depends only on
-its page number, a `--stream` or `--window` run and a range with context see the same budget at
-each page as a whole run. The report prints `doc_work` (spent) and `doc_work_limit` (the budget
-at the last page read).
+Each page that is laid out adds its lines and units to what the document has spent, and a page
+is laid out only within what the budget at its page number has left. Every page adds 20,000
+units of credit, so after heavy pages have spent the budget, a later light page gets new credit
+and is laid out again once that credit covers it. Past the cap the budget stops growing: once
+the pages have spent 250 million, the rest are plain lines. Long PDFs use about 2,700 to 22,000
+units a page on average (32,000 for a 114-page atlas; largest page 593,000), so a document
+degrades for the budget only beyond about 11,000 pages of the densest kind. The cap bounds a
+hostile document: about 7.5 s of layout CPU at about 30 ns a unit on a quiet host (15 s measured
+under heavy load), plus the linear cost of parsing and plain lines
+(PERF-ALGO.md). Because the budget at a page depends only on its page number, a `--stream` or
+`--window` run and a range with context see the same budget at each page as a whole run. The
+report prints `doc_work` (spent) and `doc_work_limit` (the budget at the last page read).
 
-Gutter-table detection counts too: each run of rows that reaches column
-detection charges twice its word count. The largest page in the 258-input golden set has 303
-lines and uses 21,052 units (20,618 without the table charge), the largest document 59,725
-(54,463). Every degraded page is listed in the
-report. See PERF-ALGO.md for the measurements.
+The cap is per run. A caller that converts the ranges of one document in parallel (`-f`/`-l`
+runs) gets a full budget in every run, so the CPU of the whole document is bounded only by the
+number of runs times the cap: such a caller must enforce its own total (for example the sum of
+the runs' `doc_work`, or its own limit on runs per document).
+
+The largest page in the 258-input golden set uses 29,571 units, the largest document 1.8
+million; no golden page or long PDF degrades. Every degraded page is listed in the report.
 
 ## Rotated text and wide-spaced or wrapped borderless tables
 

@@ -1,7 +1,7 @@
 //! Gutter tables and ruled tables (the `tables` section of doppler_md.py).
 
 use crate::TableFormat;
-use crate::layout::{Budget, near_any};
+use crate::layout::{Budget, SCAN_PER_UNIT, near_any};
 use crate::model::{Line, Page, Word, is_ltr, is_rtl};
 use crate::params::Params;
 use crate::pyc::{self, char_len, fcmp, median, pmax, pmin, round0, round1, split_count, strip};
@@ -149,6 +149,8 @@ struct RowWindow<'a, F: Fn(usize) -> bool> {
     order: &'a [usize],
     keep: F,
     p: &'a Params,
+    /// positions walked so far (the caller charges them)
+    walked: std::cell::Cell<usize>,
 }
 
 impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
@@ -160,16 +162,22 @@ impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
     /// None when the walk is too long.
     fn row_start_at_or_before(&self, pos: usize) -> Option<Option<usize>> {
         let mut steps = 0;
+        let out = self.row_start_steps(pos, &mut steps);
+        self.walked.set(self.walked.get() + steps + 1);
+        out
+    }
+
+    fn row_start_steps(&self, pos: usize, steps: &mut usize) -> Option<Option<usize>> {
         let mut k = pos;
         loop {
             if (self.keep)(self.order[k]) {
                 break;
             }
-            steps += 1;
+            *steps += 1;
             if k == 0 {
                 return Some(None);
             }
-            if steps > ROW_WINDOW_STEPS {
+            if *steps > ROW_WINDOW_STEPS {
                 return None;
             }
             k -= 1;
@@ -182,8 +190,8 @@ impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
                     break None;
                 }
                 j -= 1;
-                steps += 1;
-                if steps > ROW_WINDOW_STEPS {
+                *steps += 1;
+                if *steps > ROW_WINDOW_STEPS {
                     return None;
                 }
                 if (self.keep)(self.order[j]) {
@@ -202,6 +210,13 @@ impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
     /// The next row starting at the first kept position at or after `*pos` (which must start a
     /// row, or be followed only by non-kept lines before one).
     fn next_row(&self, pos: &mut usize) -> Option<Row> {
+        let start = *pos;
+        let out = self.next_row_from(pos);
+        self.walked.set(self.walked.get() + (*pos - start) + 1);
+        out
+    }
+
+    fn next_row_from(&self, pos: &mut usize) -> Option<Row> {
         let order = self.order;
         while *pos < order.len() && !(self.keep)(order[*pos]) {
             *pos += 1;
@@ -657,6 +672,12 @@ fn section_label(row: &Row, run: &[Row], body: f64, p: &Params) -> bool {
 /// [(row ids, grid)] for runs of aligned multi-cell rows.
 pub fn find_tables(page: &Page, ids: &[usize], p: &Params, body: f64) -> Vec<(Vec<usize>, Table)> {
     find_tables_within(page, ids, p, body, &mut Budget::new(f64::INFINITY)).unwrap_or_default()
+}
+
+/// Lines and their words: the work units of grouping the lines into visual rows (a sort by
+/// baseline, then each line's cells).
+fn lines_work(lines: &[Rc<Line>], ids: &[usize]) -> usize {
+    ids.iter().map(|&i| 1 + lines[i].words.len()).sum()
 }
 
 /// Words in rows: the work units of building their columns and grid.
@@ -1256,7 +1277,9 @@ pub fn luminance(color: &str) -> f64 {
 
 type VRule = (f64, f64, f64);
 
-/// Column intervals from inner vertical rules, else from word gutters; None if not a table.
+/// Column intervals from inner vertical rules, else from word gutters; `Some(None)` if not a
+/// table, `None` once the budget runs out.
+#[allow(clippy::too_many_arguments)]
 fn table_columns(
     rows: &mut [Row],
     v: &[VRule],
@@ -1265,10 +1288,15 @@ fn table_columns(
     y0: f64,
     y1: f64,
     p: &Params,
-) -> Option<Vec<(f64, f64)>> {
+    budget: &mut Budget,
+) -> Option<Option<Vec<(f64, f64)>>> {
     // v is sorted by x (x is never NaN)
     let v = &v[v.partition_point(|r| r.0 <= x0 + 2.0)..];
     let v = &v[..v.partition_point(|r| r.0 < x1 - 2.0)];
+    // the vertical rules in the x range, then the rows' words (gutter columns)
+    if !budget.scan(v.len()) || !budget.spend(rows.len() + row_words(rows)) {
+        return None;
+    }
     let mut vx: Vec<f64> = v
         .iter()
         .filter(|&&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && pmin(yb, y1) - pmax(ya, y0) > 0.5 * (y1 - y0))
@@ -1286,15 +1314,15 @@ fn table_columns(
         let mut edges = vec![x0];
         edges.extend(merged);
         edges.push(x1);
-        return Some(edges.windows(2).map(|e| (e[0], e[1])).collect());
+        return Some(Some(edges.windows(2).map(|e| (e[0], e[1])).collect()));
     }
     for r in rows.iter_mut() {
         r.multi = r.cells.len() >= 2;
     }
     if rows.iter().filter(|r| r.multi).count() < 2 {
-        return None;
+        return Some(None);
     }
-    Some(gutter_columns(rows, p))
+    Some(Some(gutter_columns(rows, p)))
 }
 
 struct Group {
@@ -1314,6 +1342,11 @@ pub fn ruled_tables(
 ) -> Option<Vec<RuledTable>> {
     if page.rules.is_empty() {
         return Some(Vec::new());
+    }
+    // indexing the lines by middle and by baseline, and classifying, sorting, joining and
+    // grouping the rules: a few sorts of the page's lines and rules
+    if !budget.spend(2 * (ids.len() + page.rules.len())) {
+        return None;
     }
     // Baseline discovery is shared by GFM and HTML; span work is charged separately.
     let lines: &[Rc<Line>] = &page.lines;
@@ -1362,6 +1395,10 @@ pub fn ruled_tables(
     let mut open: Vec<usize> = Vec::new();
     let gap = p.rule_row_gap * body;
     for (x0, x1, y) in h {
+        // the open groups (thousands when disjoint rules share a y)
+        if !budget.scan(open.len()) {
+            return None;
+        }
         let mut hit = None;
         open.retain(|&gi| {
             let g = &groups[gi];
@@ -1401,14 +1438,19 @@ pub fn ruled_tables(
         }
         let gaps: Vec<f64> = ys.windows(2).map(|w| w[1] - w[0]).collect();
         let limit = if gaps.is_empty() { 0.0 } else { p.rule_split * median(gaps.clone()) };
-        let caption_band = |a: f64, b: f64| {
+        // charges the vertical rules and the lines it visits; None once the budget runs out
+        let caption_band = |a: f64, b: f64, budget: &mut Budget| -> Option<bool> {
             // a band of single-cell text that no vertical rule crosses separates two ruled tables
             let lo = v.partition_point(|r| r.0 < g.x0 - 2.0);
-            let crossed = v[lo..v[lo..].partition_point(|r| r.0 <= g.x1 + 2.0) + lo]
-                .iter()
-                .any(|&(x, ya, yb)| g.x0 - 2.0 <= x && x <= g.x1 + 2.0 && pmin(yb, b) - pmax(ya, a) > 0.5 * (b - a));
-            if crossed || v.is_empty() {
-                return false;
+            let near = &v[lo..v[lo..].partition_point(|r| r.0 <= g.x1 + 2.0) + lo];
+            let crossing = near.iter().position(|&(x, ya, yb)| {
+                g.x0 - 2.0 <= x && x <= g.x1 + 2.0 && pmin(yb, b) - pmax(ya, a) > 0.5 * (b - a)
+            });
+            if !budget.scan(crossing.map_or(near.len(), |k| k + 1)) {
+                return None;
+            }
+            if crossing.is_some() || v.is_empty() {
+                return Some(false);
             }
             let mut any = false;
             // the result does not depend on the order lines are visited in
@@ -1416,20 +1458,23 @@ pub fn ruled_tables(
             let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
             for &(my, i) in &by_mid[lo..hi] {
                 let l = &lines[i];
+                if !budget.spend(1 + l.words.len()) {
+                    return None;
+                }
                 let mx = (l.x0 + l.x1) / 2.0;
                 if a < my && my < b && g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0 {
                     any = true;
                     if segment_count(l, p) != 1 {
-                        return false;
+                        return Some(false);
                     }
                 }
             }
-            any
+            Some(any)
         };
         let mut cur: Vec<f64> = ys.first().copied().into_iter().collect();
         for w in ys.windows(2) {
             let (a, b) = (w[0], w[1]);
-            if (b - a > limit && gaps.len() >= 3) || caption_band(a, b) {
+            if (b - a > limit && gaps.len() >= 3) || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
             cur.push(b);
@@ -1466,17 +1511,26 @@ pub fn ruled_tables(
             // the lines whose middle is in [y0 - 1, y1 + 1], back in ids order
             let lo = by_mid.partition_point(|&(m, _)| m < y0 - 1.0);
             let hi = by_mid.partition_point(|&(m, _)| m <= y1 + 1.0).max(lo);
+            if !budget.spend(1 + hi - lo) {
+                return None;
+            }
             let mut m: Vec<usize> = by_mid[lo..hi].iter().map(|&(_, i)| i).filter(|&i| member(i)).collect();
             m.sort_unstable();
             m
         } else {
+            if !budget.scan(ids.len()) {
+                return None;
+            }
             ids.iter().copied().filter(|&i| member(i)).collect()
         };
         if members.len() < 2 {
             continue;
         }
+        if !budget.spend(lines_work(lines, &members)) {
+            return None;
+        }
         let mut rows = visual_rows(page, &members, p);
-        let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p) else { continue };
+        let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
         if cols.len() < 2 {
             continue;
         }
@@ -1493,7 +1547,14 @@ pub fn ruled_tables(
         for &i in &members {
             in_members[i] = true;
         }
-        let win = RowWindow { lines, order: &order, keep: |i: usize| !used[i] && !in_members[i] && inside(i), p };
+        let win = RowWindow {
+            lines,
+            order: &order,
+            keep: |i: usize| !used[i] && !in_members[i] && inside(i),
+            p,
+            walked: std::cell::Cell::new(0),
+        };
+        let win = &win;
         let windowed = (|| {
             if !finite_bases {
                 return None;
@@ -1526,6 +1587,9 @@ pub fn ruled_tables(
             Some((above, mut pos)) => (above, Box::new(std::iter::from_fn(move || win.next_row(&mut pos)))),
             None => {
                 let other_ids: Vec<usize> = ids.iter().copied().filter(|&i| (win.keep)(i)).collect();
+                if !budget.spend(ids.len() + lines_work(lines, &other_ids)) {
+                    return None;
+                }
                 fallback = visual_rows(page, &other_ids, p);
                 let above = fallback.iter().rfind(|r| r.base < y0 + 1.0).cloned();
                 (above, Box::new(fallback.iter().cloned()))
@@ -1546,11 +1610,18 @@ pub fn ruled_tables(
             edge = r.base;
         }
         drop(below);
+        // the row window's walks (each row it built is a position walked)
+        if !budget.spend(win.walked.get()) {
+            return None;
+        }
         for &i in &members[..n_members] {
             in_members[i] = false;
         }
+        if !budget.spend(lines_work(lines, &members)) {
+            return None;
+        }
         let mut rows = visual_rows(page, &members, p);
-        let cols = match table_columns(&mut rows, &v, x0, x1, y0, y1, p) {
+        let cols = match table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? {
             Some(c) if !c.is_empty() => c,
             _ => cols,
         };
@@ -1563,9 +1634,18 @@ pub fn ruled_tables(
                 rows.iter().filter(|r| r.base > ys[ys.len() - 1] + 1.0).map(|r| (r.base - 0.5, r.base + 0.5)).collect();
             let spans: Vec<(f64, f64)> = head.chain(bands.iter().copied()).chain(tail).collect();
             for (a, b) in spans {
+                // every row is tested for every band, and each word is placed by a scan of the
+                // columns
+                if !budget.scan(rows.len()) {
+                    return None;
+                }
                 let band_rows: Vec<&Row> = rows.iter().filter(|r| a - 1.0 <= r.base && r.base <= b + 1.0).collect();
                 if band_rows.is_empty() {
                     continue;
+                }
+                let words: usize = band_rows.iter().map(|r| row_words(std::slice::from_ref(*r))).sum();
+                if !budget.spend(words.saturating_mul(1 + cols.len() / SCAN_PER_UNIT)) {
+                    return None;
                 }
                 let mut cells: Vec<Vec<Word>> = vec![Vec::new(); cols.len()];
                 for r in band_rows {
@@ -1586,6 +1666,9 @@ pub fn ruled_tables(
         } else {
             for r in rows.iter_mut() {
                 r.multi = r.cells.len() >= 2;
+            }
+            if !budget.spend(rows.len() + row_words(&rows)) {
+                return None;
             }
             build_grid(&rows, &cols, p)
         };

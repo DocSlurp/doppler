@@ -122,11 +122,20 @@ impl HeadingTable {
             return 3;
         }
         let tol = p.style_size;
-        if let Some(r) = self.ranks.iter().find(|r| size >= r.lo * (1.0 - tol) && size <= r.hi * (1.0 + tol)) {
-            return r.level;
+        let covers = |r: &Rank| size >= r.lo * (1.0 - tol) && size <= r.hi * (1.0 + tol);
+        // Ranks are largest first: `lo` and `hi` both descend (a size is added only below every
+        // rank with a larger `hi`, all of whose `lo` are above it), and `tol` is in [0, 1)
+        // (params validation), so `size >= lo * (1 - tol)` holds on a suffix of the ranks and
+        // `size <= hi * (1 + tol)` on a prefix. The first rank covering the size is therefore
+        // the first of that suffix when it covers it; its neighbours are checked too, so the
+        // answer is the linear scan's even if rounding broke the order.
+        let k = self.ranks.partition_point(|r| size < r.lo * (1.0 - tol));
+        let first = (k.saturating_sub(1)..(k + 2).min(self.ranks.len())).find(|&i| covers(&self.ranks[i]));
+        if let Some(i) = first {
+            return self.ranks[i].level;
         }
         // the first size below it (ranks are largest first and do not overlap it)
-        let at = self.ranks.iter().position(|r| r.hi < size).unwrap_or(self.ranks.len());
+        let at = self.ranks.partition_point(|r| r.hi >= size);
         let above = at.checked_sub(1).map(|k| &self.ranks[k]);
         let below = self.ranks.get(at).map(|r| r.level);
         let level = match (above, below) {
@@ -148,5 +157,69 @@ impl HeadingTable {
 
     pub fn is_empty(&self) -> bool {
         self.ranks.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lookup as it was: a linear scan for the first rank covering the size, then for the
+    /// first rank below it.
+    fn level_linear(t: &mut HeadingTable, size: f64, p: &Params) -> u8 {
+        if !size.is_finite() {
+            return 3;
+        }
+        let tol = p.style_size;
+        if let Some(r) = t.ranks.iter().find(|r| size >= r.lo * (1.0 - tol) && size <= r.hi * (1.0 + tol)) {
+            return r.level;
+        }
+        let at = t.ranks.iter().position(|r| r.hi < size).unwrap_or(t.ranks.len());
+        let above = at.checked_sub(1).map(|k| &t.ranks[k]);
+        let below = t.ranks.get(at).map(|r| r.level);
+        let level = match (above, below) {
+            (None, _) => 1,
+            (Some(a), _) if a.lo < size * step(p) => a.level,
+            (Some(a), None) => (a.level + 1).min(3),
+            (Some(a), Some(b)) if b > a.level => a.level + 1,
+            (Some(a), Some(_)) => a.level,
+        };
+        t.ranks.insert(at, Rank { lo: size, hi: size, level });
+        level
+    }
+
+    #[test]
+    fn binary_lookup_matches_linear_scan() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for style in [0.0, 0.01, 0.05, 0.3, 1.0] {
+            let p = Params { style_size: style, ..Params::default() };
+            for _ in 0..50 {
+                // a seeded table: groups of sizes, largest first
+                let mut a = HeadingTable::default();
+                let mut hi = 80.0;
+                for level in 1..=((next() % 6) as u8) {
+                    let lo = hi * (1.0 - style * (next() % 100) as f64 / 100.0);
+                    a.ranks.push(Rank { lo, hi, level: level.min(3) });
+                    hi = lo * (0.5 + (next() % 50) as f64 / 100.0);
+                }
+                let mut b = a.clone();
+                for _ in 0..300 {
+                    // coarse sizes repeat, so lookups hit sizes added before
+                    let size = match next() % 4 {
+                        0 => (next() % 400) as f64 / 4.0,
+                        1 => (next() % 90) as f64 + 0.5,
+                        _ => 4.0 + (next() % 1_000_000) as f64 / 10_000.0,
+                    };
+                    assert_eq!(a.level(size, &p), level_linear(&mut b, size, &p), "size {size} style {style}");
+                    assert_eq!(a, b);
+                }
+            }
+        }
     }
 }

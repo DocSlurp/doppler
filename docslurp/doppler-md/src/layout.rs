@@ -195,7 +195,10 @@ pub fn near_other(sorted: &[f64], x: f64, tol: f64) -> bool {
 /// same-baseline merge in [`crate::prose::paragraphs_within`] charges the merged word count.
 /// `doppler_md.py` charges the same units in the same places. Gutter-table detection
 /// ([`crate::tables::find_tables_within`]) also charges twice the words of each run that
-/// reaches column detection; Python does not, so its pages stop slightly later.
+/// reaches column detection, the ruled-table search the lines, rules and rows it visits (scans
+/// at [`SCAN_PER_UNIT`] elements a unit), and every page layout [`LINE_UNITS`] a line and
+/// [`WORD_UNITS`] a word up front; Python charges none of these, so its pages stop later. The
+/// weights keep a unit at about the same CPU on every measured pattern (PERF-ALGO.md).
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
     pub used: u64,
@@ -212,7 +215,24 @@ impl Budget {
         self.used = self.used.saturating_add(n as u64);
         self.used as f64 <= self.limit
     }
+
+    /// Charge a scan of `n` elements that each cost one or two comparisons (a filter over rule
+    /// or row coordinates): [`SCAN_PER_UNIT`] of them are one unit, and a scan is at least one.
+    pub(crate) fn scan(&mut self, n: usize) -> bool {
+        self.spend(n.div_ceil(SCAN_PER_UNIT).max(1))
+    }
 }
+
+/// Elements of a plain comparison scan per work unit. A unit is otherwise one element visited
+/// by a step that does real work on it (a gutter followed, a word placed), which costs about
+/// as much CPU as eight bare coordinate comparisons (PERF-ALGO.md, "Units and CPU").
+pub(crate) const SCAN_PER_UNIT: usize = 8;
+
+/// Units charged up front for each line a page layout reads, and for each of its words: the
+/// linear work every line goes through (grouping into rows and paragraphs, style runs, list and
+/// heading tests, rendering), about 1 microsecond a line and 0.1 a word (PERF-ALGO.md).
+pub(crate) const LINE_UNITS: usize = 40;
+pub(crate) const WORD_UNITS: usize = 4;
 
 /// Layout regions in reading order. Runs of bands sharing a non-table vertical gutter are read
 /// column by column.
@@ -296,8 +316,8 @@ pub fn regions_within<T: Clone>(
                 return None;
             }
             let members = bs[i..j].iter().flatten();
-            let left: Vec<Elem<T>> = members.clone().cloned().filter(|e| e.x1 <= a + 1.0).collect();
-            let right: Vec<Elem<T>> = members.cloned().filter(|e| e.x0 >= b - 1.0).collect();
+            let left: Vec<Elem<T>> = members.clone().filter(|&e| e.x1 <= a + 1.0).cloned().collect();
+            let right: Vec<Elem<T>> = members.filter(|&e| e.x0 >= b - 1.0).cloned().collect();
             if left.len() >= 2 && right.len() >= 2 && !table_like(&left, &right, lines, p) {
                 // bands already read as one wrapped table stay together: their last rows alone
                 // are too few to show the row padding again

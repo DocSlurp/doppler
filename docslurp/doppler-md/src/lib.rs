@@ -1229,7 +1229,7 @@ impl<'p> Converter<'p> {
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
                 if let Some(table) = &mut self.headings {
-                    layout.relevel(table, p);
+                    layout.relevel(table, p, &mut budget);
                 }
                 if self.o.markers {
                     self.carry = layout.stitch(&self.carry, page.height, p, &self.seal);

@@ -2,7 +2,9 @@
 //! and work counts were verified against the baseline Rust converter (Python v24 parity); work
 //! counts now also include gutter-table runs (2 units per word), which Python does not charge.
 //! Folding wrapped rows (`wrapped_rows`) charges its own work, so the work counts below are
-//! pinned with it off; the output is the same either way.
+//! pinned with it off; the output is the same either way. Every line laid out also charges 40
+//! units and every word 4 (`layout::LINE_UNITS`, `WORD_UNITS`), and the ruled-table search
+//! charges the lines, rules and rows it visits; Python charges neither.
 
 use doppler_md::{Degraded, Params, to_markdown_report};
 
@@ -51,7 +53,8 @@ fn adjacent_ruled_tables_own_their_titles_without_changing_an_earlier_heading() 
         )]
     );
     assert!(report.degraded.is_empty());
-    assert_eq!((report.doc_work, report.page_work_max), (12, 5));
+    // 5 region units, 7 lines and 11 words laid out (324), and the ruled-table search (148)
+    assert_eq!((report.doc_work, report.page_work_max), (484, 477));
 }
 
 #[test]
@@ -68,8 +71,9 @@ fn wrapped_cells_keep_their_continuation_once() {
     let (unfolded, report) = to_markdown_report(&page(&body), &Params { wrapped_rows: false, ..Params::default() });
     assert_eq!(unfolded, md);
     assert!(report.degraded.is_empty());
-    // gutter-table runs also charge their words twice (columns, then grid): 5 + 2 x 7
-    assert_eq!((report.doc_work, report.page_work_max), (24, 19));
+    // gutter-table runs also charge their words twice (columns, then grid): 5 + 2 x 7, plus
+    // 5 lines and 8 words laid out (232)
+    assert_eq!((report.doc_work, report.page_work_max), (256, 251));
 }
 
 fn overlapping_regions() -> String {
@@ -101,21 +105,25 @@ fn narrow_gutter_membership_belongs_to_each_overlapping_region() {
         )]
     );
     assert!(report.degraded.is_empty());
-    // 39 layout units as in Python v24, plus 2 x 7 words for the gutter-table run
-    assert_eq!((report.doc_work, report.page_work_max), (60, 53));
+    // 39 layout units as in Python v24, plus 2 x 7 words for the gutter-table run, plus 7 lines
+    // and 10 words laid out (320)
+    assert_eq!((report.doc_work, report.page_work_max), (380, 373));
 }
 
 #[test]
 fn exhausted_layout_discards_all_partial_assignments() {
-    let p =
-        Params { column_gutter: 0.05, table_align: 2.0, max_page_work: 38.0, wrapped_rows: false, ..Params::default() };
+    let p = Params {
+        column_gutter: 0.05,
+        table_align: 2.0,
+        max_page_work: 358.0,
+        wrapped_rows: false,
+        ..Params::default()
+    };
     let (md, report) = to_markdown_report(&overlapping_regions(), &p);
     assert_eq!(
         md,
-        [concat!(
-            "A 10\nshared\nRight column sentence 0.\nB 20\nRight column sentence 1.\nC 30\nRight column sentence 2."
-        )]
+        ["A 10\nshared\nRight column sentence 0.\nB 20\nRight column sentence 1.\nC 30\nRight column sentence 2."]
     );
     assert_eq!(report.degraded, [(0, Degraded::PageWork)]);
-    assert_eq!((report.doc_work, report.page_work_max), (58, 51));
+    assert_eq!((report.doc_work, report.page_work_max), (378, 371));
 }

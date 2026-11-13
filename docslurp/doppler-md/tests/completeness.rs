@@ -75,7 +75,8 @@ fn later_document_exhaustion_does_not_hide_upstream_truncation() {
         page("rulesTruncated=\"1\"", &line("gamma")),
     ]
     .concat();
-    let p = Params { max_doc_work: 2.0, doc_work_per_page: 0.0, ..Params::default() };
+    // enough for the first page only (one line, its layout units)
+    let p = Params { max_doc_work: 60.0, doc_work_per_page: 0.0, ..Params::default() };
     let (markdown, report) = to_markdown_report(&x, &p);
     assert_eq!(markdown, ["alpha", "beta", "gamma"]);
     assert_eq!(report.parse.rules_truncated_pages, [0, 2]);
