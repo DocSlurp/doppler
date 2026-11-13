@@ -1487,7 +1487,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
     }
 
 err:
-    if (!xRefStream && !xrefReconstructed) {
+    if (!xRefStream && !xrefReconstructed && !repairSuppressed) {
         // Check if there has been any updated object, if there has been we can't reconstruct because that would mean losing the changes
         bool xrefHasChanges = false;
         for (int i = 0; i < size; i++) {
@@ -2135,6 +2135,9 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                 return &dummyXRefEntry;
             }
         } else {
+            if (repairSuppressed && (prevXRefOffset || (rebuildOnMissing && i < size && entries[i].type == xrefEntryNone))) {
+                return &dummyXRefEntry; // neither read nor rebuild nor mark it free (RepairGuard)
+            }
             if (prevXRefOffset) {
                 // Read XRef tables until the entry we're looking for is found (only when the
                 // chain was not read at open)

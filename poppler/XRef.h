@@ -217,6 +217,22 @@ public:
 
     // Was the XRef modified?
     bool isModified() const { return modified; }
+    // DocSlurp (issue 45): while a RepairGuard lives, a fetch that would rebuild the table (a
+    // broken entry, or one no section lists) returns null and leaves the table as it was, so a
+    // read made by one kind of run only (pdftotext's XHTML header) cannot change what the pages
+    // resolve.
+    class RepairGuard
+    {
+    public:
+        explicit RepairGuard(XRef *xrefA) : xref(xrefA) { ++xref->repairSuppressed; }
+        ~RepairGuard() { --xref->repairSuppressed; }
+        RepairGuard(const RepairGuard &) = delete;
+        RepairGuard &operator=(const RepairGuard &) = delete;
+
+    private:
+        XRef *xref;
+    };
+
     // DocSlurp page facts: how many times the table was rebuilt from a scan of the file (at open or
     // later, when a fetch found a broken entry).
     unsigned int getReconstructionCount() const { return reconstructions; }
@@ -298,6 +314,7 @@ private:
     // fetch of it rebuild the table, as a lazy read of the chain would have. The rebuild is
     // counted (getReconstructionCount), so pages drawn after it are flagged.
     bool rebuildOnMissing = false;
+    int repairSuppressed = 0; // RepairGuards alive
     bool scannedSpecialFlags; // true if scanSpecialFlags has been called
     std::unique_ptr<BaseStream> strOwner; // ownership if any of str (can be null if others own the stream)
     mutable std::recursive_mutex mutex;

@@ -907,7 +907,8 @@ def grid_reopened_pdf():
 
 def grid_titled_pdf():
     """A ruled table in a file whose document information /Title names a missing object: only
-    pdftotext's XHTML header reads it (and rebuilds the table), never the page facts."""
+    pdftotext's XHTML header reads it, never the page facts; since issue 45 that read cannot
+    rebuild the table (XRef::RepairGuard)."""
     table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
     return doc([{"content": table}], extras=["<< /Title 99 0 R >>"], trailer_extra="/Info {0} 0 R")
 

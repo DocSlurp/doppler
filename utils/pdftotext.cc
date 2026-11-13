@@ -1300,6 +1300,9 @@ int main(int argc, char *argv[])
         fputs(R"(<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">)", f);
         fputs("<html xmlns=\"http://www.w3.org/1999/xhtml\">\n", f);
         fputs("<head>\n", f);
+        // Issue 45: the header's reads (which page facts never make) must not rebuild the table
+        // the pages are drawn from; a broken /Info object is left out instead.
+        const XRef::RepairGuard noRepair(doc->getXRef());
         info = doc->getDocInfo();
         if (info.isDict()) {
             Object obj = info.getDict()->lookup("Title");

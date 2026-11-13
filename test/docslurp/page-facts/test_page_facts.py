@@ -237,11 +237,12 @@ with t.TempDir() as d:
     t.check(doc_line(ls)["xref"] == "repaired" and all([(g["hRules"], g["vRules"]) for g in page(ls, n)["vectors"]["grids"]] == [(4, 5)] and not page(ls, n)["vectors"]["gridsTruncated"] for n in (1, 2)), "a table in a file rebuilt at open: counted", repr([page(ls, n)["vectors"]["grids"] for n in (1, 2)]))
     rules_only = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", paths["grid_reopened"], "-"], capture_output=True, timeout=60).stdout
     t.check(rules_only.count(b'xrefRebuilt="1"') == 2, "pdftotext -rules (no -images): pages drawn after a rebuild say xrefRebuilt", repr(rules_only[:300]))
-    # a rebuild only the XHTML header makes: the separate facts run cannot see it, the XHTML says so
+    # issue 45: the XHTML header's read of a missing /Title object no longer rebuilds the table
+    # (XRef::RepairGuard): the title is left out, the page is not marked, the facts agree
     ls = lines(facts(paths["grid_titled"], "-level", "full")[1])
     t.check(doc_line(ls)["xref"] == "ok" and [(g["hRules"], g["vRules"]) for g in page(ls, 1)["vectors"]["grids"]] == [(4, 5)], "/Title naming a missing object: the facts never read it (counted)", repr(page(ls, 1)["vectors"]["grids"]))
     rules_only = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", paths["grid_titled"], "-"], capture_output=True, timeout=60).stdout
-    t.check(b'xrefRebuilt="1"' in rules_only, "/Title naming a missing object: pdftotext -rules marks the page xrefRebuilt", repr(rules_only[:300]))
+    t.check(b'xrefRebuilt="1"' not in rules_only and b"<title></title>" in rules_only and b"<rule " in rules_only, "/Title naming a missing object: pdftotext's header leaves it out and rebuilds nothing (no xrefRebuilt)", repr(rules_only[:300]))
     ls = lines(facts(paths["grid_split"], "-level", "full")[1])
     v6, v7 = page(ls, 6)["vectors"], page(ls, 7)["vectors"]
     t.check(v6["gridsTruncated"] and v6["grids"] and not any("hRules" in x for x in v6["grids"]) and "unlistedRuledGrids" not in v6, "5,001 rules before a table (past the walker's 5,000): no counts, gridsTruncated", repr(v6["grids"]))
@@ -434,24 +435,7 @@ with t.TempDir() as d:
             ref = facts(path, "-level", level)[1]
             images = level == "full"
             rc, xhtml, got = pdftotext_facts(path, "-page-facts-level", level, images=images)
-            if name == "grid_titled":
-                # documented exception (README): pdftotext's XHTML header reads /Title after the
-                # doc line and rebuilds the table, which pdfpagefacts never does; that run's page
-                # says xref-repaired-earlier and (full) withholds the thin-rule counts
-                fd_lines, pf_lines = lines(got), lines(ref)
-                fd_page, pf_page = page(fd_lines, 1), page(pf_lines, 1)
-                t.check("xref-repaired-earlier" in fd_page["parseWarnings"] and not pf_page["parseWarnings"] and (level != "full" or (fd_page["vectors"]["gridsTruncated"] and not any("hRules" in g for g in fd_page["vectors"]["grids"]))), "%s %s: the header's rebuild: pdftotext's facts flag it and withhold the counts" % (name, level), "%r\n%r" % (fd_page, pf_page))
-                # and nothing else differs
-                fd_page["parseWarnings"] = [w for w in fd_page["parseWarnings"] if w != "xref-repaired-earlier"]
-                if level == "full":
-                    for v in (fd_page["vectors"], pf_page["vectors"]):
-                        v.pop("gridsTruncated"), v.pop("unlistedRuledGrids", None)
-                        for g in v["grids"]:
-                            for k in ("hRules", "vRules", "outerSides", "connected"):
-                                g.pop(k, None)
-                t.check(fd_lines == pf_lines, "%s %s: every other field and line the same" % (name, level), "%r\n%r" % (fd_lines, pf_lines))
-            else:
-                t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
+            t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
             plain = pdftotext_plain(path, images=images)
             # grid_rebuilt included (issue 45): the doc line's rebuild is its copy's, never the pages'
             t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))

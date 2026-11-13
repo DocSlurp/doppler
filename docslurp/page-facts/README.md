@@ -19,9 +19,9 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   same input, page range, level and include list, all three write **byte-identical** lines
   (tested), whatever else pdftomarkdown is asked for (`--markers`, `--stream`). Exceptions:
   `--math` adds `-glyphs`, which makes thin stencil image masks rules (grids drawn with them
-  differ); and pdftotext's XHTML header reads the document information (`/Title`, `/Author` and
-  so on), which `pdfpagefacts` never does: when such a read rebuilds the cross-reference table,
-  pdftotext's page lines say `xref-repaired-earlier` and withhold the thin-rule counts.
+  differ). pdftotext's XHTML header reads the document information (`/Title`, `/Author` and so
+  on), which `pdfpagefacts` never does, but since issue 45 those reads cannot rebuild the
+  cross-reference table (a broken entry is left out of the header instead).
 - **Never on stdout** for pdftomarkdown: Markdown stays on stdout, and facts do not change it.
   The doc line reads the catalog, `/Info` and `/Encrypt` through its own copy of the
   cross-reference table, so a rebuild those reads cause is the copy's, never the table the pages
@@ -384,13 +384,11 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   see (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are
   unknown through `unlistedRuledGrids`, never known.
 - **One run, not two.** Anything else is outside the contract:
-  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). pdftotext's header
-    reads the document information's `/Title`, `/Author` and so on through the pages' table,
-    which `pdfpagefacts` never does, and a fetch of a broken object rebuilds that table: the
-    same page can then draw differently in the two runs. Such a rebuild is visible (`pdftotext`
-    marks pages drawn after one `xrefRebuilt="1"` whenever `-rules` or `-images` is on). Older
-    `/Prev` sections no longer cause a difference: they are read at open in every run, and the
-    doc line's reads go through a copy of the table (issue 45).
+  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). Since issue 45 neither
+    the doc line nor pdftotext's header can change what the pages resolve, and older `/Prev`
+    sections are read at open in every run, so for the same flags and range the two runs
+    write the same facts (tested on the fixtures and under mutation fuzz). The contract still
+    pairs one run's facts with that run's XHTML: that is the pairing the parity results cover.
   - Different flags or ranges: thin image-mask rules are rules only under `-glyphs` (which
     `pdftomarkdown --math` adds), and the run's rule budget depends on where the range starts.
   - `pdftomarkdown --page-facts`: it computes the same facts on its own pass, but keeps its
@@ -400,7 +398,7 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
   budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
   run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
-  were taken (by an earlier fetch, or pdftotext's header: an object may then resolve to another
+  were taken (by an earlier fetch: an object may then resolve to another
   body than a run that never rebuilt it reads; a rebuild at open is every run's and does not
   count, and the doc line's reads rebuild only their own copy); a thin
   rule's corners or extent are not finite, or its centre is past 10^9 points; more than
@@ -457,7 +455,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
-| `xref-repaired-earlier` | an earlier page of the run (or, in pdftotext, its XHTML header) rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
+| `xref-repaired-earlier` | an earlier page of the run rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
 
 Errors raised while loading a shared resource (a font, an image dictionary) are reported on
@@ -537,6 +535,10 @@ first, as the lazy read did (an entry is taken from the newest section that list
 - **The doc line** reads through a copy of the table (`XRef::copy`), so outlines, names, page
   labels, `/Info` and `/Encrypt` cannot rebuild or extend the table the pages use. If the copy
   cannot be allocated the doc line reads nothing from the catalog and says `xref: repaired`.
+- **pdftotext's XHTML header** reads `/Info` under `XRef::RepairGuard`: a fetch that would
+  rebuild the table returns nothing instead (the field is left out, `<title></title>`), and an
+  entry no section lists is neither rebuilt nor marked free, so the header cannot change what the
+  pages resolve either.
 
 ## Hostile input
 
