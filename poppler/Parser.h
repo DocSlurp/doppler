@@ -47,6 +47,9 @@ public:
     Parser(const Parser &) = delete;
     Parser &operator=(const Parser &) = delete;
 
+    // DocSlurp (issue 45): parses on this thread cut by the recursion limit so far
+    static unsigned long depthLimitHits();
+
     // Get the next object from the input stream.  If <simpleOnly> is
     // true, do not parse compound objects (arrays, dictionaries, or
     // streams).

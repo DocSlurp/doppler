@@ -4799,6 +4799,12 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
     // check for optional content key
     if (ref) {
         const Object &objOC = dict->lookupNF("OC");
+        // issue 45: in the audit-only pass (-images, the image not drawn) this read is the
+        // audit's, which runs without facts too but never in pdfpagefacts: read-only
+        std::optional<XRef::RepairGuard> noRepair;
+        if (auditOnly && xref) {
+            noRepair.emplace(xref, XRef::GuardKind::Audit);
+        }
         if (!ocIsVisible(&objOC)) {
             return;
         }

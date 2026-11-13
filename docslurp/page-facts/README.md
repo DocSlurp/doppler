@@ -455,7 +455,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
-| `xref-repaired-earlier` | an earlier page of the run rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
+| `xref-repaired-earlier` | an earlier read of the run found an object stream that parses differently by where it is reached from, and this page's read-only lookup refused it (issue 45); or an earlier page of the run rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
 
 Errors raised while loading a shared resource (a font, an image dictionary) are reported on
@@ -579,9 +579,13 @@ first, as the lazy read did (an entry is taken from the newest section that list
     facts only (the doc line, a page's facts, the op tally); image geometry (facts or `-images`);
     the `-images` audit. Each is reused only by reads of its own kind, which every run of that
     kind makes in the same order. Page facts' and geometry's reads also ignore what drawing
-    parsed, since that depends on the run's flags. The XHTML header keeps nothing. A parse that
-    an object being fetched up the stack, or a refused repair, shaped is kept only until the
-    outermost guard ends (or not at all, after a refusal);
+    parsed, since that depends on the run's flags. The XHTML header keeps its parses only until
+    its guard ends;
+  - a guarded parse that depended on where it was reached from (an object being fetched up the
+    stack, or the parser's depth limit) is refused, as a repair would be (`syntax-error`), and
+    remembered for that kind of read so it is not parsed again. A later page refused that way is
+    marked `xref-repaired-earlier`, since a run of the page alone may read it;
+  - guarded optional-content evaluations neither read nor fill drawing's visibility cache;
   - the op tally evaluates optional content with a budget of its own, so it cannot spend the one
     image geometry (and so `-images`) answers from;
   - a rebuild made by a missing entry keeps the document's edits (a writer's added objects);

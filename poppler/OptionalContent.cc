@@ -194,7 +194,10 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
         }
         return true;
     }
-    if (dictRef->isRef()) {
+    // issue 45: a guarded (page facts, image geometry) evaluation neither reads nor fills the
+    // cache drawing uses: what it fetched can parse differently from drawing's own fetch
+    const bool guarded = m_xref && m_xref->isRepairSuppressed();
+    if (dictRef->isRef() && !guarded) {
         const auto hit = ocmdCache.find(dictRef->getRef());
         if (hit != ocmdCache.end()) {
             const CachedVisibility cached = hit->second;
@@ -218,7 +221,11 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
     if (m_xref && m_xref->getSuppressedRepairs() != suppressedBefore) {
         cacheable = false; // shaped by a repair a RepairGuard refused (issue 45)
     }
-    if (dictRef->isRef() && cacheable) {
+    if (dictRef->isRef() && cacheable && guarded) {
+        if (budget) {
+            budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { result, limited });
+        }
+    } else if (dictRef->isRef() && cacheable) {
         if (budget) {
             budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { result, limited });
         }

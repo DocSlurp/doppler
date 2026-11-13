@@ -39,6 +39,7 @@
 #define XREF_H
 
 #include <array>
+#include <unordered_set>
 #include <functional>
 #include <unordered_map>
 
@@ -247,7 +248,7 @@ public:
         }
         // the outermost guard's end drops what guarded reads cached (objStrsGuarded), so one
         // guarded read (the doc line, the XHTML header, a page's facts) never sees another's
-        ~RepairGuard();
+        ~RepairGuard(); // the outermost one drops what its scope kept (objStrsGuarded, Scope's shaped set)
         RepairGuard(const RepairGuard &) = delete;
         RepairGuard &operator=(const RepairGuard &) = delete;
 
@@ -324,6 +325,9 @@ private:
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
     GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
+    // object streams whose guarded parse depended on where it was reached from (an object being
+    // fetched up the stack, or the parser's depth limit): refused, per kind, without re-parsing
+    std::array<std::unordered_set<Goffset>, 4> shapedByKind;
     unsigned int blockedFetches = 0; // fetches refused because the object was being fetched
     bool encrypted; // true if file is encrypted
     int encRevision;

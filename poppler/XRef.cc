@@ -622,6 +622,7 @@ XRef::RepairGuard::~RepairGuard()
 {
     if (--xref->repairSuppressed == 0) {
         xref->objStrsGuarded.clear();
+        xref->shapedByKind[static_cast<int>(GuardKind::Scope)].clear();
     }
 }
 
@@ -1059,6 +1060,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     objStrsGuarded.clear();
     for (auto &kept : objStrsByKind) {
         kept.clear();
+    }
+    for (auto &shaped : shapedByKind) {
+        shaped.clear();
     }
     {
         const Goffset fileLength = str->getLength();
@@ -1578,24 +1582,37 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
         if (const auto it = objStrs.find(e->offset); !ownParsesOnly && it != objStrs.end()) {
             objStr = it->second.get();
         } else if (repairSuppressed) {
-            // RepairGuard: guarded reads keep their own parses (see XRef::GuardKind)
-            auto *kept = guardKind == GuardKind::Scope ? nullptr : &objStrsByKind[static_cast<int>(guardKind) - 1];
-            if (kept) {
-                if (const auto k = kept->find(e->offset); k != kept->end()) {
-                    if (endPos) {
-                        *endPos = -1;
-                    }
-                    return k->second->getObject(e->gen, num);
-                }
+            // RepairGuard: guarded reads keep their own parses (see XRef::GuardKind). A parse that
+            // depended on where it was reached from is refused (as a repair would have been), and
+            // remembered per kind so it is not parsed again.
+            const int kind = static_cast<int>(guardKind);
+            auto refuse = [&]() {
+                ++suppressedRepairs;
+                error(errSyntaxError, -1, "Object stream {0:d} parses differently by where it is reached from; not used for a read-only lookup", static_cast<int>(e->offset));
+                return Object::null();
+            };
+            if (shapedByKind[kind].count(e->offset)) {
+                // refused because an earlier read found it so: a run of this page alone may read
+                // it (page facts mark the page xref-repaired-earlier)
+                ++suppressedRepairs;
+                error(errSyntaxError, -1, "Object stream parsed differently earlier in the run; not used for a read-only lookup");
+                return Object::null();
             }
-            if (const auto g = objStrsGuarded.find(e->offset); g != objStrsGuarded.end()) {
+            auto *kept = guardKind == GuardKind::Scope ? &objStrsGuarded : &objStrsByKind[kind - 1];
+            if (const auto k = kept->find(e->offset); k != kept->end()) {
                 if (endPos) {
                     *endPos = -1;
                 }
-                return g->second->getObject(e->gen, num);
+                return k->second->getObject(e->gen, num);
             }
             const unsigned int repairsBefore = suppressedRepairs, blockedBefore = blockedFetches;
-            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(e->offset), recursion + 1));
+            const unsigned long depthBefore = Parser::depthLimitHits();
+            const Goffset at = e->offset;
+            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(at), recursion + 1));
+            if (blockedFetches != blockedBefore || Parser::depthLimitHits() != depthBefore) {
+                shapedByKind[kind].insert(at);
+                return refuse();
+            }
             if (!once->isOk()) {
                 goto err;
             }
@@ -1604,10 +1621,8 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             }
             Object result = once->getObject(e->gen, num);
             if (suppressedRepairs == repairsBefore) {
-                // a parse no object being fetched shaped is kept for this kind of read; one that
-                // was is kept until the outermost guard ends (constructXRef drops both)
-                auto &into = kept && blockedFetches == blockedBefore ? *kept : objStrsGuarded;
-                into.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
+                // the Scope kind keeps it until the outermost guard ends; constructXRef drops all
+                kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
             }
             return result;
         } else {
@@ -2397,8 +2412,12 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                         }
                     }
                     error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
+                    const int sizeBefore = size;
                     if (!(ok = constructXRef(nullptr))) {
                         errCode = errDamaged;
+                    }
+                    if (!edits.empty() && size < sizeBefore) {
+                        resize(sizeBefore); // a writer's trailer /Size stays as large as before
                     }
                     for (Edit &edit : edits) {
                         if (edit.num >= size && resize(edit.num + 1) != edit.num + 1) {

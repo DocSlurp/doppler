@@ -2326,6 +2326,10 @@ void PageFacts::noteError(ErrorCategory category, const char *format)
     note(wMissingFont, fontPrefixes);
     note(wBrokenImage, imagePrefixes);
     note(wLimit, limitPrefixes);
+    // issue 45: a read-only lookup refused an object stream an earlier read found to parse
+    // differently by where it is reached from: a run of this page alone may read it
+    static const char *const earlierPrefixes[] = { "Object stream parsed differently earlier" };
+    note(wXrefRepairedEarlier, earlierPrefixes);
 }
 
 void PageFacts::startPage(Page *page, double pageWidth, double pageHeight)

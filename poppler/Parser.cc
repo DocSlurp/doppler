@@ -48,6 +48,17 @@
 // lots of nested arrays that made us consume all the stack
 constexpr int recursionLimit = 500;
 
+// DocSlurp (issue 45): how many times a parse on this thread was cut by recursionLimit, so a
+// caller can tell a parse that depended on how deep it was reached (XRef's guarded reads)
+namespace {
+thread_local unsigned long depthLimitHitCount = 0;
+}
+
+unsigned long Parser::depthLimitHits()
+{
+    return depthLimitHitCount;
+}
+
 Parser::Parser(XRef *xrefA, std::unique_ptr<Stream> &&streamA, bool allowStreamsA) : lexer { xrefA, std::move(streamA) }
 {
     allowStreams = allowStreamsA;
@@ -96,6 +107,7 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
     }
 
     if (unlikely(recursion >= recursionLimit)) {
+        ++depthLimitHitCount;
         return Object::error();
     }
 
@@ -106,6 +118,9 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
         while (!buf1.isCmd("]") && !buf1.isEOF() && recursion + 1 < recursionLimit) {
             Object obj2 = getObj(false, fileKey, encAlgorithm, keyLength, objNum, objGen, recursion + 1);
             array->add(std::move(obj2));
+        }
+        if (recursion + 1 >= recursionLimit && !buf1.isCmd("]")) {
+            ++depthLimitHitCount;
         }
         if (recursion + 1 >= recursionLimit && strict) {
             return Object::error();
@@ -150,6 +165,7 @@ Object Parser::getObj(bool simpleOnly, const unsigned char *fileKey, CryptAlgori
                 hasContentsEntry = hasContentsEntry || isContents;
                 Object obj2 = getObj(false, fileKey, encAlgorithm, keyLength, objNum, objGen, recursion + 1, /*strict*/ false, /*decryptString*/ !isContents);
                 if (unlikely(recursion + 1 >= recursionLimit)) {
+                    ++depthLimitHitCount;
                     break;
                 }
                 dict->add(key.getNameString(), std::move(obj2));
