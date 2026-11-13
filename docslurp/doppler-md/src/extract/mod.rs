@@ -121,14 +121,12 @@ impl Entry {
     }
 }
 
-/// One batch of the manifest: its pages, how it ended, where it was cut and which run wrote it
-/// (`run`: the manifest's `resumes` then, 0 for the first run).
+/// One batch of the manifest: its pages, how it ended and where it was cut.
 #[derive(Clone, Debug)]
 struct Batch {
     pages: (u32, u32),
     status: &'static str,
     cut_page: Option<u32>,
-    run: u64,
 }
 
 /// Where extraction spent its time, for the report (`images_ms`, `images_cpu_ms`). The
@@ -432,7 +430,8 @@ pub fn extract(
     let batch_pages = s.batch_pages.max(1);
     let run_no = previous.map_or(0, |p| p.resumes.saturating_add(1));
     // a narrowed resume's lines name only the pages it may retry, so an earlier line for the
-    // others is not covered by one of this run's (see `merge_batches`)
+    // others is not covered by one of this run's (see `merge_batches`). No new field: the
+    // host's manifest validator takes exactly `pages`, `status` and `cut_page`.
     let clip = s.resume_pages.filter(|_| previous.is_some());
     let mut batches: Vec<Batch> = Vec::new();
     let (mut failed_in_a_row, mut failed) = (0, 0);
@@ -459,7 +458,7 @@ pub fn extract(
             for (_, i) in batch {
                 run.entries[*i].status = Status::NotExtracted(why);
             }
-            batches.push(Batch { pages, status: why, cut_page: Some(batch[0].0.page), run: run_no });
+            batches.push(Batch { pages, status: why, cut_page: Some(batch[0].0.page) });
             continue;
         }
         let (status, c, counts) = run.batch(batch, renderer)?;
@@ -477,7 +476,7 @@ pub fn extract(
         } else if status == "ok" {
             failed_in_a_row = 0;
         }
-        batches.push(Batch { pages, status, cut_page: if status == "ok" { None } else { cut_page }, run: run_no });
+        batches.push(Batch { pages, status, cut_page: if status == "ok" { None } else { cut_page } });
     }
     if let Some(prev) = previous {
         // a resume keeps the earlier lines that still say something about a page no newer
@@ -989,36 +988,42 @@ impl Batch {
 }
 
 /// The batch lines a resume writes: `own` (this run's, all kept) and those `earlier` lines that
-/// still say something about a page no newer line covers. Lines are taken newest first (by
-/// `run`; lines of one run never overlap); an earlier line is kept when its range holds a page
-/// of `pages` (each page with an image, and whether one of them is still stopped) that no newer
-/// line covers, a stopped one for a non-`ok` line. A line whose stopped images were all retried
-/// since, or that has none (a `renderer` stop after every image was answered), is dropped, so
-/// `complete` can become true. Every line written thus has a page with an image that no other
-/// line kept for it: they never outnumber those pages (the reader's cap). In page order.
+/// still say something about a page no other line kept covers. `pages` holds each page with an
+/// image and whether one of its images is still stopped. Own lines claim their pages first; then
+/// each earlier line, stopped ones first and narrower first (deterministic, with no field saying
+/// which run wrote a line), is kept when its range holds an unclaimed page (a still stopped one,
+/// for a line that is not `ok`), and claims the pages of its range. So a narrowed resume keeps
+/// the earlier record of the pages it left; a line whose stopped images were all retried since,
+/// or that left none (a `renderer` stop after every image was answered), is dropped, and
+/// `complete` can become true. Every line written claims a page with an image no other line
+/// claimed: they never outnumber those pages (the reader's cap), and no two share a range. In
+/// page order.
 fn merge_batches(own: Vec<Batch>, earlier: &[Batch], mut pages: BTreeMap<u32, bool>) -> Vec<Batch> {
     // takes the pages of [a, b] out of `pages`, returning them
-    let mut take = |(a, b): (u32, u32)| {
+    fn take(pages: &mut BTreeMap<u32, bool>, (a, b): (u32, u32)) -> BTreeMap<u32, bool> {
         let mut inside = pages.split_off(&a);
         if let Some(after) = b.checked_add(1) {
             let mut rest = inside.split_off(&after);
             pages.append(&mut rest);
         }
         inside
-    };
+    }
     for b in &own {
-        take(b.pages);
+        take(&mut pages, b.pages);
     }
     let mut earlier: Vec<&Batch> = earlier.iter().collect();
-    earlier.sort_by_key(|b| std::cmp::Reverse(b.run));
+    earlier.sort_by_key(|b| (b.ok(), b.pages.1 - b.pages.0, b.pages));
     let mut out = own;
     for b in earlier {
-        let inside = take(b.pages);
+        let inside = take(&mut pages, b.pages);
         if inside.values().any(|stopped| b.ok() || *stopped) {
             out.push(b.clone());
+        } else {
+            // a line dropped claims nothing: its pages stay for a wider line
+            pages.extend(inside);
         }
     }
-    out.sort_by_key(|b| (b.pages, b.run));
+    out.sort_by_key(|b| b.pages);
     out
 }
 
@@ -1128,12 +1133,11 @@ fn manifest_lines(
     }
     for b in batches {
         w.batch(&format!(
-            "\"pages\":[{},{}],\"status\":{},\"cut_page\":{},\"run\":{}",
+            "\"pages\":[{},{}],\"status\":{},\"cut_page\":{}",
             b.pages.0,
             b.pages.1,
             js(b.status),
-            b.cut_page.map_or_else(|| "null".to_string(), |c| c.to_string()),
-            b.run
+            b.cut_page.map_or_else(|| "null".to_string(), |c| c.to_string())
         ))?;
     }
     let cut = batches.iter().filter(|b| b.status != "ok").count();
@@ -1152,12 +1156,12 @@ fn manifest_lines(
 mod tests {
     use super::*;
 
-    fn line(pages: (u32, u32), status: &'static str, cut_page: Option<u32>, run: u64) -> Batch {
-        Batch { pages, status, cut_page, run }
+    fn line(pages: (u32, u32), status: &'static str, cut_page: Option<u32>) -> Batch {
+        Batch { pages, status, cut_page }
     }
 
-    fn summary(b: &[Batch]) -> Vec<((u32, u32), &'static str, Option<u32>, u64)> {
-        b.iter().map(|b| (b.pages, b.status, b.cut_page, b.run)).collect()
+    fn summary(b: &[Batch]) -> Vec<((u32, u32), &'static str, Option<u32>)> {
+        b.iter().map(|b| (b.pages, b.status, b.cut_page)).collect()
     }
 
     /// pages 1..=6 with an image each, `stopped` still stopped after this run
@@ -1169,40 +1173,53 @@ mod tests {
     fn a_narrowed_resume_keeps_the_default_batchs_record_of_the_pages_it_left() {
         // the first run's one 64-page batch stopped on page 2 (pages 2..6 left); a resume of
         // pages 3-4 writes [3,4] (clipped): [1,64] still holds stopped pages 2, 5, 6
-        let first = [line((1, 64), "budget", Some(2), 0)];
-        let got = merge_batches(vec![line((3, 4), "ok", None, 1)], &first, pages(&[2, 5, 6]));
-        assert_eq!(summary(&got), [((1, 64), "budget", Some(2), 0), ((3, 4), "ok", None, 1)]);
+        let first = [line((1, 64), "budget", Some(2))];
+        let got = merge_batches(vec![line((3, 4), "ok", None)], &first, pages(&[2, 5, 6]));
+        assert_eq!(summary(&got), [((1, 64), "budget", Some(2)), ((3, 4), "ok", None)]);
         // then the rest: nothing earlier holds a page this run did not cover
-        let got = merge_batches(vec![line((1, 64), "ok", None, 2)], &got, pages(&[]));
-        assert_eq!(summary(&got), [((1, 64), "ok", None, 2)]);
+        let got = merge_batches(vec![line((1, 64), "ok", None)], &got, pages(&[]));
+        assert_eq!(summary(&got), [((1, 64), "ok", None)]);
     }
 
     #[test]
-    fn a_line_is_dropped_once_its_stopped_pages_are_covered_by_newer_ones() {
-        // [1,64] (run 0) left 2 and 5; run 1 retried 2 only (still stopped), run 2 retried 5
-        let first = [line((1, 64), "budget", Some(2), 0)];
-        let r1 = merge_batches(vec![line((2, 2), "budget", Some(2), 1)], &first, pages(&[2, 5]));
-        assert_eq!(r1.len(), 2);
-        let r2 = merge_batches(vec![line((5, 5), "ok", None, 2)], &r1, pages(&[2]));
-        // [1,64] is covered on 2 (by run 1) and 5 (run 2): dropped; [2,2] keeps page 2
-        assert_eq!(summary(&r2), [((2, 2), "budget", Some(2), 1), ((5, 5), "ok", None, 2)]);
+    fn a_line_is_dropped_once_its_stopped_pages_are_covered_by_other_lines() {
+        // [1,64] left 2 and 5; a resume of 2 (still stopped), then one of 5
+        let first = [line((1, 64), "budget", Some(2))];
+        let r1 = merge_batches(vec![line((2, 2), "budget", Some(2))], &first, pages(&[2, 5]));
+        assert_eq!(summary(&r1), [((1, 64), "budget", Some(2)), ((2, 2), "budget", Some(2))]);
+        let r2 = merge_batches(vec![line((5, 5), "ok", None)], &r1, pages(&[2]));
+        // [2,2] (narrower) claims page 2 first: [1,64] holds no other stopped page and goes
+        assert_eq!(summary(&r2), [((2, 2), "budget", Some(2)), ((5, 5), "ok", None)]);
         // repeating narrowed resumes of one page does not pile lines up
-        let r3 = merge_batches(vec![line((2, 2), "budget", Some(2), 3)], &r2, pages(&[2]));
-        assert_eq!(summary(&r3), [((2, 2), "budget", Some(2), 3), ((5, 5), "ok", None, 2)]);
+        let r3 = merge_batches(vec![line((2, 2), "budget", Some(2))], &r2, pages(&[2]));
+        assert_eq!(summary(&r3), [((2, 2), "budget", Some(2)), ((5, 5), "ok", None)]);
+        // nor do overlapping ok ranges: each kept line claims a page no other line has
+        let mut got = vec![line((1, 6), "ok", None)];
+        for r in [(2, 3), (3, 4), (4, 5), (1, 2), (5, 6)] {
+            got = merge_batches(vec![line(r, "ok", None)], &got, pages(&[]));
+            assert!(got.len() <= 6, "{got:?}");
+            let mut ranges: Vec<_> = got.iter().map(|b| b.pages).collect();
+            ranges.dedup();
+            assert_eq!(ranges.len(), got.len());
+        }
     }
 
     #[test]
     fn a_stopped_line_with_no_stopped_image_does_not_pin_complete() {
         // a renderer that failed after answering every image of [1,2]: its line is not ok but
         // leaves nothing stopped; a later resume of [3,4] drops it, so every line is ok
-        let first = [line((1, 2), "renderer", None, 0), line((3, 4), "budget", Some(3), 0)];
-        let got = merge_batches(vec![line((3, 4), "ok", None, 1)], &first, pages(&[]));
-        assert_eq!(summary(&got), [((3, 4), "ok", None, 1)]);
+        let first = [line((1, 2), "renderer", None), line((3, 4), "budget", Some(3))];
+        let got = merge_batches(vec![line((3, 4), "ok", None)], &first, pages(&[]));
+        assert_eq!(summary(&got), [((3, 4), "ok", None)]);
         assert!(got.iter().all(Batch::ok));
-        // an ok line with pages no newer line covers is kept
-        let first = [line((1, 2), "ok", None, 0), line((3, 4), "budget", Some(3), 0)];
-        let got = merge_batches(vec![line((3, 4), "ok", None, 1)], &first, pages(&[]));
-        assert_eq!(summary(&got), [((1, 2), "ok", None, 0), ((3, 4), "ok", None, 1)]);
+        // an ok line with pages no other line covers is kept, also when a dropped stopped line
+        // overlapped it (a dropped line claims nothing)
+        let first = [line((1, 2), "ok", None), line((3, 4), "budget", Some(3))];
+        let got = merge_batches(vec![line((3, 4), "ok", None)], &first, pages(&[]));
+        assert_eq!(summary(&got), [((1, 2), "ok", None), ((3, 4), "ok", None)]);
+        let first = [line((1, 1), "renderer", None), line((1, 4), "ok", None)];
+        let got = merge_batches(vec![line((3, 3), "ok", None)], &first, pages(&[]));
+        assert_eq!(summary(&got), [((1, 4), "ok", None), ((3, 3), "ok", None)]);
     }
 
     #[test]

@@ -63,11 +63,13 @@ fn known(set: &[&'static str], v: &str) -> Option<&'static str> {
 /// Reads DIR's `manifest.jsonl` from `r` one line at a time, refusing one that is not
 /// `doppler-images/3`, is truncated or altered (end line, counts, hash), names another PDF or
 /// other settings, or is not one this program would write. A batch line must be well formed
-/// and consistent: `ok` with no `cut_page`, a `cut_page` within its own `pages`, a range that
-/// holds a page with an image, a `run` no later than the header's `resumes`, and no overlap
-/// with another line of the same run. There are at most as many batch lines as pages with
-/// images: every line this program keeps has such a page no other line kept claims (see
-/// `merge_batches`), whatever `--images-batch-pages` each run used.
+/// (exactly `type`, `pages`, `status` and `cut_page`) and consistent: `ok` with no `cut_page`, a
+/// `cut_page` within its own `pages`, a range that holds a page with an image (so within the
+/// document), and no two lines with the same range. There are at most as many batch lines as
+/// pages with images: every line this program writes claims such a page no other line claims
+/// (see `merge_batches`), whatever `--images-batch-pages` each run used. Lines of different runs
+/// may overlap, and nothing says which run wrote a line, so overlaps within one run are not
+/// told apart from those (the cap above bounds them).
 pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str) -> Result<Previous, String> {
     let mut lines = Reader::new(r);
     let mut resumes = 0;
@@ -143,6 +145,11 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                 }
                 Kind::Batch => {
                     let bad = || format!("{NAME}: a bad batch line");
+                    let keys = ["type", "pages", "status", "cut_page"];
+                    let fields = im.as_object().ok_or_else(bad)?;
+                    if fields.len() != keys.len() || !keys.iter().all(|k| fields.contains_key(*k)) {
+                        return Err(bad());
+                    }
                     let page =
                         |v: &serde_json::Value| v.as_u64().and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0);
                     let range = match im["pages"].as_array().map(Vec::as_slice) {
@@ -160,7 +167,6 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                         serde_json::Value::Null => None,
                         v => Some(page(v).ok_or_else(bad)?),
                     };
-                    let run = im["run"].as_u64().filter(|r| *r <= resumes).ok_or_else(bad)?;
                     let (a, b) = range;
                     if (status == "ok" && cut_page.is_some()) || cut_page.is_some_and(|c| c < a || c > b) {
                         return Err(format!("{NAME}: a batch line whose cut_page is not one of its pages"));
@@ -171,7 +177,10 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
                     if batches.len() >= pages.len() {
                         return Err(format!("{NAME}: more batch lines than pages with images"));
                     }
-                    batches.push(Batch { pages: range, status, cut_page, run });
+                    if batches.iter().any(|b| b.pages == range) {
+                        return Err(format!("{NAME}: two batch lines for pages {a}-{b}"));
+                    }
+                    batches.push(Batch { pages: range, status, cut_page });
                 }
                 Kind::End => {}
             }
@@ -179,16 +188,10 @@ pub fn read(r: impl std::io::BufRead, source_sha256: &str, settings_sha256: &str
         })();
         first = checked.err();
     }
-    if let Some(e) = first {
-        return Err(e);
+    match first {
+        Some(e) => Err(e),
+        None => Ok(Previous { entries, batches, resumes }),
     }
-    // the lines of one run never overlap (nor repeat)
-    let mut by_run: Vec<&Batch> = batches.iter().collect();
-    by_run.sort_by_key(|b| (b.run, b.pages));
-    if by_run.windows(2).any(|w| w[0].run == w[1].run && w[1].pages.0 <= w[0].pages.1) {
-        return Err(format!("{NAME}: two batch lines of one run overlap"));
-    }
-    Ok(Previous { entries, batches, resumes })
 }
 
 impl Entry {
@@ -220,7 +223,7 @@ mod tests {
         )
         .unwrap();
         w.image("\"id\":\"p3.1\",\"page\":3,\"status\":\"not-extracted\",\"reason\":\"min_side\",\"path\":null").unwrap();
-        w.batch("\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0").unwrap();
+        w.batch("\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2").unwrap();
         let out = w.finish("\"complete\":false,\"resumable\":true,\"totals\":{\"images\":3,\"batches\":1}").unwrap();
         String::from_utf8(out).unwrap()
     }
@@ -272,8 +275,8 @@ mod tests {
         assert!(!p.entries["p3.1"].0.resumable());
         assert_eq!(p.entries["p2.1"].0.format, None);
         // the batch lines are kept (a resume carries forward those it does not run again)
-        let b: Vec<_> = p.batches.iter().map(|b| (b.pages, b.status, b.cut_page, b.run)).collect();
-        assert_eq!(b, [((1, 64), "budget", Some(2), 0)]);
+        let b: Vec<_> = p.batches.iter().map(|b| (b.pages, b.status, b.cut_page)).collect();
+        assert_eq!(b, [((1, 64), "budget", Some(2))]);
     }
 
     #[test]
@@ -298,35 +301,35 @@ mod tests {
         assert!(read(twice.as_bytes(), "aa", "ss").err().unwrap().contains("twice"));
         assert!(read(rehash(&ok).as_bytes(), "aa", "ss").is_ok());
         // a batch line this program would not write
-        let batch = "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0";
+        let batch = "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2";
         let refused = |lines: &str| read(rehash(&ok.replace(batch, lines)).as_bytes(), "aa", "ss").err();
         for bad in [
             // malformed
-            "\"pages\":[2,1],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
-            "\"pages\":[0,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
-            "\"pages\":[1],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
-            "\"pages\":[1,64],\"status\":\"forged\",\"cut_page\":2,\"run\":0",
-            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":\"2\",\"run\":0",
+            "\"pages\":[2,1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[0,64],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1],\"status\":\"budget\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"forged\",\"cut_page\":2",
+            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":\"2\"",
             "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2",
-            // inconsistent: ok with a cut_page, a cut_page outside the line, a run after the
-            // header's resumes (2), pages with no image
-            "\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":2,\"run\":0",
-            "\"pages\":[1,2],\"status\":\"budget\",\"cut_page\":3,\"run\":0",
-            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":3",
-            "\"pages\":[4000000000,4000000000],\"status\":\"budget\",\"cut_page\":null,\"run\":0",
+            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
+            // inconsistent: ok with a cut_page, a cut_page outside the line, pages with no image
+            "\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":2",
+            "\"pages\":[1,2],\"status\":\"budget\",\"cut_page\":3",
+            "\"pages\":[4,64],\"status\":\"budget\",\"cut_page\":null",
+            "\"pages\":[4000000000,4000000000],\"status\":\"budget\",\"cut_page\":null",
         ] {
             let e = refused(bad).unwrap();
             assert!(e.contains("batch"), "{bad}: {e}");
         }
-        // two lines of one run that overlap, or repeat, are refused; lines of two runs may
+        // a missing cut_page (null when the batch finished) is refused too
+        assert!(refused("\"pages\":[1,64],\"status\":\"ok\"").is_some());
+        // two lines for one range are refused; overlapping ranges (of different runs) are not
         let lines = |batches: &[&str]| read(with_batches(batches).as_bytes(), "aa", "ss");
-        let line = |a: u32, b: u32, run: u64| format!("\"pages\":[{a},{b}],\"status\":\"ok\",\"cut_page\":null,\"run\":{run}");
-        let e = lines(&[batch, &line(2, 3, 0)]).err().unwrap();
-        assert!(e.contains("overlap"), "{e}");
-        assert!(lines(&[batch, batch]).err().unwrap().contains("overlap"));
-        assert_eq!(lines(&[batch, &line(2, 3, 1)]).unwrap().batches.len(), 2);
+        let line = |a: u32, b: u32| format!("\"pages\":[{a},{b}],\"status\":\"ok\",\"cut_page\":null");
+        assert!(lines(&[batch, batch]).err().unwrap().contains("two batch lines"));
+        assert_eq!(lines(&[batch, &line(2, 3)]).unwrap().batches.len(), 2);
         // no more batch lines than pages with images (three here)
-        let (l1, l2, l3, l4) = (line(1, 1, 0), line(2, 2, 0), line(3, 3, 0), line(1, 3, 1));
+        let (l1, l2, l3, l4) = (line(1, 1), line(2, 2), line(3, 3), line(1, 3));
         assert_eq!(lines(&[&l1, &l2, &l3]).unwrap().batches.len(), 3);
         assert!(lines(&[&l1, &l2, &l3, &l4]).err().unwrap().contains("more batch lines"));
     }

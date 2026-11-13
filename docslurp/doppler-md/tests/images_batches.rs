@@ -143,13 +143,19 @@ fn batches(m: &serde_json::Value) -> Vec<(String, Option<u64>)> {
         .collect()
 }
 
-/// Each batch line's pages and run.
-fn pages(m: &serde_json::Value) -> Vec<(u64, u64, u64)> {
+/// Each batch line's pages. A line has exactly `type`, `pages`, `status` and `cut_page`: the
+/// host's manifest validator refuses any other key.
+fn pages(m: &serde_json::Value) -> Vec<(u64, u64)> {
     m["batches"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|b| (b["pages"][0].as_u64().unwrap(), b["pages"][1].as_u64().unwrap(), b["run"].as_u64().unwrap()))
+        .map(|b| {
+            let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["cut_page", "pages", "status", "type"], "{b}");
+            (b["pages"][0].as_u64().unwrap(), b["pages"][1].as_u64().unwrap())
+        })
         .collect()
 }
 
@@ -663,9 +669,9 @@ fn a_resume_page_range_retries_only_its_pages() {
         assert_eq!(entry(&m, pg)["resumable"], true, "{pg}");
     }
     // the batches it did not run again keep their records, in page order: [1,2] and [5,6] as
-    // the first run left them (run 0), beside this resume's own (run 1), clipped to 3-4; the
-    // first run's [3,4] is replaced (every page of it is covered by a newer line)
-    assert_eq!(pages(&m), [(1, 2, 0), (3, 4, 1), (5, 6, 0)], "{m}");
+    // the first run left them, beside this resume's own, clipped to 3-4; the first run's [3,4]
+    // is replaced (every page of it is covered by this run's)
+    assert_eq!(pages(&m), [(1, 2), (3, 4), (5, 6)], "{m}");
     assert_eq!(batches(&m), [("budget".to_string(), Some(2)), ok("ok"), ("budget".to_string(), Some(6))]);
     assert_eq!((&m["totals"]["batches"], &m["totals"]["batches_cut"]), (&3.into(), &2.into()));
     // a second narrowed resume still keeps the first run's [1,2]
@@ -679,7 +685,7 @@ fn a_resume_page_range_retries_only_its_pages() {
     assert_eq!(status(&m, 6).0, "extracted");
     assert_eq!(entry(&m, 2)["resumable"], true);
     // (this resume's [5,6] replaces the first run's)
-    assert_eq!(pages(&m), [(1, 2, 0), (3, 4, 1), (5, 6, 2)], "{m}");
+    assert_eq!(pages(&m), [(1, 2), (3, 4), (5, 6)], "{m}");
     assert_eq!(batches(&m), [("budget".to_string(), Some(2)), ok("ok"), ok("ok")]);
     assert_eq!(
         (&m["totals"]["batches"], &m["totals"]["batches_cut"], &m["resumes"]),
@@ -712,7 +718,7 @@ fn a_resume_page_range_retries_only_its_pages() {
     assert_eq!((&m["complete"], &m["resumes"]), (&true.into(), &3.into()));
     assert_eq!(m["totals"]["extracted"], 6);
     // a whole resume's [1,64] covers every earlier line: it alone remains
-    assert_eq!(pages(&m), [(1, 64, 3)], "{m}");
+    assert_eq!(pages(&m), [(1, 64)], "{m}");
     assert_eq!(batches(&m), [ok("ok")]);
     assert_eq!((&m["totals"]["batches"], &m["totals"]["batches_cut"]), (&1.into(), &0.into()));
     // --images-resume-pages without --images-resume is a usage error
@@ -730,7 +736,7 @@ fn a_narrowed_resume_keeps_the_default_batchs_record_of_the_pages_it_left() {
     let m = manifest(&part);
     let resumable: Vec<u32> = (1..=6).filter(|&pg| entry(&m, pg)["resumable"] == true).collect();
     assert_eq!(resumable, [2, 3, 4, 5, 6], "{m}");
-    assert_eq!(pages(&m), [(1, 64, 0)]);
+    assert_eq!(pages(&m), [(1, 64)]);
     assert_eq!(batches(&m), [("budget".to_string(), Some(2))]);
     // pages 3-4: the first run's record of 2, 5 and 6 stays, beside this resume's own [3,4]
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-resume-pages", "3-4", &pdf], &[]);
@@ -743,7 +749,7 @@ fn a_narrowed_resume_keeps_the_default_batchs_record_of_the_pages_it_left() {
         assert_eq!(status(&m, pg), ("not-extracted".to_string(), Some("budget".to_string())), "{pg}");
         assert_eq!(entry(&m, pg)["resumable"], true, "{pg}");
     }
-    assert_eq!(pages(&m), [(1, 64, 0), (3, 4, 1)], "{m}");
+    assert_eq!(pages(&m), [(1, 64), (3, 4)], "{m}");
     assert_eq!(batches(&m), [("budget".to_string(), Some(2)), ok("ok")]);
     assert_eq!(
         (&m["complete"], &m["totals"]["batches"], &m["totals"]["batches_cut"]),
@@ -762,10 +768,53 @@ fn a_narrowed_resume_keeps_the_default_batchs_record_of_the_pages_it_left() {
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = manifest(&part);
     assert_eq!((&m["complete"], &m["totals"]["extracted"]), (&true.into(), &6.into()));
-    assert_eq!(pages(&m), [(1, 64, 2)], "{m}");
+    assert_eq!(pages(&m), [(1, 64)], "{m}");
     // a resume with nothing left changes nothing and says so the same way (exit 0)
     let before = std::fs::read(part.join("manifest.jsonl")).unwrap();
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
     assert_eq!(r.status.code(), Some(0));
     assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), before);
+}
+
+#[test]
+fn a_renderer_stop_that_left_nothing_does_not_pin_complete() {
+    let Some((p, s, pdf)) = setup("renderer-left-nothing", 6) else { return };
+    let part = s.0.join("part");
+    // one page per batch, a renderer that exits 1 after answering its one job: [1,1] and [2,2]
+    // end `renderer` with every image extracted, and the next batches are aborted (two failed
+    // in a row)
+    let crash = [("FAKE_PDFREGIONS_MODE", "crash")];
+    let r = run(&p, &["--images-dir", part.to_str().unwrap(), "--images-batch-pages", "1", &pdf], &crash);
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&part);
+    assert_eq!(status(&m, 1).0, "extracted");
+    assert_eq!(status(&m, 2).0, "extracted");
+    let b = batches(&m);
+    assert_eq!(&b[..2], [("renderer".to_string(), None), ("renderer".to_string(), None)], "{m}");
+    assert!(b[2..].iter().all(|(s, _)| s == "aborted"), "{m}");
+    // a resume that finishes the aborted pages drops the renderer lines (nothing of theirs is
+    // left): complete, exit 0, every line ok
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&part);
+    assert_eq!((&m["complete"], &m["resumable"], &m["totals"]["extracted"]), (&true.into(), &false.into(), &6.into()));
+    assert_eq!(pages(&m), [(3, 3), (4, 4), (5, 5), (6, 6)], "{m}");
+    assert!(batches(&m).iter().all(|(s, _)| s == "ok"), "{m}");
+    // nothing left: a resume changes nothing and exits as `complete` says
+    let before = std::fs::read(part.join("manifest.jsonl")).unwrap();
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0));
+    assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), before);
+    // renderer lines with nothing to resume: the end line says complete:false, and a resume
+    // with nothing to do exits 5, the same, instead of 0
+    let two = s.0.join("two");
+    let first = ["--images-pages", "1-2", "--images-batch-pages", "1"];
+    let r = run(&p, &[&["--images-dir", two.to_str().unwrap()], &first[..], &[&pdf]].concat(), &crash);
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&two);
+    assert_eq!((&m["complete"], &m["resumable"]), (&false.into(), &false.into()), "{m}");
+    let before = std::fs::read(two.join("manifest.jsonl")).unwrap();
+    let r = run(&p, &[&["--images-resume", two.to_str().unwrap()], &first[..], &[&pdf]].concat(), &[]);
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(std::fs::read(two.join("manifest.jsonl")).unwrap(), before);
 }

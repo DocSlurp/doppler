@@ -607,7 +607,7 @@ order, the lines in this order:
 ```
 {"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"image","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
 {"type":"image","id":"p1.1","page":1,"bbox":[72.00,222.00,272.00,372.00],"kind":"picture","fate":"block","obj":[6,0],"path":"page-0001/image-001.webp","link":"images/page-0001/image-001.webp","status":"extracted","format":"webp","source":"render","bytes":5468,"sha256":"…","width":417,"height":312}
-{"type":"batch","pages":[1,64],"status":"ok","cut_page":null,"run":0}
+{"type":"batch","pages":[1,64],"status":"ok","cut_page":null}
 {"type":"end","complete":true,"resumable":false,"totals":{"images":1,…,"batches":1,"batches_cut":0},"images":1,"batches":1,"sha256":"…"}
 ```
 
@@ -621,14 +621,16 @@ when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `sca
 `--images-resume` runs rewrote it). Then one **image** line per image (below), then one
 **batch** line per batch, in page order: `pages` `[A,B]` (the batch's pages; on an
 `--images-resume-pages` resume, clipped to that range), `status` `ok`, `budget`, `doc_budget`,
-`timeout`, `deadline`, `renderer` or `aborted`, `cut_page`, the first page with an image the
-batch did not get to (null for `ok`), and `run`, the `resumes` count of the run that wrote it
-(0 for the first). A resume lists its own lines and keeps each earlier line that still says
-something no newer line does: one with a page with an image that no newer line covers (for a
-stopped line, an image there still stopped). So a narrowed resume keeps the earlier record of
-the pages it left, a whole resume replaces every earlier line, and a stopped line whose images
-were all retried, or that left none (a `renderer` stop after every image was answered), goes,
-so `complete` can become true. Lines of one run never overlap; lines of different runs may.
+`timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the first page with an image
+the batch did not get to (null for `ok`); no other key. A resume lists its own lines and keeps
+each earlier line that still says something no other line does: its own lines claim their
+pages, then each earlier line (stopped ones first, narrower first) is kept when its range holds
+a page with an image no kept line has claimed (for a stopped line, one with an image still
+stopped there), and claims its pages. So a narrowed resume keeps the earlier record of the pages
+it left, a whole resume replaces every earlier line, and a stopped line whose images were all
+retried, or that left none (a `renderer` stop after every image was answered), goes, so
+`complete` can become true. Lines of one run never overlap; lines of different runs may (which
+run wrote a line is not recorded), and no two lines share a range.
 The **end** line, last:
 `complete` (every batch line `ok` and no image was left by a stopped batch), `resumable` (some
 image may still be extracted by a resume), `totals`, then `images` and `batches` (the number of
@@ -701,10 +703,12 @@ the same conversion options or `--images-plan PLAN`, and the same image options 
 `--images-batch-pages`, the time limits and `--images-confine` may change). DIR's
 `manifest.jsonl` is read one line at a time and must be whole (a `doppler-images/3` header, its
 end line, matching counts and hash: a truncated or altered one is refused), hold only lines
-this program would write (known statuses and reasons; batch lines with an `ok` and no
-`cut_page` or a `cut_page` within their own `pages`, a range with a page that has an image, a
-`run` no later than `resumes`, no overlap within one run, and no more batch lines than pages
-with images, which bounds what a forged manifest can make a resume hold), name the same PDF
+this program would write (known statuses and reasons; batch lines with exactly `type`,
+`pages`, `status` and `cut_page`, an `ok` with no `cut_page` or a `cut_page` within their own
+`pages`, a range with a page that has an image, no two with the same range, and no more batch
+lines than pages with images, which bounds what a forged manifest can make a resume hold; the
+manifest's hash is not keyed, so these refuse damage and mistakes, not a deliberate forgery),
+name the same PDF
 (`source_sha256`) and settings (`settings_sha256`) and list exactly this conversion's images at
 the same paths; otherwise nothing is touched and the exit status is **2** (also for a DIR
 without a manifest, and for a version 2 `manifest.json` or any other schema: extract again). Only the
@@ -959,9 +963,8 @@ for the measured baseline and scoring coverage.
 - The suites that need the DocSlurp utils (`tests/images_batches.rs`, `images_dir.rs`,
   `page_facts.rs`, `page_info.rs`) print `skipped:` and pass without them, unless
   `DOPPLER_REQUIRE_INTEGRATION` is `1`, `true` or `on`: then a missing toolchain fails the test
-  (`tests/toolchain`). The `doppler-md` GitHub Actions job (`.github/workflows/doppler-md.yml`)
-  builds `pdftotext`, `pdfregions` and `pdfpagefacts` and runs `--lib` and those suites with it
-  set.
+  (`tests/toolchain`). No CI job sets it yet; run them so after building the utils:
+  `PDFTOTEXT=../../build/utils/pdftotext DOPPLER_REQUIRE_INTEGRATION=1 cargo test --release`.
 - `python3 -I scripts/check_pipeline.py --pdftotext /path/to/pdftotext --converter target/release/doppler-md`:
   check producer rule completeness through the real XHTML-to-Markdown pipeline.
 - `scripts/parity.sh [GOLDEN_DIR [SET]]`: byte-identical output against `doppler_md.py` on the
