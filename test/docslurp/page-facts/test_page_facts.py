@@ -420,6 +420,15 @@ with t.TempDir() as d:
     alone = lines(facts(budget, "-level", "full", "-f", "52", "-l", "52")[1])
     t.check(page(whole, 52) == page(alone, 52) and page(whole, 52)["images"]["scan"] == "single" and not page(whole, 52)["images"]["truncated"], "image budget spent by earlier pages: page 52 unchanged, still a scan", repr(page(whole, 52)["images"]))
     t.check(pdftotext_facts(budget, "-page-facts-level", "full", images=True)[2] == facts(budget, "-level", "full")[1], "image budget: pdftotext -images facts == pdfpagefacts")
+    # the image cache's fetch budget: limit-hit only on a page that drew an image whose own
+    # colour-space lookup was refused, including when that image is drawn again; never on a later
+    # page whose images needed no refused lookup
+    refusal = d.write("refusal.pdf", fx.image_refusal_pdf())
+    out = facts(refusal, "-level", "full")[1]
+    warn = [("limit-hit" in page(lines(out), n)["parseWarnings"]) for n in (1, 2, 3)]
+    t.check(warn == [True, False, True], "image fetch budget: limit-hit on the refused page and on its image drawn again, not on a page that needed no lookup", repr(warn))
+    t.check(page(lines(out), 2)["images"]["items"][0]["colorSpace"] == "gray" and page(lines(out), 3)["images"]["items"][0]["colorSpace"] == "other", "image fetch budget: colour spaces gray and other", repr([page(lines(out), n)["images"]["items"] for n in (2, 3)]))
+    t.check(pdftotext_facts(refusal, "-page-facts-level", "full", images=True)[2] == out, "image fetch budget: pdftotext -images facts == pdfpagefacts")
     # small UserUnit keeps its value (schema minimum 0.0001)
     uu = d.write("userunit.pdf", fx.doc([{"content": fx.words(5), "extra": "/UserUnit 0.001"}, {"content": fx.words(5), "extra": "/UserUnit 0.00001"}]))
     out = facts(uu, "-level", "full")[1]

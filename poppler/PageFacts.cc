@@ -2391,7 +2391,7 @@ void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
 bool ImageInfoCache::takeFetch()
 {
     if (fetchesLeft == 0) {
-        fetchLimitHit = true;
+        ++refused;
         return false;
     }
     --fetchesLeft;
@@ -2413,9 +2413,12 @@ ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     }
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
+    const size_t before = refused;
     const Object resolved = xref->fetch(cs.getRef());
     const ImageColor c = classify(resolved, xref);
-    if (spaces.size() < maxEntries) {
+    // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
+    // without saying so (and a retry past the budget is refused at once)
+    if (refused == before && spaces.size() < maxEntries) {
         spaces.emplace(cs.getRef(), c);
     }
     return c;
@@ -2479,6 +2482,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
     }
     ImageColor c = ImageColor::Other;
     const Object icc = xref->fetch(profile.getRef());
+    const size_t before = refused;
     if (icc.isStream()) {
         // /N by reference is resolved too, within the same budget
         const Object &nRaw = icc.getStream()->getDict()->lookupNF("N");
@@ -2506,7 +2510,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
             }
         }
     }
-    if (profiles.size() < maxEntries) {
+    if (refused == before && profiles.size() < maxEntries) {
         profiles.emplace(profile.getRef(), c);
     }
     return c;

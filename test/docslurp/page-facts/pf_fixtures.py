@@ -577,6 +577,42 @@ def image_budget_pdf(busy_pages=51, draws=1990):
     return doc([{"content": busy, "resources": res}] * busy_pages + [{"content": scan, "resources": res}], extras=[image("/DCTDecode")])
 
 
+def image_refusal_pdf(spenders=22000):
+    """Page 1 draws <spenders> images whose colour spaces cost 3 fetches each (an indirect family
+    name, an ICC profile and its /N by reference): past the 65,536-fetch budget of the image
+    cache, then one more such image L (refused). Page 2 draws a /DeviceGray image (no lookup);
+    page 3 draws L again. Only pages 1 and 3 are limited."""
+    objs = []
+
+    def add(body):
+        objs.append(body if isinstance(body, bytes) else body.encode("latin-1"))
+        return len(objs)
+
+    # 1 Catalog, 2 Pages, 3 Helvetica, 4-9 pages and contents, then the rest
+    for _ in range(9):
+        add(b"null")
+    gray = add(t.stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray", b"\x80"))
+    xs = []
+    for _ in range(spenders + 1):
+        fam = add("/ICCBased")
+        n = add("3")
+        prof = add(t.stream("/N %d 0 R" % n, b"x"))
+        xs.append(add(t.stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [%d 0 R %d 0 R]" % (fam, prof), b"\x80\x80\x80")))
+    res = lambda names: "<< /XObject << %s >> >>" % " ".join("/X%d %d 0 R" % (i, x) for i, x in names)
+    contents = [
+        ("".join("q 1 0 0 1 %d %d cm /X%d Do Q\n" % (i % 600, i // 600 % 780, i) for i in range(spenders + 1)), res(enumerate(xs))),
+        ("q 100 0 0 100 100 100 cm /G Do Q\n", "<< /XObject << /G %d 0 R >> >>" % gray),
+        ("q 100 0 0 100 100 100 cm /L Do Q\n", "<< /XObject << /L %d 0 R >> >>" % xs[-1]),
+    ]
+    objs[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objs[1] = b"<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>"
+    objs[2] = HELV.encode("latin-1")
+    for i, (c, r) in enumerate(contents):
+        objs[3 + 2 * i] = ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources %s /Contents %d 0 R >>" % (r, 5 + 2 * i)).encode("latin-1")
+        objs[4 + 2 * i] = t.stream("", c.encode("latin-1"), compress=True)
+    return t.build_pdf(objs)
+
+
 def copy_class_pdf():
     """Images whose dictionaries must not be copied as they are."""
     res = "<< /XObject << %s >> >>" % " ".join("/I%d {%d} 0 R" % (i, i) for i in range(4))

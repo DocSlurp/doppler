@@ -259,7 +259,7 @@ private:
     // image geometry) have evaluated on this page, by reference (at most 4096)
     std::unordered_map<Ref, bool> factsOcVisible;
     bool factsOcIsVisible(const Object &oc);
-    bool imageInfoLimitReported = false; // this page reported ImageInfoCache::limitHit
+    bool imageInfoLimitReported = false; // this page gave the ImageInfoCache limit-hit warning
 
     Parser *parser; // parser for page content stream(s)
 
@@ -381,7 +381,9 @@ private:
     void opXObject(Object args[], int numArgs);
     void doImage(Object *ref, Stream *str, bool inlineImg);
     void reportImageGeometry(Dict *dict, Ref ref);
-    ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg);
+    // <limited>: set when the ImageInfoCache fetch budget refused a lookup for this image
+    ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, bool *limited = nullptr);
+    void noteImageInfoLimit();
     void doForm(Object *str);
 
     // in-line image operators

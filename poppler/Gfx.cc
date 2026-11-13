@@ -4318,6 +4318,9 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     const bool cacheable = cache && ref != Ref::INVALID();
     if (cacheable) {
         if (const ImageInfoCache::Image *seen = cache->find(ref, xref)) {
+            if (seen->limited) {
+                noteImageInfoLimit();
+            }
             if (seen->width >= 1 && seen->height >= 1) {
                 out->imageGeometry(state, seen->width, seen->height, seen->info.imageMask, ref, seen->info);
             }
@@ -4340,7 +4343,7 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     image.width = size("Width", "W");
     image.height = size("Height", "H");
     if (image.width >= 1 && image.height >= 1) {
-        image.info = readImageDictInfo(dict, false);
+        image.info = readImageDictInfo(dict, false, &image.limited);
     }
     if (cacheable) {
         cache->store(ref, xref, image);
@@ -4353,7 +4356,18 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
 // ICC colour space's stream dictionary is fetched for /N), never the image data.
-ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
+// DocSlurp page facts: one limit-hit warning per page, for an image whose colour-space lookup
+// the ImageInfoCache fetch budget refused (on its first read or when it is drawn again).
+void Gfx::noteImageInfoLimit()
+{
+    if (!imageInfoLimitReported) {
+        imageInfoLimitReported = true;
+        // fixed text (no arguments): page facts classify it as limit-hit from the format string
+        error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
+    }
+}
+
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, bool *limited)
 {
     ImageDictInfo info;
     info.inlineImg = inlineImg;
@@ -4420,6 +4434,7 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
     // the colour space by reference is classified once per document (ImageInfoCache)
     ImageInfoCache localCache;
     ImageInfoCache *cache = out->getImageInfoCache() ? out->getImageInfoCache() : &localCache;
+    const size_t refusals = cache->refusals();
     const Object *cs = &dict->lookupNF("ColorSpace");
     if (cs->isNull()) {
         cs = &dict->lookupNF("CS");
@@ -4434,10 +4449,12 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
     } else if (info.imageMask) {
         info.color = ImageColor::None;
     }
-    if (cache->limitHit() && !imageInfoLimitReported) {
-        imageInfoLimitReported = true;
-        // fixed text (no arguments): page facts classify it as limit-hit from the format string
-        error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
+    // limit-hit only when this image's own lookup was refused
+    if (cache->refusals() != refusals) {
+        if (limited) {
+            *limited = true;
+        }
+        noteImageInfoLimit();
     }
     Object smask = dict->lookup("SMask");
     Object smaskInData = dict->lookup("SMaskInData");

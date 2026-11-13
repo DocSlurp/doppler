@@ -278,7 +278,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `bad-content-stream` | content-stream errors (unknown operators, wrong operands, unbalanced state) |
 | `missing-font` | text shown without a usable font |
 | `broken-image` | bad image parameters or codec errors |
-| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget, an optional-content expression past 10,000 operands, which then counts as visible) |
+| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
@@ -370,9 +370,17 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   the pass on each hostile case): an image XObject's dictionary is read once per document,
   and a colour space (or an ICC profile's `/N`) reached by reference is classified once per
   document without copying its lookup string, within a budget of 65,536 fetches (then
-  `other`, with `limit-hit`); optional-content visibility is computed once per `/OC`
-  reference and page, and poppler evaluates a `/VE` expression visiting each shared indirect
-  level once, at most 10,000 operands (then visible, `limit-hit`); poppler's errors are
+  `other`, with `limit-hit` on each page that draws an image whose own lookup was refused,
+  including when that image is drawn again); poppler keeps optional-content visibility by
+  reference (an OCMD and each indirect `/VE` sub-expression) until a group's state changes,
+  so an OCMD named by many `BDC /OC` or XObject `/OC` entries is evaluated once; it evaluates
+  a `/VE` expression visiting each shared indirect level once, at most 10,000 operands (then
+  visible, `limit-hit`), and never reuses a sub-expression cut short by the 50-level
+  recursion limit; what is not cached (a direct OCMD) is charged to a budget of 200,000
+  operands per page, after which uncached `/OC` counts as visible, with `limit-hit`. Whether
+  content is hidden is O(1) per `BMC`/`BDC`/`EMC`, and marked content nested past 4,096
+  levels is not tracked (`limit-hit`; content inside takes the visibility of the deepest
+  tracked level). These hold for plain pdftotext too. Poppler's errors are
   classified from their unformatted format strings; figure clusters merge by union-find over
   a sweep, within a run budget; the rule-grid score is a sweep over x with a Fenwick tree.
 - pdftotext has no time limit by default; `-timeout S`, `-timeout-per-page P` and
