@@ -81,7 +81,8 @@ byte-identical.
   so the id does not change with the layout around it. A picture between paragraphs is a paragraph of its own, in reading order; a text-sized
   one inside a line of text is in that line, among the words. Neighbouring images (within 0.75
   body sizes, transitively) are one figure with one marker, at its first image. A full-page
-  scan is a `page-scan` (see [Page scans](#page-scans)). No marker for
+  scan copied as its own bytes is a `page-scan` (see [Page scans](#page-scans)); with the
+  default `--scan-pages copy` any other scan is a `background`. No marker for
   a page background under a text layer (one picture, or a figure of pieces such as the strips
   or tiles of a scan, covering 85% of the page), an image in the header or footer band, a sliver, a
   duplicate, or the text-sized pictures of a page that draws its words as pictures (more than
@@ -150,7 +151,7 @@ A link is the image's path relative to the images folder, after a prefix:
 |---|---|---|
 | picture `p12.3` | `page-0012/image-003.webp` (`.png` with `--raster-format png`) | `images/page-0012/image-003.webp` |
 | vector figure `p12.g1` | `page-0012/figure-001.svg` (`.webp`/`.png` with `--vector-format`) | `images/page-0012/figure-001.svg` |
-| page scan `p12.1` | `page-0012/image-001.jpg` (a JPEG copied unchanged), `.png` (bilevel), else as a picture | `images/page-0012/image-001.jpg` |
+| page scan `p12.1` | `page-0012/image-001.jpg` (a JPEG copied unchanged), `.png` (bilevel), else (`--scan-pages image` or `render`) as a picture | `images/page-0012/image-001.jpg` |
 
 Numbers are 1-based and zero-padded to at least 4 digits for the page and 3 for the index
 (page 12345 is `page-12345`). Only `src/extract/layout.rs` maps ids to paths. The link depends
@@ -206,7 +207,9 @@ manifest lists.
 A page is a scan when pdftotext says so (`scan="single|tiled|layered" scanImage="K"` on
 `<page>`, from the classifier it shares with page facts: images cover at least 85% of the page
 (`--scan-min-coverage`) on a 64 x 64 grid and at most `--scan-max-words` (20) words are
-visible; render mode 3 OCR text is invisible). Its scan image `pN.K` is placed `page-scan` before anything else (no
+visible; render mode 3 OCR text is invisible). With the default `--scan-pages copy`, only a
+scan that can be copied as its own bytes (below) becomes a page scan; any other scan gets no
+marker and no file (see the table below). A page scan's image `pN.K` is placed `page-scan` before anything else (no
 `background`, `watermark` or `block` for it), and the page's Markdown starts with
 
     ![page 12 scan](images/page-0012/image-001.jpg)
@@ -275,9 +278,19 @@ copied scan's page. `--scan-pages` says what to do with scans:
 
 | `--scan-pages` | Markdown | File |
 |---|---|---|
-| `image` (default) | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
+| `copy` (default) | `![page N scan](...)` first for a scan copied as its own bytes: a single, upright scan on a page that passed the allow-list (`copyable="1"`) whose stream is a JPEG to copy (`copy="jpeg"`) or bilevel (`copy="bilevel"`); every other scan (`decode`: JPEG 2000, Flate and other samples; not copyable: a visible page number, a stamp, a box; tiled, layered, turned, rebuilt table) is placed `background`, with no marker | the JPEG stream or 1-bit PNG, as for `image`; nothing for any other scan (`unlinked`, `reason: scan-not-copyable`): its page image comes from the host's page rendering (DocSlurp's `render-images` stage) |
+| `image` | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
 | `render` | the same, always the raster format | rendered at `--scan-dpi` (200, 36..300) |
 | `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
+
+The choice in `copy` is made at conversion from pdftotext's `copyable=`/`copy=`/`orient=`/
+`overlaid=` (the links are final before extraction) and is cheap: a copy is a few milliseconds a
+page, where decoding a JPEG 2000 or Flate scan to WebP or rendering one at `--scan-dpi` costs
+seconds a page on one core (see the performance notes below), and duplicates the page images
+the host renders anyway. On real scanned books nearly every scan has something beside it (a
+printed page number, a layer, a mask) or is JPEG 2000, so with the default nearly no scan
+yields a Doppler file; `--scan-pages image` restores Doppler-side decoding and rendering of
+those scans (today's behaviour before `copy` became the default).
 
 A copy is checked twice: pdfregions answers a copy job only for an image named in that page's
 resources (directly or through forms at most 4 deep) whose dictionary still gives the same
@@ -317,7 +330,7 @@ most 30 characters); anything else is a usage error (exit 2) before anything run
 whole-document `--images-dir`, this 8-core machine under other load; wall, CPU of the process
 tree, peak RSS):
 
-| Book | `--scan-pages image` (copy) | `--scan-pages render` (150 dpi WebP) | before (scans rendered as pictures) |
+| Book | `--scan-pages copy` (default) or `image`: copied | `--scan-pages render` (150 dpi WebP) | before (scans rendered as pictures) |
 |---|---|---|---|
 | grey DCT, 0.94 MB a page | 4.2 s, 4.8 CPU-s, 23 MiB: 500 `.jpg` (the stored bytes), about 7,200 pages a minute | 94.5 s, 124.5 CPU-s, 114 MiB: 500 `.webp` | failed after 21.9 s (`output limit`), 0 files |
 | CCITT G4, 0.11 MB a page | 8.3 s, 9.6 CPU-s, 23 MiB: 500 1-bit `.png` (decode 7.7 CPU-s, PNG 1.1 s), about 3,600 pages a minute | 91.9 s, 122.6 CPU-s, 115 MiB: 500 `.webp` | failed after 24.8 s (`output limit`), 0 files |
@@ -529,9 +542,9 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
 | `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; exit 5 while any image is left |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
-| `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
-| `--scan-dpi N` | `200` | rendered scans (tiled, layered, turned, not copyable, `--scan-pages render`), 36..300 |
-| `--scan-max-dpi N` | `300` | a decoded scan finer than this is scaled down to it |
+| `--scan-pages copy\|image\|skip\|render` | `copy` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
+| `--scan-dpi N` | `200` | rendered scans with `--scan-pages image` (tiled, layered, turned, not copyable) or `render`, 36..300 |
+| `--scan-max-dpi N` | `300` | with `--scan-pages image`, a decoded scan finer than this is scaled down to it |
 | `--scan-max N` | `1000` | most scan files per batch; past it a scan is `not-extracted` (`budget`) and the batch goes on |
 | `--scan-max-bytes N` | `1GiB` | most scan bytes per batch, likewise |
 

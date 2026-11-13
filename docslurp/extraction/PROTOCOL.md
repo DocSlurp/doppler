@@ -132,11 +132,17 @@ production.
     under another filter (`[/JPXDecode /FlateDecode]`) is `err:decode`. JBIG2 symbol and region
     bitmaps, and the codecs on the render path, stay bounded by `-max-memory` only.
   - Copy jobs use the decoders page rendering uses, inside the same confinement and limits;
-    pdftomarkdown sends them only for page scans whose `copy=` is `jpeg`, `bilevel` or
-    `decode`, whose page passed the allow-list (`copyable="1"`), that are upright
-    (`orient="0"`), that the overpaint estimate also clears (`overlaid="0"`, an extra refusal)
-    and single (not tiled or layered); a `decode` scan over 16,777,216 pixels is rendered
-    instead.
+    pdftomarkdown sends them only for page scans whose `copy=` is `jpeg` or `bilevel` (and,
+    with `--scan-pages image`, `decode`), whose page passed the allow-list (`copyable="1"`),
+    that are upright (`orient="0"`), that the overpaint estimate also clears (`overlaid="0"`,
+    an extra refusal) and single (not tiled or layered); with `--scan-pages image` a `decode`
+    scan over 16,777,216 pixels is rendered instead.
+  - With `--scan-pages copy` (the default) these copy jobs are the only work pdfregions does for
+    scans: a scan that is not copyable as a `jpeg` or `bilevel` stream (`decode`, tiled,
+    layered, turned, covered, rebuilt table) gets no page-scan marker and no job at all; it is
+    the page's `background`, unlinked in the manifest (`reason: scan-not-copyable`), and the
+    host's own page rendering pictures that page. `--scan-pages image` restores the decode and
+    render jobs for such scans; `--scan-pages render` renders every scan.
 - `kind=svg`: UTF-8 SVG, width/height fields 0; the root `<svg>` has `width`/`height` in pt and
   `viewBox` equal to the (cut) region (`x0 y0 x1-x0 y1-y0`, at most 6 decimals), so the figure
   is the whole canvas. Content outside the region is clipped away (cairo culls it).
