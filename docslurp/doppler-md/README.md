@@ -251,7 +251,8 @@ otherwise), so both must agree; the earlier overpaint estimate (`overlaid="0"`) 
 more refusal, never as the permission. A copyable, upright (`orient="0"`) scan whose stream is a
 JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`, no `/Decode`, masks or
 colour transform) is `.jpg`; a bilevel one (CCITT, JBIG2 or 1 bpc with an integer
-`/BitsPerComponent 1`, or a stencil, `DeviceGray`, no `/Decode`)
+`/BitsPerComponent 1`, or a stencil, `DeviceGray`, no `/Decode`; never JPEG 2000, which
+decodes to 8 bits whatever its dictionary says)
 `.png`; any other with a reference the raster format. Every other scan (tiled, layered,
 turned, clipped, inline, covered by anything, or from a producer without those attributes) is
 rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,

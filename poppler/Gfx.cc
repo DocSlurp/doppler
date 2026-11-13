@@ -4473,11 +4473,10 @@ static bool imageDictDrawable(Dict *dict, bool inlineImg, const ImageDictInfo &i
     }
     // samples: bits from the dictionary (or a JPEG 2000 codestream), a colour space, a Decode
     // array with a range for every component
+    // (doImage takes a JPEG 2000 stream's depth from the codestream, 8 bits a component,
+    // and never reads the dictionary's)
     if (!jpx && !(bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 30)) {
         return false;
-    }
-    if (jpx && !bpc.isNull() && !(bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 30)) {
-        return false; // a codestream's depth wins only when it can be read; do not count on it
     }
     // a colour space (info.color is None when /ColorSpace, or /CS without it, is absent or
     // resolves to null; it is not fetched again here)
@@ -4620,8 +4619,11 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
         info.filters = 1;
         info.filter = ImageFilter::Other;
     }
+    // a JPEG 2000 stream's depth is its codestream's (JPXStream::getImageParams gives 8 bits a
+    // component, which doImage draws whatever the dictionary says): its /BitsPerComponent is
+    // not reported, so nothing takes it for the depth of the samples
     Object bpc = lookup("BitsPerComponent", "BPC");
-    if (bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 32) {
+    if (info.filter != ImageFilter::JPX && bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 32) {
         info.bpc = static_cast<uint8_t>(bpc.getInt());
     }
     Object im = lookup("ImageMask", "IM");
@@ -4703,10 +4705,12 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
         jpxStream->setSupportJPXtransparency(true);
     }
 #endif
-    // a JPEG 2000 stream decodes itself to answer this: not for the audit, which then takes
-    // the dictionary's /BitsPerComponent (classifyImageCopy wants it given)
+    // a JPEG 2000 stream may decode itself to answer this: not for the audit, which takes the
+    // dictionary's /BitsPerComponent, or for a JPEG 2000 stream the 8 bits it always answers
     if (!auditOnly) {
         str->getImageParams(&bits, &csMode, &hasAlpha);
+    } else if (str->getKind() == strJPX) {
+        bits = 8; // what JPXStream::getImageParams always answers, without decoding
     }
 
     // get stream dict

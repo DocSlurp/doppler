@@ -654,6 +654,62 @@ def test_reachable_shallow(d):
     t.check(r["p1.1"][0] == "ok", "a form reached deep first and shallow later is searched at its shallow depth", r["p1.1"][:4])
 
 
+def pgm_pixels(data):
+    """The samples of a binary PGM (P5, maxval 255): (width, height, bytes)."""
+    fields, i = [], 0
+    while len(fields) < 4:
+        while data[i : i + 1].isspace():
+            i += 1
+        j = i
+        while not data[j : j + 1].isspace():
+            j += 1
+        fields.append(data[i:j])
+        i = j
+    w, h = int(fields[1]), int(fields[2])
+    return w, h, data[i + 1 : i + 1 + w * h]
+
+
+def test_jpx_dictionary_bits(d):
+    # A JPEG 2000 stream decodes to 8 bits a component (JPXStream::getImageParams), and Splash
+    # draws it so whatever the dictionary's /BitsPerComponent says. With /BitsPerComponent 1 it
+    # must not be classed bilevel and copied as 1-bit rows packed from those 8-bit bytes: every
+    # byte here is 0xF0 | (a bit of hidden text), near white when rendered, while the rows packed
+    # from the same bytes would show the text. If copied at all, the copy is the Decode path's,
+    # and its pixels are the render's at native size.
+    try:
+        from PIL import Image, features
+        import io
+
+        if not features.check("jpg_2000"):
+            raise ImportError
+    except ImportError:
+        print("SKIP test_jpx_dictionary_bits: Pillow without JPEG 2000")
+        return
+    w, h = 64, 48
+    hidden = bytes((0x0F if (x // 8 + y // 6) % 2 else 0x00) for y in range(h) for x in range(w))
+    samples = bytes(0xF0 | v for v in hidden)
+    out = io.BytesIO()
+    Image.frombytes("L", (w, h), samples).save(out, "JPEG2000", irreversible=False, no_jp2=True)
+    j2k = out.getvalue()
+    for bpc in ("/BitsPerComponent 1", "/BitsPerComponent 8", ""):
+        name = "jpx-bpc%s.pdf" % (bpc.split()[-1] if bpc else "-none")
+        obj = image("/Width %d /Height %d /ColorSpace /DeviceGray %s /Filter /JPXDecode" % (w, h, bpc), j2k)
+        pdf = t.simple_page_pdf(b"q %d 0 0 %d 0 0 cm /A Do Q" % (w, h), resources="<< /XObject << /A 6 0 R >> >>", mediabox=(0, 0, w, h), extra_objects=[obj])
+        path = d.write(name, pdf)
+        _, images = attributes(path)
+        t.check(len(images) == 1 and ' copy="bilevel"' not in images[0], "%s: a JPX stream is never copy=bilevel" % name, images)
+        rc, r, _ = copy(path, [("p1.1", 1, "6.0")])
+        status, kind, cw, ch, payload = r["p1.1"]
+        t.check(kind != "gray1", "%s: never copied as 1-bit rows" % name, r["p1.1"][:4])
+        if status != "ok":
+            continue
+        t.check((kind, cw, ch) == ("gray8", w, h), "%s: copied through the Decode path (gray8, native size)" % name, r["p1.1"][:4])
+        rc, pgm, _ = run("pdftoppm", "-r", "72", "-gray", path)
+        rw, rh, rendered = pgm_pixels(pgm)
+        diff = sum(abs(a - b) for a, b in zip(payload, rendered)) / max(1, len(rendered))
+        t.check((rw, rh) == (w, h) and len(payload) == len(rendered) and diff < 2, "%s: the copy is the render (mean abs diff %.2f)" % (name, diff), (rw, rh, len(payload)))
+
+
 with t.TempDir() as d:
     path = d.write("copy.pdf", copy_pdf())
     test_copies(path)
@@ -671,4 +727,5 @@ with t.TempDir() as d:
     test_jbig2_regions(d)
     test_ccitt_black(d)
     test_reachable_shallow(d)
+    test_jpx_dictionary_bits(d)
 t.finish()

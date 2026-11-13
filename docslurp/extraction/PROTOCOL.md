@@ -112,7 +112,9 @@ production.
     string reaches the file. A stream without metadata comes back byte for byte. Nothing is
     decoded.
   - `kind=gray1` (class `bilevel`: CCITT, JBIG2 or grey with an integer `/BitsPerComponent 1`,
-    or a stencil mask, no `/Decode`):
+    or a stencil mask, no `/Decode`; never a JPEG 2000 stream, which decodes to 8 bits a
+    component whatever its dictionary says, so its `/BitsPerComponent` is not read and it is
+    at most class `decode`):
     the decoded samples, `ceil(width/8) * height` bytes, rows top first, most significant bit
     first, 0 black (the PDF's own sense); a short stream ends in white rows.
   - `kind=gray8` or `kind=rgb8` (class `decode`: another single image): its samples decoded once

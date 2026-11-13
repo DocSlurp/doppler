@@ -135,8 +135,10 @@ ImageCopy classifyImageCopy(const ImageDictInfo &info)
     }
     const bool oneBit = info.bpc == 1 || info.imageMask || info.filter == ImageFilter::CCITT || info.filter == ImageFilter::JBIG2;
     const bool grayish = info.imageMask || (info.color == ImageColor::Gray && !info.calibrated) || info.color == ImageColor::None;
-    // one bit for certain: an integer /BitsPerComponent 1, or a stencil (/ImageMask true)
-    if (oneBit && grayish && (info.bpc == 1 || (info.imageMask && info.bpc == 0)) && !info.decode) {
+    // one bit for certain: an integer /BitsPerComponent 1, or a stencil (/ImageMask true).
+    // Never a JPEG 2000 stream: it decodes to 8 bits a component whatever its dictionary says
+    // (JPXStream::getImageParams), so its samples go through the Decode path as Splash reads them
+    if (info.filter != ImageFilter::JPX && oneBit && grayish && (info.bpc == 1 || (info.imageMask && info.bpc == 0)) && !info.decode) {
         return ImageCopy::Bilevel;
     }
     if (info.filter == ImageFilter::Other || info.imageMask) {

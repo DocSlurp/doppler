@@ -1895,6 +1895,12 @@ void Renderer::copyImage(const Job &job)
         }
     }
     if (info.copy == ImageCopy::Bilevel) {
+        // packed rows only from a stream whose bytes are 1-bit rows: a JPEG 2000 or DCT
+        // stream decodes to 8 bits a component (render reads it so), never to packed rows
+        if (kind == strJPX || kind == strDCT) {
+            emitError(job, "copy");
+            return;
+        }
         const size_t rowBytes = (static_cast<size_t>(width) + 7) / 8;
         std::vector<unsigned char> data(rowBytes * static_cast<size_t>(height), 0xFF);
         if (!str->rewind()) {
