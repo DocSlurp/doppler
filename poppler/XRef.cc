@@ -2413,8 +2413,16 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                     }
                     error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
                     const int sizeBefore = size;
+                    // and the trailer a writer may have edited (/Info), with its root
+                    Object trailerBefore = edits.empty() ? Object() : trailerDict.copy();
+                    const int rootNumBefore = rootNum, rootGenBefore = rootGen;
                     if (!(ok = constructXRef(nullptr))) {
                         errCode = errDamaged;
+                    }
+                    if (!edits.empty() && trailerBefore.isDict()) {
+                        trailerDict = std::move(trailerBefore);
+                        rootNum = rootNumBefore;
+                        rootGen = rootGenBefore;
                     }
                     if (!edits.empty() && size < sizeBefore) {
                         resize(sizeBefore); // a writer's trailer /Size stays as large as before

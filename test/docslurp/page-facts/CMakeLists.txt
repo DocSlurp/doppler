@@ -34,4 +34,6 @@ endif()
 set_tests_properties(docslurp-page-facts-walker-parity PROPERTIES SKIP_RETURN_CODE 77)
 # Issue 45: the /Prev chain read at open and read-only lookups, under the council's hostile
 # cross-reference tables (generators in xref_hostile/)
-docslurp_add_test(page-facts-xref-chain test_xref_chain.py)
+add_executable(docslurp-info-edit-probe info_edit_probe.cc)
+target_link_libraries(docslurp-info-edit-probe poppler)
+docslurp_add_test(page-facts-xref-chain test_xref_chain.py --info-probe $<TARGET_FILE:docslurp-info-edit-probe>)

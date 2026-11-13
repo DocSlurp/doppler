@@ -588,7 +588,8 @@ first, as the lazy read did (an entry is taken from the newest section that list
   - guarded optional-content evaluations neither read nor fill drawing's visibility cache;
   - the op tally evaluates optional content with a budget of its own, so it cannot spend the one
     image geometry (and so `-images`) answers from;
-  - a rebuild made by a missing entry keeps the document's edits (a writer's added objects);
+  - a rebuild made by a missing entry keeps the document's edits (a writer's added or changed
+    objects, its trailer and `/Info`);
   - stream parameters are not stored at all.
 
 ## Hostile input

@@ -22,6 +22,7 @@ import docslurp_testlib as t  # noqa: E402
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--bindir", required=True)
+parser.add_argument("--info-probe", default="")
 args, _ = parser.parse_known_args()
 BIN = args.bindir
 GEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xref_hostile")
@@ -166,6 +167,12 @@ with t.TempDir() as d:
             # refused on page 2 too, and the page says a run of it alone may differ
             p2 = [json.loads(l) for l in pf.splitlines() if json.loads(l).get("page") == 2]
             t.check(p2 and "xref-repaired-earlier" in p2[0].get("parseWarnings", []), "depthpred: page 2 refused from page 1's finding is marked xref-repaired-earlier", repr(p2[:1]))
+        if name == "gapprev" and args.info_probe:
+            # a writer's /Info edit survives the rebuild a later missing entry makes
+            edited = os.path.join(base, "gapprev-info.pdf")
+            rc_probe = subprocess.run([args.info_probe, path, edited], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120).returncode
+            info = subprocess.run([os.path.join(BIN, "pdfinfo"), edited], capture_output=True, timeout=60).stdout if os.path.exists(os.path.join(BIN, "pdfinfo")) else b""
+            t.check(rc_probe == 0 and b"Record quarter" in info, "gapprev: a writer's /Info edit survives the missing-entry rebuild", repr((rc_probe, info[:200])))
         if name == "lenstack":
             # the XHTML header's /Title (in an object stream both the doc line and the header
             # reach): each guarded scope parses it for itself
