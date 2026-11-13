@@ -139,10 +139,25 @@ production.
     scan over 16,777,216 pixels is rendered instead.
   - With `--scan-pages copy` (the default) these copy jobs are the only work pdfregions does for
     scans: a scan that is not copyable as a `jpeg` or `bilevel` stream (`decode`, tiled,
-    layered, turned, covered, rebuilt table) gets no page-scan marker and no job at all; it is
-    the page's `background`, unlinked in the manifest (`reason: scan-not-copyable`), and the
-    host's own page rendering pictures that page. `--scan-pages image` restores the decode and
+    layered, turned, covered or overlaid, on or after the page where the cross-reference table
+    was found rebuilt) gets no page-scan marker and no job at all; it is the page's
+    `background`, unlinked in the manifest (`reason: scan-not-copyable`), and the host's own
+    page rendering pictures that page. A scan judged copyable before a rebuild found on a later
+    page keeps its page-scan marker (the links are final at conversion), but its copy is refused
+    and nothing is rendered in its place: the manifest says `not-extracted`, `reason: copy`,
+    `error: xref`, with no file. The host must render the page for such entries as well as for
+    `scan-not-copyable` ones. On a tiled or layered scan every other image of at least 1% of
+    the page is grouped with it, so under `copy` a real photo on such a page also becomes
+    backdrop with no Doppler image; the host's page rendering shows it. An image the producer
+    does not make a scan (a stencil mask, or a page whose image list was truncated) is placed
+    as any picture and may be rendered as one. `--scan-pages image` restores the decode and
     render jobs for such scans; `--scan-pages render` renders every scan.
+  - Manifest: `reason` is set on `not-extracted` entries and, with the single value
+    `scan-not-copyable`, on the `unlinked` `background` entries of a scan `--scan-pages copy`
+    left to the host; the header's `scan_pages` is `copy`, `image`, `skip` or `render`. Both are
+    new values under the unchanged `doppler-images/3` schema: a host that checks them strictly
+    (DocSlurp core does) needs the matching contract change before it reads `copy` output, and
+    hosts should pass `--scan-pages` explicitly rather than rely on the default.
 - `kind=svg`: UTF-8 SVG, width/height fields 0; the root `<svg>` has `width`/`height` in pt and
   `viewBox` equal to the (cut) region (`x0 y0 x1-x0 y1-y0`, at most 6 decimals), so the figure
   is the whole canvas. Content outside the region is clipped away (cairo culls it).

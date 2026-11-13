@@ -35,7 +35,9 @@ pub enum ScanPages {
     /// the default: only a scan whose own bytes can be copied (one upright image the producer
     /// marks `copyable="1"`, `copy="jpeg"` or `copy="bilevel"`) is a page scan, as in `image`;
     /// any other scan is placed as the page's backdrop, with no marker and no file (its page
-    /// image comes from the host's page rendering). Nothing is decoded or rendered for scans
+    /// image comes from the host's page rendering). Nothing placed as a scan is decoded or
+    /// rendered; an image the producer does not make a scan (a stencil mask, a page whose image
+    /// list was truncated) is placed, and may be rendered, as any picture
     Copy,
     /// the page's Markdown starts with `![page N scan](link)`; the file is the scan's own
     /// pixels where its dictionary allows (a `.jpg` copy, a bilevel `.png`, else decoded once),

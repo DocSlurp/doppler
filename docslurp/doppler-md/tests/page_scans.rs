@@ -345,6 +345,27 @@ fn run(t: &Path, r: &Path, args: &[&str]) -> Output {
     Command::new(PDFTOMARKDOWN).args(args).env("PDFTOTEXT", t).env("PDFREGIONS", r).output().unwrap()
 }
 
+/// A pdfregions that appends every job line it is sent to `log`, then runs the real one.
+fn logging_renderer(dir: &Path, real: &Path, log: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let quote = |p: &Path| format!("'{}'", p.to_str().unwrap().replace('\'', "'\\''"));
+    let script = dir.join("pdfregions-logged");
+    std::fs::write(&script, format!("#!/bin/sh\ntee -a {} | {} \"$@\"\n", quote(log), quote(real))).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// The jobs a [`logging_renderer`] was sent: (id, kind) per line.
+fn logged_jobs(log: &Path) -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    text.lines()
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[0].to_string(), f[6].to_string())
+        })
+        .collect()
+}
+
 fn entry<'a>(m: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
     m["images"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap_or_else(|| panic!("{id} missing: {m}"))
 }
@@ -431,8 +452,18 @@ fn the_default_copies_copyable_scans_and_leaves_the_rest_to_the_host() {
     let Some((t, r, s)) = fixtures("default") else { return };
     let pdf = s.0.join("kinds.pdf");
     let out = s.0.join("out");
-    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    let log = s.0.join("jobs.log");
+    let logged = logging_renderer(&s.0, &r, &log);
+    let res = run(&t, &logged, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
     assert_eq!(res.status.code(), Some(0), "{}", String::from_utf8_lossy(&res.stderr));
+    // the renderer was sent the three copy jobs and nothing else: no render, no decode of
+    // the scans left to the host
+    let mut jobs = logged_jobs(&log);
+    jobs.sort();
+    assert_eq!(
+        jobs,
+        [("p1.1", "copy"), ("p2.1", "copy"), ("p7.1", "copy")].map(|(i, k)| (i.to_string(), k.to_string()))
+    );
     let md = String::from_utf8(res.stdout.clone()).unwrap();
     let pages: Vec<&str> = md.split('\u{c}').collect();
     assert_eq!(pages.len(), 7, "{md}");
@@ -755,6 +786,49 @@ fn a_document_whose_cross_reference_table_was_rebuilt_copies_no_scan() {
         let e = entry(&m, id);
         assert_eq!((e["status"].as_str(), e["source"].as_str()), (Some("extracted"), Some("render")), "{e}");
     }
+}
+
+#[test]
+fn with_the_default_a_rebuilt_table_found_after_a_scan_leaves_its_marker_without_a_file() {
+    // --scan-pages copy (the default) decides at conversion: page 1's JPEG was copyable when
+    // pdftotext reached it, so it is a page scan linked as .jpg; the table is rebuilt on page 3,
+    // after that link was final, so the copy is refused and nothing is rendered in its place.
+    // The marker stays with no file (not-extracted, copy, xref): the host renders that page as
+    // it does a scan-not-copyable one. Page 2 (Flate, decode) and page 3 (after the mark) are
+    // the host's from the start
+    let Some((t, r, s)) = fixtures("rebuilt-default") else { return };
+    let pdf = s.0.join("rebuilt.pdf");
+    let out = s.0.join("out");
+    let log = s.0.join("jobs.log");
+    let logged = logging_renderer(&s.0, &r, &log);
+    let res = run(&t, &logged, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    assert!(matches!(res.status.code(), Some(0 | 5)), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout.clone()).unwrap();
+    let pages: Vec<&str> = md.split('\u{c}').collect();
+    assert_eq!(pages[0], "![page 1 scan](images/page-0001/image-001.jpg)", "{md}");
+    for (k, p) in pages.iter().enumerate().skip(1) {
+        assert!(!p.contains("]("), "page {}: {p}", k + 1);
+    }
+    let m = manifest(&out);
+    assert_eq!(m["scan_pages"], "copy");
+    let e = entry(&m, "p1.1");
+    assert_eq!(
+        (e["fate"].as_str(), e["status"].as_str(), e["reason"].as_str(), e["error"].as_str()),
+        (Some("page-scan"), Some("not-extracted"), Some("copy"), Some("xref")),
+        "{e}"
+    );
+    for id in ["p2.1", "p3.1"] {
+        let e = entry(&m, id);
+        assert_eq!(
+            (e["fate"].as_str(), e["status"].as_str(), e["reason"].as_str()),
+            (Some("background"), Some("unlinked"), Some("scan-not-copyable")),
+            "{e}"
+        );
+    }
+    assert_eq!(m["totals"]["extracted"], 0, "{m}");
+    assert!(!out.join("page-0001").exists(), "no file at all");
+    // and no renderer work: the refused copy is not rendered instead
+    assert!(logged_jobs(&log).iter().all(|(_, kind)| kind == "copy"), "{:?}", logged_jobs(&log));
 }
 
 #[test]

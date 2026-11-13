@@ -265,7 +265,12 @@ A document whose cross-reference table poppler rebuilt from a scan of the file (
 to another object body than a page draws. pdftotext marks the page where it noticed
 (`xrefRebuilt="1"`, no `copyable="1"` from there on) and the end of the document
 (`<xref rebuilt="1"/>`); scans to decode are rendered instead (same link), and a JPEG or
-bilevel scan linked before the mark is not extracted (`reason: copy`, `error: xref`).
+bilevel scan linked before the mark is not extracted (`reason: copy`, `error: xref`). With the
+default `--scan-pages copy` the links are final at conversion, so a JPEG or bilevel scan that
+was copyable before the mark keeps its page-scan marker but gets no file and no render
+(`not-extracted`, `reason: copy`, `error: xref`); scans from the mark on are not copyable and get
+no marker (`unlinked`, `reason: scan-not-copyable`). A host renders the page for such a
+`not-extracted` / `copy` page scan as it does for a `scan-not-copyable` one.
 pdfregions refuses a copy job (`err:copy`) in a document whose table it rebuilt. Every other scan (tiled, layered,
 turned, clipped, inline, covered by anything, or from a producer without those attributes) is
 rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,
@@ -278,7 +283,7 @@ copied scan's page. `--scan-pages` says what to do with scans:
 
 | `--scan-pages` | Markdown | File |
 |---|---|---|
-| `copy` (default) | `![page N scan](...)` first for a scan copied as its own bytes: a single, upright scan on a page that passed the allow-list (`copyable="1"`) whose stream is a JPEG to copy (`copy="jpeg"`) or bilevel (`copy="bilevel"`); every other scan (`decode`: JPEG 2000, Flate and other samples; not copyable: a visible page number, a stamp, a box; tiled, layered, turned, rebuilt table) is placed `background`, with no marker | the JPEG stream or 1-bit PNG, as for `image`; nothing for any other scan (`unlinked`, `reason: scan-not-copyable`): its page image comes from the host's page rendering (DocSlurp's `render-images` stage) |
+| `copy` (default) | `![page N scan](...)` first for a scan copied as its own bytes: a single, upright scan on a page that passed the allow-list (`copyable="1"`) whose stream is a JPEG to copy (`copy="jpeg"`) or bilevel (`copy="bilevel"`); every other scan (`decode`: JPEG 2000, Flate and other samples; not copyable: a visible page number, a stamp, a box; tiled, layered, turned, covered or overlaid; on or after the page where the cross-reference table was found rebuilt) is placed `background`, with no marker. A copyable scan before a rebuild found later keeps its marker | the JPEG stream or 1-bit PNG, as for `image`; nothing for any other scan (`unlinked`, `reason: scan-not-copyable`): its page image comes from the host's page rendering (DocSlurp's `render-images` stage). A page scan whose copy is refused (a rebuilt table found after its page: `not-extracted`, `reason: copy`, `error: xref`) has a marker and no file; the host renders that page too |
 | `image` | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
 | `render` | the same, always the raster format | rendered at `--scan-dpi` (200, 36..300) |
 | `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
@@ -291,6 +296,20 @@ the host renders anyway. On real scanned books nearly every scan has something b
 printed page number, a layer, a mask) or is JPEG 2000, so with the default nearly no scan
 yields a Doppler file; `--scan-pages image` restores Doppler-side decoding and rendering of
 those scans (today's behaviour before `copy` became the default).
+
+What `copy` leaves to the host, besides the scans themselves:
+
+- **A picture on a tiled or layered scan.** Such a scan groups the page's other images of at
+  least 1% of the page with it; under `copy` they all become the page's backdrop, so a real
+  photo printed on that page gets no Doppler image of its own (`unlinked`,
+  `scan-not-copyable`). The host's rendering of the page shows it.
+- **A refused copy.** A page scan whose copy fails (`not-extracted`, `reason: copy`, for
+  example `error: xref` after a rebuilt table) keeps its marker with no file; the host renders
+  that page, as for `scan-not-copyable`.
+
+`copy` does no decoding or rendering for anything placed as a scan. An image pdftotext does not
+make a scan (a stencil mask as the scan image, or a page whose image list was truncated) is not
+one: it is placed as any picture and, when marked, rendered as one.
 
 A copy is checked twice: pdfregions answers a copy job only for an image named in that page's
 resources (directly or through forms at most 4 deep) whose dictionary still gives the same
@@ -635,7 +654,7 @@ else escaped `\uXXXX`), each line ending in `\n` and at most 64 KiB with it, key
 order, the lines in this order:
 
 ```
-{"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"image","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
+{"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"copy","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
 {"type":"image","id":"p1.1","page":1,"bbox":[72.00,222.00,272.00,372.00],"kind":"picture","fate":"block","obj":[6,0],"path":"page-0001/image-001.webp","link":"images/page-0001/image-001.webp","status":"extracted","format":"webp","source":"render","bytes":5468,"sha256":"…","width":417,"height":312}
 {"type":"batch","pages":[1,64],"status":"ok","cut_page":null}
 {"type":"end","complete":true,"resumable":false,"totals":{"images":1,…,"batches":1,"batches_cut":0},"images":1,"batches":1,"sha256":"…"}
@@ -646,7 +665,10 @@ repeat: the conversion settings an images plan is bound to, `-f`/`-l`, the link 
 formats and their encoder settings, `--images-dpi`, `--images-min-side`, `--images-pages`,
 `--images-max-file-bytes`, `--svg-*`, `--scan-dpi`, `--scan-max-dpi`; not the budgets, batch
 size, time limits or confinement), `link_prefix`, `pages` (`--images-pages` as `[A,B]`, null
-when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`,
+when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages` (`copy`, the default, `image`,
+`skip` or `render`; `copy` is a new value under the same `doppler-images/3` schema, so a host
+that validates the header and the `reason` values strictly needs a matching contract change
+before it accepts a `copy` manifest, and should pass `--scan-pages` explicitly), `scan_dpi`, `scan_max_dpi`,
 `batch_pages`, `deadline_ms` (the effective `--images-deadline`) and `resumes` (how many
 `--images-resume` runs rewrote it). Then one **image** line per image (below), then one
 **batch** line per batch of this run (a resume lists its own): `pages` `[A,B]`, `status` `ok`,
@@ -667,7 +689,9 @@ altered manifest is never taken for a whole one. The Rust reader is
 (`[num,gen]` of the image object, or null: with `sha256`, a key for deduplicating across runs),
 `path` and `link` (null when unlinked; a repeat's are its first placement's), `status`
 (`extracted`, `not-extracted`, `unlinked` for a fate without a link), `reason` for
-`not-extracted` (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`,
+`not-extracted` and, with the single value `scan-not-copyable`, for an `unlinked` `background`
+entry of a scan `--scan-pages copy` left to the host (every other `unlinked` entry has no
+`reason`); for `not-extracted` it is one of (`min_side`, `repeat`, `pages`, `bbox`, `id`, `file_bytes`, `encode`,
 `scan-pages` (`--scan-pages skip`), `copy` (a scan copy that failed its checks: `error` `jpeg`,
 `size`, `kind`, or the renderer's `copy`, `copysize`, `pixels`, `decode`), `error`
 for a per-image renderer or record error, and the batch stops `budget`, `doc_budget`,

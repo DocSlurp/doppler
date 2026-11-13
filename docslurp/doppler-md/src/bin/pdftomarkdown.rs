@@ -96,8 +96,12 @@ image links (with --markers or --images-dir; they shape the Markdown):
                               bilevel stream) starts the page with
                               ![page N scan](images/page-0012/image-001.jpg), then its OCR text;
                               the file is its JPEG (.jpg) or 1-bit .png. Any other scan (JPEG
-                              2000, Flate, a visible page number, tiles, layers) gets no marker
-                              and no file: its page image comes from the host's page rendering.
+                              2000, Flate, a visible page number, tiles, layers, turned,
+                              covered or overlaid, after a rebuilt xref) gets no marker and no
+                              file: its page image comes from the host's page rendering. A
+                              copyable scan before a rebuilt xref found later keeps its marker
+                              with no file (not-extracted, copy, error xref): render that page
+                              too.
                               image: as copy, but other scans are decoded or rendered
                               (--raster-format) by Doppler. render: always rendered. skip:
                               placed as any picture, never extracted
