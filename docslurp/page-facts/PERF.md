@@ -19,7 +19,7 @@ python3 docslurp/page-facts/bench.py --bin build/utils \
 
 ## Issue #45: the /Prev chain read at open, read-only lookups for facts
 
-Measured 2026-11-13 near the final commit, interleaving master (af38de11e) and this branch.
+Measured 2026-11-13 (whole documents at the final commit, the rest at the round-4 commit), interleaving master (af38de11e) and this branch.
 CPU is user+sys and peak RSS comes from `wait4`.
 - **Runs:** whole documents are the median of 11 runs; `-l 1` (mostly open time) is the median
   of 7 runs.
@@ -31,10 +31,10 @@ CPU is user+sys and peak RSS comes from `wait4`.
 
 | input | run | master CPU | branch CPU | change | RSS master / branch (MiB) |
 |---|---|---:|---:|---:|---:|
-| Ghostscript.pdf (477 pp) | the pass | 0.537 s | 0.552 s | +2.9 % | 25.3 / 25.5 |
-| Ghostscript.pdf | `pdfpagefacts -level full` | 0.495 s | 0.440 s | -11.1 % (21 runs: -1.7 %) | 26.1 / 26.3 |
-| gs-incr-999 (999 updates) | the pass | 0.535 s | 0.542 s | +1.4 % | 25.5 / 25.4 |
-| gs-incr-999 | `pdfpagefacts -level full` | 0.451 s | 0.425 s | -5.7 % | 26.1 / 26.2 |
+| Ghostscript.pdf (477 pp) | the pass | 0.532 s | 0.535 s | +0.6 % | 25.4 / 25.2 |
+| Ghostscript.pdf | `pdfpagefacts -level full` | 0.404 s | 0.407 s | +0.8 % | 26.1 / 26.2 |
+| gs-incr-999 (999 updates) | the pass | 0.538 s | 0.532 s | -1.0 % | 25.5 / 25.3 |
+| gs-incr-999 | `pdfpagefacts -level full` | 0.409 s | 0.404 s | -1.1 % | 26.1 / 26.3 |
 | gs-incr-999 | `pdftotext -l 1` | 0.016 s | 0.016 s | -1.0 % | 19.0 / 18.9 |
 | gs-incr-1200 (past the 999-section cap) | `pdftotext -l 1` | 0.018 s | 0.046 s | +28 ms | 18.9 / 19.6 |
 | h-deep (100,000 empty sections) | `pdftotext -l 1` | 2.817 s | 0.262 s | -91 % | 17.8 / 18.0 |
