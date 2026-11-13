@@ -32,7 +32,8 @@
 // Anything else, at any depth (forms, annotation appearances, charprocs), denies the page:
 // every other operator (fills, strokes, shadings, inline images, Type 3 glyph metrics),
 // visible text in any mode, a second image, a page /Group, a transparency group, a soft mask,
-// a non-rectangular or stroke clip, and any annotation that draws an appearance or border.
+// a non-rectangular or stroke clip, and any annotation that draws an appearance or border, in
+// view or in print mode (only a link or popup with no appearance and no border is let pass).
 // Operators the table does not know are ignored by Gfx and paint nothing.
 //
 // Gfx feeds it (OutputDev::getScanCopyAudit, asked once per page Gfx): op() before each

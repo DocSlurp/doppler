@@ -88,6 +88,14 @@ bool drawsBorder(const AnnotBorder *border, const AnnotColor *color)
     return border && border->getWidth() > 0 && (!color || color->getSpace() != AnnotColor::colorTransparent);
 }
 
+// An annotation that paints nothing in any mode: a link or a popup with no appearance
+// dictionary at all (other types build an appearance when they have none) and no border
+bool quietAnnotation(const Annot &annot)
+{
+    const Annot::AnnotSubtype type = annot.getType();
+    return (type == Annot::typeLink || type == Annot::typePopup) && !annot.getAppearStreams() && annot.getAppearance().isNull() && !drawsBorder(annot.getBorder(), annot.getColor());
+}
+
 bool isDeviceSpaceName(const Object &o)
 {
     return o.isName("DeviceGray") || o.isName("DeviceRGB") || o.isName("DeviceCMYK");
@@ -155,6 +163,21 @@ void ScanCopyAudit::startPage(Page *page, const GfxState *state)
     }
     if (page->getGroup()) {
         deny(Reason::PageGroup);
+    }
+    // annotations: the audit runs the page in view mode, where drawAnnot reports what is drawn
+    // (annotation()); one shown only when printing (Print with NoView) or one that draws in
+    // either mode would put something on the page the copy does not show
+    if (Annots *annots = page->getAnnots()) {
+        for (const std::shared_ptr<Annot> &annot : annots->getAnnots()) {
+            // shown in view mode (not NoView) or when printing (Print), unless Hidden; its optional
+            // content is not consulted (shown or not, it denies)
+            const unsigned flags = annot ? annot->getFlags() : 0;
+            const bool shown = !(flags & Annot::flagHidden) && (!(flags & Annot::flagNoView) || (flags & Annot::flagPrint));
+            if (annot && shown && !quietAnnotation(*annot)) {
+                deny(Reason::Annotation);
+                break;
+            }
+        }
     }
     const std::array<double, 6> &m = state->getCTM();
     const PDFRectangle &box = page->getCropBox();

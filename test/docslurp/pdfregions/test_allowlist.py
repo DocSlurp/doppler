@@ -160,6 +160,15 @@ CASES = {
     "annotation": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /Rect [50 300 550 500] /AP << /N 16 0 R >> >>]", "", 6, False),
     "empty-annotation": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] /AP << /N 20 0 R >> >>]", "", 6, False),
     "link-border": (SCAN, "/Annots [<< /Type /Annot /Subtype /Link /Rect [50 300 550 500] /Border [0 0 2] /C [0 0 0] >>]", "", 6, False),
+    # an annotation drawn only when printing (Print with NoView), or with no flags, still puts
+    # something on the page; a Hidden one never does; a link or popup without an appearance
+    # or border paints nothing, but other types build an appearance when they have none
+    "print-only-annotation": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /F 36 /Rect [50 300 550 500] /Border [0 0 0] /AP << /N 16 0 R >> >>]", "", 6, False),
+    "noview-annotation": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /F 32 /Rect [50 300 550 500] /Border [0 0 0] /AP << /N 16 0 R >> >>]", "", 6, True),
+    "hidden-annotation": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /F 38 /Rect [50 300 550 500] /AP << /N 16 0 R >> >>]", "", 6, True),
+    "square-no-appearance": (SCAN, "/Annots [<< /Type /Annot /Subtype /Square /F 4 /Rect [50 300 550 500] /IC [0 0 0] >>]", "", 6, False),
+    "print-only-link-border": (SCAN, "/Annots [<< /Type /Annot /Subtype /Link /F 36 /Rect [50 300 550 500] /Border [0 0 2] /C [0 0 0] >>]", "", 6, False),
+    "empty-popup": (SCAN, "/Annots [<< /Type /Annot /Subtype /Popup /F 4 /Rect [50 300 550 500] >>]", "", 6, True),
     "hidden-layer": (b"/OC /oc1 BDC " + SCAN + b"EMC\n" + OCR, "", HIDDEN, 6, False),
     "own-oc": (b"q 612 0 0 792 0 0 cm /O Do Q\n", "", SHOWN, 18, False),
     # denied: an image Gfx refuses to draw is no scan (the render is blank, a copy would not be)
