@@ -185,7 +185,7 @@ with t.TempDir() as d:
     t.check(v4["limitHit"] and v4["paths"] == 100000 and "drawing-limit" in page(ls, 4)["unusualFeatures"] and "limit-hit" in page(ls, 4)["parseWarnings"], "drawing-limit at 100000 paths", repr(v4))
 
     # --- D ruled grids (issue 40) --------------------------------------------------------------------------
-    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165, "hRules": 6, "vRules": 6, "outerSides": 4}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
+    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165, "hRules": 6, "vRules": 6, "outerSides": 4, "connected": True}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
     t.check(v2["grids"] == [] and v3["grids"] == [] and not v2["gridsTruncated"], "chart and shading pages: no grid", repr((v2["grids"], v3["grids"])))
     ls = lines(facts(paths["grids"], "-level", "full")[1])
     g = [page(ls, n)["vectors"] for n in range(1, 7)]
@@ -205,7 +205,7 @@ with t.TempDir() as d:
     t.check(rules[:2] == [(4, 4, 5, 5, 4), (4, 3, 5, 4, 4)], "two ruled tables: hRules rows + 1, vRules columns + 1, four outer sides", repr(rules[:2]))
     t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[5]["grids"]] == [(0, 2, 0)], "shaded rows with column rules: the shading is not rules, vRules 2, no outer side", repr(g[5]["grids"]))
     t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[3]["grids"]] == [(3, 0, 2)], "booktabs-style rules: 3 horizontal lines, top and bottom sides", repr(g[3]["grids"]))
-    t.check(all("hRules" in x for x in g[2]["grids"]), "72 grids (list truncated at 64): the listed grids keep their rule counts", repr(g[2]["grids"][:2]))
+    t.check(all("hRules" in x and not x["connected"] for x in g[2]["grids"]), "72 grids (list truncated at 64): the listed grids keep their rule counts", repr(g[2]["grids"][:2]))
     ls = lines(facts(paths["grid_rules"], "-level", "full")[1])
     gr = [page(ls, n)["vectors"]["grids"] for n in range(1, 6)]
     shape = [[(x["rows"], x["columns"], x["hRules"], x["vRules"], x["outerSides"]) for x in v] for v in gr]
@@ -214,8 +214,17 @@ with t.TempDir() as d:
     t.check([(h, v, o) for _, _, h, v, o in shape[2]] == [(0, 2, 0)], "zebra with column lines only: outerSides 0, vRules 2", repr(gr[2]))
     t.check([(h, v, o) for _, _, h, v, o in shape[3]] == [(3, 3, 0)], "a 4-point frame: too thick to be a thin rule; the inner rules count, no outer side", repr(gr[3]))
     t.check([(h, v, o) for _, _, h, v, o in shape[4]] == [(5, 5, 4)], "a stray underline in a cell is not connected (not counted); a white rule joined to the grid is", repr(gr[4]))
-    t.check(not any(page(ls, n)["vectors"]["gridsTruncated"] for n in range(1, 6)), "grid_rules pages 1-5: no truncation")
-    capped = page(ls, 6)["vectors"]
+    t.check(not any(page(ls, n)["vectors"]["gridsTruncated"] for n in range(1, 6)) and all(page(ls, n)["vectors"]["unlistedRuledGrids"] == 0 for n in range(1, 6)), "grid_rules pages 1-5: no truncation, no unlisted ruled grid")
+    t.check([[x["connected"] for x in v] for v in gr[:5]] == [[True], [False], [False], [True], [True]], "connected: set where the counts are one joined set of both directions", repr(gr[:5]))
+    t.check("unlistedRuledGrids" not in page(lines(facts(paths["grid_rules"], "-level", "full")[1]), 6)["vectors"], "the page's rule cap: no unlistedRuledGrids")
+    t.check(page(lines(facts(paths["grids"], "-level", "full")[1]), 5)["vectors"]["unlistedRuledGrids"] == 1, "white rules: no grid listed, the walker's white grid unlisted (1)")
+    ls = lines(facts(paths["grid_split"], "-level", "full")[1])
+    for n, what in ((1, "column lines through two blocks split by spacing"), (2, "a 118-point row inside one ruled set"), (3, "a column line rising to a rule above the table"), (4, "column lines dropping to a rule below it")):
+        v = page(ls, n)["vectors"]
+        t.check(v["grids"] and not any("hRules" in x for x in v["grids"]) and v["unlistedRuledGrids"] == 1 and not v["gridsTruncated"], "%s: the set crosses the grid's box, so no counts, and it is unlisted" % what, repr(v["grids"]))
+    v = page(ls, 5)["vectors"]
+    t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
+    capped = page(lines(facts(paths["grid_rules"], "-level", "full")[1]), 6)["vectors"]
     t.check(capped["gridsTruncated"] and capped["limitHit"] and [(x["rows"], x["columns"]) for x in capped["grids"]] == [(3, 4)] and not any("hRules" in x for x in capped["grids"]), "the page's rule cap: the grid listed without rule counts, gridsTruncated", repr(capped["grids"]))
     ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
     caps = [page(ls, n)["vectors"] for n in range(1, 5)]
@@ -270,7 +279,7 @@ with t.TempDir() as d:
     t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
 
     # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
-    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1)):
+    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1), ("grid_split", 5)):
         whole = lines(facts(paths[name], "-level", "full")[1])
         ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
         t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)

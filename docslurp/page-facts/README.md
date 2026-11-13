@@ -269,8 +269,9 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
-| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`), and `hRules`, `vRules`, `outerSides` (issue 43, below) |
+| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`), and `hRules`, `vRules`, `outerSides`, `connected` (issue 43, below) |
 | `gridsTruncated` | more than 64 grids, or the grid search (or the thin-rule search) hit its rule or work cap: the list is incomplete |
+| `unlistedRuledGrids` | walker-style ruled grids (connected thin rules) that no counted grid stands for (issue 43, below) |
 | `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far (`drawing-limit`) |
 
 **Ruled grids** are the grids pdftomarkdown's ruled-table search (`doppler-md`
@@ -319,38 +320,51 @@ so a router can see where a table is and how big it is without a layout pass:
 
 **Thin rules per grid** (issue 43, added within `/1`; absent from earlier builds). The grid
 search above also builds grids from shaded boxes, and finds column lines without outer sides;
-`hRules`, `vRules` and `outerSides` on each grid say which of its lines are thin ruled lines, the
-way a reader that finds ruled grids from connected thin rules (DocSlurp's layout walker,
-`pdf_layout_facts.ruled_grids`) counts them:
+`hRules`, `vRules`, `outerSides` and `connected` on each grid, and `unlistedRuledGrids` on the
+page, say which of its lines are thin ruled lines, the way a reader that finds ruled grids from
+connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) counts them:
 
 - A thin rule is a `<rule>` of `pdftotext -rules` (a stroked line, or a fill at most 1.5 points
   thin; never a shaded `<box>`), of any colour (white rules included, as the walker reads them)
-  and image-mask rules included, taken at the 0.01 point the XHTML writes, at most 3 points thick
-  and at least 8 points long (horizontal: height ≤ 3, width ≥ 8; vertical the other way round).
-  Shaded fills thicker than 1.5 points and lines stroked thicker than 3 are not thin rules.
+  and image-mask rules included, taken at the 0.01 point the XHTML writes (rounded exactly as
+  its `%.2f` is), at most 3 points thick and at least 8 points long (horizontal: height ≤ 3,
+  width ≥ 8; vertical the other way round). Shaded fills thicker than 1.5 points and lines
+  stroked thicker than 3 are not thin rules; dashes and underlines 8 points or longer are.
+- Across the page, a horizontal and a vertical thin rule whose boxes come within 2.5 points join
+  one set (the walker's test); a set with at least 2 distinct horizontal lines and 3 vertical
+  ones is a walker grid.
 - A grid's rules are the thin rules whose centre line lies in its `bbox` grown by 2.5 points and
-  whose span overlaps that box. When the box holds rules of both directions, only the largest
-  set of them connected by a horizontal and a vertical rule that touch (boxes within 2.5 points,
-  the walker's test) counts: most rules, then the set with the topmost horizontal rule. A stray
-  underline in a cell, or a separate checkbox, is then not counted. When it holds one direction
-  only, all of them count.
-- `hRules` and `vRules` are the distinct lines among them: centres more than 2.5 points apart,
+  whose span overlaps that box. When some of them belong to a set of both directions, the grid
+  stands for the set with the most rules there (on a tie, the one holding the topmost horizontal
+  rule), and `connected` is true: a stray underline in a cell, or a separate checkbox, is not
+  counted. If that set reaches outside the box (a column line running on to a rule above or
+  below, a table the grid search splits in two) or another grid stands for it too, the grid
+  gets none of the four fields: its counts would not be the walker's. When no rule in the box
+  belongs to such a set, all of them count and `connected` is false.
+- `hRules` and `vRules` are the distinct lines counted: centres more than 2.5 points apart,
   clustered from the lowest value as the walker does. A table drawn cell by cell has one line
   per row border. A fully ruled table has `hRules` = rows + 1 and `vRules` = columns + 1 (its
-  walker grid's rows and columns); a zebra table of shaded rows and no rules has 0 and 0.
-- `outerSides` (0-4): the sides of `bbox` whose thin rules (centre within 2.5 points of the side)
-  cover at least 80% of its length. A fully ruled table has 4; column lines only, 0.
-- Reading them as the walker's grids: a grid with `hRules` ≥ 2 and `vRules` ≥ 3 is a walker grid
-  of `hRules` - 1 rows and `vRules` - 1 columns. On the walker's public fixtures and the grid
-  fixtures here (`test_walker_parity.py`), that matches the walker's grids page for page, except:
-  rules lighter than luminance 0.97 make no grid here (no grid to carry counts, where the walker
-  reads white rules); rules whose rows are more than 8 body sizes apart make no grid here (the
-  walker joins any rules that touch); and when one grid's box holds two separate ruled tables
-  only the larger is counted. Grids listed here are a subset of the tables the walker could find.
-- Absent from every grid of the page, with `gridsTruncated` set, when the page's rule list is
-  partial (the page's rule cap), more than 4,096 thin rules run either way, or the search makes
-  more than 2^20 rule visits a page (the candidate scan and the touch tests): counts from part of
-  the rules could be too low. Each grid's search is O(log n + its rules + its touch tests).
+  walker grid's rows and columns); a zebra table of shaded rows with no rules of any kind has 0
+  and 0.
+- `outerSides` (0-4): the sides of `bbox` that the counted rules (centre within 2.5 points of
+  the side, each assigned to the nearer side) cover for at least 80% of its length. A fully
+  ruled table has 4; column lines only, 0.
+- `unlistedRuledGrids` (page): walker grids that no grid with `connected` true stands for,
+  because the grid search found no grid there (rules lighter than luminance 0.97, which it
+  skips; rows more than 8 body sizes apart) or the grid was left uncounted.
+- **Reading them as the walker's grids:** the page's walker grids are known only when
+  `gridsTruncated` is false, `unlistedRuledGrids` is 0 and every grid has `hRules`. They are
+  then the grids with `connected` true, `hRules` ≥ 2 and `vRules` ≥ 3, of `hRules` - 1 rows and
+  `vRules` - 1 columns. Otherwise treat the page's ruled grids as unknown. On the walker's public
+  fixtures and the grid fixtures here (`test_walker_parity.py`), every page this reads as known
+  equals the walker. Where the walker itself sees less: it reads only the rules the XHTML
+  writes (none past the run's 200,000-rule budget, which the facts still count) and at most
+  5,000 a page.
+- Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
+  the page's rule list is partial (the page's rule cap), more than 4,096 thin rules run either
+  way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
+  the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
+  part of the rules could be too low.
 
 ### `forms` (`forms`)
 

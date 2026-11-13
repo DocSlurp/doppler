@@ -6,15 +6,17 @@ For each page of each input PDF (the walker's own public fixtures, worker/testda
 and this directory's grid and image fixtures):
 
 * grids: the walker's ruled_grids over this build's `pdftotext -bbox-layout -rules` XHTML gives
-  (rows, columns) per grid. From the facts, every vectors.grids[] entry with hRules >= 2 and
-  vRules >= 3 (the walker's minimum grid) gives (hRules - 1, vRules - 1). The two multisets must
-  be equal.
+  (rows, columns) per grid. The facts state the walker's grids when the page is known: not
+  gridsTruncated, unlistedRuledGrids 0, and every grid counted (hRules present). They are then
+  the grids with connected true, hRules >= 2 and vRules >= 3, as (hRules - 1, vRules - 1), and
+  that multiset must equal the walker's. An unknown page passes (a reader treats it as unknown),
+  and is reported. A known page that differs from the walker fails: never known and wrong.
 * words inside images: the walker's layout_facts (this build's `pdfimages -list` and XHTML)
   gives wordsInside per placed image. Each must equal visibleWordsCentredInside +
   invisibleWordsCentredInside of the facts image whose box matches (within 1 pt).
 
-Known differences are listed in KNOWN (fixture, page, kind) with the reason; they are reported
-and do not fail, and a KNOWN entry that starts to match fails (so the list stays true).
+Known word-count differences are listed in KNOWN (fixture, page, "words") with the reason;
+they are reported and do not fail, and a KNOWN entry that starts to match fails.
 
 Needs the docslurp-oss checkout: --oss DIR or DOCSLURP_OSS_DIR. Without it the test is skipped
 (exit 77).
@@ -50,10 +52,7 @@ walker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(walker)
 
 # (fixture, page, "grids" | "words"): why the facts cannot match the walker there
-KNOWN = {
-    ("grids", 5, "grids"): "white rules: the walker reads rules of any colour, while the facts grid search skips rules lighter than luminance 0.97, so there is no facts grid to carry counts",
-    ("routing-table-large-coverage", 1, "grids"): "rows 118 pt apart: the facts grid search groups rules at most 8 body sizes (80 pt) apart, so these rules make no facts grid; the walker joins any rules that touch",
-}
+KNOWN = {}
 
 
 def run(cmd):
@@ -88,13 +87,14 @@ def facts_side(path, pages):
             continue
         v = d.get("vectors") or {}
         grids = v.get("grids") or []
-        complete = not v.get("gridsTruncated") and all("hRules" in g for g in grids)
-        walkerlike = sorted((g["hRules"] - 1, g["vRules"] - 1) for g in grids if "hRules" in g and g["hRules"] >= 2 and g["vRules"] >= 3)
+        complete = not v.get("gridsTruncated") and v.get("unlistedRuledGrids") == 0 and all("hRules" in g for g in grids)
+        walkerlike = sorted((g["hRules"] - 1, g["vRules"] - 1) for g in grids if g.get("connected") and g["hRules"] >= 2 and g["vRules"] >= 3)
         items = (d.get("images") or {}).get("items") or []
         out[d["page"]] = {
             "grids": walkerlike,
             "complete": complete,
-            "raw": [{k: g.get(k) for k in ("rows", "columns", "hRules", "vRules", "outerSides")} for g in grids],
+            "raw": [{k: g.get(k) for k in ("rows", "columns", "hRules", "vRules", "outerSides", "connected")} for g in grids],
+            "unlisted": v.get("unlistedRuledGrids"), "truncated": v.get("gridsTruncated"),
             "images": [(it["bbox"], it["visibleWordsCentredInside"] + it["invisibleWordsCentredInside"], it["visibleWordsInside"] + it["invisibleWordsInside"]) for it in items],
         }
     return out
@@ -114,7 +114,7 @@ for name in sorted(os.listdir(fixtures_dir)) if os.path.isdir(fixtures_dir) else
     if name.endswith(".pdf"):
         inputs.append((name[:-4], os.path.join(fixtures_dir, name)))
 tmp = tempfile.TemporaryDirectory()
-for name in ("grids", "grid_rules", "image_words", "caption_straddle", "vectors", "scans", "images"):
+for name in ("grids", "grid_rules", "grid_split", "image_words", "caption_straddle", "vectors", "scans", "images"):
     path = os.path.join(tmp.name, name + ".pdf")
     with open(path, "wb") as f:
         f.write(fx.ALL[name]())
@@ -122,7 +122,7 @@ for name in ("grids", "grid_rules", "image_words", "caption_straddle", "vectors"
 t.check(len(inputs) > 20, "parity inputs: the walker's public fixtures and the grid/image fixtures", repr([n for n, _ in inputs]))
 
 report = []
-totals = {"pages": 0, "gridPagesEqual": 0, "gridPages": 0, "walkerGrids": 0, "images": 0, "imagesEqual": 0, "imagesWholeBoxDiffer": 0, "gridPagesTruncated": 0}
+totals = {"pages": 0, "gridPagesKnownEqual": 0, "gridPagesUnknown": 0, "gridPagesUnknownWalkerGrids": 0, "gridPages": 0, "walkerGrids": 0, "images": 0, "imagesEqual": 0, "imagesWholeBoxDiffer": 0}
 for name, path in inputs:
     pages = min(page_count(path), args.max_pages)
     if pages == 0:
@@ -142,16 +142,14 @@ for name, path in inputs:
         if wp["grids"] or fp["grids"] or fp["raw"]:
             totals["gridPages"] += 1
         totals["walkerGrids"] += len(wp["grids"])
-        same = fp["complete"] and wp["grids"] == fp["grids"]
-        key = (name, n, "grids")
+        same = wp["grids"] == fp["grids"]
         if not fp["complete"]:
-            totals["gridPagesTruncated"] += 1
-            t.check(True, "%s p%d grids: gridsTruncated (unknown to a reader; not compared)" % (name, n))
-        elif key in KNOWN:
-            t.check(not same, "%s p%d grids: known difference still differs (%s)" % (name, n, KNOWN[key]), repr(row))
+            totals["gridPagesUnknown"] += 1
+            totals["gridPagesUnknownWalkerGrids"] += bool(wp["grids"])
+            t.check(True, "%s p%d grids: unknown to a reader (truncated %s, unlisted %s); walker %r" % (name, n, fp["truncated"], fp["unlisted"], wp["grids"]))
         else:
-            t.check(same, "%s p%d grids: facts %r == walker %r" % (name, n, fp["grids"], wp["grids"]), repr(fp["raw"]))
-        totals["gridPagesEqual"] += same and bool(wp["grids"] or fp["raw"])
+            t.check(same, "%s p%d grids: known, facts %r == walker %r" % (name, n, fp["grids"], wp["grids"]), repr(fp["raw"]))
+        totals["gridPagesKnownEqual"] += fp["complete"] and same and bool(wp["grids"] or fp["raw"])
         for bbox, inside in wp["images"]:
             match = [it for it in fp["images"] if all(abs(a - b) <= 1.0 for a, b in zip(bbox, it[0]))]
             got = match[0][1] if match else None

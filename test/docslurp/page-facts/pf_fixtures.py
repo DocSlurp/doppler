@@ -794,6 +794,24 @@ def grid_rules_pdf():
     return doc([{"content": "0.5 w\n" + p1}, {"content": p2}, {"content": p3}, {"content": p4}, {"content": p5}, {"content": p6}])
 
 
+def grid_split_pdf():
+    """Ruled tables whose connected thin rules the grid search does not see as one box (council,
+    issue 43). Page 1: column lines through two blocks of rules told apart by a jump in spacing
+    (one walker grid, two grid-search grids). Page 2: a 118-point row between two ruled blocks,
+    column lines through all of it. Page 3: the left column line rises to a 20-point rule above
+    the table. Page 4: the column lines drop to a 10-point rule below the last row. Page 5: a
+    table ruled only horizontally with one short vertical tick that touches nothing."""
+    ys1 = [700, 680, 660, 640, 570, 550, 530, 510]
+    p1 = _hlines(72, 400, ys1) + _vlines([72, 236, 400], 510, 700)
+    ys2 = [700, 680, 660, 542, 522, 502]
+    p2 = _hlines(72, 400, ys2) + _vlines([72, 236, 400], 502, 700)
+    ys3 = [700, 680, 660, 640]
+    p3 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 640, 700) + _vlines([72], 700, 730) + _hlines(62, 82, [730])
+    p4 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 600, 700) + _hlines(230, 242, [600])
+    p5 = _hlines(72, 400, [700, 680, 660, 640, 620]) + _vlines([120], 645, 655)
+    return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5)])
+
+
 def caption_straddle_pdf():
     """A photo (PDF y 400..600) with a caption line whose words straddle its bottom edge with
     their centres inside, a line straddling it with centres outside, and a line well below."""
@@ -836,4 +854,5 @@ ALL = {
     "grid_caps": grid_caps_pdf,
     "grid_rules": grid_rules_pdf,
     "caption_straddle": caption_straddle_pdf,
+    "grid_split": grid_split_pdf,
 }
