@@ -4,7 +4,9 @@
 //! The parent is opened one path component at a time with `O_NOFOLLOW | O_DIRECTORY`, so no
 //! component may be a symbolic link; the folder is made with `mkdirat` (it must not exist) and
 //! opened with `O_NOFOLLOW`. Files are written to a temporary name created with
-//! `O_CREAT | O_EXCL | O_NOFOLLOW` and renamed into place with `RENAME_NOREPLACE`. Images go to
+//! `O_CREAT | O_EXCL | O_NOFOLLOW`, synced to disk (`fsync`) and renamed into place with
+//! `RENAME_NOREPLACE`, so a name never holds a partial file after a crash; the folders' entries
+//! are synced before `manifest.json` is written, and the folder again after it. Images go to
 //! one subfolder per page (`page-0012/image-003.webp`), made with `mkdirat` (mode 0700, it must
 //! not exist) under the folder's descriptor and opened with `O_NOFOLLOW`; files are 0600.
 //! Whatever the umask, nothing is readable by others: copy or `chmod` the files to share them.
@@ -113,6 +115,10 @@ impl OutDir {
         self.created.push((sub.clone(), tmp.clone()));
         let mut f = std::fs::File::from(fd);
         f.write_all(data).map_err(|e| format!("writing {name}: {e}"))?;
+        // on disk before its name appears: after a crash the name holds the whole file or
+        // is absent, never an empty or partial one (the folder's entries are synced by
+        // `sync` and `sync_top`)
+        f.sync_all().map_err(|e| format!("syncing {name}: {e}"))?;
         drop(f);
         rustix::fs::renameat_with(at, tmp.as_str(), at, file, RenameFlags::NOREPLACE)
             .map_err(|e| err(&format!("renaming {name}"), e))?;
@@ -253,10 +259,16 @@ impl NewFile {
         )
         .map_err(|e| err(&format!("creating {}", self.shown), e))?;
         let mut f = std::fs::File::from(fd);
-        let written = f.write_all(data).map_err(|e| format!("writing {}: {e}", self.shown)).and_then(|()| {
-            rustix::fs::renameat_with(&self.parent, &tmp, &self.parent, &self.name, RenameFlags::NOREPLACE)
-                .map_err(|e| err(&format!("renaming to {}", self.shown), e))
-        });
+        // the data on disk before the name appears, then the name itself
+        let written = f
+            .write_all(data)
+            .and_then(|()| f.sync_all())
+            .map_err(|e| format!("writing {}: {e}", self.shown))
+            .and_then(|()| {
+                rustix::fs::renameat_with(&self.parent, &tmp, &self.parent, &self.name, RenameFlags::NOREPLACE)
+                    .map_err(|e| err(&format!("renaming to {}", self.shown), e))
+            })
+            .and_then(|()| rustix::fs::fsync(&self.parent).map_err(|e| err(&format!("syncing {}", self.shown), e)));
         drop(f);
         if written.is_err() {
             let _ = rustix::fs::unlinkat(&self.parent, &tmp, AtFlags::empty());
