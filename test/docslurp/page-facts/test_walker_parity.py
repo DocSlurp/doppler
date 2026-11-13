@@ -8,7 +8,8 @@ and this directory's grid and image fixtures):
 
 * grids: the walker's ruled_grids over this build's `pdftotext -bbox-layout -rules` XHTML gives
   (rows, columns) per grid. The facts state the walker's grids when the page is known: not
-  gridsTruncated, unlistedRuledGrids 0, and every grid counted (hRules present). They are then
+  gridsTruncated, unlistedRuledGrids 0, every grid counted (hRules present), and no
+  xref-repaired among the page's parseWarnings. They are then
   the grids with connected true, hRules >= 2 and vRules >= 3, as (hRules - 1, vRules - 1), and
   that multiset must equal the walker's. An unknown page passes (a reader treats it as unknown),
   and is reported. A known page that differs from the walker fails: never known and wrong.
@@ -62,7 +63,7 @@ def run(cmd):
 
 def same_run(path, pages):
     """(XHTML, facts lines) of one `pdftotext -bbox-layout -rules -page-facts-fd` run: the pairing
-    the known-grids contract covers (README, "One run or two")."""
+    the known-grids contract covers (README, "Reading them as the walker's grids")."""
     with tempfile.TemporaryDirectory() as d:
         out, facts_path = os.path.join(d, "layout.xhtml"), os.path.join(d, "facts.jsonl")
         fd = os.open(facts_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

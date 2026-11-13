@@ -1613,8 +1613,8 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         // met a broken entry, on this page or before): a reference may now resolve to another
         // object body than a reader that never rebuilt it sees, so no image of this page or a
         // later one is copyable, and the page says so (xrefRebuilt="1", which a reader keeps
-        // for the rest of the document). With -rules too: a page-facts reader pairing a separate
-        // run's facts with these rules must know this run's objects may differ from its
+        // for the rest of the document). With -rules too: the rules were drawn from objects that
+        // may differ from what a run that never rebuilt the table reads
         const bool xrefRebuilt = doc->getXRef()->getReconstructionCount() > 0;
         if (collectImages) {
             // last: a full-page scan (see classifyScan) and the image that covers it

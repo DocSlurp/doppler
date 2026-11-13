@@ -140,7 +140,9 @@ docslurp-oss checkout; skipped without one).
   `-max-pages`, `-timeout`, and a Landlock + seccomp sandbox entered after the file is opened
   and before it is parsed (`utils/Confine`, shared with pdfregions; `-confine require` by
   default). Exit 0 ok, 1 cannot open, 2 needs a password, 3 limit, 5 cannot confine, 99 usage.
-- The three write byte-identical lines for the same input, range and level. Facts are
+- The three write byte-identical lines for the same input, range and level (except with
+  `-glyphs`, which `--math` adds, or when pdftotext's XHTML header rebuilds the cross-reference
+  table: see the README). Facts are
   deterministic (timing only with `-timing`) and page-local (`-f p -l p` gives a page the
   same line as a whole run). They never contain document text, paths, URIs or field values,
   except the capped, sanitised and untrusted `producer`/`creator`.

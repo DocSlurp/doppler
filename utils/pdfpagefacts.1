@@ -36,7 +36,8 @@ docslurp/page-facts/doppler-page-facts-1.schema.json.
 and
 .B "pdftomarkdown \-\-page\-facts"
 compute the same facts on their own pass: for the same input, range, level and include list
-the three write byte-identical lines. Without
+the three write byte-identical lines (except where pdftotext reads more: \-glyphs, or a
+rebuild by its XHTML header's document information reads). Without
 .B \-timing
 the output is the same on every run, and a page's line does not depend on which other pages
 were processed.

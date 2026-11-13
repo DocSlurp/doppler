@@ -333,7 +333,10 @@ to the open descriptor
 .I fd
 (3 or more, open for writing, never standard output). The lines are byte-identical to
 .BR pdfpagefacts 's
-for the same range and level, and the text output does not change. Poppler's messages
+for the same range and level, except with \-glyphs (thin stencil masks become rules) or when
+the XHTML header's read of the document information rebuilds the cross-reference table; and
+the text output does not change, except on a damaged file whose catalog reads at level full
+rebuild the table or read an older section of it before the first page. Poppler's messages
 are also counted per page (by category) while facts are written.
 .TP
 .BI \-page\-facts\-level " basic|full"

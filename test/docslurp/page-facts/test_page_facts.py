@@ -417,8 +417,18 @@ with t.TempDir() as d:
                 # documented exception (README): pdftotext's XHTML header reads /Title after the
                 # doc line and rebuilds the table, which pdfpagefacts never does; that run's page
                 # says xref-repaired-earlier and (full) withholds the thin-rule counts
-                fd_page, pf_page = page(lines(got), 1), page(lines(ref), 1)
+                fd_lines, pf_lines = lines(got), lines(ref)
+                fd_page, pf_page = page(fd_lines, 1), page(pf_lines, 1)
                 t.check("xref-repaired-earlier" in fd_page["parseWarnings"] and not pf_page["parseWarnings"] and (level != "full" or (fd_page["vectors"]["gridsTruncated"] and not any("hRules" in g for g in fd_page["vectors"]["grids"]))), "%s %s: the header's rebuild: pdftotext's facts flag it and withhold the counts" % (name, level), "%r\n%r" % (fd_page, pf_page))
+                # and nothing else differs
+                fd_page["parseWarnings"] = [w for w in fd_page["parseWarnings"] if w != "xref-repaired-earlier"]
+                if level == "full":
+                    for v in (fd_page["vectors"], pf_page["vectors"]):
+                        v.pop("gridsTruncated"), v.pop("unlistedRuledGrids", None)
+                        for g in v["grids"]:
+                            for k in ("hRules", "vRules", "outerSides", "connected"):
+                                g.pop(k, None)
+                t.check(fd_lines == pf_lines, "%s %s: every other field and line the same" % (name, level), "%r\n%r" % (fd_lines, pf_lines))
             else:
                 t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
             plain = pdftotext_plain(path, images=images)
