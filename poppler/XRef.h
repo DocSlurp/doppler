@@ -188,6 +188,8 @@ public:
 
     // Return the number of objects in the xref table.
     int getNumObjects() const { return size; }
+    // the document's bytes (DocSlurp page facts bound a stream's /Length by them)
+    BaseStream *getBaseStream() const { return str; }
 
     // Return the catalog object reference.
     int getRootNum() const { return rootNum; }

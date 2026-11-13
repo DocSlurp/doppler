@@ -163,6 +163,42 @@ def rule_grid(pages=500, n=512):
 FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
 
 
+def rule_spread(pages=50, bands=6):
+    """Pages whose text is half a point high (the grid search scales its thresholds with the body
+    size: rules 1.5 points long, a 4-point row gap) under bands of 4 rows of 165 rules 1.6
+    points long. Rows are 1.1 points apart and rules 2.1 apart along a row, so none are joined;
+    each row is 0.9 points right of the last, so no rule overlaps another's group enough to
+    join it: every band keeps 660 groups open, and a grouping that visits every open group is
+    quadratic (about 220,000 visits a band)."""
+    ops = ["BT /F1 0.5 Tf 100 100 Td (aaaa bbbb cccc) Tj ET", "0.1 w"]
+    for b in range(bands):
+        for r in range(4):
+            y = 760 - 10 * b - 1.1 * r
+            for k in range(165):
+                x = 5 + 3.7 * k + 0.9 * r
+                ops.append("%.2f %.2f m %.2f %.2f l S" % (x, y, x + 1.6, y))
+    d = Doc()
+    font = d.add(FONT)
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >>" % font)
+
+
+def words_over_images(pages=20, images=32, words=60000):
+    """Pages of <images> image draws under <words> one-letter words: every word is tested against
+    every listed image."""
+    d = Doc()
+    font = d.add(FONT)
+    im = d.stream(b"\xff\xd8x\xff\xd9", "/Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode")
+    ops = ["q 18 0 0 24 %d %d cm /Im Do Q" % (10 + 19 * (k % 32), 20 + 25 * (k // 32)) for k in range(images)]
+    line = " ".join("a" for _ in range(100))
+    for k in range(words // 100):
+        ops.append("BT /F1 4 Tf %d %d Td (%s) Tj ET" % (5, 780 - (k % 190) * 4, line))
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >> /XObject << /Im %d 0 R >>" % (font, im))
+
+
+
+
 def oc_marked(kind, sections, operands=9990):
     """A page that shows "shown" and draws "hidden" in <sections> optional-content sections,
     each naming one OCMD over an OFF group with <operands> operands:
@@ -344,7 +380,7 @@ with t.TempDir() as d:
     t.check(v["figureClusters"] == 129 and not v["limitHit"], "chained cells merge into one figure, isolated dots stay apart", repr((v["figureClusters"], v["limitHit"])))
 
     # 5. the rule-grid score is a sweep, not every row against every column (was 13x the pass)
-    ls = bounded("500 pages of a 512 x 512 rule grid", d.write("grid.pdf", rule_grid()))
+    ls = ls_grid = bounded("500 pages of a 512 x 512 rule grid", d.write("grid.pdf", rule_grid()))
     v = page(ls, 1)["vectors"]
     t.check(v["ruleGridScore"] == 1 and v["hRules"] == 512 and v["vRules"] == 512, "a full rule grid scores 1", repr((v["ruleGridScore"], v["hRules"], v["vRules"])))
     ls = [json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "vectors", d.write("grid-small.pdf", rule_grid(pages=1, n=3))])[1].decode().splitlines()]
@@ -427,6 +463,19 @@ with t.TempDir() as d:
     for n, shown in ((16, True), (17, False)):
         text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", d.write("hex%d.pdf" % n, hex_chain(n)), "-"], capture_output=True, timeout=60).stdout.decode()
         t.check(("chained" in text) == shown, "%d ASCIIHex filters: %s" % (n, "decoded" if shown else "refused"), repr(text[:60]))
+
+    # 9. ruled grids (issue 40): the grid search takes at most 4,096 rules a direction and a
+    #    fixed number of group visits a page, however the rules are laid out
+    v = page(ls_grid, 1)["vectors"]
+    t.check(len(v["grids"]) == 1 and v["grids"][0]["rows"] == 255 and v["grids"][0]["columns"] == 256, "a 512 x 512 rule grid: one grid", repr(v["grids"])[:300])
+    ls = bounded("50 pages of 3,960 short rules that never share a group", d.write("spread.pdf", rule_spread()))
+    v = page(ls, 1)["vectors"]
+    t.check(v["gridsTruncated"] and v["grids"] == [], "rules spread past the page: the grid search stops at its cap", repr((v["hRules"], v["gridsTruncated"], v["grids"][:2])))
+
+    # 10. words inside images (issue 40): words x listed images, both bounded per page
+    ls = bounded("20 pages of 32 images under 60,000 words", d.write("words-images.pdf", words_over_images()))
+    items = page(ls, 1)["images"]["items"]
+    t.check(len(items) == 32 and sum(i["visibleWordsInside"] for i in items) > 0, "words over images: counted per listed image", repr([i["visibleWordsInside"] for i in items])[:200])
 
     # 8. pdftotext -timeout: exit code 6, whole facts lines, no run line
     slow = d.write("slow.pdf", error_dense(pages=40))

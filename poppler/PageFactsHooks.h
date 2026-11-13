@@ -93,6 +93,10 @@ struct ImageDictInfo
     bool deviceSpace = false; // /ColorSpace is DeviceGray, DeviceRGB or DeviceCMYK by full name, or /Indexed directly over one
     bool drawable = false; // Gfx::doImage would draw it, as far as the dictionary shows (none of its early returns)
     ImageCopy copy = ImageCopy::Render;
+    // the stream's encoded bytes as poppler read them (its /Length, corrected when the file's
+    // endstream disagrees, and never past the end of the file), without decoding: -1 when not
+    // known (an inline image, data in an external file /F, or a device that did not ask)
+    long long encodedBytes = -1;
 };
 
 POPPLER_PRIVATE_EXPORT const char *imageFilterName(ImageFilter f);

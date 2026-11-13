@@ -228,6 +228,8 @@ public:
     bool isUnderlined() const { return underlined; }
     // True if the word is invisible text (render mode 3), such as an OCR text layer.
     bool isInvisible() const { return invisible; }
+    // a glyph of it is not render mode 3 and has its centre inside the clip
+    bool isShown() const { return shown; }
     const AnnotLink *getLink() const { return link; }
     double getEdge(int i) const { return chars[i].edge; }
     // Per-character facts for glyph-level output (pdftotext -glyphs): the font-local char

@@ -120,8 +120,10 @@ Tests: `test/docslurp/pagecount/`.
 
 ## Page facts
 
-Per-page facts for routing pages (text layer, scans, images and their encodings, fonts, odd
-characters, vector drawing and rules, forms, annotations, optional content) and one document
+Per-page facts for routing pages (text layer, scans, images and their encodings, the words
+inside each image and its bytes per pixel, fonts, odd characters, vector drawing and rules,
+the ruled grids pdftomarkdown's table search starts from, forms, annotations, optional
+content) and one document
 line, as JSON lines (schema `doppler-page-facts/1`). Every field and value:
 [docslurp/page-facts/README.md](docslurp/page-facts/README.md); JSON Schema beside it;
 benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
