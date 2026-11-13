@@ -236,6 +236,9 @@ fn hostile_scan_attributes_are_ignored() {
 
 // --- the real tools ---------------------------------------------------------------------------
 
+mod manifest_file;
+use manifest_file::manifest;
+
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
 
 /// pdftotext and pdfregions of this tree (`$PDFTOTEXT`, `$PDFREGIONS` or ../../build/utils)
@@ -276,10 +279,6 @@ fn fixtures(tag: &str) -> Option<(PathBuf, PathBuf, Scratch)> {
 
 fn run(t: &Path, r: &Path, args: &[&str]) -> Output {
     Command::new(PDFTOMARKDOWN).args(args).env("PDFTOTEXT", t).env("PDFREGIONS", r).output().unwrap()
-}
-
-fn manifest(dir: &Path) -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap()
 }
 
 fn entry<'a>(m: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {

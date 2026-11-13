@@ -6,7 +6,7 @@
 //! opened with `O_NOFOLLOW`. Files are written to a temporary name created with
 //! `O_CREAT | O_EXCL | O_NOFOLLOW`, synced to disk (`fsync`) and renamed into place with
 //! `RENAME_NOREPLACE`, so a name never holds a partial file after a crash; the folders' entries
-//! are synced before `manifest.json` is written, and the folder again after it. Images go to
+//! are synced before `manifest.jsonl` is written, and the folder again after it. Images go to
 //! one subfolder per page (`page-0012/image-003.webp`), made with `mkdirat` (mode 0700, it must
 //! not exist) under the folder's descriptor and opened with `O_NOFOLLOW`; files are 0600.
 //! Whatever the umask, nothing is readable by others: copy or `chmod` the files to share them.
@@ -15,7 +15,7 @@
 //!
 //! `--images-resume` opens an existing folder ([`OutDir::open_existing`]) the same way: page
 //! folders already there are reused (opened with `O_NOFOLLOW`), files are still created new
-//! (`RENAME_NOREPLACE`: an existing file is never overwritten), `manifest.json` alone is
+//! (`RENAME_NOREPLACE`: an existing file is never overwritten), `manifest.jsonl` alone is
 //! replaced ([`OutDir::replace`], an atomic rename), and [`OutDir::remove`] removes only what
 //! this run created, never the folder or what was there.
 
@@ -107,10 +107,9 @@ impl OutDir {
         })
     }
 
-    /// The contents of regular file `name` (`manifest.json`) in the folder, read without
-    /// following a symbolic link; `Ok(None)` when it does not exist, `Err` past `max` bytes.
-    pub fn read(&self, name: &str, max: u64) -> Result<Option<Vec<u8>>, String> {
-        use std::io::Read as _;
+    /// Regular file `name` (`manifest.jsonl`) in the folder, opened for reading without
+    /// following a symbolic link, with its length; `Ok(None)` when it does not exist.
+    pub fn open_read(&self, name: &str) -> Result<Option<(std::fs::File, u64)>, String> {
         let fd = match rustix::fs::openat(
             &self.dir,
             name,
@@ -125,12 +124,7 @@ impl OutDir {
         if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
             return Err(format!("{name} is not a regular file"));
         }
-        let mut data = Vec::new();
-        std::fs::File::from(fd).take(max + 1).read_to_end(&mut data).map_err(|e| format!("reading {name}: {e}"))?;
-        if data.len() as u64 > max {
-            return Err(format!("{name} is larger than {max} bytes"));
-        }
-        Ok(Some(data))
+        Ok(Some((std::fs::File::from(fd), st.st_size as u64)))
     }
 
     /// The descriptor of page subfolder `sub`: made (0700, must not exist) the first time,
@@ -159,7 +153,7 @@ impl OutDir {
         Ok(&self.current.as_ref().expect("set above").1)
     }
 
-    /// Writes `data` as `name` (checked with [`valid_name`]: `manifest.json`, or a page
+    /// Writes `data` as `name` (checked with [`valid_name`]: `manifest.jsonl`, or a page
     /// subfolder and a file in it), which must not exist.
     pub fn write(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
         if !valid_name(name) {
@@ -199,10 +193,10 @@ impl OutDir {
         Ok(())
     }
 
-    /// Replaces `manifest.json` with `data` in one rename (a resumed folder's manifest): the
+    /// Replaces `manifest.jsonl` with `data` in one rename (a resumed folder's manifest): the
     /// old one stays until the new one is whole on disk.
     pub fn replace(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
-        if name != "manifest.json" {
+        if name != super::manifest::NAME {
             return Err("invalid file name".into());
         }
         let tmp = format!(".{name}.part");
@@ -378,10 +372,10 @@ impl NewFile {
     }
 }
 
-/// `manifest.json`, or an image path of the layout (`page-0012/image-003.webp`; see
+/// `manifest.jsonl`, or an image path of the layout (`page-0012/image-003.webp`; see
 /// [`super::layout::valid_rel`]).
 pub fn valid_name(name: &str) -> bool {
-    name == "manifest.json" || super::layout::valid_rel(name)
+    name == super::manifest::NAME || super::layout::valid_rel(name)
 }
 
 /// An image id as pdftotext and the converter make them: `p<page>.<n>` or `p<page>.g<n>`.
@@ -401,7 +395,7 @@ mod tests {
 
     #[test]
     fn names_come_only_from_ids() {
-        for ok in ["page-0001/image-001.webp", "page-0003/figure-012.svg", "manifest.json"] {
+        for ok in ["page-0001/image-001.webp", "page-0003/figure-012.svg", "manifest.jsonl"] {
             assert!(valid_name(ok), "{ok}");
         }
         for bad in [
@@ -422,7 +416,8 @@ mod tests {
             "page-0001/",
             "/page-0001/image-001.webp",
             "page-0001//image-001.webp",
-            "manifest.json/x",
+            "manifest.jsonl/x",
+            "manifest.json",
         ] {
             assert!(!valid_name(bad), "{bad:?}");
         }
@@ -442,7 +437,7 @@ mod tests {
         d.write("page-0001/image-002.webp", b"c").unwrap();
         assert!(d.write("page-0001/image-001.webp", b"again").is_err(), "never replaces");
         assert!(d.write("../x/image-001.webp", b"x").is_err());
-        d.write("manifest.json", b"{}").unwrap();
+        d.write("manifest.jsonl", b"{}").unwrap();
         d.sync().unwrap();
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);

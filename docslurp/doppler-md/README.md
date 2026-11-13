@@ -550,7 +550,7 @@ A plan that cannot be written gives exit 6 after the Markdown.
 
 **What is byte-identical.** Without `--markers`, `--page-markers` and `--images-dir` the
 Markdown and report are the same bytes as before image links became paths. With them, the
-links, file layout, manifest (version 2) and exit status 5 changed meaning in that release;
+links, file layout, manifest (now `manifest.jsonl`, `doppler-images/3`) and exit status 5 changed meaning in that release;
 otherwise rendering and encoding are unchanged, so each image file has the same bytes as
 before. Raw `pdfregions` SVG records may differ only in cairo's `source-N` ids (and so
 in record length); pages with damaged fonts or streams render one job at a time. stderr is not
@@ -595,21 +595,43 @@ with one `VP8 `/`VP8L` chunk; PNG has only IHDR/IDAT/IEND. Files are written to 
 temporary name in a directory opened without following links, then renamed with
 `RENAME_NOREPLACE`.
 
-**manifest.json** (version 2; written last, atomically, after the files are synced; the same
-input gives the same bytes; a DIR without a manifest is garbage). It is the source of truth:
-every link of the Markdown has an entry, and every file in DIR is listed. First line:
-`version` (2), `source_sha256` (the PDF), `settings_sha256` (what a resume must repeat: the
-conversion settings an images plan is bound to, `-f`/`-l`, the link options, the formats and
-their encoder settings, `--images-dpi`, `--images-min-side`, `--images-pages`,
+**manifest.jsonl** (schema `doppler-images/3`: JSON Lines, so a consumer reads it one line at a
+time with fixed memory; written last, after the files are synced, to a temporary name that is
+synced and then renamed into place without replacing anything; the same input gives the same
+bytes; a DIR without a whole manifest is garbage). It is the source of truth: every link of the
+Markdown has an entry, and every file in DIR is listed. One JSON object per line, ASCII (anything
+else escaped `\uXXXX`), each line ending in `\n` and at most 64 KiB with it, keys in a fixed
+order, the lines in this order:
+
+```
+{"type":"header","schema":"doppler-images/3","source_sha256":"…","settings_sha256":"…","link_prefix":"images/","pages":null,"dpi":150,"min_side_pt":11.52,"repeats":"skip","scan_pages":"image","scan_dpi":200,"scan_max_dpi":300,"batch_pages":64,"deadline_ms":121000,"resumes":0}
+{"type":"image","id":"p1.1","page":1,"bbox":[72.00,222.00,272.00,372.00],"kind":"picture","fate":"block","obj":[6,0],"path":"page-0001/image-001.webp","link":"images/page-0001/image-001.webp","status":"extracted","format":"webp","source":"render","bytes":5468,"sha256":"…","width":417,"height":312}
+{"type":"batch","pages":[1,64],"status":"ok","cut_page":null}
+{"type":"end","complete":true,"resumable":false,"totals":{"images":1,…,"batches":1,"batches_cut":0},"images":1,"batches":1,"sha256":"…"}
+```
+
+The **header**: `schema`, `source_sha256` (the PDF), `settings_sha256` (what a resume must
+repeat: the conversion settings an images plan is bound to, `-f`/`-l`, the link options, the
+formats and their encoder settings, `--images-dpi`, `--images-min-side`, `--images-pages`,
 `--images-max-file-bytes`, `--svg-*`, `--scan-dpi`, `--scan-max-dpi`; not the budgets, batch
-size, time limits or confinement), `resumes` (how many `--images-resume` runs rewrote it),
-`resumable` (some image may still be extracted by a resume), `link_prefix`, `dpi`,
-`min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`, `batch_pages`,
-`deadline_ms` (the effective `--images-deadline`), `complete` (every batch finished and no
-image was left by a stopped batch); then `batches` (of this run; a resume lists its own), one per line:
-`{"pages":[A,B],"status":S,"cut_page":N}`, `status` `ok`, `budget`, `doc_budget`, `timeout`,
-`deadline`, `renderer` or `aborted`, and `cut_page` the first page with an image the batch did
-not get to. Then `images`, sorted by page, pictures before figures, by index, one per line:
+size, time limits or confinement), `link_prefix`, `pages` (`--images-pages` as `[A,B]`, null
+when not given), `dpi`, `min_side_pt`, `repeats`, `scan_pages`, `scan_dpi`, `scan_max_dpi`,
+`batch_pages`, `deadline_ms` (the effective `--images-deadline`) and `resumes` (how many
+`--images-resume` runs rewrote it). Then one **image** line per image (below), then one
+**batch** line per batch of this run (a resume lists its own): `pages` `[A,B]`, `status` `ok`,
+`budget`, `doc_budget`, `timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the
+first page with an image the batch did not get to (null for `ok`). The **end** line, last:
+`complete` (every batch finished and no image was left by a stopped batch), `resumable` (some
+image may still be extracted by a resume), `totals`, then `images` and `batches` (the number of
+image and batch lines) and `sha256`, the SHA-256 (lowercase hex) of every byte of the file
+before the end line. A reader refuses a manifest whose first line is not a `doppler-images/3`
+header, whose lines are out of this order, whose end line is missing or followed by anything,
+whose counts disagree (with the lines or with `totals`) or whose hash fails: a truncated or
+altered manifest is never taken for a whole one. The Rust reader is
+`doppler_md::extract::manifest::Reader` (one line held at a time). The version 2
+`manifest.json` (one JSON object) is no longer written or read.
+
+**Image** lines, sorted by page, pictures before figures, by index, after `type`:
 `id`, `page`, `bbox` (points, y down), `kind` (`picture`, `mask`, `vector`), `fate`, `obj`
 (`[num,gen]` of the image object, or null: with `sha256`, a key for deduplicating across runs),
 `path` and `link` (null when unlinked; a repeat's are its first placement's), `status`
@@ -629,9 +651,9 @@ unchanged, and `decode`, samples decoded once; null without a file), `bytes`, `s
 (`svg_allowlist`, `svg_size`, `svg_input` for raw SVG over 8 MiB) when it applies. pdfregions
 gets `-max-svg-bytes 8MiB` (larger: `err:svgsize`, raster fallback), `-max-copy-bytes` of
 `--scan-max-bytes` up to 64 MiB, and, per batch, `-max-output-bytes` of 8 × `--images-max-bytes`
-+ 4 × `--scan-max-bytes` (64 MiB..64 GiB). Then `totals` (`images`, `linked`, `extracted`,
-`not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `scans`, `scan_bytes`, `batches`,
-`batches_cut`). `--report` gains `path` and `file` per image, `images_written`,
++ 4 × `--scan-max-bytes` (64 MiB..64 GiB). The end line's `totals`: `images`, `linked`,
+`extracted`, `not_extracted`, `unlinked`, `bytes`, `repeats`, `fallbacks`, `scans`,
+`scan_bytes`, `batches`, `batches_cut`. `--report` gains `path` and `file` per image, `images_written`,
 `images_complete`, `images_deadline_ms`, `images_confined`, with `--report-timing` (they change from run to run)
 `images_ms` (`render`: the renderer processes' CPU;
 `webp`, `png`, `svg`: encoding and compaction on this thread; `wait`: blocked on the renderer;
@@ -660,7 +682,7 @@ failed: it neither counts nor ends a run, and its images are `not-extracted`, `b
 `resumable: true` for a later `--images-resume`. The rest is marked `aborted`
 without starting another renderer; `--images-doc-max-bytes` and `--images-deadline` mark the
 rest `doc_budget` or `deadline`. Then the manifest is written, DIR is kept, and the exit status
-is **5** (`complete: false`). Only a hard failure removes DIR, with exit status **6**: a write
+is **5** (the end line's `complete: false`). Only a hard failure removes DIR, with exit status **6**: a write
 failure (disk full, I/O error), a manifest that cannot be written, or a renderer that cannot be
 started. The Markdown is written in every case. pdftotext failing exits as before and removes
 DIR.
@@ -668,15 +690,18 @@ DIR.
 **Resuming** (`--images-resume DIR`, in place of `--images-dir`): give the same PDF and either
 the same conversion options or `--images-plan PLAN`, and the same image options (the budgets,
 `--images-batch-pages`, the time limits and `--images-confine` may change). DIR's
-`manifest.json` must be version 2, name the same PDF (`source_sha256`) and settings
-(`settings_sha256`) and list exactly this conversion's images at the same paths; otherwise
-nothing is touched and the exit status is **2** (also for a DIR without a manifest). Only the
+`manifest.jsonl` is read one line at a time and must be whole (a `doppler-images/3` header, its
+end line, matching counts and hash: a truncated or altered one is refused), name the same PDF
+(`source_sha256`) and settings (`settings_sha256`) and list exactly this conversion's images at
+the same paths; otherwise nothing is touched and the exit status is **2** (also for a DIR
+without a manifest, and for a version 2 `manifest.json` or any other schema: extract again). Only the
 images marked `resumable` are extracted, in fresh batches with their own budgets, under the
 document ceilings less the bytes DIR holds; every other entry stays as it was. Files go to the
 paths the Markdown already links, so the Markdown (written to stdout again when converting)
 never changes; they are created new, never replacing a file (one in the way is a hard
-failure). The manifest is then replaced in one rename, with each entry's new status and
-`resumes` one more. Exit status **0** when nothing is left (`complete`), **5** when the resume
+failure). The manifest is then written whole to a temporary name, synced, and renamed over the
+old one in one step, with each entry's new status, the resume's own batches and `resumes` one
+more. Exit status **0** when nothing is left (`complete`), **5** when the resume
 stopped too; a resume with nothing to do changes nothing and exits 0 (5 if the manifest still
 lists images a stopped batch left that are not resumable, such as `renderer`). A hard failure
 (exit **6**) keeps the old manifest and every file that was there, and removes only the files
@@ -731,11 +756,14 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
 ## Exit status and report
 
 - 5 (`pdftomarkdown --images-dir` or `--images-resume`): the Markdown was written and the
-  images only in part; DIR and its manifest are kept, and the manifest says why per image and
-  per batch (`resumable` images may be finished with `--images-resume DIR`).
+  images only in part; DIR and its `manifest.jsonl` are kept, its end line says
+  `complete: false`, and its image and batch lines say why (`resumable` images may be finished
+  with `--images-resume DIR`). A manifest without its end line is incomplete.
 - 6 (`pdftomarkdown --images-dir`, `--images-plan-out` or `--page-facts`): the Markdown was
   written but image extraction failed hard (DIR removed), or the images plan or page facts
   could not be written.
+- 2 (`pdftomarkdown --images-resume`): also a refused manifest (missing, truncated, altered,
+  version 2 `manifest.json`, another schema, PDF or settings); nothing is touched.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

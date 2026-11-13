@@ -7,7 +7,7 @@
 //! or lossless when they hold text) or PNG; SVG is checked against an allowlist and compacted.
 //! A refused SVG figure becomes a lossless PNG wrapped in an SVG, so its `.svg` link stays
 //! valid. Files go where the Markdown links point ([`layout`]: `page-0012/image-003.webp`);
-//! `manifest.json`, written last, lists every image and every file.
+//! `manifest.jsonl` ([`manifest`]), written last, lists every image and every file.
 //!
 //! Full-page scans (`page-scan`) are taken out without rendering where the scan image's
 //! dictionary allows and nothing else shows over it: a JPEG is copied without its metadata
@@ -32,6 +32,7 @@
 
 pub mod encode;
 pub mod layout;
+pub mod manifest;
 pub mod outdir;
 pub mod plan;
 pub mod regions;
@@ -49,6 +50,7 @@ use crate::Report;
 use crate::images::{Fate, Note, ScanSource};
 use encode::Raster;
 use layout::{RepeatKey, kind, repeat_key};
+use manifest::js;
 use outdir::OutDir;
 use regions::{Halt, Job, Mode, Outcome, Renderer, RunError};
 use settings::{RasterFormat, Repeats, Settings, VectorFormat};
@@ -227,7 +229,7 @@ struct Run<'a> {
     timing: Timing,
 }
 
-/// Extracts the images of `report` into `dir` and writes `manifest.json` last: sets each note's
+/// Extracts the images of `report` into `dir` and writes `manifest.jsonl` last: sets each note's
 /// link (from `s`, as the Markdown has them) and `file`, and the report's `images_written`,
 /// `images_complete`, `images_confined` and `images_timing`. `source_sha256` names the PDF in
 /// the manifest, `settings_sha256` the settings a resume must repeat. With `previous` (an
@@ -262,7 +264,8 @@ pub fn extract(
         && prev.entries.len() != notes.len()
     {
         return Err(format!(
-            "--images-resume: manifest.json lists {} images, this conversion has {}",
+            "--images-resume: {} lists {} images, this conversion has {}",
+            manifest::NAME,
             prev.entries.len(),
             notes.len()
         ));
@@ -272,11 +275,11 @@ pub fn extract(
         // decisions as in the first run (all of which depend on the notes and settings only)
         if let Some(prev) = previous {
             let Some((old, path)) = prev.entries.get(&n.id) else {
-                return Err(format!("--images-resume: manifest.json does not list image {}", n.id));
+                return Err(format!("--images-resume: {} does not list image {}", manifest::NAME, n.id));
             };
             let linked = if old.status == Status::Unlinked { None } else { n.link.as_ref() };
             if path.as_ref() != linked {
-                return Err(format!("--images-resume: image {} is at another path in manifest.json", n.id));
+                return Err(format!("--images-resume: image {} is at another path in {}", n.id, manifest::NAME));
             }
             if !old.resumable() {
                 entries[i] = old.clone();
@@ -474,11 +477,11 @@ pub fn extract(
     // the files first, then the manifest that lists them
     run.dir.sync()?;
     let resumes = previous.map_or(0, |p| p.resumes.saturating_add(1));
-    let manifest = manifest(&run, source_sha256, settings_sha256, resumes, &batches, complete, doc_deadline);
+    let lines = manifest_lines(&run, source_sha256, settings_sha256, resumes, &batches, complete, doc_deadline)?;
     if previous.is_some() {
-        run.dir.replace("manifest.json", manifest.as_bytes())?;
+        run.dir.replace(manifest::NAME, &lines)?;
     } else {
-        run.dir.write("manifest.json", manifest.as_bytes())?;
+        run.dir.write(manifest::NAME, &lines)?;
     }
     run.dir.sync_top()?;
     let written = run.written;
@@ -962,28 +965,11 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// A JSON string of fixed vocabulary or checked ids: escaped anyway.
-fn js(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 || c == '\u{7f}' => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// `manifest.json` (version 2): the run's settings and batches, then one image per line,
-/// sorted by page, then pictures before vector figures, by index; then the totals. The same
-/// input gives the same bytes.
-fn manifest(
+/// `manifest.jsonl` ([`manifest`], schema `doppler-images/3`): the header (the PDF, the
+/// settings, `resumes`), one line per image sorted by page, then pictures before vector
+/// figures, by index; one line per batch; the end line (`complete`, `resumable`, the totals,
+/// the line counts and the hash). The same input gives the same bytes.
+fn manifest_lines(
     run: &Run,
     source_sha256: &str,
     settings_sha256: &str,
@@ -991,20 +977,20 @@ fn manifest(
     batches: &[Batch],
     complete: bool,
     deadline: Duration,
-) -> String {
+) -> Result<Vec<u8>, String> {
     let notes = run.notes;
     let s = run.s;
     let mut order: Vec<usize> = (0..run.entries.len()).collect();
     order.sort_by_key(|&i| id_order(&notes[i].id));
     let opt = |v: &Option<String>| v.as_deref().map(js).unwrap_or_else(|| "null".into());
-    let mut out = String::new();
-    let _ = write!(
-        out,
-        "{{\"version\":2,\"source_sha256\":{},\"settings_sha256\":{},\"resumes\":{resumes},\"resumable\":{},\"link_prefix\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"deadline_ms\":{},\"complete\":{complete},\n\"batches\":[",
+    let mut w = manifest::Writer::new(Vec::with_capacity(512 + notes.len() * 400));
+    w.header(&format!(
+        "\"schema\":{},\"source_sha256\":{},\"settings_sha256\":{},\"link_prefix\":{},\"pages\":{},\"dpi\":{},\"min_side_pt\":{:.2},\"repeats\":{},\"scan_pages\":{},\"scan_dpi\":{},\"scan_max_dpi\":{},\"batch_pages\":{},\"deadline_ms\":{},\"resumes\":{resumes}",
+        js(manifest::SCHEMA),
         js(source_sha256),
         js(settings_sha256),
-        run.entries.iter().any(Entry::resumable),
         js(&s.link_prefix),
+        s.pages.map(|(a, b)| format!("[{a},{b}]")).unwrap_or_else(|| "null".into()),
         s.dpi,
         s.min_side_pt(),
         js(match s.repeats {
@@ -1017,18 +1003,10 @@ fn manifest(
         s.scan_max_dpi,
         s.batch_pages,
         deadline.as_millis()
-    );
-    for (k, b) in batches.iter().enumerate() {
-        out.push_str(if k == 0 { "\n" } else { ",\n" });
-        let _ = write!(out, "{{\"pages\":[{},{}],\"status\":{}", b.pages.0, b.pages.1, js(b.status));
-        if let Some(c) = b.cut_page {
-            let _ = write!(out, ",\"cut_page\":{c}");
-        }
-        out.push('}');
-    }
-    out.push_str("\n],\n\"images\":[");
+    ))?;
     let (mut repeats, mut fallbacks, mut linked, mut extracted, mut not_extracted, mut unlinked) = (0, 0, 0, 0, 0, 0);
-    for (k, &i) in order.iter().enumerate() {
+    let mut line = String::with_capacity(512);
+    for &i in &order {
         let n = &notes[i];
         let e = &run.entries[i];
         let (status, reason) = match e.status {
@@ -1047,10 +1025,10 @@ fn manifest(
         unlinked += usize::from(status == "unlinked");
         let link = path.as_ref().map(|p| format!("{}{p}", s.link_prefix));
         let format = path.as_deref().and_then(|p| p.rsplit_once('.')).map(|(_, x)| x);
-        out.push_str(if k == 0 { "\n" } else { ",\n" });
+        line.clear();
         let _ = write!(
-            out,
-            "{{\"id\":{},\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"kind\":{},\"fate\":{},\"obj\":{},\"path\":{},\"link\":{},\"status\":{}",
+            line,
+            "\"id\":{},\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"kind\":{},\"fate\":{},\"obj\":{},\"path\":{},\"link\":{},\"status\":{}",
             js(&n.id),
             n.page,
             n.bbox.0,
@@ -1065,19 +1043,19 @@ fn manifest(
             js(status)
         );
         if let Some(r) = reason {
-            let _ = write!(out, ",\"reason\":{}", js(r));
+            let _ = write!(line, ",\"reason\":{}", js(r));
         }
         if e.resumable() {
-            out.push_str(",\"resumable\":true");
+            line.push_str(",\"resumable\":true");
         }
         if let Some(err) = &e.error {
-            let _ = write!(out, ",\"error\":{}", js(err));
+            let _ = write!(line, ",\"error\":{}", js(err));
         }
         if let Some(r) = &e.repeat_of {
-            let _ = write!(out, ",\"repeat_of\":{}", js(r));
+            let _ = write!(line, ",\"repeat_of\":{}", js(r));
         }
         let _ = write!(
-            out,
+            line,
             ",\"format\":{},\"source\":{},\"bytes\":{},\"sha256\":{},\"width\":{},\"height\":{}",
             e.format.or(format).map(js).unwrap_or_else(|| "null".into()),
             e.source.map(js).unwrap_or_else(|| "null".into()),
@@ -1087,21 +1065,29 @@ fn manifest(
             e.height
         );
         if let Some(f) = &e.fallback {
-            let _ = write!(out, ",\"fallback\":{}", js(f));
+            let _ = write!(line, ",\"fallback\":{}", js(f));
         }
-        out.push('}');
+        w.image(&line)?;
+    }
+    for b in batches {
+        w.batch(&format!(
+            "\"pages\":[{},{}],\"status\":{},\"cut_page\":{}",
+            b.pages.0,
+            b.pages.1,
+            js(b.status),
+            b.cut_page.map_or_else(|| "null".to_string(), |c| c.to_string())
+        ))?;
     }
     let cut = batches.iter().filter(|b| b.status != "ok").count();
-    let _ = write!(
-        out,
-        "\n],\n\"totals\":{{\"images\":{},\"linked\":{linked},\"extracted\":{extracted},\"not_extracted\":{not_extracted},\"unlinked\":{unlinked},\"bytes\":{},\"repeats\":{repeats},\"fallbacks\":{fallbacks},\"scans\":{},\"scan_bytes\":{},\"batches\":{},\"batches_cut\":{cut}}}}}\n",
+    w.finish(&format!(
+        "\"complete\":{complete},\"resumable\":{},\"totals\":{{\"images\":{},\"linked\":{linked},\"extracted\":{extracted},\"not_extracted\":{not_extracted},\"unlinked\":{unlinked},\"bytes\":{},\"repeats\":{repeats},\"fallbacks\":{fallbacks},\"scans\":{},\"scan_bytes\":{},\"batches\":{},\"batches_cut\":{cut}}}",
+        run.entries.iter().any(Entry::resumable),
         notes.len(),
         run.total_bytes,
         run.scans_written,
         run.scan_bytes,
         batches.len()
-    );
-    out
+    ))
 }
 
 #[cfg(test)]

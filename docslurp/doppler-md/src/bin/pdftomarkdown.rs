@@ -26,7 +26,7 @@ use std::process::{Command, ExitCode, Stdio};
 use doppler_md::extract::outdir::{NewFile, OutDir};
 use doppler_md::extract::regions::{self, Renderer};
 use doppler_md::extract::settings::Settings;
-use doppler_md::extract::{plan, resume};
+use doppler_md::extract::{manifest, plan, resume};
 use doppler_md::{Options, Params, TableFormat};
 
 #[path = "../cli.rs"]
@@ -99,8 +99,10 @@ image links (with --markers or --images-dir; they shape the Markdown):
                               never extracted
 
 image extraction (implies --markers; files where the links point: DIR/page-0012/image-003.webp,
-DIR/page-0012/figure-001.svg, and DIR/manifest.json, written last, listing every image and
-file; DIR and its page folders are created 0700 and files 0600 whatever the umask; stdout is
+DIR/page-0012/figure-001.svg, and DIR/manifest.jsonl, written last, listing every image and
+file (JSON Lines, doppler-images/3: a header line, one line per image, one per batch, and an
+end line with the line counts and the SHA-256 of the lines before it; a file without a valid
+end line is incomplete); DIR and its page folders are created 0700 and files 0600 whatever the umask; stdout is
 closed once the Markdown is complete, before extraction):
   --images-dir DIR            write the marked pictures and figures to DIR, which must not exist
   --images-min-side N[px|pt]  no file under this smallest side (24px: pixels at the dpi)
@@ -156,12 +158,14 @@ closed once the Markdown is complete, before extraction):
                               file; the manifest is replaced (resumes + 1). Give the same FILE.pdf
                               and the same conversion and image options (or --images-plan PLAN);
                               the budgets, batch size, time limits and --images-confine may
-                              change. A manifest that is not version 2, names another PDF or
-                              other settings, or is missing is refused (exit status 2, nothing
-                              touched); a hard failure keeps the old manifest and files and
-                              removes only the new ones (6); 0 complete, 5 still partial
-  Exit status 5: Markdown written, images in part (DIR and manifest.json kept; manifest:
-  complete false, why per image and per batch). 6: Markdown written, extraction failed (DIR
+                              change. A manifest.jsonl that is not doppler-images/3 (a version 2
+                              manifest.json too), is truncated or altered (end line, counts,
+                              SHA-256), names another PDF or other settings, or is missing is
+                              refused (exit status 2, nothing touched); a hard failure keeps
+                              the old manifest and files and removes only the new ones (6); 0
+                              complete, 5 still partial
+  Exit status 5: Markdown written, images in part (DIR and manifest.jsonl kept; its end line:
+  complete false; why per image and per batch). 6: Markdown written, extraction failed (DIR
   removed), or the images plan could not be written.
 
 page facts (doppler-page-facts/1 JSON lines: a doc line, one line per page, a run line;
@@ -491,9 +495,25 @@ fn main() -> ExitCode {
     };
     let previous = match out_dir.as_ref().filter(|_| images.resume) {
         Some(d) => {
-            let read = d.read("manifest.json", resume::MAX_MANIFEST_BYTES).and_then(|m| {
-                let m = m.ok_or("the folder has no manifest.json")?;
-                resume::read(&m, &source_sha256(&file)?, &files_settings)
+            // read line by line (doppler-images/3); a version 2 manifest.json is refused
+            let read = d.open_read(manifest::NAME).and_then(|m| {
+                let Some((m, len)) = m else {
+                    return Err(if d.open_read(manifest::V2_NAME)?.is_some() {
+                        format!(
+                            "the folder has a version 2 {} (this version reads only {}, {}): extract again",
+                            manifest::V2_NAME,
+                            manifest::NAME,
+                            manifest::SCHEMA
+                        )
+                    } else {
+                        format!("the folder has no {}", manifest::NAME)
+                    });
+                };
+                if len > resume::MAX_MANIFEST_BYTES {
+                    return Err(format!("{} is larger than {} bytes", manifest::NAME, resume::MAX_MANIFEST_BYTES));
+                }
+                let r = std::io::BufReader::new(std::io::Read::take(m, resume::MAX_MANIFEST_BYTES));
+                resume::read(r, &source_sha256(&file)?, &files_settings)
             });
             match read {
                 Ok(p) => Some(p),

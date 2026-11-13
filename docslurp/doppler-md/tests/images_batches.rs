@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+mod manifest_file;
+use manifest_file::manifest;
+
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
 
 fn pdftotext() -> Option<PathBuf> {
@@ -116,10 +119,6 @@ fn run(pdftotext: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
         c.env(k, v);
     }
     c.output().unwrap()
-}
-
-fn manifest(dir: &Path) -> serde_json::Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap()
 }
 
 fn status(m: &serde_json::Value, page: u32) -> (String, Option<String>) {
@@ -389,18 +388,31 @@ fn a_resume_finishes_what_a_budget_stopped() {
     let m = manifest(&part);
     let f = manifest(&full);
     assert_eq!((&m["complete"], &m["resumable"], &m["resumes"]), (&true.into(), &false.into(), &1.into()));
+    // the round trip: the resumed manifest is the uninterrupted run's, line for line, but for
+    // `resumes` and the resume's own batches (and so the end line's counts and hash)
+    let lines = |d: &Path| -> Vec<String> {
+        String::from_utf8(std::fs::read(d.join("manifest.jsonl")).unwrap()).unwrap().lines().map(String::from).collect()
+    };
+    let (rl, fl) = (lines(&part), lines(&full));
+    assert_eq!(
+        rl[0],
+        fl[0].replace("\"resumes\":0", "\"resumes\":1").replace("\"batch_pages\":64", "\"batch_pages\":2")
+    );
+    let images = |l: &[String]| l.iter().filter(|l| l.starts_with("{\"type\":\"image\"")).cloned().collect::<Vec<_>>();
+    assert_eq!(images(&rl), images(&fl));
+    assert!(rl.last().unwrap().starts_with("{\"type\":\"end\",\"complete\":true,\"resumable\":false,"));
     assert_eq!(m["totals"]["extracted"], 6);
     for page in 1..=6 {
         assert_eq!(entry(&m, page)["sha256"], entry(&f, page)["sha256"], "{page}");
         assert_eq!(entry(&m, page)["path"], entry(&f, page)["path"], "{page}");
     }
     // nothing left to do: nothing changes, exit 0
-    let manifest_bytes = std::fs::read(part.join("manifest.json")).unwrap();
-    let mtime = std::fs::metadata(part.join("manifest.json")).unwrap().modified().unwrap();
+    let manifest_bytes = std::fs::read(part.join("manifest.jsonl")).unwrap();
+    let mtime = std::fs::metadata(part.join("manifest.jsonl")).unwrap().modified().unwrap();
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    assert_eq!(std::fs::read(part.join("manifest.json")).unwrap(), manifest_bytes);
-    assert_eq!(std::fs::metadata(part.join("manifest.json")).unwrap().modified().unwrap(), mtime);
+    assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), manifest_bytes);
+    assert_eq!(std::fs::metadata(part.join("manifest.jsonl")).unwrap().modified().unwrap(), mtime);
     // from an images plan, without converting again
     let plan = s.0.join("doc.plan");
     let r = run(&p, &["--markers", "--images-plan-out", plan.to_str().unwrap(), &pdf], &[]);
@@ -427,7 +439,7 @@ fn a_resume_is_refused_unless_bound_to_the_same_pdf_and_settings() {
     assert_eq!(r.status.code(), Some(5));
     let snapshot = || {
         let mut v: Vec<(String, Vec<u8>)> = files(&part).into_iter().map(|(k, v)| (k, v.0)).collect();
-        v.push(("manifest.json".into(), std::fs::read(part.join("manifest.json")).unwrap_or_default()));
+        v.push(("manifest.jsonl".into(), std::fs::read(part.join("manifest.jsonl")).unwrap_or_default()));
         v
     };
     let before = snapshot();
@@ -456,12 +468,40 @@ fn a_resume_is_refused_unless_bound_to_the_same_pdf_and_settings() {
         assert!(String::from_utf8_lossy(&r.stderr).contains("other settings"), "{extra:?}");
     }
     assert_eq!(snapshot(), before, "a refused resume changes nothing");
-    // a version 1 manifest, and none at all
-    let text = String::from_utf8(std::fs::read(part.join("manifest.json")).unwrap()).unwrap();
-    std::fs::write(part.join("manifest.json"), text.replacen("\"version\":2", "\"version\":1", 1)).unwrap();
-    assert_eq!(resume(&[], &pdf).status.code(), Some(2));
+    // a damaged or foreign manifest: refused (exit 2) and left as it is
+    let path = part.join("manifest.jsonl");
+    let text = String::from_utf8(std::fs::read(&path).unwrap()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let joined = |l: &[&str]| l.iter().map(|l| format!("{l}\n")).collect::<String>();
+    let refused = |bytes: &str, why: &str| {
+        std::fs::write(&path, bytes).unwrap();
+        let r = resume(&[], &pdf);
+        let err = String::from_utf8_lossy(&r.stderr).to_string();
+        assert_eq!(r.status.code(), Some(2), "{why}: {err}");
+        assert!(err.contains(why), "{why}: {err}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes.as_bytes(), "{why}: left as it was");
+    };
+    // truncated: no end line; the header alone; a line cut short
+    refused(&joined(&lines[..lines.len() - 1]), "no end line");
+    refused(&joined(&lines[..1]), "no end line");
+    refused(&text[..text.len() - 10], "no line break");
+    // an image line changed (a status that would let a resume skip it): the hash fails
+    let tampered = text.replacen("\"status\":\"not-extracted\"", "\"status\":\"extracted\"", 1);
+    assert_ne!(tampered, text);
+    refused(&tampered, "sha256");
+    // another schema, and a version 2 manifest.json in place of manifest.jsonl
+    refused(&text.replacen("doppler-images/3", "doppler-images/4", 1), "schema");
+    std::fs::remove_file(&path).unwrap();
+    let v2 = "{\"version\":2,\"source_sha256\":\"00\",\"resumes\":0,\n\"batches\":[\n],\n\"images\":[\n]}\n";
+    std::fs::write(part.join("manifest.json"), v2).unwrap();
+    let r = resume(&[], &pdf);
+    assert_eq!(r.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("version 2"), "{}", String::from_utf8_lossy(&r.stderr));
     std::fs::remove_file(part.join("manifest.json")).unwrap();
-    assert_eq!(resume(&[], &pdf).status.code(), Some(2));
+    // none at all
+    let r = resume(&[], &pdf);
+    assert_eq!(r.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("no manifest.jsonl"));
     // a folder that does not exist, and --images-dir with --images-resume
     assert_eq!(run(&p, &["--images-resume", s.0.join("none").to_str().unwrap(), &pdf], &[]).status.code(), Some(2));
     let r = run(
@@ -471,7 +511,7 @@ fn a_resume_is_refused_unless_bound_to_the_same_pdf_and_settings() {
     );
     assert_eq!(r.status.code(), Some(2));
     // the budget flags may change: a resume with a bigger budget is not refused
-    std::fs::write(part.join("manifest.json"), text).unwrap();
+    std::fs::write(&path, &text).unwrap();
     let r = resume(&["--images-max", "100", "--images-timeout", "30"], &pdf);
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
 }
@@ -482,7 +522,7 @@ fn a_failed_resume_keeps_the_old_manifest_and_removes_only_its_own_files() {
     let part = s.0.join("part");
     let r = run(&p, &["--images-dir", part.to_str().unwrap(), "--images-max", "1", &pdf], &[]);
     assert_eq!(r.status.code(), Some(5));
-    let manifest_bytes = std::fs::read(part.join("manifest.json")).unwrap();
+    let manifest_bytes = std::fs::read(part.join("manifest.jsonl")).unwrap();
     // something put a file where page 4's picture goes: the resume writes pages 2 and 3, then
     // must not replace it (a hard failure, exit 6)
     std::fs::create_dir(part.join("page-0004")).unwrap();
@@ -490,7 +530,7 @@ fn a_failed_resume_keeps_the_old_manifest_and_removes_only_its_own_files() {
     let before = files(&part);
     let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
     assert_eq!(r.status.code(), Some(6), "{}", String::from_utf8_lossy(&r.stderr));
-    assert_eq!(std::fs::read(part.join("manifest.json")).unwrap(), manifest_bytes, "the old manifest stays");
+    assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), manifest_bytes, "the old manifest stays");
     let after = files(&part);
     assert_eq!(after.keys().collect::<Vec<_>>(), before.keys().collect::<Vec<_>>(), "only the new files went");
     assert_eq!(std::fs::read(part.join("page-0004/image-001.webp")).unwrap(), b"theirs");

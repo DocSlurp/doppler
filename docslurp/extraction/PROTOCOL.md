@@ -173,7 +173,7 @@ production.
 - `pdfregions`: renders regions and copies images it can verify; no policy, no files.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records
   against the report (id, size), encodes WebP / compacts and allowlists SVG, writes DIR and
-  `manifest.json`. It alone maps ids to paths (`page-NNNN/image-MMM.<ext>`,
+  `manifest.jsonl`. It alone maps ids to paths (`page-NNNN/image-MMM.<ext>`,
   `page-NNNN/figure-KKK.<ext>`; `docslurp/doppler-md/src/extract/layout.rs`), so ids on this
   protocol never become paths here.
 
@@ -184,8 +184,13 @@ production.
   Files are created **0600** (`O_CREAT|O_EXCL|O_NOFOLLOW` to a temporary name, renamed with
   `RENAME_NOREPLACE`). The modes hold whatever the umask (it can only remove bits): images can
   be tenant data in a shared VM tmp. Copy or `chmod` them to share.
-- `manifest.json` (version 2) is written last, after the files are synced; every link of the
-  Markdown has an entry and every file is listed. A DIR without a manifest is garbage.
+- `manifest.jsonl` (JSON Lines, schema `doppler-images/3`; docslurp/doppler-md/README.md) is
+  written last, after the files are synced, to a temporary name that is synced and renamed into
+  place without replacing anything (a resume renames its new one over the old). A header line,
+  one line per image, one per batch, and an end line with the line counts and the SHA-256 of
+  every byte before it; ASCII, at most 64 KiB per line, so it is read one line at a time with
+  fixed memory. Every link of the Markdown has an entry and every file is listed. A DIR without
+  a manifest, or with one that has no valid end line, is garbage.
 
 ## Security model (council review, 2026-11-10)
 

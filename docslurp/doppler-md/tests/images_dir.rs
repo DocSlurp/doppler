@@ -5,6 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+mod manifest_file;
+use manifest_file::manifest;
+
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
 
 fn pdftotext() -> Option<PathBuf> {
@@ -134,10 +137,6 @@ fn files(dir: &Path) -> Vec<String> {
     v
 }
 
-fn manifest(dir: &Path) -> serde_json::Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap()
-}
-
 fn entry(m: &serde_json::Value, id: &str) -> serde_json::Value {
     m["images"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap().clone()
 }
@@ -161,9 +160,9 @@ fn extracts_files_where_the_links_point_without_changing_the_markdown() {
     let err = String::from_utf8_lossy(&one.stderr);
     assert_eq!(one.status.code(), Some(0), "{err}");
     assert_eq!(one.stdout, plain.stdout, "Markdown changed with --images-dir");
-    assert_eq!(files(&d1), ["manifest.json", FIGURE, PICTURE], "{err}");
+    assert_eq!(files(&d1), ["manifest.jsonl", FIGURE, PICTURE], "{err}");
     let m = manifest(&d1);
-    assert_eq!((m["version"].as_u64(), m["complete"].as_bool()), (Some(2), Some(true)));
+    assert_eq!((m["schema"].as_str(), m["complete"].as_bool()), (Some("doppler-images/3"), Some(true)));
     // the 10 pt icon is under 24 px at 150 dpi: linked, not extracted
     let icon = entry(&m, "p1.2");
     assert_eq!((icon["status"].as_str(), icon["reason"].as_str()), (Some("not-extracted"), Some("min_side")));
@@ -237,45 +236,47 @@ fn the_manifest_lists_every_link_and_every_file() {
         sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
     };
     let m = manifest(&d);
-    let text = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    let text = std::fs::read_to_string(d.join("manifest.jsonl")).unwrap();
     let source = sha(&std::fs::read(&pdf).unwrap());
     let settings = m["settings_sha256"].as_str().unwrap();
     assert!(settings.len() == 64 && settings.bytes().all(|b| b.is_ascii_hexdigit()), "{settings}");
-    let head = format!(
-        "{{\"version\":2,\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"resumes\":0,\"resumable\":false,\"link_prefix\":\"images/\",\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"complete\":true,\n\"batches\":[\n{{\"pages\":[1,64],\"status\":\"ok\"}}\n],\n\"images\":["
+    let header = format!(
+        "{{\"type\":\"header\",\"schema\":\"doppler-images/3\",\"source_sha256\":\"{source}\",\"settings_sha256\":\"{settings}\",\"link_prefix\":\"images/\",\"pages\":null,\"dpi\":150,\"min_side_pt\":11.52,\"repeats\":\"skip\",\"scan_pages\":\"image\",\"scan_dpi\":200,\"scan_max_dpi\":300,\"batch_pages\":64,\"deadline_ms\":121000,\"resumes\":0}}"
     );
-    assert!(text.starts_with(&head), "{text}");
     let file = |f: &str| std::fs::read(d.join(f)).unwrap();
     let webp = file(PICTURE);
     let svg = file(FIGURE);
-    let lines = [
+    let mut want = vec![
+        header,
         format!(
-            "{{\"id\":\"p1.1\",\"page\":1,\"bbox\":[72.00,222.00,272.00,372.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"extracted\",\"format\":\"webp\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":417,\"height\":312}}",
+            "{{\"type\":\"image\",\"id\":\"p1.1\",\"page\":1,\"bbox\":[72.00,222.00,272.00,372.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"extracted\",\"format\":\"webp\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":417,\"height\":312}}",
             webp.len(),
             sha(&webp)
         ),
-        "{\"id\":\"p1.2\",\"page\":1,\"bbox\":[400.00,82.00,410.00,92.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"page-0001/image-002.webp\",\"link\":\"images/page-0001/image-002.webp\",\"status\":\"not-extracted\",\"reason\":\"min_side\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}".to_string(),
+        "{\"type\":\"image\",\"id\":\"p1.2\",\"page\":1,\"bbox\":[400.00,82.00,410.00,92.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"page-0001/image-002.webp\",\"link\":\"images/page-0001/image-002.webp\",\"status\":\"not-extracted\",\"reason\":\"min_side\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}".to_string(),
         format!(
-            "{{\"id\":\"p1.g1\",\"page\":1,\"bbox\":[210.00,452.00,390.00,632.00],\"kind\":\"vector\",\"fate\":\"block\",\"obj\":null,\"path\":\"{FIGURE}\",\"link\":\"images/{FIGURE}\",\"status\":\"extracted\",\"format\":\"svg\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":180,\"height\":180}}",
+            "{{\"type\":\"image\",\"id\":\"p1.g1\",\"page\":1,\"bbox\":[210.00,452.00,390.00,632.00],\"kind\":\"vector\",\"fate\":\"block\",\"obj\":null,\"path\":\"{FIGURE}\",\"link\":\"images/{FIGURE}\",\"status\":\"extracted\",\"format\":\"svg\",\"source\":\"render\",\"bytes\":{},\"sha256\":\"{}\",\"width\":180,\"height\":180}}",
             svg.len(),
             sha(&svg)
         ),
         format!(
-            "{{\"id\":\"p2.1\",\"page\":2,\"bbox\":[300.00,442.00,500.00,592.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"not-extracted\",\"reason\":\"repeat\",\"repeat_of\":\"p1.1\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}}"
+            "{{\"type\":\"image\",\"id\":\"p2.1\",\"page\":2,\"bbox\":[300.00,442.00,500.00,592.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"not-extracted\",\"reason\":\"repeat\",\"repeat_of\":\"p1.1\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}}"
         ),
+        "{\"type\":\"batch\",\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":null}".to_string(),
     ];
-    let body: Vec<&str> = text[head.len()..].lines().take(lines.len() + 1).collect();
-    assert_eq!(body[0], "", "{text}");
-    for (k, want) in lines.iter().enumerate() {
-        assert_eq!(body[k + 1].trim_end_matches(','), want, "line {k}");
+    // the end line: the counts, and the hash of every byte before it
+    let body: String = want.iter().map(|l| format!("{l}\n")).collect();
+    want.push(format!(
+        "{{\"type\":\"end\",\"complete\":true,\"resumable\":false,\"totals\":{{\"images\":4,\"linked\":4,\"extracted\":2,\"not_extracted\":2,\"unlinked\":0,\"bytes\":{},\"repeats\":1,\"fallbacks\":0,\"scans\":0,\"scan_bytes\":0,\"batches\":1,\"batches_cut\":0}},\"images\":4,\"batches\":1,\"sha256\":\"{}\"}}",
+        webp.len() + svg.len(),
+        sha(body.as_bytes())
+    ));
+    assert!(text.is_ascii() && text.ends_with('\n'), "{text}");
+    let got: Vec<&str> = text.lines().collect();
+    assert_eq!(got.len(), want.len(), "{text}");
+    for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert_eq!(g, w, "line {k}");
     }
-    assert!(
-        text.ends_with(&format!(
-            "\n],\n\"totals\":{{\"images\":4,\"linked\":4,\"extracted\":2,\"not_extracted\":2,\"unlinked\":0,\"bytes\":{},\"repeats\":1,\"fallbacks\":0,\"scans\":0,\"scan_bytes\":0,\"batches\":1,\"batches_cut\":0}}}}\n",
-            webp.len() + svg.len()
-        )),
-        "{text}"
-    );
     // every link of the Markdown has one entry (by id), every file one extracted entry
     let md = String::from_utf8(r.stdout).unwrap();
     let links: Vec<&str> = md.split("](").skip(1).map(|t| &t[..t.find(')').unwrap()]).collect();
@@ -284,7 +285,7 @@ fn the_manifest_lists_every_link_and_every_file() {
     for l in &links {
         assert!(all.iter().any(|e| e["link"] == *l), "{l}");
     }
-    for f in files(&d).iter().filter(|f| *f != "manifest.json") {
+    for f in files(&d).iter().filter(|f| *f != "manifest.jsonl") {
         assert_eq!(all.iter().filter(|e| e["status"] == "extracted" && e["path"] == f.as_str()).count(), 1, "{f}");
     }
 }
@@ -438,7 +439,7 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
         svg.starts_with("<svg xmlns=") && svg.contains("data:image/png;base64,") && !svg.contains("script"),
         "{svg}"
     );
-    assert_eq!(files(&d), ["manifest.json", FIGURE, PICTURE]);
+    assert_eq!(files(&d), ["manifest.jsonl", FIGURE, PICTURE]);
     // with --vector-format webp a refused figure is a lossless WebP, as linked
     let d = s.0.join("bigsvg-webp");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--vector-format", "webp", &pdf], "ok");
@@ -456,7 +457,7 @@ fn bad_records_and_refused_svg_are_recorded_per_image() {
     let d = s.0.join("pages");
     let r = run(&p, &["--images-dir", d.to_str().unwrap(), "--images-pages", "2-2", &pdf], "ok");
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
-    assert_eq!(files(&d), ["manifest.json", PICTURE]);
+    assert_eq!(files(&d), ["manifest.jsonl", PICTURE]);
     let m = manifest(&d);
     assert_eq!(entry(&m, "p1.1")["reason"], "pages");
     let p2 = entry(&m, "p2.1");
@@ -485,7 +486,7 @@ fn the_real_renderer_extracts_the_pictures_and_figures() {
     let err = String::from_utf8_lossy(&r.stderr);
     assert_eq!(r.status.code(), Some(0), "{err}");
     assert_eq!(r.stdout, plain.stdout);
-    let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    let m = std::fs::read_to_string(d.join("manifest.jsonl")).unwrap();
     assert!(files(&d).contains(&PICTURE.to_string()) && files(&d).contains(&FIGURE.to_string()), "{m}\n{err}");
     assert!(!m.contains("\"error\"") && m.contains("\"complete\":true"), "{m}");
     assert!(err.contains("\"images_confined\""), "{err}");

@@ -307,10 +307,10 @@ pub struct Report {
     pub images_budget_pages: Vec<usize>,
     /// images past [`MAX_DOC_IMAGES`] that have no entry in `images` (their markers stand)
     pub images_notes_dropped: usize,
-    /// whether image extraction finished every batch (`manifest.json` `complete`)
+    /// whether image extraction finished every batch (`manifest.jsonl` end line `complete`)
     pub images_complete: Option<bool>,
     /// the time image extraction had in all (`--images-deadline`, or its default scaled with
-    /// the converted pages), in milliseconds (`manifest.json` `deadline_ms`)
+    /// the converted pages), in milliseconds (`manifest.jsonl` header `deadline_ms`)
     pub images_deadline_ms: Option<u64>,
     /// where image extraction spent its time (`pdftomarkdown --images-dir`)
     pub images_timing: Option<extract::Timing>,
