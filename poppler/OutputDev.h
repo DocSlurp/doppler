@@ -332,6 +332,9 @@ public:
     // once, when a page's Gfx is created; nullptr for none), and calls around the drawing of
     // each annotation's appearance on a page.
     virtual GfxOpTally *getOpTally() { return nullptr; }
+    // DocSlurp: the document-lifetime cache Gfx keeps image dictionary facts in for
+    // imageGeometry() (nullptr: Gfx reads them on every draw).
+    virtual ImageInfoCache *getImageInfoCache() { return nullptr; }
     virtual void beginAnnot(Annot * /*annot*/) { }
     virtual void endAnnot(Annot * /*annot*/) { }
 

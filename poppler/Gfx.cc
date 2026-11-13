@@ -4196,7 +4196,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     if (opTally && ocState && catalog->getOptContentConfig()) {
         const Object &oc = obj1StreamDict->lookupNF("OC");
         if (!oc.isNull()) {
-            uint64_t &n = catalog->getOptContentConfig()->optContentIsVisible(&oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            uint64_t &n = factsOcIsVisible(oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
             n += n != UINT64_MAX;
         }
     }
@@ -4279,17 +4279,50 @@ static void skipStreamBytes(Stream *str, int64_t n)
     }
 }
 
+// DocSlurp page facts: optContentIsVisible, remembered per reference for this page (OCG states
+// do not change while a page is drawn).
+bool Gfx::factsOcIsVisible(const Object &oc)
+{
+    const OCGs *ocgs = catalog->getOptContentConfig();
+    if (!ocgs) {
+        return true;
+    }
+    if (!oc.isRef()) {
+        return ocgs->optContentIsVisible(&oc);
+    }
+    const auto it = factsOcVisible.find(oc.getRef());
+    if (it != factsOcVisible.end()) {
+        return it->second;
+    }
+    const bool visible = ocgs->optContentIsVisible(&oc);
+    if (factsOcVisible.size() < 4096) {
+        factsOcVisible.emplace(oc.getRef(), visible);
+    }
+    return visible;
+}
+
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
-// stream dictionary is read: never the image data, so a hostile image costs a few lookups.
+// stream dictionary is read: never the image data, so a hostile image costs a few lookups, and
+// with the device's ImageInfoCache an image XObject's dictionary is read once per document.
 void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 {
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (!factsOcIsVisible(objOC)) {
         return;
     }
     const std::array<double, 6> &ctm = state->getCTM();
     if (fabs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) < 0.000001) {
         return;
+    }
+    ImageInfoCache *cache = out->getImageInfoCache();
+    const bool cacheable = cache && ref != Ref::INVALID();
+    if (cacheable) {
+        if (const ImageInfoCache::Image *seen = cache->find(ref, xref)) {
+            if (seen->width >= 1 && seen->height >= 1) {
+                out->imageGeometry(state, seen->width, seen->height, seen->info.imageMask, ref, seen->info);
+            }
+            return;
+        }
     }
     auto size = [dict](const char *key, const char *abbrev) {
         Object o = dict->lookup(key);
@@ -4303,12 +4336,19 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         const double r = o.isReal() ? o.getReal() : 0.0;
         return std::isfinite(r) && r >= 1.0 && r <= static_cast<double>(INT_MAX) ? static_cast<int>(r) : 0;
     };
-    const int width = size("Width", "W"), height = size("Height", "H");
-    if (width < 1 || height < 1) {
+    ImageInfoCache::Image image;
+    image.width = size("Width", "W");
+    image.height = size("Height", "H");
+    if (image.width >= 1 && image.height >= 1) {
+        image.info = readImageDictInfo(dict, false);
+    }
+    if (cacheable) {
+        cache->store(ref, xref, image);
+    }
+    if (image.width < 1 || image.height < 1) {
         return;
     }
-    const ImageDictInfo info = readImageDictInfo(dict, false);
-    out->imageGeometry(state, width, height, info.imageMask, ref, info);
+    out->imageGeometry(state, image.width, image.height, image.info.imageMask, ref, image.info);
 }
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
@@ -4377,72 +4417,27 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg)
     }
     Object im = lookup("ImageMask", "IM");
     info.imageMask = im.isBool() && im.getBool();
-    auto colorOfName = [](const std::string &n) {
-        if (n == "DeviceGray" || n == "G" || n == "CalGray") {
-            return ImageColor::Gray;
-        }
-        if (n == "DeviceRGB" || n == "RGB" || n == "CalRGB") {
-            return ImageColor::RGB;
-        }
-        if (n == "DeviceCMYK" || n == "CMYK") {
-            return ImageColor::CMYK;
-        }
-        if (n == "Indexed" || n == "I") {
-            return ImageColor::Indexed;
-        }
-        if (n == "Lab") {
-            return ImageColor::Lab;
-        }
-        if (n == "Separation") {
-            return ImageColor::Separation;
-        }
-        if (n == "DeviceN") {
-            return ImageColor::DeviceN;
-        }
-        return ImageColor::Other;
-    };
-    auto colorOf = [&](const Object &cs) {
-        if (cs.isName()) {
-            return colorOfName(cs.getNameString());
-        }
-        if (cs.isArray() && cs.arrayGetLength() >= 1) {
-            Object family = cs.arrayGet(0);
-            if (!family.isName()) {
-                return ImageColor::Other;
-            }
-            if (family.isName("ICCBased") && cs.arrayGetLength() >= 2) {
-                Object icc = cs.arrayGet(1);
-                if (icc.isStream()) {
-                    Object n = icc.getStream()->getDict()->lookup("N");
-                    if (n.isInt()) {
-                        switch (n.getInt()) {
-                        case 1:
-                            return ImageColor::ICC1;
-                        case 3:
-                            return ImageColor::ICC3;
-                        case 4:
-                            return ImageColor::ICC4;
-                        default:
-                            break;
-                        }
-                    }
-                }
-                return ImageColor::Other;
-            }
-            return colorOfName(family.getNameString());
-        }
-        return ImageColor::Other;
-    };
-    Object cs = lookup("ColorSpace", "CS");
-    if (!cs.isNull()) {
-        info.color = colorOf(cs);
+    // the colour space by reference is classified once per document (ImageInfoCache)
+    ImageInfoCache localCache;
+    ImageInfoCache *cache = out->getImageInfoCache() ? out->getImageInfoCache() : &localCache;
+    const Object *cs = &dict->lookupNF("ColorSpace");
+    if (cs->isNull()) {
+        cs = &dict->lookupNF("CS");
+    }
+    if (!cs->isNull()) {
+        info.color = cache->colorSpace(*cs, xref);
         // an inline image may name a colour space of the resources (one level)
-        if (inlineImg && cs.isName() && info.color == ImageColor::Other) {
-            Object named = res->lookupColorSpace(cs.getNameString());
-            info.color = named.isNull() ? ImageColor::Other : colorOf(named);
+        if (inlineImg && cs->isName() && info.color == ImageColor::Other) {
+            Object named = res->lookupColorSpace(cs->getNameString());
+            info.color = named.isNull() ? ImageColor::Other : cache->colorSpace(named, xref);
         }
     } else if (info.imageMask) {
         info.color = ImageColor::None;
+    }
+    if (cache->limitHit() && !imageInfoLimitReported) {
+        imageInfoLimitReported = true;
+        // fixed text (no arguments): page facts classify it as limit-hit from the format string
+        error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
     }
     Object smask = dict->lookup("SMask");
     Object smaskInData = dict->lookup("SMaskInData");

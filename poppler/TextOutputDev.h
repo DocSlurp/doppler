@@ -1068,6 +1068,7 @@ public:
     // text output); for a caller that needs only page facts and word counts.
     void setWordsOnly(bool on) { wordsOnly = on; }
     GfxOpTally *getOpTally() override;
+    ImageInfoCache *getImageInfoCache() override { return &imageInfoCache; }
     void beginAnnot(Annot *annot) override;
     void endAnnot(Annot *annot) override;
 
@@ -1114,6 +1115,7 @@ private:
     size_t remainingDocImages = maxDocImages;
     static constexpr size_t maxDocGraphics = 100000;
     size_t remainingDocGraphics = maxDocGraphics;
+    ImageInfoCache imageInfoCache; // DocSlurp: see getImageInfoCache
     bool graphicsTruncated = false;
     void collectPathGraphic(const GfxState *state, bool filled);
     static constexpr size_t maxDocRules = 200000;

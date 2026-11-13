@@ -14,9 +14,14 @@
 #define PAGEFACTSHOOKS_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 
 #include "poppler_private_export.h"
+#include "Object.h"
+
+class XRef;
 
 // The image codec: the last filter of /Filter (the one that decodes to samples). ASCII
 // filters alone count as None.
@@ -90,6 +95,50 @@ POPPLER_PRIVATE_EXPORT const char *imageColorName(ImageColor c);
 POPPLER_PRIVATE_EXPORT const char *imageCopyName(ImageCopy c);
 // The copy class of an image with these dictionary facts (see ImageCopy).
 POPPLER_PRIVATE_EXPORT ImageCopy classifyImageCopy(const ImageDictInfo &info);
+
+// A document's image dictionary facts, for a device that wants image geometry: Gfx reads an
+// image XObject's dictionary once per document (by its reference), not once per draw, and
+// classifies colour spaces (and ICC profiles' /N) reached by reference once each. A colour space
+// a document draws many images with may be a large indirect object (an /Indexed lookup string);
+// it is parsed once. Each map holds at most maxEntries; at most maxFetches objects are fetched
+// for colour spaces over the document, after which a colour space not yet seen counts as Other
+// and limitHit() turns on. Everything is dropped when the cross-reference table changes.
+class POPPLER_PRIVATE_EXPORT ImageInfoCache
+{
+public:
+    struct Image
+    {
+        int width = 0, height = 0; // < 1: not an image Gfx reports
+        ImageDictInfo info;
+    };
+    static constexpr size_t maxEntries = 1u << 16;
+    static constexpr size_t maxFetches = 1u << 16;
+
+    // The facts stored for image <ref> of <xref>, or nullptr.
+    const Image *find(Ref ref, XRef *xref);
+    void store(Ref ref, XRef *xref, const Image &image);
+    // The colour space family of <cs> (a /ColorSpace value, unresolved: a reference is
+    // resolved here, once per document). A null value is None.
+    ImageColor colorSpace(const Object &cs, XRef *xref);
+    // Whether a colour space was reported as Other because the fetch budget ran out.
+    bool limitHit() const { return fetchLimitHit; }
+
+private:
+    void sync(XRef *xref);
+    bool takeFetch();
+    ImageColor classify(const Object &cs, XRef *xref);
+    ImageColor familyOf(const Object &family, XRef *xref);
+    ImageColor iccOf(const Object &profile, XRef *xref);
+
+    XRef *docXref = nullptr;
+    unsigned int generation = 0;
+    std::unordered_map<Ref, Image> images;
+    std::unordered_map<Ref, ImageColor> spaces; // a colour space by reference
+    std::unordered_map<Ref, ImageColor> families; // a family name by reference
+    std::unordered_map<Ref, ImageColor> profiles; // an ICC profile stream, by its /N
+    size_t fetchesLeft = maxFetches;
+    bool fetchLimitHit = false;
+};
 
 // Operators Gfx executed on a page, by their index in Gfx's operator table (Gfx::opName).
 // "visible" while optional content is shown, "hidden" while it is not; "inLayer" the visible

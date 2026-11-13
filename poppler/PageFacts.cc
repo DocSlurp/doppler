@@ -2253,3 +2253,188 @@ std::string PageFacts::runLine(const char *version, const char *commit, double t
     j.s += '\n';
     return j.s;
 }
+
+//------------------------------------------------------------------------
+// ImageInfoCache
+//------------------------------------------------------------------------
+
+namespace {
+
+ImageColor colorOfName(const std::string &n)
+{
+    if (n == "DeviceGray" || n == "G" || n == "CalGray") {
+        return ImageColor::Gray;
+    }
+    if (n == "DeviceRGB" || n == "RGB" || n == "CalRGB") {
+        return ImageColor::RGB;
+    }
+    if (n == "DeviceCMYK" || n == "CMYK") {
+        return ImageColor::CMYK;
+    }
+    if (n == "Indexed" || n == "I") {
+        return ImageColor::Indexed;
+    }
+    if (n == "Lab") {
+        return ImageColor::Lab;
+    }
+    if (n == "Separation") {
+        return ImageColor::Separation;
+    }
+    if (n == "DeviceN") {
+        return ImageColor::DeviceN;
+    }
+    return ImageColor::Other;
+}
+
+} // namespace
+
+void ImageInfoCache::sync(XRef *xref)
+{
+    if (xref != docXref || (xref && xref->getGeneration() != generation)) {
+        images.clear();
+        spaces.clear();
+        families.clear();
+        profiles.clear();
+        docXref = xref;
+        generation = xref ? xref->getGeneration() : 0;
+    }
+}
+
+const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
+{
+    sync(xref);
+    const auto it = images.find(ref);
+    return it == images.end() ? nullptr : &it->second;
+}
+
+void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
+{
+    sync(xref);
+    if (images.size() < maxEntries) {
+        images.emplace(ref, image);
+    }
+}
+
+bool ImageInfoCache::takeFetch()
+{
+    if (fetchesLeft == 0) {
+        fetchLimitHit = true;
+        return false;
+    }
+    --fetchesLeft;
+    return true;
+}
+
+ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
+{
+    sync(xref);
+    if (!cs.isRef()) {
+        return classify(cs, xref);
+    }
+    const auto it = spaces.find(cs.getRef());
+    if (it != spaces.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return ImageColor::Other;
+    }
+    // classify() only reads the array's first two entries (by reference): a large lookup
+    // string is parsed here once and never copied
+    const Object resolved = xref->fetch(cs.getRef());
+    const ImageColor c = classify(resolved, xref);
+    if (spaces.size() < maxEntries) {
+        spaces.emplace(cs.getRef(), c);
+    }
+    return c;
+}
+
+ImageColor ImageInfoCache::classify(const Object &cs, XRef *xref)
+{
+    if (cs.isNull()) {
+        return ImageColor::None;
+    }
+    if (cs.isName()) {
+        return colorOfName(cs.getNameString());
+    }
+    if (!cs.isArray() || cs.arrayGetLength() < 1) {
+        return ImageColor::Other;
+    }
+    // the family, by name (None stands for ICCBased, which colorOfName never returns)
+    const Object &family = cs.getArray()->getNF(0);
+    ImageColor c = ImageColor::Other;
+    if (family.isName()) {
+        c = family.isName("ICCBased") ? ImageColor::None : colorOfName(family.getNameString());
+    } else if (family.isRef()) {
+        c = familyOf(family, xref);
+    }
+    if (c == ImageColor::None) {
+        return cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other;
+    }
+    return c;
+}
+
+// An indirect family name: its colour (None for ICCBased), once per reference.
+ImageColor ImageInfoCache::familyOf(const Object &family, XRef *xref)
+{
+    const auto it = families.find(family.getRef());
+    if (it != families.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return ImageColor::Other;
+    }
+    const Object name = xref->fetch(family.getRef());
+    const ImageColor c = !name.isName() ? ImageColor::Other : name.isName("ICCBased") ? ImageColor::None : colorOfName(name.getNameString());
+    if (families.size() < maxEntries) {
+        families.emplace(family.getRef(), c);
+    }
+    return c;
+}
+
+ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
+{
+    // the profile is a stream, so indirect
+    if (!profile.isRef()) {
+        return ImageColor::Other;
+    }
+    const auto it = profiles.find(profile.getRef());
+    if (it != profiles.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return ImageColor::Other;
+    }
+    ImageColor c = ImageColor::Other;
+    const Object icc = xref->fetch(profile.getRef());
+    if (icc.isStream()) {
+        // /N by reference is resolved too, within the same budget
+        const Object &nRaw = icc.getStream()->getDict()->lookupNF("N");
+        Object n;
+        if (nRaw.isRef()) {
+            if (takeFetch()) {
+                n = xref->fetch(nRaw.getRef());
+            }
+        } else {
+            n = nRaw.copy();
+        }
+        if (n.isInt()) {
+            switch (n.getInt()) {
+            case 1:
+                c = ImageColor::ICC1;
+                break;
+            case 3:
+                c = ImageColor::ICC3;
+                break;
+            case 4:
+                c = ImageColor::ICC4;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    if (profiles.size() < maxEntries) {
+        profiles.emplace(profile.getRef(), c);
+    }
+    return c;
+}

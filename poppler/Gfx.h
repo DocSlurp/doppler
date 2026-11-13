@@ -45,6 +45,7 @@
 #include "PageFactsHooks.h"
 
 #include <stack>
+#include <unordered_map>
 #include <vector>
 
 class PDFDoc;
@@ -247,6 +248,11 @@ private:
     MarkedContentStack *mcStack; // current BMC/EMC stack
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     int ocLayerDepth = 0; // open BDC /OC sections
+    // DocSlurp page facts: the visibility of the /OC entries the facts paths (operator tally,
+    // image geometry) have evaluated on this page, by reference (at most 4096)
+    std::unordered_map<Ref, bool> factsOcVisible;
+    bool factsOcIsVisible(const Object &oc);
+    bool imageInfoLimitReported = false; // this page reported ImageInfoCache::limitHit
 
     Parser *parser; // parser for page content stream(s)
 
