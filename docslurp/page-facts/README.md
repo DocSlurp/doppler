@@ -575,9 +575,16 @@ first, as the lazy read did (an entry is taken from the newest section that list
   - once the document has edits, a missing entry continues the chain where the walk stopped, as
     the lazy read did, or, when the walk read it all, rebuilds the table, as the lazy read did.
 - **Caches shared with drawing**, filled under a guard:
-  - object streams parsed under one go to a separate cache that only guarded reads in the same
-    guarded scope use (the doc line, the header, one page's facts, one image lookup). It is
-    dropped when the scope ends, since a parse can depend on where it was reached from;
+  - object streams parsed under a guard are kept apart from drawing's, by the kind of read: page
+    facts only (the doc line, a page's facts, the op tally); image geometry (facts or `-images`);
+    the `-images` audit. Each is reused only by reads of its own kind, which every run of that
+    kind makes in the same order. Page facts' and geometry's reads also ignore what drawing
+    parsed, since that depends on the run's flags. The XHTML header keeps nothing. A parse that
+    an object being fetched up the stack, or a refused repair, shaped is kept only until the
+    outermost guard ends (or not at all, after a refusal);
+  - the op tally evaluates optional content with a budget of its own, so it cannot spend the one
+    image geometry (and so `-images`) answers from;
+  - a rebuild made by a missing entry keeps the document's edits (a writer's added objects);
   - stream parameters are not stored at all.
 
 ## Hostile input

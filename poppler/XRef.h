@@ -38,6 +38,7 @@
 #ifndef XREF_H
 #define XREF_H
 
+#include <array>
 #include <functional>
 #include <unordered_map>
 
@@ -223,10 +224,27 @@ public:
     // Reads only some runs make (page facts, pdftotext's XHTML header) take one, so they cannot
     // change what the pages resolve. Each refused repair adds one to getSuppressedRepairs(): a
     // cache shared with drawing does not keep an answer computed after one.
+    //
+    // Object streams a guarded read parses are kept per kind of read: <kind> names which runs
+    // make it, so a kept parse is reused only by reads every such run makes in the same order.
+    // A parse that a refused repair or an object being fetched up the stack shaped is kept only
+    // until the outermost guard ends. Drawing never uses any of them.
+    enum class GuardKind
+    {
+        Scope, // nothing kept past the guard (pdftotext's XHTML header)
+        Facts, // page facts only: the doc line, endPage, the op tally
+        Geometry, // facts or -images: image geometry and its image info
+        Audit, // -images: the scan-copy audit
+    };
     class RepairGuard
     {
     public:
-        explicit RepairGuard(XRef *xrefA) : xref(xrefA) { ++xref->repairSuppressed; }
+        explicit RepairGuard(XRef *xrefA, GuardKind kind = GuardKind::Scope) : xref(xrefA)
+        {
+            if (xref->repairSuppressed++ == 0) {
+                xref->guardKind = kind;
+            }
+        }
         // the outermost guard's end drops what guarded reads cached (objStrsGuarded), so one
         // guarded read (the doc line, the XHTML header, a page's facts) never sees another's
         ~RepairGuard();
@@ -304,6 +322,9 @@ private:
     // being fetched), so a read only some runs make must not decide what anything else gets.
     // Both maps are also dropped with the table (constructXRef).
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
+    std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
+    GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
+    unsigned int blockedFetches = 0; // fetches refused because the object was being fetched
     bool encrypted; // true if file is encrypted
     int encRevision;
     int encVersion; // encryption algorithm

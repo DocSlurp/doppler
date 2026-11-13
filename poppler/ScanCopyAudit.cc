@@ -347,7 +347,7 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
     XRef *xref = dict->getXRef();
     std::optional<XRef::RepairGuard> noRepair;
     if (xref) {
-        noRepair.emplace(xref);
+        noRepair.emplace(xref, XRef::GuardKind::Audit);
     }
     const unsigned int suppressedBefore = xref ? xref->getSuppressedRepairs() : 0;
     const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res, colorCache, &limited);
@@ -409,7 +409,7 @@ void ScanCopyAudit::imageDrawn(GfxState *state, GfxResources *res, Dict *dict, c
     {
         std::optional<XRef::RepairGuard> noRepair;
         if (dict->getXRef()) {
-            noRepair.emplace(dict->getXRef());
+            noRepair.emplace(dict->getXRef(), XRef::GuardKind::Audit);
         }
         imageMask = Gfx::readImageDictInfo(dict, false, res, colorCache).imageMask;
     }

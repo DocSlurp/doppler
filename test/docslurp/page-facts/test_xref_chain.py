@@ -97,9 +97,12 @@ with t.TempDir() as d:
         "lenstack": ("lenstack.py", []),
         "missing_single": ("missing.py", ["single"]),
         "missing_prev": ("missing.py", ["prev"]),
+        "scopebomb": ("scopebomb.py", ["200", "20000000"]),
+        "gapprev": ("gapprev.py", []),
+        "ocbudget": ("ocbudget.py", ["1000", "250"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -141,6 +144,20 @@ with t.TempDir() as d:
         if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest", "wide_pred", "widepred_old", "tail_eof", "manysec999") and rc == 0:
             dl = doc_line(pf)
             t.check(dl.get("xref") == "ok" and b"xref-repaired" not in pf and b'xrefRebuilt="1"' not in outs[0], "%s: not repaired, no page flagged" % name, repr((dl.get("xref"), pf[-400:])))
+        attach = os.path.join(BIN, "pdfattach")
+        detach = os.path.join(BIN, "pdfdetach")
+        if name == "gapprev" and os.path.exists(attach) and os.path.exists(detach):
+            # a writer's added objects survive the rebuild a missing entry makes
+            note = os.path.join(base, "note.txt")
+            with open(note, "wb") as f:
+                f.write(b"quarterly beat note\n")
+            attached = os.path.join(base, "gapprev-attached.pdf")
+            subprocess.run([attach, path, note, attached], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            out_dir = os.path.join(base, "detached")
+            os.makedirs(out_dir, exist_ok=True)
+            subprocess.run([detach, "-saveall", "-o", out_dir, attached], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            saved = os.path.join(out_dir, "note.txt")
+            t.check(os.path.exists(saved) and open(saved, "rb").read() == b"quarterly beat note\n", "gapprev: pdfattach keeps the attached file's data (edits survive a rebuild)")
         if name == "lenstack":
             # the XHTML header's /Title (in an object stream both the doc line and the header
             # reach): each guarded scope parses it for itself

@@ -2117,7 +2117,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     // the doc line reads nothing from) turns "ok" into "repaired" at the end.
     const int reconstructionsAtXref = xref->getReconstructionCount();
     openReconstructions = reconstructionsAtXref;
-    const XRef::RepairGuard noRepair(xref);
+    const XRef::RepairGuard noRepair(xref, XRef::GuardKind::Facts);
     const unsigned int suppressedAtXref = xref->getSuppressedRepairs();
     auto trailerLookup = [&](const char *key) { return xref->getTrailerDict()->dictLookup(key); };
     const size_t xrefAt = j.s.size();
@@ -2761,7 +2761,7 @@ void PageFacts::endPage(const TextPage &text)
     // issue 45: the facts' own reads (annotations, widgets, forms) cannot rebuild the table
     std::optional<XRef::RepairGuard> noRepair;
     if (docXref) {
-        noRepair.emplace(docXref);
+        noRepair.emplace(docXref, XRef::GuardKind::Facts);
     }
     State &s = *st;
     s.ended = true;

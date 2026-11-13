@@ -4223,7 +4223,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     if (opTally && ocState && catalog->getOptContentConfig()) {
         const Object &oc = obj1StreamDict->lookupNF("OC");
         if (!oc.isNull()) {
-            uint64_t &n = factsOcIsVisible(oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            uint64_t &n = factsOcIsVisible(oc, tallyOcBudget, tallyOcVisible, static_cast<int>(XRef::GuardKind::Facts)) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
             n += n != UINT64_MAX;
         }
     }
@@ -4329,25 +4329,30 @@ bool Gfx::ocIsVisible(const Object *oc)
 // do not change while a page is drawn).
 bool Gfx::factsOcIsVisible(const Object &oc)
 {
+    return factsOcIsVisible(oc, factsOcBudget, factsOcVisible, static_cast<int>(XRef::GuardKind::Geometry));
+}
+
+bool Gfx::factsOcIsVisible(const Object &oc, OCVisibilityBudget &budget, std::unordered_map<Ref, bool> &cache, int guardKind)
+{
     // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
     std::optional<XRef::RepairGuard> noRepair;
     if (xref) {
-        noRepair.emplace(xref);
+        noRepair.emplace(xref, static_cast<XRef::GuardKind>(guardKind));
     }
     const OCGs *ocgs = catalog->getOptContentConfig();
     if (!ocgs) {
         return true;
     }
     if (!oc.isRef()) {
-        return ocgs->optContentIsVisible(&oc, &factsOcBudget);
+        return ocgs->optContentIsVisible(&oc, &budget);
     }
-    const auto it = factsOcVisible.find(oc.getRef());
-    if (it != factsOcVisible.end()) {
+    const auto it = cache.find(oc.getRef());
+    if (it != cache.end()) {
         return it->second;
     }
-    const bool visible = ocgs->optContentIsVisible(&oc, &factsOcBudget);
-    if (factsOcVisible.size() < 4096) {
-        factsOcVisible.emplace(oc.getRef(), visible);
+    const bool visible = ocgs->optContentIsVisible(&oc, &budget);
+    if (cache.size() < 4096) {
+        cache.emplace(oc.getRef(), visible);
     }
     return visible;
 }
@@ -4417,7 +4422,7 @@ void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
     // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
     std::optional<XRef::RepairGuard> noRepair;
     if (xref) {
-        noRepair.emplace(xref);
+        noRepair.emplace(xref, XRef::GuardKind::Geometry);
     }
     const Object &objOC = dict->lookupNF("OC");
     if (!factsOcIsVisible(objOC)) {
@@ -4481,7 +4486,7 @@ ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *reso
     // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
     std::optional<XRef::RepairGuard> noRepair;
     if (xref) {
-        noRepair.emplace(xref);
+        noRepair.emplace(xref, XRef::GuardKind::Geometry);
     }
     bool refused = false;
     const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, out->getImageInfoCache(), &refused);

@@ -1057,6 +1057,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     chainResumeOffset = 0;
     objStrs.clear();
     objStrsGuarded.clear();
+    for (auto &kept : objStrsByKind) {
+        kept.clear();
+    }
     {
         const Goffset fileLength = str->getLength();
         trailerBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
@@ -1498,6 +1501,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
     const Ref ref = { .num = num, .gen = gen };
 
     if (!refsBeingFetched.insert(ref)) {
+        ++blockedFetches;
         return Object::null();
     }
 
@@ -1568,17 +1572,29 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
         }
 
         ObjectStream *objStr = nullptr;
-        if (const auto it = objStrs.find(e->offset); it != objStrs.end()) {
+        // Facts and Geometry reads skip drawing's parses too: what drawing parsed depends on the
+        // run's flags (pdftotext -images reads more than pdfpagefacts)
+        const bool ownParsesOnly = repairSuppressed && (guardKind == GuardKind::Facts || guardKind == GuardKind::Geometry);
+        if (const auto it = objStrs.find(e->offset); !ownParsesOnly && it != objStrs.end()) {
             objStr = it->second.get();
-        } else if (const auto g = objStrsGuarded.find(e->offset); repairSuppressed && g != objStrsGuarded.end()) {
-            if (endPos) {
-                *endPos = -1;
-            }
-            return g->second->getObject(e->gen, num);
         } else if (repairSuppressed) {
-            // RepairGuard: an object stream whose parse a refused repair shaped (a /Length that
-            // would have needed a rebuild, say) is used once and not kept
-            const unsigned int before = suppressedRepairs;
+            // RepairGuard: guarded reads keep their own parses (see XRef::GuardKind)
+            auto *kept = guardKind == GuardKind::Scope ? nullptr : &objStrsByKind[static_cast<int>(guardKind) - 1];
+            if (kept) {
+                if (const auto k = kept->find(e->offset); k != kept->end()) {
+                    if (endPos) {
+                        *endPos = -1;
+                    }
+                    return k->second->getObject(e->gen, num);
+                }
+            }
+            if (const auto g = objStrsGuarded.find(e->offset); g != objStrsGuarded.end()) {
+                if (endPos) {
+                    *endPos = -1;
+                }
+                return g->second->getObject(e->gen, num);
+            }
+            const unsigned int repairsBefore = suppressedRepairs, blockedBefore = blockedFetches;
             std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(e->offset), recursion + 1));
             if (!once->isOk()) {
                 goto err;
@@ -1587,9 +1603,11 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 *endPos = -1;
             }
             Object result = once->getObject(e->gen, num);
-            if (suppressedRepairs == before) {
-                // kept for guarded reads only (objStrsGuarded); constructXRef drops it
-                objStrsGuarded.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
+            if (suppressedRepairs == repairsBefore) {
+                // a parse no object being fetched shaped is kept for this kind of read; one that
+                // was is kept until the outermost guard ends (constructXRef drops both)
+                auto &into = kept && blockedFetches == blockedBefore ? *kept : objStrsGuarded;
+                into.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
             }
             return result;
         } else {
@@ -2360,10 +2378,40 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                     chainResumeOffset = 0;
                     readXRefUntil(i);
                 } else {
-                    // as the lazy read on its first missing entry (it did not check for edits)
+                    // as the lazy read on its first missing entry; the document's edits (Updated
+                    // entries, a writer's added objects) are kept across the rebuild, which the
+                    // lazy read did not do
+                    struct Edit
+                    {
+                        int num;
+                        Goffset offset;
+                        int gen;
+                        XRefEntryType type;
+                        int flags;
+                        Object obj;
+                    };
+                    std::vector<Edit> edits;
+                    for (int k = 0; hasChanges && k < size; ++k) {
+                        if (entries[k].getFlag(XRefEntry::Updated)) {
+                            edits.push_back({ k, entries[k].offset, entries[k].gen, entries[k].type, entries[k].flags, entries[k].obj.copy() });
+                        }
+                    }
                     error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
                     if (!(ok = constructXRef(nullptr))) {
                         errCode = errDamaged;
+                    }
+                    for (Edit &edit : edits) {
+                        if (edit.num >= size && resize(edit.num + 1) != edit.num + 1) {
+                            continue;
+                        }
+                        entries[edit.num].offset = edit.offset;
+                        entries[edit.num].gen = edit.gen;
+                        entries[edit.num].type = edit.type;
+                        entries[edit.num].flags = edit.flags;
+                        entries[edit.num].obj = std::move(edit.obj);
+                        if (edit.num > last) {
+                            last = edit.num;
+                        }
                     }
                 }
             }
