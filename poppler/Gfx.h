@@ -76,6 +76,7 @@ class AnnotBorder;
 class AnnotColor;
 class Catalog;
 struct MarkedContentStack;
+class ScanCopyAudit;
 
 //------------------------------------------------------------------------
 
@@ -251,6 +252,7 @@ private:
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
+    ScanCopyAudit *scanAudit = nullptr; // DocSlurp page-scan copies (OutputDev::getScanCopyAudit)
     int ocLayerDepth = 0; // open BDC /OC sections
 
     Parser *parser; // parser for page content stream(s)

@@ -6048,6 +6048,7 @@ void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
     oddClipDepth = -1;
     softMaskDepth = -1;
     transparencyGroupDepth = 0;
+    scanAudit.startPage(currentPage, state);
     if (facts) {
         facts->startPage(currentPage, text->getPageWidth(), text->getPageHeight());
     }
@@ -6182,16 +6183,19 @@ void TextOutputDev::noteClip(GfxState *state, bool rectangular)
 void TextOutputDev::clip(GfxState *state)
 {
     noteClip(state, true);
+    scanAudit.clip(state);
 }
 
 void TextOutputDev::eoClip(GfxState *state)
 {
     noteClip(state, true);
+    scanAudit.clip(state);
 }
 
 void TextOutputDev::clipToStrokePath(GfxState *state)
 {
     noteClip(state, false);
+    scanAudit.deny(ScanCopyAudit::Reason::Clip);
 }
 
 // Gfx::drawForm resets the fill and stroke opacity, the blend mode and the soft mask before a
@@ -6200,6 +6204,7 @@ void TextOutputDev::clipToStrokePath(GfxState *state)
 void TextOutputDev::beginTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, GfxColorSpace * /*blendingColorSpace*/, bool /*isolated*/, bool /*knockout*/, bool /*forSoftMask*/)
 {
     ++transparencyGroupDepth;
+    scanAudit.deny(ScanCopyAudit::Reason::Group);
 }
 
 void TextOutputDev::endTransparencyGroup(GfxState * /*state*/)
@@ -6211,6 +6216,7 @@ void TextOutputDev::endTransparencyGroup(GfxState * /*state*/)
 
 void TextOutputDev::skippedSoftMask(GfxState * /*state*/)
 {
+    scanAudit.deny(ScanCopyAudit::Reason::SoftMask);
     if (softMaskDepth < 0) {
         softMaskDepth = gsDepth;
     }

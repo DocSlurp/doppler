@@ -1513,9 +1513,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));
             glyphAttrs += crop;
         }
+        ScanVerdict scan;
         if (collectImages) {
             // last: a full-page scan (see classifyScan) and the image that covers it
-            const ScanVerdict scan = textOut->getScan(scanThresholds);
+            scan = textOut->getScan(scanThresholds);
             if (scan.kind != ScanVerdict::None) {
                 glyphAttrs += std::string(" scan=\"") + scanKindName(scan.kind) + "\" scanImage=\"" + std::to_string(scan.image) + "\"";
             }
@@ -1533,7 +1534,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, glyphAttrs.c_str());
         }
         if (collectImages) {
+            int imageNumber = 0;
             for (const TextImage &image : textOut->getImages()) {
+                ++imageNumber;
                 if (image.pastDocumentCap) {
                     break; // kept for page facts and scans only; they come last
                 }
@@ -1560,6 +1563,11 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                 static const char *const orientations[] = { "0", "90", "180", "270", "other" };
                 dict += std::string(" orient=\"") + orientations[image.orientation] + "\"";
                 dict += image.overlaid ? " overlaid=\"1\"" : " overlaid=\"0\"";
+                // last: a single scan whose page passed the copy allow-list (ScanCopyAudit:
+                // nothing but this one image paints on the page); absent means render it
+                if (scan.kind == ScanVerdict::Single && scan.image == imageNumber && image.ref != Ref::INVALID() && textOut->getPageScanAudit().copyable(image.ref)) {
+                    dict += " copyable=\"1\"";
+                }
                 fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
                         image.stencil ? " kind=\"mask\"" : "", ref.c_str(), dict.c_str());
             }

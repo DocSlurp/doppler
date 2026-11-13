@@ -60,6 +60,7 @@ class AnnotLink;
 class Catalog;
 class Page;
 class Function;
+class ScanCopyAudit;
 
 //------------------------------------------------------------------------
 // OutputDev
@@ -332,6 +333,10 @@ public:
     // once, when a page's Gfx is created; nullptr for none), and calls around the drawing of
     // each annotation's appearance on a page.
     virtual GfxOpTally *getOpTally() { return nullptr; }
+    // DocSlurp page-scan copies: the allow-list a page's Gfx reports its operators and
+    // annotations to (asked once, when a page's Gfx is created; nullptr for none). See
+    // ScanCopyAudit.h; the device itself reports clips, groups and soft masks to it.
+    virtual ScanCopyAudit *getScanCopyAudit() { return nullptr; }
     virtual void beginAnnot(Annot * /*annot*/) { }
     virtual void endAnnot(Annot * /*annot*/) { }
 

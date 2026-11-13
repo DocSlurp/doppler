@@ -87,6 +87,7 @@
 #include "Page.h"
 #include "Error.h"
 #include "Gfx.h"
+#include "ScanCopyAudit.h"
 #include "ProfileData.h"
 #include "Catalog.h"
 #include "OptionalContent.h"
@@ -479,6 +480,7 @@ Gfx::Gfx(PDFDoc *docA, OutputDev *outA, int pageNum, Dict *resDict, double hDPI,
     ignoreUndef = 0;
     out->startPage(pageNum, state, xref);
     opTally = out->getOpTally();
+    scanAudit = out->getScanCopyAudit();
     out->setDefaultCTM(state->getCTM());
     out->updateAll(state);
     baseMatrix = state->getCTM();
@@ -787,6 +789,9 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
         const auto index = static_cast<size_t>(op - opTab);
         uint64_t &n = ocState ? (ocLayerDepth > 0 ? opTally->inLayer[index] : opTally->visible[index]) : opTally->hidden[index];
         n += n != UINT64_MAX;
+    }
+    if (scanAudit) [[unlikely]] {
+        scanAudit->op(static_cast<int>(op - opTab), argPtr, numArgs, state, res, ocState);
     }
 
     // do it
@@ -5548,6 +5553,9 @@ void Gfx::drawAnnot(Object *str, AnnotBorder *border, AnnotColor *aColor, double
     // at all
     if (xMin == xMax || yMin == yMax) {
         return;
+    }
+    if (scanAudit) [[unlikely]] {
+        scanAudit->annotation(str, border, aColor);
     }
 
     // saves gfx state and automatically restores it on return

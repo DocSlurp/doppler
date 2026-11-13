@@ -4,7 +4,8 @@ attributes that decide them (copy=, orient=, overlaid=, scan=).
 A copy job names an image XObject; pdfregions answers only for an image reachable from the
 job's page whose dictionary still has a copy class: a DCT stream byte for byte (kind=jpeg),
 bilevel samples as packed rows (gray1), other samples decoded once (gray8/rgb8). Everything
-else is an error record, never a render.
+else is an error record, never a render. The page must also pass the copy allow-list (the
+image is the only thing it paints, test_allowlist.py), so each fixture draws one image a page.
 """
 
 import os
@@ -41,6 +42,31 @@ def copy(path, jobs, *args):
     lines = "".join("%s\t%d\t0\t0\t10\t10\tcopy\t%s\n" % j for j in jobs).encode()
     rc, out, err = run("pdfregions", *args, path, stdin=lines)
     return rc, {h[0]: (h[1], h[2], int(h[3]), int(h[4]), p) for h, p in records(out)}, err
+
+
+def pages_pdf(contents, resources, extra_objects=()):
+    """A PDF with one page per content stream, all sharing <resources>. Objects: 1 catalog, 2
+    pages, 3 page 1, 4 Helvetica, 5 content 1, 6.. extra_objects, then a page and its content
+    for each further page."""
+    extra = list(extra_objects)
+    n = 6 + len(extra)
+    kids = ["3 0 R"] + ["%d 0 R" % (n + 2 * k) for k in range(len(contents) - 1)]
+    page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources %s /Contents %%d 0 R >>" % resources
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join(kids), len(contents)),
+        page % 5,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        t.stream("", contents[0]),
+    ] + extra
+    for k, c in enumerate(contents[1:]):
+        objects += [page % (n + 2 * k + 1), t.stream("", c)]
+    return t.build_pdf(objects)
+
+
+def one_each(names):
+    """One page per XObject name, drawing it alone in a 10 pt square."""
+    return [b"q 10 0 0 10 0 0 cm /%s Do Q" % n.encode() for n in names]
 
 
 def image(dict_body, data, compress=False):
@@ -83,18 +109,25 @@ def objects():
 
 
 XOBJECTS = " ".join("/I%d %d 0 R" % (n, n) for n in (6, 7, 8, 9, 10, 11, 15, 16, 17, 18)) + " /Fm 14 0 R"
-CONTENT = b"q 100 0 0 100 0 0 cm /I6 Do Q q 10 0 0 10 200 200 cm /Fm Do Q " + b" ".join(b"q 10 0 0 10 %d 300 cm /I%d Do Q" % (20 * k, n) for k, n in enumerate((7, 8, 9, 10, 11, 15, 16, 17, 18)))
+# one draw a page: page 1 I6, page 2 the form (image 13), pages 3.. I7, I8, I9, I10, I11, I15, I16, I17, I18
+CONTENTS = [b"q 100 0 0 100 0 0 cm /I6 Do Q", b"q 10 0 0 10 200 200 cm /Fm Do Q"] + [b"q 10 0 0 10 20 300 cm /I%d Do Q" % n for n in (7, 8, 9, 10, 11, 15, 16, 17, 18)]
+PAGE_OF = {6: 1, 13: 2, 7: 3, 8: 4, 9: 5, 10: 6, 11: 7, 15: 8, 16: 9, 17: 10, 18: 11}
 
 
 def copy_pdf():
-    return t.simple_page_pdf(CONTENT, resources="<< /Font << /F1 4 0 R >> /XObject << %s >> >>" % XOBJECTS, extra_objects=objects())
+    return pages_pdf(CONTENTS, "<< /Font << /F1 4 0 R >> /XObject << %s >> >>" % XOBJECTS, objects())
+
+
+def job(k, obj, page=None):
+    page = page or PAGE_OF[obj]
+    return ("p%d.%d" % (page, k), page, "%d.0" % obj)
 
 
 def test_copies(path):
-    rc, r, err = copy(
-        path,
-        [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0"), ("p1.3", 1, "8.0"), ("p1.4", 1, "9.0"), ("p1.5", 1, "10.0"), ("p1.6", 1, "11.0"), ("p1.7", 1, "13.0"), ("p1.8", 1, "16.0")],
-    )
+    objs = (6, 13, 7, 8, 9, 10, 11, 16)  # in page order
+    keys = dict(zip(objs, ("p1.1", "p1.7", "p1.2", "p1.3", "p1.4", "p1.5", "p1.6", "p1.8")))
+    rc, got, err = copy(path, [job(1, n) for n in objs])
+    r = {keys[n]: got["p%d.1" % PAGE_OF[n]] for n in objs}
     t.check(rc == 0, "copy jobs: exit 0", err)
     t.check(r["p1.1"][:4] == ("ok", "jpeg", 160, 200), "grey DCT: kind jpeg, its size", r["p1.1"][:4])
     t.check(r["p1.1"][4] == GRAY_JPEG, "grey DCT: the embedded stream byte for byte")
@@ -112,7 +145,10 @@ def test_copies(path):
 
 
 def test_refusals(path):
-    rc, r, err = copy(path, [("p1.1", 1, "12.0"), ("p1.2", 1, "5.0"), ("p1.3", 1, "4.0"), ("p1.4", 1, "15.0"), ("p1.5", 1, "17.0"), ("p1.6", 1, "18.0"), ("p1.7", 1, "999.0"), ("p1.8", 1, "6.1"), ("p2.1", 2, "6.0")])
+    jobs = [("p1.1", 1, "12.0"), ("p1.2", 1, "5.0"), ("p1.3", 1, "4.0"), ("p1.7", 1, "999.0"), ("p1.8", 1, "6.1"), ("p1.9", 1, "7.0"), ("p8.1", 8, "15.0"), ("p10.1", 10, "17.0"), ("p11.1", 11, "18.0"), ("p99.1", 99, "6.0")]
+    rc, got, err = copy(path, jobs)
+    r = {"p1.4": got.get("p8.1"), "p1.5": got.get("p10.1"), "p1.6": got.get("p11.1"), "p2.1": got.get("p99.1")}
+    r.update({k: got.get(k) for k in ("p1.1", "p1.2", "p1.3", "p1.7", "p1.8", "p1.9")})
     t.check(rc == 0, "refusals: still exit 0 (error records)", err)
     want = {
         "p1.1": "err:copy",  # an image of the file, not named by this page
@@ -123,7 +159,8 @@ def test_refusals(path):
         "p1.6": "err:jpeg",  # not a JPEG
         "p1.7": "err:copy",  # no such object
         "p1.8": "err:copy",  # wrong generation
-        "p2.1": "err:page",  # no page 2
+        "p1.9": "err:copy",  # named by the page's resources, but not what the page draws
+        "p2.1": "err:page",  # no page 99
     }
     for k, v in want.items():
         t.check(r.get(k, ("missing",))[0] == v, "refused: %s -> %s" % (k, v), r.get(k))
@@ -135,8 +172,8 @@ def test_limits(path):
     t.check(rc == 0 and r["p1.1"][0] == "err:copysize", "a JPEG over -max-copy-bytes is err:copysize", r)
     rc, r, _ = copy(path, [("p1.1", 1, "6.0")], "-max-copy-bytes", len(GRAY_JPEG))
     t.check(r["p1.1"][0] == "ok", "a JPEG of exactly -max-copy-bytes is copied", r["p1.1"][:4])
-    rc, r, _ = copy(path, [("p1.1", 1, "8.0"), ("p1.2", 1, "10.0")], "-max-copy-pixels", 6)
-    t.check(r["p1.1"][0] == "err:pixels" and r["p1.2"][0] == "ok", "-max-copy-pixels caps decoded copies", r)
+    rc, r, _ = copy(path, [job(1, 8), job(1, 10)], "-max-copy-pixels", 6)
+    t.check(r["p4.1"][0] == "err:pixels" and r["p6.1"][0] == "ok", "-max-copy-pixels caps decoded copies", r)
     # the whole-run output cap still holds
     rc, _, _ = copy(path, [("p1.1", 1, "6.0")], "-max-output-bytes", 100)
     t.check(rc == 3, "a copy record past -max-output-bytes exits 3", rc)
@@ -307,9 +344,10 @@ def test_jpeg_metadata(d):
         image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", dirty),  # 6
         image("/Width 37 /Height 21 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", adobe),  # 7
     ]
-    pdf = t.simple_page_pdf(b"q 10 0 0 10 0 0 cm /A Do Q q 10 0 0 10 20 0 cm /B Do Q", resources="<< /XObject << /A 6 0 R /B 7 0 R >> >>", extra_objects=objs)
+    pdf = pages_pdf(one_each(["A", "B"]), "<< /XObject << /A 6 0 R /B 7 0 R >> >>", objs)
     path = d.write("exif.pdf", pdf)
-    rc, r, err = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0")])
+    rc, r, err = copy(path, [("p1.1", 1, "6.0"), ("p2.1", 2, "7.0")])
+    r["p1.2"] = r["p2.1"]
     t.check(rc == 0 and r["p1.1"][:4] == ("ok", "jpeg", 160, 200), "a JPEG with metadata is still copied", r.get("p1.1", ("missing",))[:4])
     t.check(r["p1.1"][4] == GRAY_JPEG, "Exif, XMP and comments (before the frame and before the scan) are dropped; the rest is the stream as stored")
     t.check(b"SECRET" not in r["p1.1"][4] and b"victim" not in r["p1.1"][4] and b"Exif" not in r["p1.1"][4], "no document string reaches the copy")
@@ -362,8 +400,10 @@ def test_color_spaces(d):
     _, images = attributes(path)
     classes = [re.search(r' copy="(\w+)"', i).group(1) for i in images]
     t.check(classes == ["decode", "decode", "decode"], "ICCBased DCT, CalGray DCT, ICCBased CCITT: copy=decode, not jpeg or bilevel", images)
-    rc, r, _ = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0"), ("p1.3", 1, "8.0")])
-    t.check([r[k][1] for k in ("p1.1", "p1.2", "p1.3")] == ["gray8", "gray8", "gray8"], "the copies are decoded through the colour space (never the stored JPEG)", {k: v[:4] for k, v in r.items()})
+    # the copy allow-list refuses ICC-based and calibrated scans outright: they are rendered
+    path = d.write("icc-pages.pdf", pages_pdf(one_each(["A", "B", "C"]), res, objs))
+    rc, r, _ = copy(path, [("p1.1", 1, "6.0"), ("p2.1", 2, "7.0"), ("p3.1", 3, "8.0")])
+    t.check([r[k][0] for k in ("p1.1", "p2.1", "p3.1")] == ["err:copy"] * 3, "ICC-based and calibrated images are not copied (err:copy)", {k: v[:4] for k, v in r.items()})
     # a Device space that a DefaultGray of the resources replaces: rendered
     res = "<< /ColorSpace << /DefaultGray [/ICCBased 9 0 R] >> /XObject << /A 10 0 R >> >>"
     path = d.write("default-gray.pdf", t.simple_page_pdf(b"q 612 0 0 792 0 0 cm /A Do Q", resources=res, extra_objects=objs))
@@ -388,11 +428,10 @@ def test_jpeg_structure(d):
         mutate(0xDA, 5 + 2 + 1, 62),  # SOS: Se 62 in a baseline scan
     ]
     objs = [image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", data) for data in bad]
-    content = b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, 6 + k) for k in range(len(bad)))
     res = "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (6 + k, 6 + k) for k in range(len(bad)))
-    path = d.write("bad-jpeg.pdf", t.simple_page_pdf(content, resources=res, extra_objects=objs))
-    rc, r, _ = copy(path, [("p1.%d" % (k + 1), 1, "%d.0" % (6 + k)) for k in range(len(bad))])
-    got = [r["p1.%d" % (k + 1)][0] for k in range(len(bad))]
+    path = d.write("bad-jpeg.pdf", pages_pdf(one_each(["I%d" % (6 + k) for k in range(len(bad))]), res, objs))
+    rc, r, _ = copy(path, [("p%d.1" % (k + 1), k + 1, "%d.0" % (6 + k)) for k in range(len(bad))])
+    got = [r["p%d.1" % (k + 1)][0] for k in range(len(bad))]
     t.check(rc == 0 and got == ["err:jpeg"] * len(bad), "bogus Huffman table, DQT id, SOS component, baseline Se: err:jpeg", got)
 
 
@@ -417,15 +456,14 @@ def test_jbig2_regions(d):
         t.stream("", region(60000, 60000)),  # 9: globals with a huge region
         image("/Width 10 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", page + region(10, 10)),  # 10
     ]
-    content = b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, n) for k, n in enumerate((6, 7, 8, 10)))
     res = "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in (6, 7, 8, 10))
-    path = d.write("jbig2-regions.pdf", t.simple_page_pdf(content, resources=res, extra_objects=objs))
+    path = d.write("jbig2-regions.pdf", pages_pdf(one_each(["I%d" % n for n in (6, 7, 8, 10)]), res, objs))
     import time
 
     start = time.monotonic()
-    rc, r, _ = copy(path, [("p1.1", 1, "6.0"), ("p1.2", 1, "7.0"), ("p1.3", 1, "8.0"), ("p1.4", 1, "10.0")])
+    rc, r, _ = copy(path, [("p%d.1" % (k + 1), k + 1, "%d.0" % n) for k, n in enumerate((6, 7, 8, 10))])
     secs = time.monotonic() - start
-    got = [r[k][0] for k in ("p1.1", "p1.2", "p1.3", "p1.4")]
+    got = [r["p%d.1" % k][0] for k in (1, 2, 3, 4)]
     t.check(rc == 0 and got == ["err:decode", "err:decode", "err:decode", "ok"] and secs < 10, "JBIG2 region or pattern dictionary larger than the page (in the stream or its globals): refused before decoding", (got, secs))
 
 
@@ -446,11 +484,11 @@ def test_codec_sizes(d):
         # a JPX under a Flate filter: never decoded unchecked
         image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/JPXDecode /FlateDecode]", zlib.compress(j2k)),  # 10
     ]
-    pdf = t.simple_page_pdf(b" ".join(b"q 10 0 0 10 %d 0 cm /I%d Do Q" % (20 * k, n) for k, n in enumerate(range(6, 11))), resources="<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in range(6, 11)), extra_objects=objs)
+    pdf = pages_pdf(one_each(["I%d" % n for n in range(6, 11)]), "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in range(6, 11)), objs)
     path = d.write("codecs.pdf", pdf)
-    rc, r, err = copy(path, [("p1.%d" % (n - 5), 1, "%d.0" % n) for n in range(6, 11)])
+    rc, r, err = copy(path, [("p%d.1" % (n - 5), n - 5, "%d.0" % n) for n in range(6, 11)])
     t.check(rc == 0, "codec size checks: exit 0", err)
-    got = {k: v[0] for k, v in r.items()}
+    got = {"p1.%d" % int(k[1:].split(".")[0]): v[0] for k, v in r.items()}
     t.check(got.get("p1.1") == "err:pixels" and got.get("p1.2") == "err:pixels", "JPX codestream larger than /Width x /Height: err:pixels", got)
     t.check(got.get("p1.3") == "err:pixels", "JBIG2 page larger than the image: err:pixels", got)
     t.check(got.get("p1.4") == "err:pixels", "CCITT /Columns not /Width: err:pixels", got)
@@ -493,7 +531,9 @@ def test_reachable_shallow(d):
         form(10),  # 11: A
         form(8),  # 12: B
     ]
-    pdf = t.simple_page_pdf(b"/A Do /B Do", resources="<< /XObject << /A 11 0 R /B 12 0 R >> >>", extra_objects=objs)
+    # (A is named first in the resources, so the search meets F deep first; only B is drawn, as
+    # the copy allow-list wants the image drawn once)
+    pdf = t.simple_page_pdf(b"/B Do", resources="<< /XObject << /A 11 0 R /B 12 0 R >> >>", extra_objects=objs)
     rc, r, _ = copy(d.write("shallow.pdf", pdf), [("p1.1", 1, "6.0")])
     t.check(r["p1.1"][0] == "ok", "a form reached deep first and shallow later is searched at its shallow depth", r["p1.1"][:4])
 

@@ -74,6 +74,7 @@
 #include "Stream.h"
 #include "XRef.h"
 #include "PageFactsHooks.h"
+#include "ScanCopyAudit.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include "Win32Console.h"
@@ -1122,6 +1123,43 @@ private:
     bool memory = false;
 };
 
+// The page-level check before a copy job (ScanCopyAudit.h): runs the page's content, its forms
+// and its annotations as the raster renders do (media box, page /Rotate, not printing), drawing
+// nothing and decoding no image, and records whether anything but one plain image XObject paints.
+// pdftotext -images runs the same allow-list on its own pass (copyable="1"); this is the
+// renderer's own check, so a job line cannot ask for a copy the page does not allow.
+class ScanAuditOutputDev : public OutputDev
+{
+public:
+    bool upsideDown() override { return true; }
+    bool useDrawChar() override { return false; }
+    bool interpretType3Chars() override { return false; }
+    bool needNonText() override { return false; }
+    bool needCharCount() override { return true; }
+    bool checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/, int /*rotate*/, bool /*useMediaBox*/, bool /*crop*/, int /*sliceX*/, int /*sliceY*/, int /*sliceW*/, int /*sliceH*/, bool /*printing*/,
+                        bool (* /*abortCheckCbk*/)(void *data), void * /*abortCheckCbkData*/, bool (* /*annotDisplayDecideCbk*/)(Annot *annot, void *user_data), void * /*annotDisplayDecideCbkData*/) override
+    {
+        page = pageA;
+        return true;
+    }
+    void startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/) override { audit.startPage(page, state); }
+    void clip(GfxState *state) override { audit.clip(state); }
+    void eoClip(GfxState *state) override { audit.clip(state); }
+    void clipToStrokePath(GfxState * /*state*/) override { audit.deny(ScanCopyAudit::Reason::Clip); }
+    void beginTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, GfxColorSpace * /*blendingColorSpace*/, bool /*isolated*/, bool /*knockout*/, bool /*forSoftMask*/) override
+    {
+        audit.deny(ScanCopyAudit::Reason::Group);
+    }
+    void setSoftMask(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, bool /*alpha*/, Function * /*transferFunc*/, const GfxColor & /*backdropColor*/) override { audit.deny(ScanCopyAudit::Reason::SoftMask); }
+    void skippedSoftMask(GfxState * /*state*/) override { audit.deny(ScanCopyAudit::Reason::SoftMask); }
+    ScanCopyAudit *getScanCopyAudit() override { return &audit; }
+
+    ScanCopyAudit audit;
+
+private:
+    Page *page = nullptr;
+};
+
 class Renderer
 {
 public:
@@ -1175,7 +1213,22 @@ private:
     FT_Library ftLib = nullptr;
     std::unique_ptr<CairoFontEngine> cairoFonts;
     std::vector<unsigned char> rowBuffer;
+    // the copy allow-list of the last page audited (copy jobs come sorted by page)
+    int auditedPage = 0;
+    ScanCopyAudit pageAudit;
+    bool pageCopyable(int pageNum, Ref ref);
 };
+
+bool Renderer::pageCopyable(int pageNum, Ref ref)
+{
+    if (auditedPage != pageNum) {
+        ScanAuditOutputDev dev;
+        doc->displayPage(&dev, pageNum, 72.0, 72.0, 0, true, false, false);
+        pageAudit = dev.audit;
+        auditedPage = pageNum;
+    }
+    return pageAudit.copyable(ref);
+}
 
 // Each crop is its own slice render, exactly as pdftoppm -r -x -y -W -H draws
 // it: the same box and rotation as pdftotext (media box, page /Rotate, no crop
@@ -1688,8 +1741,9 @@ static bool jbig2Segments(const std::vector<unsigned char> &d, bool pageInfo, ui
 //           first, most significant bit first, 0 black (the PDF's sense, /Decode absent);
 //  Decode   kind=gray8 (a one-component grey space) or rgb8: its samples decoded once at
 //           native size through its colour space.
-// Bilevel and Decode images at most -max-copy-pixels. Errors: copy (not such an image, or
-// class Render), copysize, pixels, jpeg (the stream is not a JPEG to copy), decode.
+// The page must pass the copy allow-list (ScanAuditOutputDev): the image is the only thing that
+// paints on it. Bilevel and Decode images at most -max-copy-pixels. Errors: copy (not such an
+// image, class Render, or a page that does not pass), copysize, pixels, jpeg (the stream is not a JPEG to copy), decode.
 void Renderer::copyImage(const Job &job)
 {
     XRef *xref = doc->getXRef();
@@ -1717,6 +1771,11 @@ void Renderer::copyImage(const Job &job)
     };
     const int width = size("Width", "W"), height = size("Height", "H");
     if (info.copy == ImageCopy::Render || width < 1 || height < 1) {
+        emitError(job, "copy");
+        return;
+    }
+    // and the page shows exactly that image: nothing else paints, it is drawn plainly, once
+    if (!pageCopyable(job.page, job.ref)) {
         emitError(job, "copy");
         return;
     }

@@ -47,6 +47,7 @@
 #include "OutputDev.h"
 #include "PDFRectangle.h"
 #include "PageFacts.h"
+#include "ScanCopyAudit.h"
 
 #include <array>
 #include <vector>
@@ -1105,6 +1106,9 @@ public:
     // text output); for a caller that needs only page facts and word counts.
     void setWordsOnly(bool on) { wordsOnly = on; }
     GfxOpTally *getOpTally() override;
+    // page-scan copies: the page's allow-list (with setCollectImages), see ScanCopyAudit.h
+    ScanCopyAudit *getScanCopyAudit() override { return collectImages ? &scanAudit : nullptr; }
+    const ScanCopyAudit &getPageScanAudit() const { return scanAudit; }
     void beginAnnot(Annot *annot) override;
     void endAnnot(Annot *annot) override;
 
@@ -1158,6 +1162,7 @@ private:
     int gsDepth = 0, oddClipDepth = -1, softMaskDepth = -1;
     // transparency groups open around the current content
     int transparencyGroupDepth = 0;
+    ScanCopyAudit scanAudit;
     void noteClip(GfxState *state, bool rectangular);
     void overpaintPath(GfxState *state, bool stroke);
     void overpaintGlyph(GfxState *state, double x, double y, double dx, double dy);
