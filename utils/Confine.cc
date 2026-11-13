@@ -36,6 +36,22 @@
 #endif
 
 #ifdef __linux__
+// calls newer than some C library headers: the same numbers on x86_64 and aarch64
+#    if defined(__x86_64__) || defined(__aarch64__)
+#        ifndef SYS_fchmodat2
+#            define SYS_fchmodat2 452
+#        endif
+#        ifndef SYS_setxattrat
+#            define SYS_setxattrat 463
+#        endif
+#        ifndef SYS_removexattrat
+#            define SYS_removexattrat 466
+#        endif
+#        ifndef SYS_file_setattr
+#            define SYS_file_setattr 469
+#        endif
+#    endif
+
 static int applyLandlock()
 {
 #    if defined(SYS_landlock_create_ruleset) && defined(SYS_landlock_restrict_self)
@@ -93,11 +109,128 @@ static bool applySeccomp()
     constexpr uint32_t eperm = SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA);
     constexpr uint32_t enosys = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
     constexpr uint32_t writeFlags = O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND;
+    // Denied with EPERM. Beyond running programs, the network and other processes' memory:
+    // every call that changes a file through a path or a descriptor without opening it for
+    // writing (modes, owners, times, extended attributes, sizes, links and names; Landlock
+    // covers most of these, truncate only from ABI 3, attributes and times never), signals to
+    // other processes (Landlock scopes them only from ABI 6), and System V and POSIX IPC
+    // objects and memfds (shared with, or a way around the filesystem rules).
     const uint32_t denied[] = {
-        SYS_execve, SYS_execveat, SYS_socket, SYS_socketpair, SYS_connect, SYS_ptrace, SYS_process_vm_readv, SYS_process_vm_writev,
+        SYS_execve,
+        SYS_execveat,
+        SYS_socket,
+        SYS_socketpair,
+        SYS_connect,
+        SYS_ptrace,
+        SYS_process_vm_readv,
+        SYS_process_vm_writev,
 #        ifdef SYS_creat
         SYS_creat,
 #        endif
+#        ifdef SYS_chmod
+        SYS_chmod,
+#        endif
+        SYS_fchmod,
+        SYS_fchmodat,
+#        ifdef SYS_fchmodat2
+        SYS_fchmodat2,
+#        endif
+#        ifdef SYS_chown
+        SYS_chown,
+#        endif
+#        ifdef SYS_lchown
+        SYS_lchown,
+#        endif
+        SYS_fchown,
+        SYS_fchownat,
+#        ifdef SYS_utime
+        SYS_utime,
+#        endif
+#        ifdef SYS_utimes
+        SYS_utimes,
+#        endif
+#        ifdef SYS_futimesat
+        SYS_futimesat,
+#        endif
+        SYS_utimensat,
+        SYS_truncate,
+        SYS_ftruncate,
+        SYS_fallocate,
+        SYS_setxattr,
+        SYS_lsetxattr,
+        SYS_fsetxattr,
+        SYS_removexattr,
+        SYS_lremovexattr,
+        SYS_fremovexattr,
+#        ifdef SYS_setxattrat
+        SYS_setxattrat,
+#        endif
+#        ifdef SYS_removexattrat
+        SYS_removexattrat,
+#        endif
+#        ifdef SYS_file_setattr
+        SYS_file_setattr,
+#        endif
+#        ifdef SYS_unlink
+        SYS_unlink,
+#        endif
+#        ifdef SYS_rename
+        SYS_rename,
+#        endif
+#        ifdef SYS_mkdir
+        SYS_mkdir,
+#        endif
+#        ifdef SYS_rmdir
+        SYS_rmdir,
+#        endif
+#        ifdef SYS_link
+        SYS_link,
+#        endif
+#        ifdef SYS_symlink
+        SYS_symlink,
+#        endif
+#        ifdef SYS_mknod
+        SYS_mknod,
+#        endif
+#        ifdef SYS_renameat
+        SYS_renameat,
+#        endif
+        SYS_unlinkat,
+        SYS_renameat2,
+        SYS_mkdirat,
+        SYS_linkat,
+        SYS_symlinkat,
+        SYS_mknodat,
+        SYS_tkill,
+        SYS_rt_sigqueueinfo,
+        SYS_rt_tgsigqueueinfo,
+#        ifdef SYS_pidfd_open
+        SYS_pidfd_open,
+#        endif
+#        ifdef SYS_pidfd_send_signal
+        SYS_pidfd_send_signal,
+#        endif
+#        ifdef SYS_pidfd_getfd
+        SYS_pidfd_getfd,
+#        endif
+        SYS_shmget,
+        SYS_shmat,
+        SYS_shmctl,
+        SYS_msgget,
+        SYS_msgsnd,
+        SYS_msgrcv,
+        SYS_msgctl,
+        SYS_semget,
+        SYS_semop,
+        SYS_semtimedop,
+        SYS_semctl,
+        SYS_memfd_create,
+        SYS_mq_open,
+        SYS_mq_unlink,
+        SYS_mq_timedsend,
+        SYS_mq_timedreceive,
+        SYS_mq_notify,
+        SYS_mq_getsetattr,
     };
     std::vector<sock_filter> f;
     auto stmt = [&f](uint16_t code, uint32_t k) { f.push_back(BPF_STMT(code, k)); };
@@ -127,6 +260,16 @@ static bool applySeccomp()
         stmt(BPF_RET | BPF_K, enosys);
     }
 #        endif
+    // kill(pid, sig) and tgkill(tgid, tid, sig): only this process (a pid of 0 or -1 names a
+    // group or every process); raise() and abort() use tgkill on this process
+    const uint32_t self = static_cast<uint32_t>(getpid());
+    for (uint32_t nr : { uint32_t(SYS_kill), uint32_t(SYS_tgkill) }) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 4);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args)); // low 32 bits of the pid
+        jump(BPF_JMP | BPF_JEQ | BPF_K, self, 0, 1);
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+        stmt(BPF_RET | BPF_K, eperm);
+    }
     // open(path, flags) / openat(dirfd, path, flags): deny write or create flags
     auto openCheck = [&](uint32_t nr, int flagsArg) {
         jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 5);

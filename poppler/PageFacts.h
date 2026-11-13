@@ -166,9 +166,10 @@ public:
     int pagesEmitted() const { return emitted; }
     int pagesFailed() const { return failed; }
 
-    // Poppler's error callback while facts are collected: the category (and, for a few fixed
-    // message prefixes, the stage) is recorded for the current page. Never the message.
-    static void noteError(ErrorCategory category, const char *msg);
+    // Poppler's error format callback (setErrorFormatCallback) while facts are collected: the
+    // category (and, for a few fixed format-string prefixes, the stage) is recorded for the
+    // current page. The message is never formatted for it.
+    static void noteError(ErrorCategory category, const char *format);
 
     //----- device hooks
 
@@ -209,6 +210,10 @@ private:
     GfxOpTally tally;
     int emitted = 0, failed = 0;
     XRef *docXref = nullptr; // the document's, for xref-repaired
+    // box pairs the figure-cluster merge (TextPage::getGraphics) may still compare over the run;
+    // past it a page's clusters stay as merged so far, with drawing-limit
+    static constexpr size_t maxGraphicsComparisons = size_t(1) << 27;
+    size_t graphicsBudget = maxGraphicsComparisons;
 
     // the current page
     struct State;

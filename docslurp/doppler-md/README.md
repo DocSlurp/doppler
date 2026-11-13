@@ -675,6 +675,12 @@ without them. Facts never go to stdout.
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
 | `--scan-min-coverage F`, `--scan-max-words N`, `--scan-layer-overlap F` | the scan test's thresholds ([Page scans](#page-scans)); a changed one is recorded on the doc line (`scanThresholds`), so the lines stay byte-identical to `pdfpagefacts` given the same `-scan-...` options |
 
+With page facts, pdftotext runs under a time limit of 60 s plus 1 s per page of the range, at
+most an hour (`-timeout 60 -timeout-per-page 1 -timeout-max 3600`); past it the conversion
+fails: pdftomarkdown exits 1 with no Markdown, and the message names pdftotext's timeout (its
+exit status 6, which is not pdftomarkdown's exit status 6). Without page facts there is no
+limit, as before.
+
 With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
 Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor
 of `--page-facts` is inheritable only while pdftotext starts; the renderer never gets it.
@@ -696,6 +702,7 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
   the pdftotext used, which is probably not the DocSlurp fork), and 1 when pdftotext is not
   found, cannot be run or exits non-zero. pdftotext runs with `-q`, so the message names its
   exit status instead: 1 could not open or decrypt the PDF, 3 refused by the PDF's permissions,
+  6 (with page facts only) ran past its time limit,
   99 bad arguments (a first page past the last page of the document, or not the fork). Page
   numbers outside 1 to 2147483647 and `-f` after `-l` exit 2 before pdftotext runs.
 - `--report` prints one line of JSON to stderr: pages found and unclosed, lines and words kept,

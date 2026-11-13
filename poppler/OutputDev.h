@@ -337,6 +337,9 @@ public:
     // annotations to (asked once, when a page's Gfx is created; nullptr for none). See
     // ScanCopyAudit.h; the device itself reports clips, groups and soft masks to it.
     virtual ScanCopyAudit *getScanCopyAudit() { return nullptr; }
+    // DocSlurp: the document-lifetime cache Gfx keeps image dictionary facts in for
+    // imageGeometry() (nullptr: Gfx reads them on every draw).
+    virtual ImageInfoCache *getImageInfoCache() { return nullptr; }
     virtual void beginAnnot(Annot * /*annot*/) { }
     virtual void endAnnot(Annot * /*annot*/) { }
 

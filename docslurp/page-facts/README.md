@@ -235,7 +235,7 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
-| `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds (`drawing-limit`) |
+| `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far (`drawing-limit`) |
 
 ### `forms` (`forms`)
 
@@ -273,7 +273,8 @@ Hidden content is not text: its characters are not counted in `text`.
 ### `parseWarnings` (basic)
 
 Sorted, unique; what went wrong while the page was processed, by poppler's error category
-and, for a few fixed message prefixes, the stage. Message text is never kept.
+and, for a few fixed prefixes of the message's format string, the stage. Messages are never
+formatted for facts (their arguments are not read) and never kept.
 
 | value | meaning |
 |---|---|
@@ -281,7 +282,7 @@ and, for a few fixed message prefixes, the stage. Message text is never kept.
 | `bad-content-stream` | content-stream errors (unknown operators, wrong operands, unbalanced state) |
 | `missing-font` | text shown without a usable font |
 | `broken-image` | bad image parameters or codec errors |
-| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations) |
+| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget, an optional-content expression past 10,000 operands, which then counts as visible) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
@@ -329,8 +330,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
 - A page line depends only on that page and the resources it shares with others, never on
   which other pages were processed: `-f p -l p` gives the same line as a whole run (tested).
   The exceptions are documented above: `parseWarnings` of shared resources, and the
-  run-wide caps (100,000 images, 200,000 rules, the form budget), past which `limit-hit` is
-  set.
+  run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
+  colour-space budgets), past which `limit-hit` is set.
 
 ## Hostile input
 
@@ -347,7 +348,14 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   parsing a byte of it: no file writes or creation, no network, no exec (`-confine
   require|auto|off`, default `require`: a kernel without Landlock or seccomp is exit 5;
   `auto` falls back with a fixed-string warning; Landlock + seccomp, shared with pdfregions in
-  `utils/Confine`). It must still run inside the credential-free, network-blocked VM boundary
+  `utils/Confine`). seccomp also denies, on any kernel, what Landlock leaves open or covers
+  only from a later ABI: chmod, chown, utimes and their variants, truncate and ftruncate,
+  fallocate, extended attributes, unlink/rename/mkdir/link/symlink/mknod, signals to other
+  processes (kill and tgkill reach only this process; tkill, sigqueue and pidfds never),
+  System V and POSIX IPC and memfd_create. Landlock ABI 1 (Linux 5.13) is enough for
+  `require`; ABI 2 adds cross-directory link and rename checks, ABI 3 truncation, ABI 4 TCP,
+  ABI 5 device ioctls and ABI 6 signal and abstract-socket scoping, all but device ioctls also
+  denied by seccomp (tested with a probe, `test/docslurp/page-facts/confine_probe.cc`). It must still run inside the credential-free, network-blocked VM boundary
   DocSlurp requires for customer files.
 - pdftomarkdown's `--page-facts FILE` must not exist, is reached without following symbolic
   links, is created mode 0600 under a temporary name and renamed into place as soon as
@@ -361,6 +369,20 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   are one entry) and stops fetching at its budget (forms `truncated`), a name tree's shared
   `/Names` and `/Kids` arrays once per walk, and the `/Prev` walk within a byte budget. The
   XFA config read takes each packet stream once, through at most one filter.
+- Drawing paths cost about what the text pass costs (tested in
+  `test/docslurp/page-facts/test_cost_bounds.py`: facts CPU within the pass + 3 s and 3x
+  the pass on each hostile case): an image XObject's dictionary is read once per document,
+  and a colour space (or an ICC profile's `/N`) reached by reference is classified once per
+  document without copying its lookup string, within a budget of 65,536 fetches (then
+  `other`, with `limit-hit`); optional-content visibility is computed once per `/OC`
+  reference and page, and poppler evaluates a `/VE` expression visiting each shared indirect
+  level once, at most 10,000 operands (then visible, `limit-hit`); poppler's errors are
+  classified from their unformatted format strings; figure clusters merge by union-find over
+  a sweep, within a run budget; the rule-grid score is a sweep over x with a Fenwick tree.
+- pdftotext has no time limit by default; `-timeout S`, `-timeout-per-page P` and
+  `-timeout-max M` bound the run to S + P x pages of the range, at most M seconds (exit 6,
+  facts lines whole, no run line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
+  -timeout-max 3600` when, and only when, page facts are requested.
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and
   exits 6.

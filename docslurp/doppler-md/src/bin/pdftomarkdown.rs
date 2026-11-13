@@ -14,7 +14,8 @@
 //!
 //! pdftotext is `$PDFTOTEXT` if set, else a `pdftotext` next to this executable, else
 //! `pdftotext` on `PATH`. Exit status 2 for bad arguments or output without a `<page>` (a
-//! pdftotext that is not the fork), 1 when pdftotext cannot be run or exits non-zero.
+//! pdftotext that is not the fork), 1 when pdftotext cannot be run or exits non-zero
+//! (including its time limit with page facts, its own status 6, which is not ours).
 
 #![forbid(unsafe_code)]
 
@@ -152,6 +153,10 @@ docslurp/page-facts/README.md):
   --page-facts-fd N           write them to descriptor N (3 or more), open for writing and
                               inherited from the caller (the image renderer does not keep it)
   A facts write that fails (the reader closed it, say) keeps the Markdown: exit status 6.
+  With page facts pdftotext runs under a time limit of 60 s plus 1 s per page (at most
+  3600 s); past it the conversion fails with exit status 1 and no Markdown (pdftotext's own
+  status 6, its timeout, is named on stderr; it is not pdftomarkdown's 6). Without them there
+  is no limit.
   --page-facts-level L        basic (default) or full
   --page-facts-include LIST   families added to basic: fonts,oddtext,images-detail,vectors,
                               forms,annots,ocg,structure
@@ -169,6 +174,10 @@ pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext 
 It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pdfregions
 (image extraction) is found the same way ($PDFREGIONS).
 ";
+
+/// pdftotext's time limit when page facts are requested: 60 s plus 1 s per page of the range,
+/// at most an hour (pdftotext exits with status 6 past it).
+const FACTS_TIMEOUT: [&str; 6] = ["-timeout", "60", "-timeout-per-page", "1", "-timeout-max", "3600"];
 
 fn main() -> ExitCode {
     let mut params = Params::default();
@@ -388,6 +397,9 @@ fn main() -> ExitCode {
     if let Some(fd) = facts_target {
         let mut args: Vec<OsString> = vec!["-page-facts-fd".into(), fd.to_string().into()];
         args.append(&mut facts_opts);
+        // with facts, pdftotext runs under a wall-clock bound scaled from the page count
+        // (FACTS_TIMEOUT); without them it runs as it always has, unbounded
+        args.extend(FACTS_TIMEOUT.iter().map(OsString::from));
         facts_opts = args;
     }
     facts_opts.extend(scan.pdftotext_args());
@@ -553,6 +565,16 @@ fn convert(
                 Path::new(file).display()
             ),
             Some(3) => eprintln!("pdftomarkdown: {} was refused by the PDF's permissions (status 3)", exe.display()),
+            // pdftotext's 6 is its -timeout (passed only with page facts): the conversion fails
+            // (exit status 1, like any failed pdftotext), never pdftomarkdown's own 6, which says
+            // the Markdown was written
+            Some(6) if facts_requested => eprintln!(
+                "pdftomarkdown: {} ran past its time limit (pdftotext status 6; with page facts: {} s plus {} s a page, at most {} s); no Markdown",
+                exe.display(),
+                FACTS_TIMEOUT[1],
+                FACTS_TIMEOUT[3],
+                FACTS_TIMEOUT[5]
+            ),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
             None => eprintln!("pdftomarkdown: {} {}", exe.display(), status),
         }

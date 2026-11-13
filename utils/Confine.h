@@ -24,10 +24,21 @@
 //    for fonts), TCP bind/connect denied, and abstract unix sockets and signals scoped to
 //    this process;
 //  - seccomp: execve/execveat, socket, ptrace, process_vm_readv/writev and open/openat with
-//    write or create flags fail with EPERM (openat2, whose flags a filter cannot read, with
-//    ENOSYS), as a second layer that also holds on kernels without Landlock.
-// Already open descriptors (stdout, a saved stderr) keep working. Linux only; elsewhere
-// nothing is applied.
+//    write or create flags fail with EPERM (openat2, whose flags a filter cannot read, and
+//    io_uring with ENOSYS), and so do the calls that change a file without opening it for
+//    writing (chmod, chown, utimes and their variants, truncate, ftruncate, fallocate,
+//    extended attributes, unlink, rename, mkdir, rmdir, link, symlink, mknod), signals to any
+//    other process (kill and tgkill only to this one; tkill, sigqueue and pidfds never), and
+//    System V and POSIX IPC and memfd_create. It is a second layer that also holds on kernels
+//    without Landlock.
+// Which guarantees need which kernel: seccomp (Linux 3.5+) gives everything in its list on any
+// supported kernel. Landlock adds path-based write denial (ABI 1, Linux 5.13), cross-directory
+// links and renames (ABI 2), truncation (ABI 3; seccomp denies truncate and ftruncate anyway),
+// TCP (ABI 4; seccomp denies socket anyway), device ioctls (ABI 5) and signal and abstract
+// socket scoping (ABI 6; seccomp covers signals and sockets). -confine require needs both
+// Landlock (any ABI) and seccomp, and fails closed without either.
+// Already open descriptors (stdout, a saved stderr) keep working, but cannot be truncated.
+// Linux only; elsewhere nothing is applied.
 struct Confinement
 {
     int landlockAbi = 0; // 0: not applied

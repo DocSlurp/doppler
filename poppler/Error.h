@@ -55,6 +55,12 @@ using ErrorCallback = void (*)(ErrorCategory category, Goffset pos, const char *
 
 extern void POPPLER_PRIVATE_EXPORT setErrorCallback(ErrorCallback cbk);
 
+// DocSlurp: called first by every error() with its category and its format string, unformatted
+// (no argument is formatted or passed). It costs nothing more when messages are quiet, and it
+// changes nothing about how a message is printed or passed to the ErrorCallback.
+using ErrorFormatCallback = void (*)(ErrorCategory category, const char *format);
+extern void POPPLER_PRIVATE_EXPORT setErrorFormatCallback(ErrorFormatCallback cbk);
+
 extern void CDECL POPPLER_PRIVATE_EXPORT error(ErrorCategory category, Goffset pos, const char *msg, ...) GOOSTRING_FORMAT;
 
 enum class ErrorStringType

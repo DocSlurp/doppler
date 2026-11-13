@@ -378,6 +378,21 @@ Object GfxResources::lookupColorSpace(std::string_view name)
     return Object::null();
 }
 
+// DocSlurp: whether /DefaultGray, /DefaultRGB or /DefaultCMYK is a key of a /ColorSpace
+// dictionary in this chain (the value is not fetched).
+bool GfxResources::definesDefaultSpaces() const
+{
+    for (const GfxResources *resPtr = this; resPtr; resPtr = resPtr->next) {
+        if (resPtr->colorSpaceDict.isDict()) {
+            Dict *d = resPtr->colorSpaceDict.getDict();
+            if (!d->lookupNF("DefaultGray").isNull() || !d->lookupNF("DefaultRGB").isNull() || !d->lookupNF("DefaultCMYK").isNull()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::unique_ptr<GfxPattern> GfxResources::lookupPattern(std::string_view name, OutputDev *out, GfxState *state)
 {
     GfxResources *resPtr;
@@ -4206,7 +4221,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     if (opTally && ocState && catalog->getOptContentConfig()) {
         const Object &oc = obj1StreamDict->lookupNF("OC");
         if (!oc.isNull()) {
-            uint64_t &n = catalog->getOptContentConfig()->optContentIsVisible(&oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            uint64_t &n = factsOcIsVisible(oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
             n += n != UINT64_MAX;
         }
     }
@@ -4292,36 +4307,95 @@ static void skipStreamBytes(Stream *str, int64_t n)
     }
 }
 
+// DocSlurp page facts: optContentIsVisible, remembered per reference for this page (OCG states
+// do not change while a page is drawn).
+bool Gfx::factsOcIsVisible(const Object &oc)
+{
+    const OCGs *ocgs = catalog->getOptContentConfig();
+    if (!ocgs) {
+        return true;
+    }
+    if (!oc.isRef()) {
+        return ocgs->optContentIsVisible(&oc);
+    }
+    const auto it = factsOcVisible.find(oc.getRef());
+    if (it != factsOcVisible.end()) {
+        return it->second;
+    }
+    const bool visible = ocgs->optContentIsVisible(&oc);
+    if (factsOcVisible.size() < 4096) {
+        factsOcVisible.emplace(oc.getRef(), visible);
+    }
+    return visible;
+}
+
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
-// stream dictionary is read: never the image data, so a hostile image costs a few lookups.
+// stream dictionary is read: never the image data, so a hostile image costs a few lookups, and
+// with the device's ImageInfoCache an image XObject's dictionary is read once per document.
 void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 {
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (!factsOcIsVisible(objOC)) {
         return;
     }
     const std::array<double, 6> &ctm = state->getCTM();
     if (fabs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) < 0.000001) {
         return;
     }
-    auto size = [dict](const char *key, const char *abbrev) {
-        Object o = dict->lookup(key);
-        if (o.isNull()) {
-            o = dict->lookup(abbrev);
+    // The cache holds only what the image's dictionary alone decides, read without resources:
+    // its drawable is then conservative (a mask's named colour space is not resolved, and a
+    // masked image is never copied anyway). Default colour spaces depend on the resources in
+    // force at this draw, so they and the copy class are worked out at every draw. The copy
+    // class reported here is a hint: the scan-copy audit (ScanCopyAudit) never reads this
+    // cache, it re-reads the dictionary where Gfx draws the image.
+    ImageInfoCache *cache = out->getImageInfoCache();
+    const bool cacheable = cache && ref != Ref::INVALID();
+    ImageInfoCache::Image image;
+    if (const ImageInfoCache::Image *seen = cacheable ? cache->find(ref, xref) : nullptr) {
+        image = *seen;
+    } else {
+        auto size = [dict](const char *key, const char *abbrev) {
+            Object o = dict->lookup(key);
+            if (o.isNull()) {
+                o = dict->lookup(abbrev);
+            }
+            if (o.isInt()) {
+                return o.getInt();
+            }
+            // a real outside int's range (or NaN) is undefined behaviour to cast: no size
+            const double r = o.isReal() ? o.getReal() : 0.0;
+            return std::isfinite(r) && r >= 1.0 && r <= static_cast<double>(INT_MAX) ? static_cast<int>(r) : 0;
+        };
+        image.width = size("Width", "W");
+        image.height = size("Height", "H");
+        if (image.width >= 1 && image.height >= 1) {
+            image.info = factsImageInfo(dict, false, nullptr);
         }
-        if (o.isInt()) {
-            return o.getInt();
+        if (cacheable) {
+            cache->store(ref, xref, image);
         }
-        // a real outside int's range (or NaN) is undefined behaviour to cast: no size
-        const double r = o.isReal() ? o.getReal() : 0.0;
-        return std::isfinite(r) && r >= 1.0 && r <= static_cast<double>(INT_MAX) ? static_cast<int>(r) : 0;
-    };
-    const int width = size("Width", "W"), height = size("Height", "H");
-    if (width < 1 || height < 1) {
+    }
+    if (image.width < 1 || image.height < 1) {
         return;
     }
-    const ImageDictInfo info = readImageDictInfo(dict, false, res);
-    out->imageGeometry(state, width, height, info.imageMask, ref, info);
+    ImageDictInfo info = image.info;
+    info.defaultSpaces = res && res->definesDefaultSpaces();
+    info.copy = classifyImageCopy(info);
+    out->imageGeometry(state, image.width, image.height, info.imageMask, ref, info);
+}
+
+// readImageDictInfo with the device's ImageInfoCache, reporting (once a page) a colour space
+// that budget left unclassified.
+ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources)
+{
+    ImageInfoCache *cache = out->getImageInfoCache();
+    const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, cache);
+    if (cache && cache->limitHit() && !imageInfoLimitReported) {
+        imageInfoLimitReported = true;
+        // fixed text (no arguments): page facts classify it as limit-hit from the format string
+        error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
+    }
+    return info;
 }
 
 // Whether Gfx::doImage would draw an image with this dictionary: each of its early returns that
@@ -4373,8 +4447,9 @@ static bool imageDictDrawable(Dict *dict, bool inlineImg, const ImageDictInfo &i
     if (jpx && !bpc.isNull() && !(bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 30)) {
         return false; // a codestream's depth wins only when it can be read; do not count on it
     }
-    const Object cs = lookup(dict, "ColorSpace", "CS");
-    if (cs.isNull() && !jpx) {
+    // a colour space (info.color is None when /ColorSpace, or /CS without it, is absent or
+    // resolves to null; it is not fetched again here)
+    if (info.color == ImageColor::None && !jpx) {
         return false;
     }
     if (!decode.isNull()) {
@@ -4455,7 +4530,7 @@ static bool imageDictDrawable(Dict *dict, bool inlineImg, const ImageDictInfo &i
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
 // ICC colour space's stream dictionary is fetched for /N), never the image data.
-ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources)
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache)
 {
     ImageDictInfo info;
     info.inlineImg = inlineImg;
@@ -4519,79 +4594,27 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
     }
     Object im = lookup("ImageMask", "IM");
     info.imageMask = im.isBool() && im.getBool();
-    auto colorOfName = [](const std::string &n) {
-        if (n == "DeviceGray" || n == "G" || n == "CalGray") {
-            return ImageColor::Gray;
-        }
-        if (n == "DeviceRGB" || n == "RGB" || n == "CalRGB") {
-            return ImageColor::RGB;
-        }
-        if (n == "DeviceCMYK" || n == "CMYK") {
-            return ImageColor::CMYK;
-        }
-        if (n == "Indexed" || n == "I") {
-            return ImageColor::Indexed;
-        }
-        if (n == "Lab") {
-            return ImageColor::Lab;
-        }
-        if (n == "Separation") {
-            return ImageColor::Separation;
-        }
-        if (n == "DeviceN") {
-            return ImageColor::DeviceN;
-        }
-        return ImageColor::Other;
-    };
-    auto colorOf = [&](const Object &cs) {
-        if (cs.isName()) {
-            return colorOfName(cs.getNameString());
-        }
-        if (cs.isArray() && cs.arrayGetLength() >= 1) {
-            Object family = cs.arrayGet(0);
-            if (!family.isName()) {
-                return ImageColor::Other;
-            }
-            if (family.isName("ICCBased") && cs.arrayGetLength() >= 2) {
-                Object icc = cs.arrayGet(1);
-                if (icc.isStream()) {
-                    Object n = icc.getStream()->getDict()->lookup("N");
-                    if (n.isInt()) {
-                        switch (n.getInt()) {
-                        case 1:
-                            return ImageColor::ICC1;
-                        case 3:
-                            return ImageColor::ICC3;
-                        case 4:
-                            return ImageColor::ICC4;
-                        default:
-                            break;
-                        }
-                    }
-                }
-                return ImageColor::Other;
-            }
-            return colorOfName(family.getNameString());
-        }
-        return ImageColor::Other;
-    };
-    // CalGray and CalRGB (a name or [/CalGray << ... >>]), one level through the resources
-    auto calibratedOf = [](const Object &c) {
-        const Object family = c.isArray() && c.arrayGetLength() >= 1 ? c.arrayGet(0) : Object::null();
-        return c.isName("CalGray") || c.isName("CalRGB") || family.isName("CalGray") || family.isName("CalRGB");
-    };
-    if (resources) {
-        info.defaultSpaces = !resources->lookupColorSpace("DefaultGray").isNull() || !resources->lookupColorSpace("DefaultRGB").isNull() || !resources->lookupColorSpace("DefaultCMYK").isNull();
+    // the colour space by reference is classified once per document (ImageInfoCache), as is
+    // whether it is CalGray or CalRGB
+    ImageInfoCache localCache;
+    if (!cache) {
+        cache = &localCache;
     }
-    Object cs = lookup("ColorSpace", "CS");
-    if (!cs.isNull()) {
-        info.color = colorOf(cs);
-        info.calibrated = calibratedOf(cs);
+    XRef *xref = dict->getXRef();
+    // a Default colour space anywhere in the resource chain (by key: a value that turns out to
+    // be null still counts, which only ever makes a copy less likely)
+    info.defaultSpaces = resources && resources->definesDefaultSpaces();
+    const Object *cs = &dict->lookupNF("ColorSpace");
+    if (cs->isNull()) {
+        cs = &dict->lookupNF("CS");
+    }
+    if (!cs->isNull()) {
+        info.color = cache->colorSpace(*cs, xref, &info.calibrated);
         // an inline image may name a colour space of the resources (one level)
-        if (inlineImg && resources && cs.isName() && info.color == ImageColor::Other) {
-            Object named = resources->lookupColorSpace(cs.getNameString());
-            info.color = named.isNull() ? ImageColor::Other : colorOf(named);
-            info.calibrated = calibratedOf(named);
+        if (inlineImg && resources && cs->isName() && info.color == ImageColor::Other) {
+            Object named = resources->lookupColorSpace(cs->getNameString());
+            info.calibrated = false;
+            info.color = named.isNull() ? ImageColor::Other : cache->colorSpace(named, xref, &info.calibrated);
         }
     } else if (info.imageMask) {
         info.color = ImageColor::None;
@@ -4708,7 +4731,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
 
     // an inline image is read from the content stream either way; tell a geometry-only device
     if (inlineImg && ocState && !out->needNonText() && out->needImageGeometry() && !singular_matrix) {
-        const ImageDictInfo info = readImageDictInfo(dict, true, res);
+        const ImageDictInfo info = factsImageInfo(dict, true, res);
         out->imageGeometry(state, width, height, info.imageMask, Ref::INVALID(), info);
     }
 

@@ -587,6 +587,90 @@ private:
 
 PageFacts *activeFacts = nullptr;
 
+// The distinct (row, column) pairs of a page's rules that cross: a horizontal rule at row y
+// (its rounded middle) and a vertical one at column x cross when x lies within the horizontal
+// rule's span and y within the vertical one's (both grown by 1.5). <ys> and <xs> are the
+// sorted distinct rows and columns. The spans of each row (and each column) are merged first,
+// so a pair is met at most once by a sweep over x with a Fenwick tree of the rows whose spans
+// are open: O((h + v) log(h + v)), not h * v.
+size_t countRuleCrossings(const std::vector<const TextRule *> &hs, const std::vector<const TextRule *> &vs, const std::vector<double> &ys, const std::vector<double> &xs)
+{
+    struct Span
+    {
+        size_t line; // row (or column) index
+        double lo, hi;
+    };
+    auto merged = [](std::vector<Span> spans) {
+        std::ranges::sort(spans, [](const Span &a, const Span &b) { return a.line < b.line || (a.line == b.line && a.lo < b.lo); });
+        std::vector<Span> out;
+        for (const Span &sp : spans) {
+            if (!out.empty() && out.back().line == sp.line && sp.lo <= out.back().hi) {
+                out.back().hi = std::max(out.back().hi, sp.hi);
+            } else {
+                out.push_back(sp);
+            }
+        }
+        return out;
+    };
+    auto indexOf = [](const std::vector<double> &v, double x) { return static_cast<size_t>(std::lower_bound(v.begin(), v.end(), x) - v.begin()); };
+    std::vector<Span> rows, cols;
+    for (const TextRule *h : hs) {
+        rows.push_back({ indexOf(ys, std::round(0.5 * (h->yMin + h->yMax))), h->xMin - 1.5, h->xMax + 1.5 });
+    }
+    for (const TextRule *v : vs) {
+        cols.push_back({ indexOf(xs, std::round(0.5 * (v->xMin + v->xMax))), v->yMin - 1.5, v->yMax + 1.5 });
+    }
+    rows = merged(std::move(rows));
+    cols = merged(std::move(cols));
+    // events along x: a row span opens at lo, the columns are queried at their x, a row span
+    // closes after hi (inclusive bounds: open, query, close at equal x)
+    struct Event
+    {
+        double x;
+        int kind; // 0 open, 1 query, 2 close
+        size_t i;
+    };
+    std::vector<Event> events;
+    events.reserve(2 * rows.size() + cols.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        events.push_back({ rows[i].lo, 0, i });
+        events.push_back({ rows[i].hi, 2, i });
+    }
+    for (size_t i = 0; i < cols.size(); ++i) {
+        events.push_back({ xs[cols[i].line], 1, i });
+    }
+    std::ranges::sort(events, [](const Event &a, const Event &b) { return a.x < b.x || (a.x == b.x && a.kind < b.kind); });
+    std::vector<long> tree(ys.size() + 1, 0);
+    auto update = [&tree](size_t i, long d) {
+        for (++i; i < tree.size(); i += i & (~i + 1)) {
+            tree[i] += d;
+        }
+    };
+    auto prefix = [&tree](size_t n) { // open rows among the first n
+        long sum = 0;
+        for (; n > 0; n -= n & (~n + 1)) {
+            sum += tree[n];
+        }
+        return sum;
+    };
+    size_t crossings = 0;
+    for (const Event &e : events) {
+        if (e.kind == 0) {
+            update(rows[e.i].line, 1);
+        } else if (e.kind == 2) {
+            update(rows[e.i].line, -1);
+        } else {
+            // rows whose y lies in the column span [lo, hi]
+            const size_t first = indexOf(ys, cols[e.i].lo);
+            const size_t end = static_cast<size_t>(std::upper_bound(ys.begin(), ys.end(), cols[e.i].hi) - ys.begin());
+            if (end > first) {
+                crossings += static_cast<size_t>(prefix(end) - prefix(first));
+            }
+        }
+    }
+    return crossings;
+}
+
 bool startsWith(const char *s, const char *prefix)
 {
     return strncmp(s, prefix, strlen(prefix)) == 0;
@@ -1268,10 +1352,10 @@ void PageFacts::beginPage(int pageNum)
     activeFacts = this;
 }
 
-void PageFacts::noteError(ErrorCategory category, const char *msg)
+void PageFacts::noteError(ErrorCategory category, const char *format)
 {
     PageFacts *f = activeFacts;
-    if (!f || !f->st->begun || !msg) {
+    if (!f || !f->st->begun || !format) {
         return;
     }
     unsigned &w = f->st->warnings;
@@ -1294,28 +1378,32 @@ void PageFacts::noteError(ErrorCategory category, const char *msg)
     default:
         break;
     }
-    // the stage, from a few fixed message prefixes (the message itself is never kept)
+    // the stage, from a few fixed prefixes of the format string (never formatted: its arguments,
+    // which can quote the document, are not read); a group whose warning the page already has is
+    // skipped, so an error-dense page costs a few comparisons per error
     static const char *const contentPrefixes[] = {
         "Unknown operator", "Too few (",     "Too many (", "Too many args", "Leftover args", "Arg #", "Weird page contents", "Illegal character", "Unterminated", "End of file inside", "Found state under last state guard",
         "No current point", "Mismatched EMC"
     };
     static const char *const fontPrefixes[] = { "No font in show", "Unknown font tag", "Unknown font type", "Couldn't find a font", "Couldn't create a font", "Bad font type" };
     static const char *const imagePrefixes[] = { "Bad image parameters", "Bad image", "Unknown image", "JPX", "JBIG2", "Bad DCT", "DCT", "CCITT", "Invalid Code", "Bad 2D code", "Bad white code", "Bad black code" };
-    for (const char *p : contentPrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wBadContent;
+    // fixed messages of poppler's own budgets (optional content expressions, image colour spaces)
+    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Image colour space budget exhausted" };
+    auto note = [&w, format](Warning warning, const auto &prefixes) {
+        if (w & (1u << warning)) {
+            return;
         }
-    }
-    for (const char *p : fontPrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wMissingFont;
+        for (const char *p : prefixes) {
+            if (startsWith(format, p)) {
+                w |= 1u << warning;
+                return;
+            }
         }
-    }
-    for (const char *p : imagePrefixes) {
-        if (startsWith(msg, p)) {
-            w |= 1u << wBrokenImage;
-        }
-    }
+    };
+    note(wBadContent, contentPrefixes);
+    note(wMissingFont, fontPrefixes);
+    note(wBrokenImage, imagePrefixes);
+    note(wLimit, limitPrefixes);
 }
 
 void PageFacts::startPage(Page *page, double pageWidth, double pageHeight)
@@ -1952,27 +2040,11 @@ void PageFacts::endPage(const TextPage &text)
             std::sort(xs.begin(), xs.end());
             xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
             if (ys.size() >= 2 && xs.size() >= 2) {
-                // at most 512 x 512 distinct (row, column) pairs: a bitmap
-                std::vector<bool> crossed(ys.size() * xs.size());
-                size_t crossings = 0;
-                for (const TextRule *h : hs) {
-                    const double y = std::round(0.5 * (h->yMin + h->yMax));
-                    const size_t yi = std::lower_bound(ys.begin(), ys.end(), y) - ys.begin();
-                    for (const TextRule *v : vs) {
-                        const double x = std::round(0.5 * (v->xMin + v->xMax));
-                        if (x >= h->xMin - 1.5 && x <= h->xMax + 1.5 && y >= v->yMin - 1.5 && y <= v->yMax + 1.5) {
-                            const size_t xi = std::lower_bound(xs.begin(), xs.end(), x) - xs.begin();
-                            if (yi < ys.size() && xi < xs.size() && !crossed[yi * xs.size() + xi]) {
-                                crossed[yi * xs.size() + xi] = true;
-                                ++crossings;
-                            }
-                        }
-                    }
-                }
-                gridScore = double(crossings) / (double(ys.size()) * double(xs.size()));
+                gridScore = double(countRuleCrossings(hs, vs, ys, xs)) / (double(ys.size()) * double(xs.size()));
             }
         }
-        const std::vector<TextGraphic> clusters = text.getGraphics(3.0);
+        bool graphicsLimit = false;
+        const std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
         const int vectorCells = s.vectorGrid.count();
         j.kopen("vectors");
         j.kint("paths", s.paths);
@@ -2004,7 +2076,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         j.close(']');
         j.kbool("clustersTruncated", clusters.size() > maxItems);
-        const bool limit = s.pathLimit || text.getRulesPageTruncated();
+        const bool limit = s.pathLimit || text.getRulesPageTruncated() || graphicsLimit;
         j.kbool("limitHit", limit);
         j.close();
         if (limit) {
@@ -2259,4 +2331,203 @@ std::string PageFacts::runLine(const char *version, const char *commit, double t
     j.close();
     j.s += '\n';
     return j.s;
+}
+
+//------------------------------------------------------------------------
+// ImageInfoCache
+//------------------------------------------------------------------------
+
+namespace {
+
+ImageColor colorOfName(const std::string &n)
+{
+    if (n == "DeviceGray" || n == "G" || n == "CalGray") {
+        return ImageColor::Gray;
+    }
+    if (n == "DeviceRGB" || n == "RGB" || n == "CalRGB") {
+        return ImageColor::RGB;
+    }
+    if (n == "DeviceCMYK" || n == "CMYK") {
+        return ImageColor::CMYK;
+    }
+    if (n == "Indexed" || n == "I") {
+        return ImageColor::Indexed;
+    }
+    if (n == "Lab") {
+        return ImageColor::Lab;
+    }
+    if (n == "Separation") {
+        return ImageColor::Separation;
+    }
+    if (n == "DeviceN") {
+        return ImageColor::DeviceN;
+    }
+    return ImageColor::Other;
+}
+
+ImageInfoCache::Space spaceOfName(const std::string &n)
+{
+    return { colorOfName(n), n == "CalGray" || n == "CalRGB" };
+}
+
+} // namespace
+
+void ImageInfoCache::sync(XRef *xref)
+{
+    if (xref != docXref || (xref && xref->getGeneration() != generation)) {
+        images.clear();
+        spaces.clear();
+        families.clear();
+        profiles.clear();
+        docXref = xref;
+        generation = xref ? xref->getGeneration() : 0;
+    }
+}
+
+const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
+{
+    sync(xref);
+    const auto it = images.find(ref);
+    return it == images.end() ? nullptr : &it->second;
+}
+
+void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
+{
+    sync(xref);
+    if (images.size() < maxEntries) {
+        images.emplace(ref, image);
+    }
+}
+
+bool ImageInfoCache::takeFetch()
+{
+    if (fetchesLeft == 0) {
+        fetchLimitHit = true;
+        return false;
+    }
+    --fetchesLeft;
+    return true;
+}
+
+ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref, bool *calibrated)
+{
+    const Space space = spaceOf(cs, xref);
+    if (calibrated) {
+        *calibrated = space.calibrated;
+    }
+    return space.color;
+}
+
+ImageInfoCache::Space ImageInfoCache::spaceOf(const Object &cs, XRef *xref)
+{
+    sync(xref);
+    if (!cs.isRef()) {
+        return classify(cs, xref);
+    }
+    const auto it = spaces.find(cs.getRef());
+    if (it != spaces.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return { ImageColor::Other, false };
+    }
+    // classify() only reads the array's first two entries (by reference): a large lookup
+    // string is parsed here once and never copied
+    const Object resolved = xref->fetch(cs.getRef());
+    const Space c = classify(resolved, xref);
+    if (spaces.size() < maxEntries) {
+        spaces.emplace(cs.getRef(), c);
+    }
+    return c;
+}
+
+ImageInfoCache::Space ImageInfoCache::classify(const Object &cs, XRef *xref)
+{
+    if (cs.isNull()) {
+        return { ImageColor::None, false };
+    }
+    if (cs.isName()) {
+        return spaceOfName(cs.getNameString());
+    }
+    if (!cs.isArray() || cs.arrayGetLength() < 1) {
+        return { ImageColor::Other, false };
+    }
+    // the family, by name (None stands for ICCBased, which colorOfName never returns)
+    const Object &family = cs.getArray()->getNF(0);
+    Space c { ImageColor::Other, false };
+    if (family.isName()) {
+        c = family.isName("ICCBased") ? Space { ImageColor::None, false } : spaceOfName(family.getNameString());
+    } else if (family.isRef()) {
+        c = familyOf(family, xref);
+    }
+    if (c.color == ImageColor::None) {
+        return { cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other, false };
+    }
+    return c;
+}
+
+// An indirect family name: its colour (None for ICCBased), once per reference.
+ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
+{
+    const auto it = families.find(family.getRef());
+    if (it != families.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return { ImageColor::Other, false };
+    }
+    const Object name = xref->fetch(family.getRef());
+    const Space c = !name.isName() ? Space { ImageColor::Other, false } : name.isName("ICCBased") ? Space { ImageColor::None, false } : spaceOfName(name.getNameString());
+    if (families.size() < maxEntries) {
+        families.emplace(family.getRef(), c);
+    }
+    return c;
+}
+
+ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
+{
+    // the profile is a stream, so indirect
+    if (!profile.isRef()) {
+        return ImageColor::Other;
+    }
+    const auto it = profiles.find(profile.getRef());
+    if (it != profiles.end()) {
+        return it->second;
+    }
+    if (!xref || !takeFetch()) {
+        return ImageColor::Other;
+    }
+    ImageColor c = ImageColor::Other;
+    const Object icc = xref->fetch(profile.getRef());
+    if (icc.isStream()) {
+        // /N by reference is resolved too, within the same budget
+        const Object &nRaw = icc.getStream()->getDict()->lookupNF("N");
+        Object n;
+        if (nRaw.isRef()) {
+            if (takeFetch()) {
+                n = xref->fetch(nRaw.getRef());
+            }
+        } else {
+            n = nRaw.copy();
+        }
+        if (n.isInt()) {
+            switch (n.getInt()) {
+            case 1:
+                c = ImageColor::ICC1;
+                break;
+            case 3:
+                c = ImageColor::ICC3;
+                break;
+            case 4:
+                c = ImageColor::ICC4;
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    if (profiles.size() < maxEntries) {
+        profiles.emplace(profile.getRef(), c);
+    }
+    return c;
 }

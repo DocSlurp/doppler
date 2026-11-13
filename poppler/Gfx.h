@@ -45,6 +45,7 @@
 #include "PageFactsHooks.h"
 
 #include <stack>
+#include <unordered_map>
 #include <vector>
 
 class PDFDoc;
@@ -127,6 +128,7 @@ public:
     Object lookupXObjectNF(std::string_view name);
     Object lookupMarkedContentNF(std::string_view name);
     Object lookupColorSpace(std::string_view name);
+    bool definesDefaultSpaces() const; // DocSlurp: see Gfx.cc
     std::unique_ptr<GfxPattern> lookupPattern(std::string_view name, OutputDev *out, GfxState *state);
     std::unique_ptr<GfxShading> lookupShading(std::string_view name, OutputDev *out, GfxState *state);
     Object lookupGState(std::string_view name);
@@ -175,9 +177,11 @@ public:
     XRef *getXRef() { return xref; }
 
     // Image dictionary facts (page facts, pdftotext -images, pdfregions copy jobs): dictionary
-    // lookups only, never the image data. <res> resolves an inline image's named colour space
-    // (may be null).
-    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources);
+    // lookups only, never the image data. <resources> resolves an inline image's named colour
+    // space, a mask's named colour space and Default colour spaces (may be null). <cache>, the
+    // document's ImageInfoCache (may be null), classifies colour spaces by reference; it never
+    // holds image facts (drawable, copy class) for this call.
+    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache = nullptr);
 
     // Interpret a stream or array of streams.
     enum class DisplayType
@@ -254,6 +258,12 @@ private:
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     ScanCopyAudit *scanAudit = nullptr; // DocSlurp page-scan copies (OutputDev::getScanCopyAudit)
     int ocLayerDepth = 0; // open BDC /OC sections
+    // DocSlurp page facts: the visibility of the /OC entries the facts paths (operator tally,
+    // image geometry) have evaluated on this page, by reference (at most 4096)
+    std::unordered_map<Ref, bool> factsOcVisible;
+    bool factsOcIsVisible(const Object &oc);
+    bool imageInfoLimitReported = false; // this page reported ImageInfoCache::limitHit
+    ImageDictInfo factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources);
 
     Parser *parser; // parser for page content stream(s)
 

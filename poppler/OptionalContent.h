@@ -53,7 +53,15 @@ public:
 private:
     bool ok;
 
+    // DocSlurp: the state of one evaluation (memoised indirect sub-expressions, operand budget)
+    struct VisibilityEval
+    {
+        std::unordered_map<Ref, bool> memo;
+        int nodes = 0;
+        bool overBudget = false;
+    };
     bool evalOCVisibilityExpr(const Object *expr, int recursion) const;
+    bool evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEval &eval) const;
     bool allOn(const Array &ocgArray) const;
     bool allOff(const Array &ocgArray) const;
     bool anyOn(const Array &ocgArray) const;

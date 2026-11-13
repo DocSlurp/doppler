@@ -740,7 +740,9 @@ public:
     void addGraphic(const TextGraphic &graphic);
     // The cells' summaries merged where their boxes touch (grown by gap): at most
     // graphicGrid * graphicGrid clusters, in top-to-bottom, left-to-right order of their first cell.
-    std::vector<TextGraphic> getGraphics(double gap) const;
+    // <budget> (optional) is the number of box pairs the merge may still compare, decremented as
+    // it does; when it runs out the clusters are returned as merged so far and <budgetHit> set.
+    std::vector<TextGraphic> getGraphics(double gap, size_t *budget = nullptr, bool *budgetHit = nullptr) const;
     // whether any drawing was summarised on the page (getGraphics would return some)
     bool hasGraphics() const;
     static constexpr int graphicGrid = 16;
@@ -1109,6 +1111,7 @@ public:
     // page-scan copies: the page's allow-list (with setCollectImages), see ScanCopyAudit.h
     ScanCopyAudit *getScanCopyAudit() override { return collectImages ? &scanAudit : nullptr; }
     const ScanCopyAudit &getPageScanAudit() const { return scanAudit; }
+    ImageInfoCache *getImageInfoCache() override { return &imageInfoCache; }
     void beginAnnot(Annot *annot) override;
     void endAnnot(Annot *annot) override;
 
@@ -1155,6 +1158,7 @@ private:
     size_t remainingDocImages = maxDocImages;
     static constexpr size_t maxDocGraphics = 100000;
     size_t remainingDocGraphics = maxDocGraphics;
+    ImageInfoCache imageInfoCache; // DocSlurp: see getImageInfoCache
     bool graphicsTruncated = false;
     void collectPathGraphic(const GfxState *state, bool filled);
     // TextImage::overlaid: the graphics state depth, and the shallowest depth at which a

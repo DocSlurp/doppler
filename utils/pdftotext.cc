@@ -135,6 +135,12 @@ static bool compactLayout = false;
 static bool glyphRecords = false;
 static char hyphenModeStr[16] = "";
 static int pageFactsFd = -1;
+// -timeout S, -timeout-per-page P, -timeout-max M: the run's wall-clock limit is S seconds plus
+// P per page of the range (counted once the document is open), at most M (0: no cap); exit
+// code 6 past it. All 0 (the default): no limit.
+static char timeoutArg[16] = "0";
+static char timeoutPerPageArg[16] = "0";
+static char timeoutMaxArg[16] = "0";
 static char pageFactsLevel[16] = "basic";
 static char pageFactsInclude[128] = "";
 static bool pageFactsTiming = false;
@@ -180,6 +186,9 @@ static const ArgDesc argDesc[] = {
     { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
     { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
     { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
+    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the run in seconds, 0 for none (default 0; exit code 6)" },
+    { .arg = "-timeout-per-page", .kind = argString, .val = timeoutPerPageArg, .size = sizeof(timeoutPerPageArg), .usage = "seconds added to -timeout per page of the range (default 0)" },
+    { .arg = "-timeout-max", .kind = argString, .val = timeoutMaxArg, .size = sizeof(timeoutMaxArg), .usage = "cap on -timeout plus the per-page seconds, 0 for none (default 0)" },
     { .arg = "-scan-max-words", .kind = argInt, .val = &scanMaxWords, .size = 0, .usage = "a page with more visible words is not a scan (page facts and -images scan=; default 20)" },
     { .arg = "-scan-min-coverage", .kind = argString, .val = scanMinCoverageArg, .size = sizeof(scanMinCoverageArg), .usage = "share of the page images must cover for a scan (default 0.85)" },
     { .arg = "-scan-layer-overlap", .kind = argString, .val = scanLayerOverlapArg, .size = sizeof(scanLayerOverlapArg), .usage = "share of the page a layer over a scan must cover (default 0.5)" },
@@ -899,6 +908,55 @@ GlyphContext *glyphContext = nullptr;
 static PageFacts *pageFacts = nullptr;
 static bool pageFactsWriteFailed = false;
 
+// -timeout: SIGALRM ends the run with exit code 6. A facts line being written gets 2 more
+// seconds, so the facts stay whole lines (without a run line, so a reader sees an incomplete run).
+static constexpr int exitTimeout = 6;
+#ifndef _WIN32
+static volatile sig_atomic_t writingFactsLine = 0;
+static volatile sig_atomic_t timeoutPassed = 0;
+
+static void timeoutExit()
+{
+    if (!quiet) {
+        static const char msg[] = "pdftotext: timeout\n";
+        ssize_t ignored = write(2, msg, sizeof(msg) - 1);
+        (void)ignored;
+    }
+    _exit(exitTimeout);
+}
+
+static void onTimeout(int /*sig*/)
+{
+    if (writingFactsLine && !timeoutPassed) {
+        timeoutPassed = 1;
+        alarm(2);
+        return;
+    }
+    timeoutExit();
+}
+#endif
+
+// A whole number of seconds in [0, 86400]: the whole string, digits only.
+static bool parseSeconds(const char *text, size_t size, long long *seconds)
+{
+    const size_t len = strlen(text);
+    if (len == 0 || len + 1 >= size) {
+        return false;
+    }
+    long long v = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (text[i] < '0' || text[i] > '9' || v > 86400) {
+            return false;
+        }
+        v = v * 10 + (text[i] - '0');
+    }
+    if (v > 86400) {
+        return false;
+    }
+    *seconds = v;
+    return true;
+}
+
 static void writeFactsLine(const std::string &line)
 {
 #ifndef _WIN32
@@ -909,6 +967,18 @@ static void writeFactsLine(const std::string &line)
     sigemptyset(&pipeSet);
     sigaddset(&pipeSet, SIGPIPE);
     const bool blocked = !pageFactsWriteFailed && pthread_sigmask(SIG_BLOCK, &pipeSet, &oldSet) == 0;
+    // a timeout waits for the line (see onTimeout)
+    writingFactsLine = 1;
+    struct Done
+    {
+        ~Done()
+        {
+            writingFactsLine = 0;
+            if (timeoutPassed) {
+                timeoutExit();
+            }
+        }
+    } done_;
     size_t done = 0;
     bool brokenPipe = false;
     while (!pageFactsWriteFailed && done < line.size()) {
@@ -939,24 +1009,6 @@ static void writeFactsLine(const std::string &line)
     (void)line;
     pageFactsWriteFailed = true;
 #endif
-}
-
-// With page facts, poppler's errors are also counted for the page (by category, never the
-// message); they are still printed as without facts unless -q.
-static void factsErrorCallback(ErrorCategory category, Goffset pos, const char *msg)
-{
-    PageFacts::noteError(category, msg);
-    if (quiet) {
-        return;
-    }
-    static const char *const names[] = { "Syntax Warning", "Syntax Error", "Config Error", "Command Line Error", "I/O Error", "Permission Error", "Unimplemented Feature", "Internal Error" };
-    const char *name = static_cast<unsigned>(category) < sizeof(names) / sizeof(names[0]) ? names[category] : "Error";
-    if (pos >= 0) {
-        fprintf(stderr, "%s (%lld): %s\n", name, static_cast<long long>(pos), msg);
-    } else {
-        fprintf(stderr, "%s: %s\n", name, msg);
-    }
-    fflush(stderr);
 }
 
 static double millisecondsSince(std::chrono::steady_clock::time_point start)
@@ -1036,6 +1088,11 @@ int main(int argc, char *argv[])
         }
 #endif
     }
+    long long timeoutBase = 0, timeoutPerPage = 0, timeoutMax = 0;
+    if (!parseSeconds(timeoutArg, sizeof(timeoutArg), &timeoutBase) || !parseSeconds(timeoutPerPageArg, sizeof(timeoutPerPageArg), &timeoutPerPage) || !parseSeconds(timeoutMaxArg, sizeof(timeoutMaxArg), &timeoutMax)) {
+        error(errCommandLine, -1, "Bad '-timeout', '-timeout-per-page' or '-timeout-max' value: whole seconds, at most 86400");
+        return 99;
+    }
     if (scanMaxWords < 0) {
         error(errCommandLine, -1, "Bad '-scan-max-words' value");
         return 99;
@@ -1066,6 +1123,28 @@ int main(int argc, char *argv[])
         }
         return 99;
     }
+
+#ifndef _WIN32
+    // the timeout runs from here: S (capped) until the page count is known
+    const auto timeoutStart = std::chrono::steady_clock::now();
+    const bool timeoutOn = timeoutBase > 0 || timeoutPerPage > 0;
+    auto timeoutLimit = [&](long long pages) {
+        long long limit = timeoutBase + std::min(timeoutPerPage * pages, 86400LL);
+        if (timeoutMax > 0) {
+            limit = std::min(limit, timeoutMax);
+        }
+        return std::max(limit, 1LL);
+    };
+    if (timeoutOn) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = onTimeout;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGALRM, &sa, nullptr);
+        // before the document is open: S, or the cap when S is 0
+        alarm(static_cast<unsigned>(timeoutBase > 0 ? timeoutLimit(0) : (timeoutMax > 0 ? timeoutMax : 86400)));
+    }
+#endif
 
     // read config file
     globalParams = std::make_unique<GlobalParams>();
@@ -1104,7 +1183,9 @@ int main(int argc, char *argv[])
         facts->setScanThresholds(scanThresholds);
         facts->setTiming(pageFactsTiming);
         pageFacts = &*facts;
-        setErrorCallback(factsErrorCallback);
+        // poppler's errors are also counted for the page, from their category and format string
+        // (never formatted for it); they are printed as without facts unless -q
+        setErrorFormatCallback(PageFacts::noteError);
     }
 
     EndOfLineHyphenMode hyphenMode = EndOfLineHyphenMode::RemoveAll;
@@ -1187,6 +1268,17 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "Wrong page range given: the first page ({0:d}) can not be after the last page ({1:d}).", firstPage, lastPage);
         return 99;
     }
+#ifndef _WIN32
+    if (timeoutOn) {
+        // the limit for the range, less the time spent opening the document
+        const auto spent = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - timeoutStart).count();
+        const long long left = timeoutLimit(lastPage - firstPage + 1) - static_cast<long long>(spent);
+        if (left <= 0) {
+            timeoutExit();
+        }
+        alarm(static_cast<unsigned>(left));
+    }
+#endif
     if (pageFacts) {
         writeFactsLine(pageFacts->docLine(doc.get(), ownerPW.has_value() || userPW.has_value()));
     }

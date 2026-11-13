@@ -236,11 +236,6 @@ static bool writeOut(const std::string &line)
 #endif
 }
 
-static void factsErrorCallback(ErrorCategory category, Goffset /*pos*/, const char *msg)
-{
-    PageFacts::noteError(category, msg);
-}
-
 static double millisecondsSince(std::chrono::steady_clock::time_point start)
 {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -294,7 +289,8 @@ int main(int argc, char *argv[])
     std::set_new_handler(outOfMemory);
     globalParams = std::make_unique<GlobalParams>();
     globalParams->setErrQuiet(true);
-    setErrorCallback(factsErrorCallback);
+    // errors are counted from their category and format string; quiet, they are never formatted
+    setErrorFormatCallback(PageFacts::noteError);
 
     PageFacts facts(families);
     scanThresholds.maxVisibleWords = static_cast<size_t>(scanMaxWords);
