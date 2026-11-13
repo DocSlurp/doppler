@@ -262,7 +262,7 @@ XHTML is never held whole. Two decisions look past one page, and they are set se
   give them instead (the values `--report` prints as `body_size` and `body_color`).
 
 Without `--window` both see the whole document, so every page waits for the last one. With a
-window the body sample defaults to 32 pages with text. `--stream` is `--window 16` with that
+window the body sample defaults to 32 pages with text. `--stream` is `--window 4` with that
 sample. The converter holds the larger of the window + 1 and the body sample (plus the page
 being parsed, and the margin keys of N written pages); a document no longer than both converts
 exactly as without a window (a longer one with a window covering it does not: the body comes
@@ -274,15 +274,14 @@ is at most 64 and `--body-pages` at most 256. The report always has `body_size`,
 `body_given`.
 
 **Choosing a window.** Measured on 15 long PDFs (FURNITURE.md), with no difference in the
-judged golden cases for windows of 4 or more. 16 pages either side (the `--stream` default)
-differs least from the whole-document run (1.45% of lines against 2.00% at 4) and changes one
-golden input against three. 4 pages leaves about 15% fewer running heads and footers by our
-detector (8 and 16 keep chapter-specific running heads that do not reach the share within the
-larger window), but that detector is itself a local rule and favours small windows, so the
-gain is not established: `--window 4` is the choice when removing chapter heads matters more
-than agreeing with the whole document. 2 pages also drops lines that appear on two of five
-nearby pages (it changed 10 judged golden cases), and the whole document keeps more running
-heads still. Most of what used to differ between small windows and the
+judged golden cases for windows of 4 or more. `--stream` uses 4 pages either side: it leaves
+about 15% fewer running heads and footers than 16 (8 and 16 keep chapter-specific running
+heads that do not reach the share within the larger window). 16 differs least from the
+whole-document run (1.45% of lines against 2.00% at 4, and 0.096% against 0.116% of the whole
+run's words missing) and changes one golden input against three; use `--window 16` when
+agreeing with the whole document matters more than removing chapter heads. 2 pages also drops
+lines that appear on two of five nearby pages (it changed 10 judged golden cases), and the
+whole document keeps more running heads still. Most of what used to differ between small windows and the
 whole document was the body size taken from front matter (the old sample was the first
 window + 1 pages), not furniture. `--window 0` sees one page at a time and removes no repeated
 content at all (only page numbers and pale or diagonal watermarks, which a page shows by
@@ -292,9 +291,9 @@ The library API is `model::Parser`, `model::decode_lossy` and `Converter` (`Conv
 takes a `Window`: furniture window, `BodySample`, a given body, and context pages;
 `to_markdown_report_with` is a `Converter` without a window).
 
-On the 258-input golden set `--stream` (window 16) changes one document: the 477-page
+On the 258-input golden set `--stream` (window 4) changes three documents: the 477-page
 Ghostscript manual (running chapter headers on under 40% of the document's pages drop within
-their chapter); `--window 4` also changes a 10-K (a company name over the statements drops)
+their chapter, as they also do at window 16), and a 10-K (a company name over the statements drops)
 and a US Code title (where "Page N" and section running heads sit). On the Ghostscript manual the first Markdown arrives about 0.05 s after the
 start instead of when pdftotext finishes, and peak memory is that of pdftotext (about 25 MB)
 instead of 69 MB; the converter alone stays at 16 MiB with a 32-page body sample.

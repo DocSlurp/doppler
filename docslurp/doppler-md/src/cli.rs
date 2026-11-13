@@ -194,7 +194,7 @@ pub struct WindowArgs {
 
 /// Help text for [`WindowArgs`].
 pub const WINDOW_HELP: &str = concat!(
-    "  --stream       write pages as they are converted: --window 16, body from 32 pages with text\n",
+    "  --stream       write pages as they are converted: --window 4, body from 32 pages with text\n",
     "  --window N     furniture window, 0 to 64: running headers/footers, repeated watermark\n",
     "                 words and pictures are judged over the N pages either side of each page\n",
     "                 (not the whole document); each page is written once the next N are\n",

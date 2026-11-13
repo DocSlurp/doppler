@@ -74,20 +74,22 @@ Ghostscript manual, a 10-K, a US Code title), window 6: 2, window 8 and 16: 1 (t
   (median of 5, interleaved) took the same CPU and peak RSS as before on three documents; the
   first page arrives a few hundredths of a second later (the larger body sample).
 
-**Chosen.** `--stream` is `--window 16` with the body from the pages up to the 32nd with text
+**Chosen.** `--stream` is `--window 4` with the body from the pages up to the 32nd with text
 (at most 64 pages read, and fewer once they hold 262,144 words, rules and glyph records), and
 `--window N` without `--body-pages` uses the same sample. Whole-document conversion (no window)
 is unchanged.
 
-Window 16 rather than 4 (revised after council review): against the whole-document run every
-measure but one favours 16 (lines differing 1.45% against 2.00%, documents over 5% 1 against
-3, whole-run words missing 0.096% against 0.116%, golden inputs changed 1 against 3; the judge
-shows no difference). The one measure that favours 4, running heads left (-15%), comes from a
-detector that is itself a local rule and favours small windows; a council re-run on three
-documents outside the sweep found only -2% (523 against 533 heads) for +0.6 points of lines
-differing. Until a measure that is not biased towards local windows (judged heading and
-furniture labels on long documents) shows otherwise, `--stream` keeps the old window, and
-`--window 4` stays available.
+Window 4 rather than 16 (owner decision after council review). The council noted that
+against the whole-document run every measure but one favours 16 (lines differing 1.45%
+against 2.00%, documents over 5% 1 against 3, whole-run words missing 0.096% against 0.116%,
+golden inputs changed 1 against 3; the judge shows no difference), and that the measure that
+favours 4, running heads left (-15%), comes from a detector that is itself a local rule; a
+re-run on three documents outside the sweep found only -2% (523 against 533 heads). The
+whole-document run is not a quality reference for furniture (it keeps the most running heads),
+the three golden inputs that change lose running heads, and the judge shows no loss, so
+`--stream` takes the window that removes more furniture. `--window 16` stays available. Open:
+a measure not biased towards local windows (judged heading and furniture labels on long
+documents), and a look at the extra 0.02% of whole-run words missing at window 4.
 
 **Out of sample (council re-run, 3 documents, 1,632 pages: a tax guide, a security-controls
 catalogue and a physics textbook).** On the catalogue the 32-text-page sample gives body size
@@ -120,7 +122,7 @@ interleaved), against the same ranges without context:
 The extra cost is pdftotext reading the context pages (they are not laid out without
 `--markers`; with it the pages before the range are, and their work is charged to the document
 budget): about 2N / L of the range's pdftotext time, plus a pdftotext start per range.
-`--context` now defaults to the window (16 with `--stream`, so the `--context 16` column
+`--context` now defaults to the window (4 with `--stream`, so the `--context 4` column
 applies to default ranges); more than the window buys nothing.
 
 Scripts: `docslurp-review/window-body-20261112/`.

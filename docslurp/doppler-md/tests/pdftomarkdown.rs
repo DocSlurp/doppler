@@ -459,7 +459,7 @@ fn a_range_reads_the_window_either_side_by_default() {
         (at("-f"), at("-l"))
     };
     let p = |f: &str, l: &str| (f.to_string(), l.to_string());
-    assert_eq!(read(&["--stream"]), p("4", "41"));
+    assert_eq!(read(&["--stream"]), p("16", "29"));
     assert_eq!(read(&["--window", "2"]), p("18", "27"));
     assert_eq!(read(&["--window", "2", "--context", "0"]), p("20", "25"));
     assert_eq!(read(&["--stream", "--context", "3"]), p("17", "28"));

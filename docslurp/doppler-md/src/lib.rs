@@ -639,11 +639,11 @@ pub const DEFAULT_BODY_PAGES: usize = 32;
 /// text pages hold a few thousand; 32 of them stay well under it.
 pub const BODY_SAMPLE_MAX_ITEMS: usize = 256 * 1024;
 
-/// The furniture window of `pdftomarkdown --stream` (pages either side). 16, as before the
-/// body sample was separated: it differs least from the whole-document run (FURNITURE.md).
-/// Smaller windows remove more chapter running heads, but the measure that shows it favours
-/// small windows, and the line, word and golden comparisons favour 16.
-pub const STREAM_WINDOW: usize = 16;
+/// The furniture window of `pdftomarkdown --stream` (pages either side). 4 (owner decision,
+/// FURNITURE.md): with the body sample separated, it leaves about 15% fewer running heads and
+/// footers than 16 with no change in the judged golden cases; 16 agrees more closely with the
+/// whole-document run, which itself keeps the most running heads.
+pub const STREAM_WINDOW: usize = 4;
 
 /// What a [`Converter`] looks at beyond the page it writes, and which pages it writes.
 #[derive(Clone, Debug, PartialEq)]
