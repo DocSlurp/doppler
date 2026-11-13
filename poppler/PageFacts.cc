@@ -580,6 +580,90 @@ private:
 
 PageFacts *activeFacts = nullptr;
 
+// The distinct (row, column) pairs of a page's rules that cross: a horizontal rule at row y
+// (its rounded middle) and a vertical one at column x cross when x lies within the horizontal
+// rule's span and y within the vertical one's (both grown by 1.5). <ys> and <xs> are the
+// sorted distinct rows and columns. The spans of each row (and each column) are merged first,
+// so a pair is met at most once by a sweep over x with a Fenwick tree of the rows whose spans
+// are open: O((h + v) log(h + v)), not h * v.
+size_t countRuleCrossings(const std::vector<const TextRule *> &hs, const std::vector<const TextRule *> &vs, const std::vector<double> &ys, const std::vector<double> &xs)
+{
+    struct Span
+    {
+        size_t line; // row (or column) index
+        double lo, hi;
+    };
+    auto merged = [](std::vector<Span> spans) {
+        std::ranges::sort(spans, [](const Span &a, const Span &b) { return a.line < b.line || (a.line == b.line && a.lo < b.lo); });
+        std::vector<Span> out;
+        for (const Span &sp : spans) {
+            if (!out.empty() && out.back().line == sp.line && sp.lo <= out.back().hi) {
+                out.back().hi = std::max(out.back().hi, sp.hi);
+            } else {
+                out.push_back(sp);
+            }
+        }
+        return out;
+    };
+    auto indexOf = [](const std::vector<double> &v, double x) { return static_cast<size_t>(std::lower_bound(v.begin(), v.end(), x) - v.begin()); };
+    std::vector<Span> rows, cols;
+    for (const TextRule *h : hs) {
+        rows.push_back({ indexOf(ys, std::round(0.5 * (h->yMin + h->yMax))), h->xMin - 1.5, h->xMax + 1.5 });
+    }
+    for (const TextRule *v : vs) {
+        cols.push_back({ indexOf(xs, std::round(0.5 * (v->xMin + v->xMax))), v->yMin - 1.5, v->yMax + 1.5 });
+    }
+    rows = merged(std::move(rows));
+    cols = merged(std::move(cols));
+    // events along x: a row span opens at lo, the columns are queried at their x, a row span
+    // closes after hi (inclusive bounds: open, query, close at equal x)
+    struct Event
+    {
+        double x;
+        int kind; // 0 open, 1 query, 2 close
+        size_t i;
+    };
+    std::vector<Event> events;
+    events.reserve(2 * rows.size() + cols.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        events.push_back({ rows[i].lo, 0, i });
+        events.push_back({ rows[i].hi, 2, i });
+    }
+    for (size_t i = 0; i < cols.size(); ++i) {
+        events.push_back({ xs[cols[i].line], 1, i });
+    }
+    std::ranges::sort(events, [](const Event &a, const Event &b) { return a.x < b.x || (a.x == b.x && a.kind < b.kind); });
+    std::vector<long> tree(ys.size() + 1, 0);
+    auto update = [&tree](size_t i, long d) {
+        for (++i; i < tree.size(); i += i & (~i + 1)) {
+            tree[i] += d;
+        }
+    };
+    auto prefix = [&tree](size_t n) { // open rows among the first n
+        long sum = 0;
+        for (; n > 0; n -= n & (~n + 1)) {
+            sum += tree[n];
+        }
+        return sum;
+    };
+    size_t crossings = 0;
+    for (const Event &e : events) {
+        if (e.kind == 0) {
+            update(rows[e.i].line, 1);
+        } else if (e.kind == 2) {
+            update(rows[e.i].line, -1);
+        } else {
+            // rows whose y lies in the column span [lo, hi]
+            const size_t first = indexOf(ys, cols[e.i].lo);
+            const size_t end = static_cast<size_t>(std::upper_bound(ys.begin(), ys.end(), cols[e.i].hi) - ys.begin());
+            if (end > first) {
+                crossings += static_cast<size_t>(prefix(end) - prefix(first));
+            }
+        }
+    }
+    return crossings;
+}
+
 bool startsWith(const char *s, const char *prefix)
 {
     return strncmp(s, prefix, strlen(prefix)) == 0;
@@ -1949,27 +2033,11 @@ void PageFacts::endPage(const TextPage &text)
             std::sort(xs.begin(), xs.end());
             xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
             if (ys.size() >= 2 && xs.size() >= 2) {
-                // at most 512 x 512 distinct (row, column) pairs: a bitmap
-                std::vector<bool> crossed(ys.size() * xs.size());
-                size_t crossings = 0;
-                for (const TextRule *h : hs) {
-                    const double y = std::round(0.5 * (h->yMin + h->yMax));
-                    const size_t yi = std::lower_bound(ys.begin(), ys.end(), y) - ys.begin();
-                    for (const TextRule *v : vs) {
-                        const double x = std::round(0.5 * (v->xMin + v->xMax));
-                        if (x >= h->xMin - 1.5 && x <= h->xMax + 1.5 && y >= v->yMin - 1.5 && y <= v->yMax + 1.5) {
-                            const size_t xi = std::lower_bound(xs.begin(), xs.end(), x) - xs.begin();
-                            if (yi < ys.size() && xi < xs.size() && !crossed[yi * xs.size() + xi]) {
-                                crossed[yi * xs.size() + xi] = true;
-                                ++crossings;
-                            }
-                        }
-                    }
-                }
-                gridScore = double(crossings) / (double(ys.size()) * double(xs.size()));
+                gridScore = double(countRuleCrossings(hs, vs, ys, xs)) / (double(ys.size()) * double(xs.size()));
             }
         }
-        const std::vector<TextGraphic> clusters = text.getGraphics(3.0);
+        bool graphicsLimit = false;
+        const std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
         const int vectorCells = s.vectorGrid.count();
         j.kopen("vectors");
         j.kint("paths", s.paths);
@@ -2001,7 +2069,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         j.close(']');
         j.kbool("clustersTruncated", clusters.size() > maxItems);
-        const bool limit = s.pathLimit || text.getRulesPageTruncated();
+        const bool limit = s.pathLimit || text.getRulesPageTruncated() || graphicsLimit;
         j.kbool("limitHit", limit);
         j.close();
         if (limit) {

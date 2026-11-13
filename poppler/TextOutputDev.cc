@@ -3077,7 +3077,7 @@ bool TextPage::hasGraphics() const
     return std::ranges::any_of(graphicCells, [](const TextGraphic &cell) { return cell.paths > 0; });
 }
 
-std::vector<TextGraphic> TextPage::getGraphics(double gap) const
+std::vector<TextGraphic> TextPage::getGraphics(double gap, size_t *budget, bool *budgetHit) const
 {
     std::vector<TextGraphic> clusters;
     for (const TextGraphic &cell : graphicCells) {
@@ -3085,31 +3085,83 @@ std::vector<TextGraphic> TextPage::getGraphics(double gap) const
             clusters.push_back(cell);
         }
     }
-    // merge any two whose grown boxes touch until none do: at most graphicGrid^2 clusters, and
-    // every pass but the last removes one
+    // Merge any two whose grown boxes touch until none do. The result (the finest partition
+    // whose clusters' boxes do not touch) does not depend on the merge order, so each pass
+    // merges every touching pair it finds (union-find, the lower index the root) over a sweep
+    // of the boxes sorted by xMin, and the passes repeat while one merged anything: at most
+    // graphicGrid^2 clusters, kept in the order of their first cell. <budget> counts the
+    // pairs compared; when it runs out the merge stops where it is.
     auto touch = [gap](const TextGraphic &a, const TextGraphic &b) { return a.xMin - gap <= b.xMax && b.xMin - gap <= a.xMax && a.yMin - gap <= b.yMax && b.yMin - gap <= a.yMax; };
+    auto add = [](size_t &x, size_t y) { x = y > SIZE_MAX - x ? SIZE_MAX : x + y; };
+    std::vector<size_t> parent, order;
+    auto find = [&parent](size_t i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    };
     bool merged = true;
-    while (merged) {
+    while (merged && clusters.size() > 1) {
         merged = false;
-        for (size_t i = 0; i < clusters.size() && !merged; ++i) {
-            for (size_t j = i + 1; j < clusters.size(); ++j) {
-                if (touch(clusters[i], clusters[j])) {
-                    TextGraphic &a = clusters[i];
-                    const TextGraphic &b = clusters[j];
-                    a.xMin = std::min(a.xMin, b.xMin);
-                    a.yMin = std::min(a.yMin, b.yMin);
-                    a.xMax = std::max(a.xMax, b.xMax);
-                    a.yMax = std::max(a.yMax, b.yMax);
-                    auto add = [](size_t &x, size_t y) { x = y > SIZE_MAX - x ? SIZE_MAX : x + y; };
-                    add(a.paths, b.paths);
-                    add(a.segments, b.segments);
-                    add(a.curves, b.curves);
-                    a.directions |= b.directions;
-                    clusters.erase(clusters.begin() + static_cast<std::ptrdiff_t>(j));
-                    merged = true;
-                    break;
+        const size_t n = clusters.size();
+        parent.resize(n);
+        order.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            parent[i] = i;
+            order[i] = i;
+        }
+        std::ranges::sort(order, [&clusters](size_t a, size_t b) { return clusters[a].xMin < clusters[b].xMin || (clusters[a].xMin == clusters[b].xMin && a < b); });
+        for (size_t k = 0; k < n; ++k) {
+            const TextGraphic &a = clusters[order[k]];
+            // later boxes start at or after a.xMin; past a.xMax + gap none can touch a
+            for (size_t m = k + 1; m < n && clusters[order[m]].xMin - gap <= a.xMax; ++m) {
+                if (budget) {
+                    if (*budget == 0) {
+                        if (budgetHit) {
+                            *budgetHit = true;
+                        }
+                        break;
+                    }
+                    --*budget;
+                }
+                if (touch(a, clusters[order[m]])) {
+                    const size_t ra = find(order[k]), rb = find(order[m]);
+                    if (ra != rb) {
+                        parent[std::max(ra, rb)] = std::min(ra, rb);
+                        merged = true;
+                    }
                 }
             }
+        }
+        if (!merged) {
+            break;
+        }
+        // fold each cluster into its root, keeping the roots in index order
+        std::vector<TextGraphic> next;
+        std::vector<size_t> slot(n, SIZE_MAX);
+        for (size_t i = 0; i < n; ++i) {
+            const size_t r = find(i);
+            if (slot[r] == SIZE_MAX) {
+                slot[r] = next.size();
+                next.push_back(clusters[r]);
+            }
+            if (r != i) {
+                TextGraphic &c = next[slot[r]];
+                const TextGraphic &b = clusters[i];
+                c.xMin = std::min(c.xMin, b.xMin);
+                c.yMin = std::min(c.yMin, b.yMin);
+                c.xMax = std::max(c.xMax, b.xMax);
+                c.yMax = std::max(c.yMax, b.yMax);
+                add(c.paths, b.paths);
+                add(c.segments, b.segments);
+                add(c.curves, b.curves);
+                c.directions |= b.directions;
+            }
+        }
+        clusters = std::move(next);
+        if (budget && *budget == 0) {
+            break;
         }
     }
     return clusters;

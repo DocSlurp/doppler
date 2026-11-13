@@ -714,7 +714,9 @@ public:
     void addGraphic(const TextGraphic &graphic);
     // The cells' summaries merged where their boxes touch (grown by gap): at most
     // graphicGrid * graphicGrid clusters, in top-to-bottom, left-to-right order of their first cell.
-    std::vector<TextGraphic> getGraphics(double gap) const;
+    // <budget> (optional) is the number of box pairs the merge may still compare, decremented as
+    // it does; when it runs out the clusters are returned as merged so far and <budgetHit> set.
+    std::vector<TextGraphic> getGraphics(double gap, size_t *budget = nullptr, bool *budgetHit = nullptr) const;
     // whether any drawing was summarised on the page (getGraphics would return some)
     bool hasGraphics() const;
     static constexpr int graphicGrid = 16;
