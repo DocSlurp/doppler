@@ -1,11 +1,13 @@
 //! `pdftomarkdown --images-dir`: needs the DocSlurp pdftotext with `-images` (`$PDFTOTEXT` or
 //! `../../build/utils/pdftotext`) and python3 for the stand-in renderer
-//! (tests/fixtures/fake_pdfregions.py); skipped (passing) without them.
+//! (tests/fixtures/fake_pdfregions.py); skipped (passing) without them, unless
+//! `DOPPLER_REQUIRE_INTEGRATION` is set (tests/toolchain).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 mod manifest_file;
+mod toolchain;
 use manifest_file::manifest;
 
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
@@ -108,7 +110,7 @@ fn run(pdftotext: &Path, args: &[&str], mode: &str) -> Output {
 
 fn setup(tag: &str) -> Option<(PathBuf, Scratch, String)> {
     let Some(p) = pdftotext() else {
-        eprintln!("skipped: needs the DocSlurp pdftotext with -images and python3");
+        toolchain::skip(tag, "the DocSlurp pdftotext with -images and python3");
         return None;
     };
     let s = Scratch::new(tag);
@@ -262,7 +264,7 @@ fn the_manifest_lists_every_link_and_every_file() {
         format!(
             "{{\"type\":\"image\",\"id\":\"p2.1\",\"page\":2,\"bbox\":[300.00,442.00,500.00,592.00],\"kind\":\"picture\",\"fate\":\"block\",\"obj\":[6,0],\"path\":\"{PICTURE}\",\"link\":\"images/{PICTURE}\",\"status\":\"not-extracted\",\"reason\":\"repeat\",\"repeat_of\":\"p1.1\",\"format\":\"webp\",\"source\":null,\"bytes\":0,\"sha256\":null,\"width\":0,\"height\":0}}"
         ),
-        "{\"type\":\"batch\",\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":null}".to_string(),
+        "{\"type\":\"batch\",\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":null,\"run\":0}".to_string(),
     ];
     // the end line: the counts, and the hash of every byte before it
     let body: String = want.iter().map(|l| format!("{l}\n")).collect();
@@ -472,7 +474,7 @@ fn the_real_renderer_extracts_the_pictures_and_figures() {
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/utils/pdfregions"));
     if !real.is_file() {
-        eprintln!("skipped: no real pdfregions");
+        toolchain::skip("real", "the real pdfregions (PDFREGIONS_REAL, else ../../build/utils/pdfregions)");
         return;
     }
     let plain = run(&p, &["--markers", &pdf], "ok");

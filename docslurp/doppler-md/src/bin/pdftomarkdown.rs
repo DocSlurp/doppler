@@ -707,10 +707,15 @@ fn convert(
         eprintln!("pdftomarkdown: --images-plan-out: {e}");
         code = Some(6);
     }
-    if let Some(dir) = out_dir.as_mut()
-        && written.is_ok()
-        && report.page_found()
-    {
+    let extract = out_dir.is_some() && written.is_ok() && report.page_found();
+    // a resume range past the converted pages: nothing extracted, the folder unchanged
+    let range = if extract { resume_range(images, previous, opts.first_page, report.parse.pages) } else { Ok(()) };
+    if let Err(e) = range {
+        close_stdout();
+        eprintln!("pdftomarkdown: {e}");
+        *out_dir = None;
+        code = Some(2);
+    } else if let Some(dir) = out_dir.as_mut().filter(|_| extract) {
         // the Markdown is complete and its links final: EOF on stdout says so, before the
         // images are extracted (the report and exit status still come after)
         close_stdout();
@@ -764,6 +769,20 @@ fn close_stdout() {
         }
         Err(e) => eprintln!("pdftomarkdown: cannot close stdout: {e}"),
     }
+}
+
+/// A resume's `--images-resume-pages` against the converted pages (from `first`, `converted` of
+/// them): a range past them is refused like one outside `--images-pages` (exit 2).
+fn resume_range(
+    images: &Settings,
+    previous: Option<&resume::Previous>,
+    first: Option<u32>,
+    converted: usize,
+) -> Result<(), String> {
+    let Some(_) = previous else { return Ok(()) };
+    let first = first.unwrap_or(1).max(1);
+    let last = first.saturating_add(u32::try_from(converted).unwrap_or(u32::MAX).saturating_sub(1));
+    images.check_resume_range(first, last)
 }
 
 /// SHA-256 (hex) of the PDF, for the manifest.
@@ -868,6 +887,11 @@ fn extract_from_plan(
     let parse = doppler_md::ParseReport { pages: converted, ..Default::default() };
     let mut report = doppler_md::Report { images: notes, parse, ..Default::default() };
     let Some(dir) = out_dir.as_mut() else { return ExitCode::from(2) };
+    if let Err(e) = resume_range(images, previous, pages.0, converted) {
+        eprintln!("pdftomarkdown: {e}");
+        *out_dir = None;
+        return ExitCode::from(2);
+    }
     let r = source_sha256(file).and_then(|sha| {
         doppler_md::extract::extract(
             &mut report,

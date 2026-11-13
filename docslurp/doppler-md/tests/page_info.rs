@@ -1,4 +1,8 @@
 //! `page_info` in the report: per-page crop size (pdftotext -crop-sizes), word counts, text layer.
+//! The pdftotext test is skipped without `$PDFTOTEXT`, unless `DOPPLER_REQUIRE_INTEGRATION` is
+//! set (tests/toolchain).
+
+mod toolchain;
 
 use doppler_md::{Params, to_markdown_report};
 
@@ -76,7 +80,7 @@ fn a_page_range_reports_the_pdfs_page_numbers() {
     use std::path::PathBuf;
     use std::process::Command;
     let Some(exe) = std::env::var_os("PDFTOTEXT").filter(|p| !p.is_empty()).map(PathBuf::from) else {
-        eprintln!("skipped: set PDFTOTEXT to the DocSlurp pdftotext");
+        toolchain::skip("page_info", "PDFTOTEXT set to the DocSlurp pdftotext");
         return;
     };
     let sizes = [(612, 792), (595, 842), (400, 792)];

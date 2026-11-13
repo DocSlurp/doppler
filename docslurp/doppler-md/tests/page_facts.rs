@@ -1,7 +1,10 @@
 //! `pdftomarkdown --page-facts FILE` / `--page-facts-fd N`: the facts pdftotext writes on the
 //! conversion's pass are byte-identical to `pdfpagefacts` for the same range and level, and
 //! the Markdown does not change. Needs the DocSlurp pdftotext and pdfpagefacts (`$PDFTOTEXT`,
-//! `$PDFPAGEFACTS`, else `../../build/utils/`); skipped (passing) without them.
+//! `$PDFPAGEFACTS`, else `../../build/utils/`); skipped (passing) without them, unless
+//! `DOPPLER_REQUIRE_INTEGRATION` is set (tests/toolchain).
+
+mod toolchain;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -19,7 +22,7 @@ fn tools() -> Option<(PathBuf, PathBuf)> {
         .unwrap_or(build.join("pdfpagefacts"));
     let usage = Command::new(&pdftotext).arg("-h").output().ok()?;
     if !String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd") || !facts.is_file() {
-        eprintln!("skipped: needs the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
+        toolchain::skip("page_facts", "the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
         return None;
     }
     Some((pdftotext, facts))
