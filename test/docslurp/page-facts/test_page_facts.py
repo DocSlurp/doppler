@@ -224,6 +224,12 @@ with t.TempDir() as d:
         t.check(v["grids"] and not any("hRules" in x for x in v["grids"]) and v["unlistedRuledGrids"] == 1 and not v["gridsTruncated"], "%s: the set crosses the grid's box, so no counts, and it is unlisted" % what, repr(v["grids"]))
     v = page(ls, 5)["vectors"]
     t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
+    ls = lines(facts(paths["grid_rebuilt"], "-level", "full")[1])
+    v = page(ls, 1)["vectors"]
+    t.check(doc_line(ls)["xref"] == "repaired" and v["gridsTruncated"] and v["grids"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "a table rebuilt by the doc line's reads: doc xref repaired, no counts, gridsTruncated", repr((doc_line(ls)["xref"], v["grids"])))
+    v = page(lines(facts(paths["grid_far"], "-level", "full")[1]), 1)["vectors"]
+    t.check(v["gridsTruncated"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "rules past 10^9 points: no counts, gridsTruncated", repr(v))
+    ls = lines(facts(paths["grid_split"], "-level", "full")[1])
     v6, v7 = page(ls, 6)["vectors"], page(ls, 7)["vectors"]
     t.check(v6["gridsTruncated"] and v6["grids"] and not any("hRules" in x for x in v6["grids"]) and "unlistedRuledGrids" not in v6, "5,001 rules before a table (past the walker's 5,000): no counts, gridsTruncated", repr(v6["grids"]))
     t.check(not v7["gridsTruncated"] and [(x["hRules"], x["vRules"], x["connected"]) for x in v7["grids"]] == [(4, 5, True)] and v7["unlistedRuledGrids"] == 0, "4,990 rules before a table: counted", repr(v7["grids"]))
@@ -266,6 +272,13 @@ with t.TempDir() as d:
         alone = page(lines(facts(paths["lengths_rebuilt"], "-level", "full", "-f", str(n), "-l", str(n))[1]), n)
         a, b = dict(page(whole, n)), dict(alone)
         a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
+        # and a page read after a rebuild has no thin-rule counts (gridsTruncated, issue 43)
+        for v in (a.get("vectors"), b.get("vectors")):
+            if v is not None:
+                v.pop("gridsTruncated", None), v.pop("unlistedRuledGrids", None)
+                for g in v.get("grids", []):
+                    for k in ("hRules", "vRules", "outerSides", "connected"):
+                        g.pop(k, None)
         ok = ok and a == b
     t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings equal its single-page run")
     t.check(all("xref-repaired-earlier" in page(whole, n)["parseWarnings"] for n in range(2, 9)) and "xref-repaired-earlier" not in page(whole, 1)["parseWarnings"], "pages read after a mid-run rebuild: xref-repaired-earlier", repr([page(whole, n)["parseWarnings"] for n in range(1, 9)]))
@@ -279,6 +292,7 @@ with t.TempDir() as d:
     t.check(c[0]["gridsTruncated"] and len(c[0]["grids"]) == 1, "a word size outside the body-size bins: gridsTruncated", repr(c[0]))
     t.check(not c[1]["gridsTruncated"] and [(g["rows"], g["columns"]) for g in c[1]["grids"]] == [(3, 2)], "256 decoy sizes: the body size is still the text's, the table found", repr(c[1]["grids"]))
     t.check(c[2]["gridsTruncated"] and c[2]["hRules"] == 4100, "4,100 horizontal rules: the grid search's rule cap, gridsTruncated", repr((c[2]["gridsTruncated"], c[2]["hRules"])))
+    t.check("unlistedRuledGrids" not in c[2] and not any("hRules" in x for x in c[2]["grids"]), "4,100 thin horizontal rules (under 5,000 on the page): the thin-rule cap, no counts", repr(c[2]["grids"][:1]))
     t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
 
     # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
@@ -362,6 +376,12 @@ with t.TempDir() as d:
             images = level == "full"
             rc, xhtml, got = pdftotext_facts(path, "-page-facts-level", level, images=images)
             t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
+            if name == "grid_rebuilt" and level == "full":
+                # documented exception (README, page locality): the doc line's read of a missing
+                # /Outlines object rebuilds the cross-reference table before pdftotext draws the
+                # page, which a run without facts never does; the facts then withhold the counts
+                t.check(b"<rule " in xhtml, "%s %s: XHTML written (may differ from a run without facts: the doc line rebuilt the table)" % (name, level))
+                continue
             t.check(xhtml == pdftotext_plain(path, images=images), "%s %s: XHTML unchanged by facts" % (name, level))
             if images:
                 t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == ref, "%s: same facts with -images -glyphs" % name)

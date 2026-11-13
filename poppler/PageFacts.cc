@@ -1680,7 +1680,11 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kenum("pdfVersion", version);
     }
     j.kbool("linearized", doc->isLinearized());
-    j.kenum("xref", xref->getReconstructionCount() > 0 ? "repaired" : "ok");
+    // the doc line's own reads below (outlines, names, page labels) can rebuild the table too:
+    // "ok" written here is turned into "repaired" at the end if they did
+    const int reconstructionsAtXref = xref->getReconstructionCount();
+    const size_t xrefAt = j.s.size();
+    j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
     if (xref->isEncrypted()) {
         bool emptyWorks = !passwordGiven;
         if (passwordGiven) {
@@ -1807,6 +1811,12 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kmask("unusualFeatures", features, featureNames, fXfaPresent + 1);
     j.close();
+    if (reconstructionsAtXref == 0 && xref->getReconstructionCount() > 0) {
+        const size_t ok = j.s.find("\"ok\"", xrefAt);
+        if (ok != std::string::npos) {
+            j.s.replace(ok, 4, "\"repaired\"");
+        }
+    }
     j.s += '\n';
     docXref = xref;
     // rebuilds while the document was opened and its doc line read happen for every page range
@@ -2616,12 +2626,15 @@ void PageFacts::endPage(const TextPage &text)
         gridsTruncated = gridsTruncated || text.getRulesPageTruncated() || s.sizeOutOfRange;
         // each grid's thin rules (thinRuleGrids), from the rules at the 0.01 pt the XHTML
         // writes (rounded as its %.2f is); absent from every grid (with unlistedRuledGrids, and
-        // gridsTruncated set) when the page's rule list is partial, the walker would read fewer
+        // gridsTruncated set) when the page's rule list is partial, the table was rebuilt, the walker would read fewer
         // rules than the page has (past walkerMaxRules, or past the run's rule budget), a thin
         // rule's extent or centre is not finite, more than maxGridRules thin rules run either
         // way, or the maxGridWork visits run out: counts from part of the rules could be wrong
         std::vector<ThinRule> th, tv;
-        bool thinComplete = !text.getRulesPageTruncated();
+        // a rebuilt cross-reference table (at open, by the doc line's reads, or by any fetch
+        // before this point) can make an object resolve to another body than a reader that never
+        // rebuilt it sees, so the rules here may not be the ones a separate pdftotext run writes
+        bool thinComplete = !text.getRulesPageTruncated() && !(docXref && docXref->getReconstructionCount() > 0);
         if (thinComplete) {
             auto at01 = [](double v) {
                 // what printf's %.2f writes, read back (both round the exact binary value)

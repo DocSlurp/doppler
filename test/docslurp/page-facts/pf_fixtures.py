@@ -818,6 +818,21 @@ def grid_split_pdf():
     return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5, dashes(5001) + table, dashes(4990) + table)])
 
 
+def grid_rebuilt_pdf():
+    """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
+    doc line does, and pdftotext never does) rebuilds the cross-reference table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
+
+
+def grid_far_pdf():
+    """A ruled table at the foot of a 2 x 10^9-point page (displayed y near 2 x 10^9): past 10^9
+    points, no counts."""
+    y = 400
+    table = "0.5 w\n" + "".join("72 %d m 472 %d l S\n" % (v, v) for v in (y, y - 30, y - 60)) + "".join("%d %d m %d %d l S\n" % (x, y - 60, x, y) for x in (72, 272, 472))
+    return doc([{"content": table, "mediabox": (0, 0, 612, 2000000000)}])
+
+
 def caption_straddle_pdf():
     """A photo (PDF y 400..600) with a caption line whose words straddle its bottom edge with
     their centres inside, a line straddling it with centres outside, and a line well below."""
@@ -861,4 +876,6 @@ ALL = {
     "grid_rules": grid_rules_pdf,
     "caption_straddle": caption_straddle_pdf,
     "grid_split": grid_split_pdf,
+    "grid_rebuilt": grid_rebuilt_pdf,
+    "grid_far": grid_far_pdf,
 }

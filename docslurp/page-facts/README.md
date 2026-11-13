@@ -360,14 +360,20 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   equals the walker, as long as the facts and the XHTML the walker reads come from the same
   pdftotext flags: thin image-mask rules are rules only when `pdftotext -glyphs` collects them
   (`pdfpagefacts` and pdftotext without `-glyphs` never do), so facts from one and XHTML from the
-  other can disagree on a table drawn with stencil masks. Pages the grid search cannot see
+  other can disagree on a table drawn with stencil masks. The two runs must also cover the same
+  page range (the run's rule budget depends on where it starts), and a reader should treat a
+  page with `xref-repaired` among its `parseWarnings` as unknown too: a rebuild after the
+  page's vector facts were taken is not seen by them. Pages the grid search cannot see
   (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are unknown
   through `unlistedRuledGrids`, never known.
 - Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
   the page's rule list is partial (the page's rule cap); the walker would read fewer rules than
   the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
   budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
-  run-wide caps); a thin rule's extent or centre is not finite or past 10^9 points; more than
+  run-wide caps); the cross-reference table was rebuilt before the page's facts were taken (at
+  open, by the doc line's reads of outlines, names or page labels, which pdftotext alone never
+  makes, or by an earlier fetch: an object may then resolve to another body than a separate
+  pdftotext run reads); a thin rule's extent or centre is not finite or past 10^9 points; more than
   4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
   the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
@@ -473,7 +479,11 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   such a document should run the page alone), and the
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
-  grids also lose their thin-rule counts (`gridsTruncated`).
+  grids also lose their thin-rule counts (`gridsTruncated`), as do a page's grids once the
+  cross-reference table was rebuilt. One more, older than issue 43: at levels that read the
+  catalog's outlines, names or page labels (`full`), a reference there to a missing or broken
+  object rebuilds the table before the first page is drawn, so `pdftotext -page-facts-fd` can
+  write different XHTML than the same run without facts on such a file.
 
 ## Hostile input
 

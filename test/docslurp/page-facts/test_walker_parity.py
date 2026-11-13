@@ -166,6 +166,8 @@ for name, path in inputs:
         report.append(row)
 
 print("totals: %s" % json.dumps(totals))
+# a regression that made every page unknown would pass the per-page checks: keep a floor
+t.check(totals["gridPagesKnownEqual"] >= 20 and totals["imagesEqual"] >= 30, "parity: at least 20 grid pages known and equal, 30 images equal", json.dumps(totals))
 if args.json:
     with open(args.json, "w") as out:
         json.dump({"totals": totals, "pages": report}, out, indent=1)
