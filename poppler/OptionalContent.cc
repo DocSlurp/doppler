@@ -25,6 +25,8 @@
 // Max depth of nested visibility expressions.  This is used to catch
 // infinite loops in the visibility expression object structure.
 constexpr int visibilityExprRecursionLimit = 50;
+// DocSlurp: operands one visibility expression may visit (see evalOCVisibilityExpr).
+constexpr int visibilityExprNodeLimit = 10000;
 
 //------------------------------------------------------------------------
 
@@ -181,11 +183,30 @@ bool OCGs::optContentIsVisible(const Object *dictRef) const
     return result;
 }
 
+// DocSlurp: one evaluation visits each indirect sub-expression once (an expression whose
+// levels share indirect arrays would otherwise take 2^depth steps) and at most
+// visibilityExprNodeLimit operands in all; past that the expression counts as visible.
 bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion) const
+{
+    VisibilityEval eval;
+    const bool ret = evalOCVisibilityExpr(expr, recursion, eval);
+    if (eval.overBudget) {
+        // fixed text (no arguments): page facts classify it as limit-hit from the format string
+        error(errSyntaxWarning, -1, "Optional content visibility expression too large; treated as visible");
+        return true;
+    }
+    return ret;
+}
+
+bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEval &eval) const
 {
     OptionalContentGroup *ocg;
     bool ret;
 
+    if (eval.overBudget || ++eval.nodes > visibilityExprNodeLimit) {
+        eval.overBudget = true;
+        return true;
+    }
     if (recursion > visibilityExprRecursionLimit) {
         error(errSyntaxError, -1, "Loop detected in optional content visibility expression");
         return true;
@@ -193,6 +214,10 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion) const
     if (expr->isRef()) {
         if ((ocg = findOcgByRef(expr->getRef()))) {
             return ocg->getState() == OptionalContentGroup::On;
+        }
+        const auto seen = eval.memo.find(expr->getRef());
+        if (seen != eval.memo.end()) {
+            return seen->second;
         }
     }
     Object expr2 = expr->fetch(m_xref);
@@ -205,26 +230,29 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion) const
     if (op.isName("Not")) {
         if (expr2Array->getLength() == 2) {
             const Object &obj = expr2Array->getNF(1);
-            ret = !evalOCVisibilityExpr(&obj, recursion + 1);
+            ret = !evalOCVisibilityExpr(&obj, recursion + 1, eval);
         } else {
             error(errSyntaxError, -1, "Invalid optional content visibility expression");
             ret = true;
         }
     } else if (op.isName("And")) {
         ret = true;
-        for (int i = 1; i < expr2Array->getLength() && ret; ++i) {
+        for (int i = 1; i < expr2Array->getLength() && ret && !eval.overBudget; ++i) {
             const Object &obj = expr2Array->getNF(i);
-            ret = evalOCVisibilityExpr(&obj, recursion + 1);
+            ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
         }
     } else if (op.isName("Or")) {
         ret = false;
-        for (int i = 1; i < expr2Array->getLength() && !ret; ++i) {
+        for (int i = 1; i < expr2Array->getLength() && !ret && !eval.overBudget; ++i) {
             const Object &obj = expr2Array->getNF(i);
-            ret = evalOCVisibilityExpr(&obj, recursion + 1);
+            ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
         }
     } else {
         error(errSyntaxError, -1, "Invalid optional content visibility expression");
         ret = true;
+    }
+    if (expr->isRef() && !eval.overBudget) {
+        eval.memo.emplace(expr->getRef(), ret);
     }
     return ret;
 }
