@@ -307,6 +307,15 @@ tree, peak RSS):
 ("Before" is the previous release with `--params '{"watermarks": false}'`, since it otherwise
 called a text-less scan repeated at one size a watermark and extracted nothing.)
 
+**The copy allow-list** (2026-11-12; a 500-page grey DCT book, 2550 x 3300, 0.65 MB a page,
+45 lines of invisible OCR text a page, median of 5 interleaved runs): every page is still
+copied (500 of 500 `.jpg`, byte-identical to the stored stream, as with the overpaint
+estimate before it), in 4.8 s wall and 6.6 CPU-s against 4.4 s and 5.9 CPU-s before (the
+allow-list on pdftotext's pass and pdfregions' own page pass before each copy job: about
+1.4 ms of CPU a page). The same book with a visible page number on every page is rendered
+on every page both before and after (0 of 500 copied); at the new 200 dpi default that took
+149 s wall, 196 CPU-s, 225 MiB (79 MB of WebP) against 85 s, 120 CPU-s, 145 MiB at 150 dpi.
+
 ## Watermarks
 
 Large pale or diagonal text and repeated backdrops are not content (parameter `watermarks`, on by
