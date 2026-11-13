@@ -9,7 +9,10 @@
 //! valid. Files go where the Markdown links point ([`layout`]: `page-0012/image-003.webp`);
 //! `manifest.jsonl` ([`manifest`]), written last, lists every image and every file.
 //!
-//! Full-page scans (`page-scan`) are taken out without rendering where the scan image's
+//! Full-page scans (`page-scan`): with `--scan-pages copy` (the default) only a scan whose own
+//! bytes can be copied (a JPEG, or 1-bit samples) is one; any other scan is the page's backdrop,
+//! unlinked (reason `scan-not-copyable`), and its picture is left to the host's page rendering.
+//! With `--scan-pages image` scans are taken out without rendering where the scan image's
 //! dictionary allows and nothing else shows over it: a JPEG is copied without its metadata
 //! (`.jpg`), a bilevel image decoded once to a 1-bit PNG, any other single image decoded once at
 //! native size (at most [`regions::MAX_COPY_PIXELS`]) and scaled to `--scan-max-dpi` at most;
@@ -53,7 +56,7 @@ use layout::{RepeatKey, kind, repeat_key};
 use manifest::js;
 use outdir::OutDir;
 use regions::{Halt, Job, Mode, Outcome, Renderer, RunError};
-use settings::{RasterFormat, Repeats, Settings, VectorFormat};
+use settings::{RasterFormat, Repeats, ScanPages, Settings, VectorFormat};
 
 /// Extra time past `--images-timeout` before the renderer is killed (it stops itself at the
 /// timeout, exit status 3).
@@ -290,7 +293,8 @@ pub fn extract(
         let e = &mut entries[i];
         let scan = n.fate == Fate::PageScan;
         if n.scan.is_some() && !scan {
-            // part of a scan placed as a picture (--scan-pages skip): never extracted
+            // part of a scan placed as a picture (--scan-pages skip) or as the page's backdrop
+            // (a scan --scan-pages copy does not copy): never extracted
             e.status = if n.fate.marked() { Status::NotExtracted("scan-pages") } else { Status::Unlinked };
             continue;
         }
@@ -1011,6 +1015,11 @@ fn manifest_lines(
         let n = &notes[i];
         let e = &run.entries[i];
         let (status, reason) = match e.status {
+            // a scan that `--scan-pages copy` could not copy: the page's backdrop, its picture
+            // left to the host's page rendering
+            Status::Unlinked if s.scan_pages == ScanPages::Copy && n.scan.is_some() && n.fate != Fate::PageScan => {
+                ("unlinked", Some("scan-not-copyable"))
+            }
             Status::Unlinked => ("unlinked", None),
             Status::Extracted => ("extracted", None),
             Status::NotExtracted(r) => ("not-extracted", Some(r)),
