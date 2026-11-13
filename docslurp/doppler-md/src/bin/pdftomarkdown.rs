@@ -3,7 +3,7 @@
 //! `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout FILE -`, converts its XHTML as
 //! it arrives and writes the pages joined with form feeds on stdout. By default every page
 //! waits for the whole document; `--stream` (or `--window N`) writes each page once the next N
-//! are complete and the body sample (`--body-pages`, 32 pages with text) is taken, holding the
+//! are complete and the body sample (`--body-pages`, 16 pages with text) is taken, holding the
 //! larger of the two. `--context N` (default: the window) reads N pages around a `-f`/`-l`
 //! range for repetition without writing them; with `--body-size`/`--body-color` the range's
 //! pages are the same bytes as in a whole run with the same window. `--strict` drops

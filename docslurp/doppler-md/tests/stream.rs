@@ -132,7 +132,7 @@ fn pages(n: usize, header: impl Fn(usize) -> String) -> Vec<u8> {
 
 #[test]
 fn a_window_covering_the_document_is_exact() {
-    for n in [1, 2, 5, 17] {
+    for n in [1, 2, 5, 16] {
         let bytes = pages(n, |i| if i % 3 == 0 { "Annual Report".into() } else { format!("Chapter {i}") });
         let want = whole(&bytes);
         // n - 1 pages either side is the smallest window that covers every page
@@ -216,7 +216,7 @@ fn an_unclosed_word_does_not_hold_back_later_pages() {
         s.push_str("<page width=\"612\" height=\"792\"><rule xMin=\"1\" yMin=\"2\" xMax=\"300\" yMax=\"3\"/></page>\n");
     }
     let p = Params::default();
-    // pages without text: the body sample (32 pages with text) stops at 64 pages read, so a
+    // pages without text: the body sample (16 pages with text) stops at 32 pages read, so a
     // scan without a text layer is held only that long
     let mut conv = Converter::new(&p, Options::default(), Some(2));
     let mut parser = Parser::new();
@@ -483,7 +483,7 @@ fn plain_page(i: usize, words: usize, size: &str, colour: &str, rules: usize) ->
 
 #[test]
 fn a_window_covering_a_long_document_needs_a_body_sample_that_does_too() {
-    // 40 pages at 12 points, then 60 at 10: the whole document's body is 10, the first 32 pages
+    // 40 pages at 12 points, then 60 at 10: the whole document's body is 10, the first 16 pages
     // with text say 12
     let doc: Vec<String> = (0..100).map(|i| plain_page(i, 4, if i < 40 { "12" } else { "10" }, "#000000", 0)).collect();
     let p = Params::default();
@@ -495,12 +495,12 @@ fn a_window_covering_a_long_document_needs_a_body_sample_that_does_too() {
     assert_eq!(r.body.size, 10.0);
     // the default sample sees only the start: another body
     let (_, r) = converted(&doc, Window::furniture(Some(1000)), Options::default(), &p);
-    assert_eq!((r.body.size, r.body.sample_pages), (12.0, 32));
+    assert_eq!((r.body.size, r.body.sample_pages), (12.0, 16));
 }
 
 #[test]
 fn the_body_sample_is_bounded_in_size_not_only_in_pages() {
-    // pages with text and 30,000 rules each: the sample (32 pages with text) ends once the
+    // pages with text and 30,000 rules each: the sample (16 pages with text) ends once the
     // pages held reach BODY_SAMPLE_MAX_ITEMS, after 9 pages, and writing starts then
     let doc: Vec<String> = (0..14).map(|i| plain_page(i, 2, "10", "#000000", 30_000)).collect();
     let p = Params::default();

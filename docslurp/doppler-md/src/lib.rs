@@ -627,11 +627,12 @@ pub enum BodySample {
     TextPages(usize),
 }
 
-/// The body sample of a furniture window by default: pages up to the 32nd with text. Measured
-/// on long PDFs (FURNITURE.md), 32 pages give the whole document's body size on 14 of 15 where
-/// the first window + 1 pages gave it on 4 to 13, and 64 pages do no better there (one
-/// document outside that sweep is better with 16 or 64: FURNITURE.md).
-pub const DEFAULT_BODY_PAGES: usize = 32;
+/// The body sample of a furniture window by default: pages up to the 16th with text. Measured
+/// on 18 long PDFs (FURNITURE.md), 16 pages give the whole document's body size on 16 of 18,
+/// the same as 32 (which misses a different one), with no change in the judged golden cases;
+/// shorter samples (the old first window + 1 pages) gave it on 4 to 13 of 15. 16 halves what
+/// is held before the first page is written (owner decision).
+pub const DEFAULT_BODY_PAGES: usize = 16;
 
 /// A page-count body sample ([`BodySample::Pages`], [`BodySample::TextPages`]) is also complete
 /// once the pages it holds have this many words, rules and glyph records in all: the

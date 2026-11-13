@@ -262,7 +262,7 @@ XHTML is never held whole. Two decisions look past one page, and they are set se
   give them instead (the values `--report` prints as `body_size` and `body_color`).
 
 Without `--window` both see the whole document, so every page waits for the last one. With a
-window the body sample defaults to 32 pages with text. `--stream` is `--window 4` with that
+window the body sample defaults to 16 pages with text. `--stream` is `--window 4` with that
 sample. The converter holds the larger of the window + 1 and the body sample (plus the page
 being parsed, and the margin keys of N written pages); a document no longer than both converts
 exactly as without a window (a longer one with a window covering it does not: the body comes

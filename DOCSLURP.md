@@ -48,7 +48,7 @@ treat it as an internal backend and do not depend on its flags or output format.
 
 
 Streaming: use `pdftomarkdown --stream` (a 4-page furniture window, body size and colour from
-the first 32 pages with text) or no window. The two are separate options: `--window N` is how
+the first 16 pages with text) or no window. The two are separate options: `--window N` is how
 far either side running headers, footers and repeated watermarks are looked for (16 differs
 least from the whole document; 4 removes more chapter running heads; 2 starts removing
 content; 0 removes none of it), and `--body-pages N`, `--body-size PT` and `--body-color C` set
