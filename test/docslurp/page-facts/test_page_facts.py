@@ -227,8 +227,8 @@ with t.TempDir() as d:
     t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
     ls = lines(facts(paths["grid_rebuilt"], "-level", "full")[1])
     v = page(ls, 1)["vectors"]
-    # issue 45: the doc line reads through its own copy of the table, so its rebuild leaves the
-    # pages' table alone: doc xref repaired, the page counted and not flagged
+    # issue 45: the doc line's reads are read-only (XRef::RepairGuard), so its refused rebuild
+    # leaves the pages' table alone: doc xref repaired, the page counted and not flagged
     t.check(doc_line(ls)["xref"] == "repaired" and not v["gridsTruncated"] and [(x["hRules"], x["vRules"]) for x in v["grids"]] == [(4, 5)] and not page(ls, 1)["parseWarnings"], "a rebuild by the doc line's reads: doc xref repaired, the page counted and unflagged", repr((doc_line(ls)["xref"], v["grids"], page(ls, 1)["parseWarnings"])))
     v = page(lines(facts(paths["grid_far"], "-level", "full")[1]), 1)["vectors"]
     t.check(v["gridsTruncated"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "rules past 10^9 points: no counts, gridsTruncated", repr(v))
@@ -410,7 +410,7 @@ with t.TempDir() as d:
             ok = ok and page(alone, n) == page(whole, n) and alone[0] == whole[0]
         t.check(ok, "page locality (%s): -f p -l p equals the whole run's line" % level)
 
-    # --- issue 45: the /Prev chain is read at open; the doc line reads through a copy ------------
+    # --- issue 45: the /Prev chain is read at open; reads beyond drawing are read-only -----------
     for name in ("prev_redefined", "prev_unlisted", "prev_broken", "facts_only_read"):
         path = paths[name]
         pf = [facts(path, "-level", "full")[1] for _ in range(3)]
@@ -427,7 +427,7 @@ with t.TempDir() as d:
         elif name == "prev_unlisted":
             t.check(doc_line(ls)["xref"] == "ok" and "xref-repaired" in page(ls, 1)["parseWarnings"] and b'xrefRebuilt="1"' in plain[0] and b'<rule ' in plain[0], "%s: the entry no section lists rebuilds the table in every run, flagged (xref-repaired, xrefRebuilt)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
         elif name == "prev_broken":
-            t.check(doc_line(ls)["xref"] == "repaired" and "xref-repaired" not in page(ls, 1)["parseWarnings"] and b"Bravo" in plain[0] and b"Alpha" not in plain[0], "%s: a broken older section rebuilds the table at open in every run (doc xref repaired, the rebuilt table's body drawn)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
+            t.check(doc_line(ls)["xref"] == "repaired" and "xref-repaired" not in page(ls, 1)["parseWarnings"] and b"Alpha" in plain[0] and b"Bravo" not in plain[0], "%s: a broken older section ends the chain; the doc line's read of /Outlines is refused (doc xref repaired), and every run draws the listed body" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
         else:
             # no -rules or -images: the facts' colour-space read is the only one, and it is guarded
             bare = [os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout"]
@@ -448,7 +448,7 @@ with t.TempDir() as d:
             rc, xhtml, got = pdftotext_facts(path, "-page-facts-level", level, images=images)
             t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
             plain = pdftotext_plain(path, images=images)
-            # grid_rebuilt included (issue 45): the doc line's rebuild is its copy's, never the pages'
+            # grid_rebuilt included (issue 45): the doc line cannot rebuild the pages' table
             t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))
             if images:
                 t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == got, "%s: same facts with -images -glyphs (as the same pdftotext run without them)" % name)

@@ -888,9 +888,9 @@ def grid_split_pdf():
 
 
 def grid_rebuilt_pdf():
-    """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
-    doc line does, and pdftotext never does) rebuilds the doc line's copy of the cross-reference
-    table, never the one the pages are drawn from (issue 45)."""
+    """A ruled table in a file whose catalog names a missing /Outlines object: the doc line reads
+    it (pdftotext never does) and, since issue 45, read-only: the refused rebuild leaves the
+    table the pages are drawn from alone (doc xref repaired)."""
     table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
     return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
 
@@ -1043,7 +1043,8 @@ def prev_broken_pdf():
     is listed only by an older section, which is garbage. Object 4 (the page's content) has a
     second, unlisted body later in the file ("Bravo"). Upstream read the older section only when
     the doc line asked for /Outlines, rebuilt there, and the page then drew Bravo with facts and
-    Alpha without. Now every run rebuilds at open and draws Bravo (doc xref repaired)."""
+    Alpha without. Now the chain ends at the broken section in every run, the doc line's guarded
+    read of /Outlines is refused (doc xref repaired), and every run draws Alpha."""
     objs = {
         1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
         2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",

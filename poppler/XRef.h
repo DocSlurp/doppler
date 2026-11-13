@@ -316,6 +316,7 @@ private:
     long long chainGrowthLeft = -1; // slots they may add to the table
     bool chainBudgetHit = false;
     Goffset trailerBytesLeft = 0; // constructTrailerDict's budget, per rebuild
+    std::vector<int> *chainFilled = nullptr; // entries the older section being read filled
     const char *chainBudgetName = nullptr;
     // Set for a classic table read whole at open: an entry no section lists makes the first
     // fetch of it rebuild the table, as a lazy read of the chain would have. The rebuild is

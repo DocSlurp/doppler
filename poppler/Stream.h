@@ -517,6 +517,7 @@ public:
     PredictorRowLimit(const PredictorRowLimit &) = delete;
     PredictorRowLimit &operator=(const PredictorRowLimit &) = delete;
     static int current();
+    static unsigned long refusals(); // predictors refused on this thread so far
 
 private:
     int previous;

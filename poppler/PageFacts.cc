@@ -3500,18 +3500,18 @@ void ImageInfoCache::sync(XRef *xref)
         profiles.clear();
         docXref = xref;
         generation = xref ? xref->getGeneration() : 0;
-        suppressedAtSync = xref ? xref->getSuppressedRepairs() : 0;
     }
 }
 
-bool ImageInfoCache::untainted(XRef *xref) const
+unsigned int ImageInfoCache::suppressed(XRef *xref)
 {
-    return !xref || xref->getSuppressedRepairs() == suppressedAtSync;
+    return xref ? xref->getSuppressedRepairs() : 0;
 }
 
 const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
 {
     sync(xref);
+    findSuppressed = suppressed(xref);
     const auto it = images.find(ref);
     return it == images.end() ? nullptr : &it->second;
 }
@@ -3519,7 +3519,7 @@ const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
 void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
 {
     sync(xref);
-    if (images.size() < maxEntries && untainted(xref)) {
+    if (images.size() < maxEntries && suppressed(xref) == findSuppressed) {
         images.emplace(ref, image);
     }
 }
@@ -3550,11 +3550,12 @@ ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
     const size_t before = refused;
+    const unsigned int repairsBefore = suppressed(xref);
     const Object resolved = xref->fetch(cs.getRef());
     const Space c = classify(resolved, xref);
     // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
     // without saying so (and a retry past the budget is refused at once)
-    if (refused == before && spaces.size() < maxEntries && untainted(xref)) {
+    if (refused == before && spaces.size() < maxEntries && suppressed(xref) == repairsBefore) {
         spaces.emplace(cs.getRef(), c);
     }
     return c;
@@ -3602,9 +3603,10 @@ ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
     if (!xref || !takeFetch()) {
         return { ImageColor::Other, false, false };
     }
+    const unsigned int repairsBefore = suppressed(xref);
     const Object name = xref->fetch(family.getRef());
     const Space c = !name.isName() ? Space { ImageColor::Other, false, false } : name.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(name.getNameString());
-    if (families.size() < maxEntries && untainted(xref)) {
+    if (families.size() < maxEntries && suppressed(xref) == repairsBefore) {
         families.emplace(family.getRef(), c);
     }
     return c;
@@ -3623,6 +3625,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
     if (!xref || !takeFetch()) {
         return ImageColor::Other;
     }
+    const unsigned int repairsBefore = suppressed(xref);
     ImageColor c = ImageColor::Other;
     const Object icc = xref->fetch(profile.getRef());
     const size_t before = refused;
@@ -3653,7 +3656,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
             }
         }
     }
-    if (refused == before && profiles.size() < maxEntries && untainted(xref)) {
+    if (refused == before && profiles.size() < maxEntries && suppressed(xref) == repairsBefore) {
         profiles.emplace(profile.getRef(), c);
     }
     return c;

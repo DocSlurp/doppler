@@ -521,22 +521,29 @@ on what a run fetched first. Doppler reads the whole chain when the document is 
 first, as the lazy read did (an entry is taken from the newest section that lists it):
 
 - **Bounds**, each checked before the work or allocation it limits:
-  - at most 1,000 older sections (the bound `incrementalUpdates` uses);
-  - at most 100,000,000 entries listed across them;
-  - table growth: older sections may add at most max(65,536, the main section's `/Size`) slots,
-    so the table stays within about twice what the main section makes it;
+  - at most 999 older sections (1,000 with the main one, the bound `incrementalUpdates` uses);
+  - at most 30,000,000 entries listed across them;
+  - table growth: older sections may add at most max(65,536, the main trailer's `/Size`) slots;
   - parsing: twice the file's bytes plus 64 KiB, shared by the main section, the chain and every
-    nested `/XRefStm` (a section's bytes are charged before it follows its `/XRefStm`);
+    nested `/XRefStm`. A section's bytes are charged before it follows its `/XRefStm`, and a parse
+    that runs off the end of its budget is charged all of it;
   - an xref stream's predictor row (its `/DecodeParms` `/Columns`, `/Colors`, `/BitsPerComponent`)
-    of at most 4,096 bytes, refused before it is allocated.
+    of at most 4,096 bytes. A larger one is refused before it is allocated, and the section counts
+    as past a bound.
+- **Where the walk stops early**, what it read stands and the rest of the chain is not read:
+  - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
+    dropped (the lazy read never used a section it could not read). Behind an xref stream they are
+    kept, as there;
+  - **a bound.** The section it stopped in is dropped.
 
-  Past any bound, on a `/Prev` loop, or on a broken older section behind a classic table, the
-  table is rebuilt from a scan at open: every run does the same, and the doc line says
-  `xref: repaired`. A broken older section behind an xref stream ends the chain there, as the lazy
-  read did. A rebuild (at open or later) never extends the rebuilt table from the old chain, and
-  the trailers it finds are parsed within one budget of twice the file plus 64 KiB.
+  A file whose objects the sections read all list then draws as upstream drew it. Otherwise the
+  first fetch of an entry no section read lists rebuilds the table. For an xref stream this
+  happens only after a bound; behind a loop or broken section, upstream never rebuilt.
+- **A rebuild** (at open or later) never extends the rebuilt table from the old chain. It drops the
+  object streams parsed before it, and parses the trailers it finds within one budget of twice
+  the file plus 64 KiB.
 - **An entry no section lists:** for a classic table the first fetch of it rebuilds the table, as
-  the lazy read did on its first missing entry. That happens after open, so it is counted like
+  the lazy read did on its first missing entry (also after a bound, for an xref stream). That happens after open, so it is counted like
   any later rebuild (`xref-repaired` on the page, `xref-repaired-earlier` after it, and
   `xrefRebuilt="1"` in pdftotext's XHTML under `-rules` or `-images`), rather than silently
   depending on whether an earlier fetch had already used up the chain.
@@ -553,8 +560,9 @@ first, as the lazy read did (an entry is taken from the newest section that list
   it was:
   - no entry is read, marked free or rebuilt;
   - an object stream or stream parameter it parsed is not kept;
-  - a cache shared with drawing (image colour spaces, optional-content visibility) does not
-    keep an answer computed after a refused repair.
+  - a cache shared with drawing (image colour spaces, optional-content visibility) does not keep
+    an answer a refused repair shaped. The optional-content cache is also dropped when the table
+    is rebuilt.
 
   A refused repair is a syntax error (`syntax-error` on the page). The doc line says
   `xref: repaired`, the header leaves the field out (`<title></title>`), and the audit leaves the

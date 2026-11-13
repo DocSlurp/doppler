@@ -138,9 +138,12 @@ static std::atomic<unsigned long> ocgStateGeneration { 0 };
 void OCGs::syncCache() const
 {
     const unsigned long g = OptionalContentGroup::stateGeneration();
-    if (g != cacheGeneration) {
+    // issue 45: also when the table was rebuilt (an OCMD may now resolve to another body)
+    const unsigned int xg = m_xref ? m_xref->getGeneration() : 0;
+    if (g != cacheGeneration || xg != cacheXRefGeneration) {
         ocmdCache.clear();
         cacheGeneration = g;
+        cacheXRefGeneration = xg;
     }
 }
 
