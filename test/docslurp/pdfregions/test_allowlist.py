@@ -72,11 +72,26 @@ OBJECTS = [
     image("/Width 64 /Height 40 /ImageMask true /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),
     # 20: an empty annotation appearance
     t.stream("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", ""),
+    # 21..27: images Gfx refuses to draw (render blank), whose copy would show the whole scan,
+    # and 28 the control that Gfx draws
+    image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /ImageMask 0", JPEG),  # 21
+    image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /IM /false", JPEG),  # 22
+    image("/Width 64 /Height 40 /ColorSpace /DeviceGray /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 23
+    image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 1.0 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 24
+    image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 0 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 25
+    image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 64 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 26
+    image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8.0 /Filter /DCTDecode", JPEG),  # 27
+    image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 28
+    # 29, 30: a tall and a wide strip, 20000 samples along one axis (a 25th of a point each on
+    # the page): a 1 pt rounding slack would hide 25 rows or columns
+    image("/Width 10 /Height 20000 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 29
+    image("/Width 20000 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 30
 ]
 
 SHADING = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 612 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
 RES = (
-    "<< /Font << /F1 4 0 R /T3 9 0 R >> /XObject << /S 6 0 R /P 7 0 R /G 8 0 R /F 11 0 R /Box 12 0 R /I 13 0 R /C 15 0 R /O 18 0 R /M 19 0 R >>"
+    "<< /Font << /F1 4 0 R /T3 9 0 R >> /XObject << /S 6 0 R /P 7 0 R /G 8 0 R /F 11 0 R /Box 12 0 R /I 13 0 R /C 15 0 R /O 18 0 R /M 19 0 R"
+    " /R1 21 0 R /R2 22 0 R /R3 23 0 R /R4 24 0 R /R5 25 0 R /R6 26 0 R /R7 27 0 R /R8 28 0 R /Tall 29 0 R /Wide 30 0 R >>"
     " /Shading << /Sh %s >> /Properties << /oc1 17 0 R >>"
     " /ExtGState << /Half << /ca 0.5 >> /Zero << /ca 0 >> /Mul << /BM /Multiply >> /Mask << /SMask << /S /Luminosity /G 12 0 R >> >>"
     " /Lines << /Type /ExtGState /LW 3 /LC 1 /LJ 1 /ML 4 /D [[] 0] /RI /Perceptual /FL 1 /SA true /CA 1 /ca 1 /BM /Normal /SMask /None /OP false /op false /OPM 1 >>"
@@ -147,6 +162,18 @@ CASES = {
     "link-border": (SCAN, "/Annots [<< /Type /Annot /Subtype /Link /Rect [50 300 550 500] /Border [0 0 2] /C [0 0 0] >>]", "", 6, False),
     "hidden-layer": (b"/OC /oc1 BDC " + SCAN + b"EMC\n" + OCR, "", HIDDEN, 6, False),
     "own-oc": (b"q 612 0 0 792 0 0 cm /O Do Q\n", "", SHOWN, 18, False),
+    # denied: an image Gfx refuses to draw is no scan (the render is blank, a copy would not be)
+    "imagemask-int": (b"q 612 0 0 792 0 0 cm /R1 Do Q\n" + OCR, "", "", 21, False),
+    "imagemask-name": (b"q 612 0 0 792 0 0 cm /R2 Do Q\n" + OCR, "", "", 22, False),
+    "no-bpc": (b"q 612 0 0 792 0 0 cm /R3 Do Q\n" + OCR, "", "", 23, False),
+    "real-bpc": (b"q 612 0 0 792 0 0 cm /R4 Do Q\n" + OCR, "", "", 24, False),
+    "bpc-0": (b"q 612 0 0 792 0 0 cm /R5 Do Q\n" + OCR, "", "", 25, False),
+    "bpc-64": (b"q 612 0 0 792 0 0 cm /R6 Do Q\n" + OCR, "", "", 26, False),
+    "real-bpc-dct": (b"q 612 0 0 792 0 0 cm /R7 Do Q\n" + OCR, "", "", 27, False),
+    "bpc-1": (b"q 612 0 0 792 0 0 cm /R8 Do Q\n" + OCR, "", "", 28, True),
+    # a refused image next to the scan: the refused one paints nothing, the scan is still not
+    # copied (a dictionary that rules a copy out denies the page wherever it is drawn)
+    "refused-and-scan": (SCAN + b"q 100 0 0 100 0 0 cm /R1 Do Q\n", "", "", 6, False),
 }
 
 

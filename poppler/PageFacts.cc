@@ -122,7 +122,8 @@ ImageCopy classifyImageCopy(const ImageDictInfo &info)
 {
     // Default colour spaces replace Device ones under the page's resources, which a copy job
     // does not see: rendered
-    if (info.inlineImg || info.softMask || info.mask || info.external || info.defaultSpaces) {
+    // an image Gfx refuses to draw shows nothing: a copy would show its samples
+    if (!info.drawable || info.inlineImg || info.softMask || info.mask || info.external || info.defaultSpaces) {
         return ImageCopy::Render;
     }
     // stored samples are copied only in a Device space: an ICC profile (or a CalGray/CalRGB
@@ -134,7 +135,8 @@ ImageCopy classifyImageCopy(const ImageDictInfo &info)
     }
     const bool oneBit = info.bpc == 1 || info.imageMask || info.filter == ImageFilter::CCITT || info.filter == ImageFilter::JBIG2;
     const bool grayish = info.imageMask || (info.color == ImageColor::Gray && !info.calibrated) || info.color == ImageColor::None;
-    if (oneBit && grayish && (info.bpc == 1 || info.bpc == 0) && !info.decode) {
+    // one bit for certain: an integer /BitsPerComponent 1, or a stencil (/ImageMask true)
+    if (oneBit && grayish && (info.bpc == 1 || (info.imageMask && info.bpc == 0)) && !info.decode) {
         return ImageCopy::Bilevel;
     }
     if (info.filter == ImageFilter::Other || info.imageMask) {

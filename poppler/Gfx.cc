@@ -4224,14 +4224,17 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
                 Object refObj = res->lookupXObjectNF(name);
                 reportImageGeometry(obj1StreamDict, refObj.isRef() ? refObj.getRef() : Ref::INVALID());
             }
+            bool maskGeometry = false;
             if (out->needImageMaskGeometry()) {
                 // only stencil masks, and never a stream whose header doImage would decode
                 Object imObj = obj1StreamDict->lookup("ImageMask");
                 const StreamKind kind = obj1Stream->getKind();
-                if (imObj.isBool() && imObj.getBool() && kind != strDCT && kind != strJPX && kind != strJBIG2) {
-                    Object refObj = res->lookupXObjectNF(name);
-                    doImage(&refObj, obj1Stream, false);
-                }
+                maskGeometry = imObj.isBool() && imObj.getBool() && kind != strDCT && kind != strJPX && kind != strJBIG2;
+            }
+            if (maskGeometry || (scanAudit && ocState)) {
+                // the scan-copy audit counts the image only where doImage would draw it
+                Object refObj = res->lookupXObjectNF(name);
+                doImage(&refObj, obj1Stream, false, !maskGeometry);
             }
         }
     } else if (obj2.isName("Form")) {
@@ -4319,6 +4322,135 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     }
     const ImageDictInfo info = readImageDictInfo(dict, false, res);
     out->imageGeometry(state, width, height, info.imageMask, ref, info);
+}
+
+// Whether Gfx::doImage would draw an image with this dictionary: each of its early returns that
+// the dictionary decides, mirrored (a JPEG 2000 stream may give its own bits and colour space,
+// which only decoding it shows: assumed given). False whenever doImage would refuse it.
+static bool imageDictDrawable(Dict *dict, bool inlineImg, const ImageDictInfo &info, GfxResources *resources)
+{
+    auto lookup = [](Dict *d, const char *key, const char *abbrev) {
+        Object o = d->lookup(key);
+        if (o.isNull()) {
+            o = d->lookup(abbrev);
+        }
+        return o;
+    };
+    // the size: an integer or a real, at least 1, and a row count that does not overflow
+    auto size = [&](Dict *d, const char *key, const char *abbrev, bool realOk) {
+        const Object o = lookup(d, key, abbrev);
+        if (o.isInt()) {
+            return o.getInt();
+        }
+        if (realOk && o.isReal() && std::isfinite(o.getReal()) && o.getReal() >= 1.0 && o.getReal() <= static_cast<double>(INT_MAX)) {
+            return static_cast<int>(o.getReal());
+        }
+        return 0;
+    };
+    const int width = size(dict, "Width", "W", true), height = size(dict, "Height", "H", true);
+    if (width < 1 || height < 1 || width >= (INT_MAX - 7) / height) {
+        return false;
+    }
+    const Object im = lookup(dict, "ImageMask", "IM");
+    if (!im.isNull() && !im.isBool()) {
+        return false;
+    }
+    const bool jpx = info.filter == ImageFilter::JPX;
+    const Object bpc = lookup(dict, "BitsPerComponent", "BPC");
+    const Object decode = lookup(dict, "Decode", "D");
+    if (info.imageMask) {
+        // a stencil: one bit (a codec's own depth unknown: refused), /Decode an array or absent
+        if (jpx || (bpc.isInt() && bpc.getInt() != 1)) {
+            return false;
+        }
+        return decode.isNull() || decode.isArray();
+    }
+    // samples: bits from the dictionary (or a JPEG 2000 codestream), a colour space, a Decode
+    // array with a range for every component
+    if (!jpx && !(bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 30)) {
+        return false;
+    }
+    if (jpx && !bpc.isNull() && !(bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 30)) {
+        return false; // a codestream's depth wins only when it can be read; do not count on it
+    }
+    const Object cs = lookup(dict, "ColorSpace", "CS");
+    if (cs.isNull() && !jpx) {
+        return false;
+    }
+    if (!decode.isNull()) {
+        int comps = 0;
+        switch (info.color) {
+        case ImageColor::Gray:
+        case ImageColor::Indexed:
+        case ImageColor::ICC1:
+        case ImageColor::Separation:
+            comps = 1;
+            break;
+        case ImageColor::RGB:
+        case ImageColor::ICC3:
+        case ImageColor::Lab:
+            comps = 3;
+            break;
+        case ImageColor::CMYK:
+        case ImageColor::ICC4:
+            comps = 4;
+            break;
+        default:
+            return false; // a range count only parsing the space shows
+        }
+        if (!decode.isArray() || decode.arrayGetLength() / 2 < comps) {
+            return false;
+        }
+        for (int i = 0; i < 2 * comps; ++i) {
+            if (!decode.arrayGet(i).isNum()) {
+                return false;
+            }
+        }
+    }
+    // masks: what doImage reads of them before it draws
+    const Object maskObj = dict->lookup("Mask");
+    const Object smaskObj = dict->lookup("SMask");
+    bool maskImage = false;
+    if (maskObj.isStream()) {
+        Dict *md = maskObj.getStream()->getDict();
+        if (md->lookup("Type").isName("XObject") && md->lookup("Subtype").isName("Image")) {
+            const Object mim = lookup(md, "ImageMask", "IM");
+            maskImage = !mim.isBool();
+        }
+    }
+    if (smaskObj.isStream() || maskImage) {
+        if (inlineImg) {
+            return false;
+        }
+        Dict *md = smaskObj.isStream() && !maskImage ? smaskObj.getStream()->getDict() : maskObj.getStream()->getDict();
+        if (!lookup(md, "Width", "W").isInt() || !lookup(md, "Height", "H").isInt() || !lookup(md, "BitsPerComponent", "BPC").isInt()) {
+            return false;
+        }
+        Object mcs = lookup(md, "ColorSpace", "CS");
+        if (mcs.isName() && resources) {
+            Object named = resources->lookupColorSpace(mcs.getNameString());
+            if (!named.isNull()) {
+                mcs = std::move(named);
+            }
+        }
+        if (!mcs.isName("DeviceGray") && !mcs.isName("G")) {
+            return false;
+        }
+    } else if (maskObj.isArray()) {
+        for (int i = 0; i < maskObj.arrayGetLength() && i < 2 * gfxColorMaxComps; ++i) {
+            if (!maskObj.arrayGet(i).isNum()) {
+                return false;
+            }
+        }
+    } else if (maskObj.isStream()) {
+        Dict *md = maskObj.getStream()->getDict();
+        const Object mim = lookup(md, "ImageMask", "IM");
+        const Object mdecode = lookup(md, "Decode", "D");
+        if (inlineImg || !lookup(md, "Width", "W").isInt() || !lookup(md, "Height", "H").isInt() || !(mim.isBool() && mim.getBool()) || !(mdecode.isNull() || mdecode.isArray())) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
@@ -4478,11 +4610,12 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
         parms = parms.arrayGet(0);
     }
     info.colorTransform = !parms.isNull() && !(parms.isDict() && parms.dictLookupNF("ColorTransform").isNull());
+    info.drawable = imageDictDrawable(dict, inlineImg, info, resources);
     info.copy = classifyImageCopy(info);
     return info;
 }
 
-void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
+void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
 {
     Dict *dict, *maskDict;
     int width, height;
@@ -4508,7 +4641,11 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
         jpxStream->setSupportJPXtransparency(true);
     }
 #endif
-    str->getImageParams(&bits, &csMode, &hasAlpha);
+    // a JPEG 2000 stream decodes itself to answer this: not for the audit, which then takes
+    // the dictionary's /BitsPerComponent (classifyImageCopy wants it given)
+    if (!auditOnly) {
+        str->getImageParams(&bits, &csMode, &hasAlpha);
+    }
 
     // get stream dict
     dict = str->getDict();
@@ -4520,6 +4657,18 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
             return;
         }
     }
+
+    // the scan-copy audit: an image XObject whose dictionary rules a copy out denies the page
+    // here (it may yet be drawn), and nothing more of it is read
+    if (auditOnly && !scanAudit->imageDict(dict, res)) {
+        return;
+    }
+    // where an image XObject is (or would be) drawn, the audit counts it
+    auto auditDrawn = [&] {
+        if (scanAudit && !inlineImg && ocState) [[unlikely]] {
+            scanAudit->imageDrawn(state, res, dict, ref, width, height);
+        }
+    };
 
     const std::array<double, 6> &ctm = state->getCTM();
     const double det = ctm[0] * ctm[3] - ctm[1] * ctm[2];
@@ -4631,13 +4780,15 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
         }
 
         // a text device may want only where the mask is (thin masks are rules)
-        if (ocState && !out->needNonText() && out->needImageMaskGeometry() && !singular_matrix) {
+        if (ocState && !out->needNonText() && out->needImageMaskGeometry() && !singular_matrix && !auditOnly) {
             out->imageMaskGeometry(state);
         }
 
         // if drawing is disabled, skip over inline image data (an XObject's data is never read)
         if (!out->needNonText() && !inlineImg) {
-            // reached only for needImageMaskGeometry()
+            // reached only for needImageMaskGeometry() or the audit: a drawing device would
+            // draw it here
+            auditDrawn();
         } else if (!ocState || !out->needNonText()) {
             if (!str->rewind()) {
                 error(errSyntaxError, getPos(), "Bad image parameters");
@@ -4648,6 +4799,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 
             // draw it
         } else {
+            auditDrawn();
             if (state->getFillColorSpace()->getMode() == csPattern) {
                 doPatternImageMask(ref, str, width, height, invert, inlineImg);
             } else {
@@ -4656,7 +4808,8 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
         }
     } else {
         // an image XObject reaches here without needNonText() only for needImageMaskGeometry()
-        if (!out->needNonText() && !inlineImg) {
+        // or the audit, which follows it to where it would be drawn
+        if (!out->needNonText() && !inlineImg && !auditOnly) {
             return;
         }
         if (bits == 0) {
@@ -4966,6 +5119,13 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
             haveExplicitMask = true;
         }
 
+        // the audit's image XObject: drawn here unless hidden or singular; its data is not read
+        if (auditOnly) {
+            if (!singular_matrix) {
+                auditDrawn();
+            }
+            return;
+        }
         // if drawing is disabled, skip over inline image data
         if (!ocState || !out->needNonText() || singular_matrix) {
             if (!str->rewind()) {
@@ -4983,6 +5143,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 
             // draw it
         } else {
+            auditDrawn();
             if (haveSoftMask) {
                 out->drawSoftMaskedImage(state, ref, str, width, height, &colorMap, interpolate, maskStr, maskWidth, maskHeight, maskColorMap.get(), maskInterpolate);
             } else if (haveExplicitMask) {

@@ -19,8 +19,10 @@
 //    RI FL SA SM Font Type; OP and op false; OPM; CA and ca 1; BM Normal or Compatible;
 //    SMask None; AIS false; TK);
 //  - Do of a form XObject without a transparency group (its content is checked op by op);
-//  - Do of one image XObject, shown (no /OC, not in hidden optional content), whose
-//    dictionary gives a copy class (classifyImageCopy) without masks, soft masks, an external
+//  - one image XObject that Gfx draws (counted in Gfx::doImage where a drawing device would
+//    draw it, so an image Gfx refuses, a bad dictionary, never stands for the page), shown
+//    (no /OC, not in hidden optional content), whose dictionary gives a copy class
+//    (classifyImageCopy, which also needs it drawable) without masks, soft masks, an external
 //    file, calibrated, ICC-based, Lab, separation or DeviceN colour, or Default colour spaces
 //    (an indexed space only over DeviceGray, DeviceRGB or DeviceCMYK; a stencil mask only in
 //    black), drawn upright, with a full fill opacity, the Normal blend mode, no transfer
@@ -33,7 +35,9 @@
 // Operators the table does not know are ignored by Gfx and paint nothing.
 //
 // Gfx feeds it (OutputDev::getScanCopyAudit, asked once per page Gfx): op() before each
-// operator runs, annotation() when an annotation is drawn. The device feeds the rest:
+// operator runs, imageDict() and imageDrawn() from doImage (on a device that draws nothing,
+// doImage runs an image XObject's dictionary through its checks without reading its data),
+// annotation() when an annotation is drawn. The device feeds the rest:
 // startPage(), clip() from its clip callbacks, deny() from transparency groups and soft masks.
 // pdftotext (TextOutputDev) and pdfregions (its own minimal device) both run it, so a copy
 // needs both to agree.
@@ -52,6 +56,7 @@
 
 class AnnotBorder;
 class AnnotColor;
+class Dict;
 class GfxResources;
 class GfxState;
 class Page;
@@ -90,6 +95,14 @@ public:
     void clip(const GfxState *state);
     // An annotation's appearance stream (or nothing) and border are about to be drawn.
     void annotation(const Object *appearance, const AnnotBorder *border, const AnnotColor *color);
+    // Gfx::doImage, before it reads anything else of an image XObject on the audit-only path:
+    // false (and the page denied) when the dictionary rules a copy out, so nothing more of the
+    // image needs reading.
+    bool imageDict(Dict *dict, GfxResources *res);
+    // Gfx::doImage is about to draw the image XObject <ref> (width x height samples) with this
+    // state: called exactly where a drawing device's drawImage (or drawImageMask) would run,
+    // so an image Gfx refuses to draw is never counted.
+    void imageDrawn(GfxState *state, GfxResources *res, Dict *dict, const Object *ref, int width, int height);
     void deny(Reason why);
 
     // The page passes for the image object <image>: it drew exactly that image, once, and
@@ -99,7 +112,6 @@ public:
     static const char *reasonName(Reason r);
 
 private:
-    void image(GfxState *state, GfxResources *res, bool ocState, const Object &xobj, const Object &ref);
     void extGState(GfxResources *res, const Object &name);
 
     bool started = false;

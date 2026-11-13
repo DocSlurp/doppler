@@ -55,11 +55,12 @@ enum class ImageColor : uint8_t
 //           /Decode, no /DecodeParms that could set /ColorTransform, no mask). Only the
 //           dictionary says so: a copier must still check the JPEG itself (SOF baseline, its
 //           component count against the colour space, its size against /Width, /Height);
-//  Bilevel  1-bit samples (CCITT, JBIG2, 1 bpc gray or a stencil mask), no /Decode (an
-//           inverted map) and no soft mask;
+//  Bilevel  1-bit samples (CCITT, JBIG2 or gray with an integer /BitsPerComponent 1, or a
+//           stencil mask, /ImageMask true), no /Decode (an inverted map) and no soft mask;
 //  Decode   another single image whose samples can be decoded at native size;
 //  Render   anything else (inline images, masked or soft-masked images, an XObject whose data
-//           is an external file, /F): render the region.
+//           is an external file, /F, and any image Gfx would refuse to draw: a non-boolean
+//           /ImageMask, a missing, real or out-of-range /BitsPerComponent, ...): render the region.
 enum class ImageCopy : uint8_t
 {
     Render,
@@ -84,6 +85,7 @@ struct ImageDictInfo
     bool inlineImg = false;
     bool calibrated = false; // CalGray or CalRGB: their gamma and matrix change what the samples show
     bool defaultSpaces = false; // the resources define DefaultGray, DefaultRGB or DefaultCMYK, which replace Device spaces
+    bool drawable = false; // Gfx::doImage would draw it, as far as the dictionary shows (none of its early returns)
     ImageCopy copy = ImageCopy::Render;
 };
 

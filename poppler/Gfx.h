@@ -373,7 +373,9 @@ private:
 
     // XObject operators
     void opXObject(Object args[], int numArgs);
-    void doImage(Object *ref, Stream *str, bool inlineImg);
+    // auditOnly: an image XObject run only for the scan-copy audit on a device that draws
+    // nothing (its data is never read; the audit counts it where it would be drawn)
+    void doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly = false);
     void reportImageGeometry(Dict *dict, Ref ref);
     void doForm(Object *str);
 

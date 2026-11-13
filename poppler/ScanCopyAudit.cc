@@ -82,6 +82,12 @@ bool isNum(const Object &o, double v)
     return o.isNum() && o.getNum() == v;
 }
 
+// Gfx::drawAnnot draws a border of positive width in a colour that is not transparent
+bool drawsBorder(const AnnotBorder *border, const AnnotColor *color)
+{
+    return border && border->getWidth() > 0 && (!color || color->getSpace() != AnnotColor::colorTransparent);
+}
+
 bool isDeviceSpaceName(const Object &o)
 {
     return o.isName("DeviceGray") || o.isName("DeviceRGB") || o.isName("DeviceCMYK");
@@ -169,7 +175,7 @@ void ScanCopyAudit::startPage(Page *page, const GfxState *state)
     }
 }
 
-void ScanCopyAudit::op(int opIndex, Object args[], int numArgs, GfxState *state, GfxResources *res, bool ocState)
+void ScanCopyAudit::op(int opIndex, Object args[], int numArgs, GfxState *state, GfxResources *res, bool /*ocState*/)
 {
     if (reason != Reason::None) {
         return; // already denied: the rest of the page costs one compare per operator
@@ -225,8 +231,8 @@ void ScanCopyAudit::op(int opIndex, Object args[], int numArgs, GfxState *state,
         Dict *dict = xobj.getStream()->getDict();
         Object subtype = dict->lookup("Subtype");
         if (subtype.isName("Image")) {
-            Object ref = res->lookupXObjectNF(name);
-            image(state, res, ocState, xobj, ref);
+            // counted by Gfx::doImage where it would draw it (imageDrawn): an image Gfx refuses
+            // to draw (a bad dictionary) shows nothing and must not stand for the page
         } else if (subtype.isName("Form")) {
             // its content runs through op() as well; a group changes how it composites, which
             // no operator inside shows
@@ -286,29 +292,21 @@ void ScanCopyAudit::extGState(GfxResources *res, const Object &name)
     }
 }
 
-void ScanCopyAudit::image(GfxState *state, GfxResources *res, bool ocState, const Object &xobj, const Object &ref)
+bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
 {
-    if (++images > 1) {
-        deny(Reason::SecondImage);
-        return;
+    if (reason != Reason::None) {
+        return false;
     }
-    Dict *dict = xobj.getStream()->getDict();
-    // hidden content, or optional content of its own (whether shown or not, render it)
-    if (!ocState || !dict->lookupNF("OC").isNull()) {
+    // optional content of its own (whether shown or not, render it)
+    if (!dict->lookupNF("OC").isNull()) {
         deny(Reason::Hidden);
-        return;
+        return false;
     }
-    if (!ref.isRef()) {
-        deny(Reason::ImageDict);
-        return;
-    }
-    imageRef = ref.getRef();
-
-    // the dictionary: a copy class, nothing masked, device colour only
+    // the dictionary: a copy class (which Gfx can draw), nothing masked, device colour only
     const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res);
-    if (info.copy == ImageCopy::Render || info.external || info.softMask || info.mask || info.calibrated || info.defaultSpaces || info.inlineImg) {
+    if (!info.drawable || info.copy == ImageCopy::Render || info.external || info.softMask || info.mask || info.calibrated || info.defaultSpaces || info.inlineImg) {
         deny(Reason::ImageDict);
-        return;
+        return false;
     }
     switch (info.color) {
     case ImageColor::Gray:
@@ -319,7 +317,7 @@ void ScanCopyAudit::image(GfxState *state, GfxResources *res, bool ocState, cons
         Object cs = dict->lookup("ColorSpace");
         if (!cs.isArray() || cs.arrayGetLength() < 2 || !isDeviceSpaceName(cs.arrayGet(1))) {
             deny(Reason::ImageDict);
-            return;
+            return false;
         }
         break;
     }
@@ -328,10 +326,10 @@ void ScanCopyAudit::image(GfxState *state, GfxResources *res, bool ocState, cons
             break;
         }
         deny(Reason::ImageDict);
-        return;
+        return false;
     default:
         deny(Reason::ImageDict);
-        return;
+        return false;
     }
     // CalGray and CalRGB read as Gray and RGB above, and are caught by info.calibrated; a
     // device colour space must be named as one
@@ -339,16 +337,34 @@ void ScanCopyAudit::image(GfxState *state, GfxResources *res, bool ocState, cons
         Object cs = dict->lookup("ColorSpace");
         if (!(isDeviceSpaceName(cs) || (cs.isArray() && cs.arrayGetLength() >= 1 && cs.arrayGet(0).isName("Indexed")))) {
             deny(Reason::ImageDict);
-            return;
+            return false;
         }
     }
+    return true;
+}
+
+void ScanCopyAudit::imageDrawn(GfxState *state, GfxResources *res, Dict *dict, const Object *ref, int width, int height)
+{
+    if (++images > 1) {
+        deny(Reason::SecondImage);
+        return;
+    }
+    if (!ref || !ref->isRef() || width < 1 || height < 1) {
+        deny(Reason::ImageDict);
+        return;
+    }
+    imageRef = ref->getRef();
+    if (!imageDict(dict, res)) {
+        return;
+    }
+    const bool imageMask = Gfx::readImageDictInfo(dict, false, res).imageMask;
 
     // how it is painted
     if (state->getFillOpacity() != 1.0 || state->getBlendMode() != gfxBlendNormal || !state->getTransfer().empty() || state->getFillOverprint()) {
         deny(Reason::ImagePaint);
         return;
     }
-    if (info.imageMask) {
+    if (imageMask) {
         // a stencil paints the fill colour: copied, it is black
         const GfxColorSpace *fcs = state->getFillColorSpace();
         const GfxColor *fc = &state->getFillColor();
@@ -377,15 +393,16 @@ void ScanCopyAudit::image(GfxState *state, GfxResources *res, bool ocState, cons
         deny(Reason::Orientation);
         return;
     }
+    const double tolX = tolerance, tolY = tolerance;
     const double ux0 = std::min({ x[0], x[1], x[2], x[3] }), ux1 = std::max({ x[0], x[1], x[2], x[3] });
     const double uy0 = std::min({ y[0], y[1], y[2], y[3] }), uy1 = std::max({ y[0], y[1], y[2], y[3] });
     double kx0, ky0, kx1, ky1;
     state->getClipBBox(&kx0, &ky0, &kx1, &ky1);
-    if (!(kx0 <= ux0 + tolerance && ky0 <= uy0 + tolerance && kx1 >= ux1 - tolerance && ky1 >= uy1 - tolerance)) {
+    if (!(kx0 <= ux0 + tolX && ky0 <= uy0 + tolY && kx1 >= ux1 - tolX && ky1 >= uy1 - tolY)) {
         deny(Reason::Clip);
         return;
     }
-    if (!(cropX0 <= ux0 + tolerance && cropY0 <= uy0 + tolerance && cropX1 >= ux1 - tolerance && cropY1 >= uy1 - tolerance)) {
+    if (!(cropX0 <= ux0 + tolX && cropY0 <= uy0 + tolY && cropX1 >= ux1 - tolX && cropY1 >= uy1 - tolY)) {
         deny(Reason::CropBox);
         return;
     }
@@ -436,10 +453,8 @@ void ScanCopyAudit::clip(const GfxState *state)
 
 void ScanCopyAudit::annotation(const Object *appearance, const AnnotBorder *border, const AnnotColor *color)
 {
-    // Gfx::drawAnnot draws the appearance stream, then a border of positive width in a colour
-    // that is not transparent
-    const bool drawsBorder = border && border->getWidth() > 0 && (!color || color->getSpace() != AnnotColor::colorTransparent);
-    if ((appearance && appearance->isStream()) || drawsBorder) {
+    // Gfx::drawAnnot draws the appearance stream, then the border
+    if ((appearance && appearance->isStream()) || drawsBorder(border, color)) {
         deny(Reason::Annotation);
     }
 }
