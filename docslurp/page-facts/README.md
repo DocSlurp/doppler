@@ -355,7 +355,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   DocSlurp requires for customer files.
 - pdftomarkdown's `--page-facts FILE` must not exist, is reached without following symbolic
   links, is created mode 0600 under a temporary name and renamed into place as soon as
-  pdftotext has finished (before image extraction); a FILE without a run line is incomplete.
+  pdftotext has finished (before image extraction), holding whole lines only (an
+  unterminated last line is dropped); a FILE without a run line is incomplete.
   The descriptor is inheritable only while pdftotext starts; a caller's `--page-facts-fd`
   descriptor cannot be marked close-on-exec from safe Rust, so pdfregions (and pdfpagefacts)
   close every descriptor above 2 at start.
@@ -385,7 +386,10 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   a sweep, within a run budget; the rule-grid score is a sweep over x with a Fenwick tree.
 - pdftotext has no time limit by default; `-timeout S`, `-timeout-per-page P` and
   `-timeout-max M` bound the run to S + P x pages of the range, at most M seconds (exit 6,
-  facts lines whole, no run line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
+  no run line). Facts lines written are whole, except the last one when the limit falls while
+  a facts write is blocked (a reader that stalled): it can end without its newline, so a
+  reader must drop an unterminated last line; pdftomarkdown drops it before committing
+  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
   -timeout-max 3600` when, and only when, page facts are requested.
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and

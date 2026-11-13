@@ -549,12 +549,18 @@ fn convert(
     code
 }
 
-/// Renames the facts file into place if pdftotext wrote to it (an empty one is removed); false
-/// when that failed.
+/// Renames the facts file into place if pdftotext wrote to it (an empty one is removed), without
+/// an unterminated last line (one with no whole line is removed); false when that failed.
 fn commit_facts(facts_file: Option<FactsFile>) -> bool {
     match facts_file {
         Some(f) if f.written() => match f.commit() {
-            Ok(()) => true,
+            Ok(false) => true,
+            Ok(true) => {
+                eprintln!(
+                    "pdftomarkdown: --page-facts: dropped an unterminated last line (pdftotext stopped mid-line)"
+                );
+                true
+            }
             Err(e) => {
                 eprintln!("pdftomarkdown: --page-facts: {e}");
                 false

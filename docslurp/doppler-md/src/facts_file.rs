@@ -6,8 +6,10 @@
 //! name in that folder, created `O_CREAT | O_EXCL | O_NOFOLLOW` with mode 0600, and renamed to
 //! FILE with `RENAME_NOREPLACE` once pdftotext has exited, so FILE appears whole or not at all
 //! and never replaces anything. The descriptor is inheritable only while pdftotext is being
-//! started; nothing else (the renderer, say) receives it. This process never reads or changes
-//! a line: the bytes are pdftotext's.
+//! started; nothing else (the renderer, say) receives it. This process never changes a line:
+//! the bytes are pdftotext's. It does drop an unterminated last line before the rename
+//! (pdftotext stopped mid-line, at its time limit while a reader stalled): a FILE holds whole
+//! lines only, and one with no whole line is not committed.
 
 use std::ffi::OsString;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
@@ -34,7 +36,8 @@ impl FactsFile {
         let file = rustix::fs::openat(
             &parent,
             &tmp,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            // read too: commit() looks for an unterminated last line through this descriptor
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::from_raw_mode(0o600),
         )
         .map_err(|e| format!("creating {shown}: {}", std::io::Error::from(e)))?;
@@ -58,18 +61,54 @@ impl FactsFile {
         self.file.as_ref().and_then(|f| rustix::fs::fstat(f).ok()).is_some_and(|st| st.st_size > 0)
     }
 
-    /// Renames the written file to FILE (which must still not exist).
-    pub fn commit(mut self) -> Result<(), String> {
+    /// Renames the written file to FILE (which must still not exist), after dropping an
+    /// unterminated last line: `Ok(true)` when one was dropped. A file left with no whole line
+    /// is refused (an error; it is removed).
+    pub fn commit(mut self) -> Result<bool, String> {
         let file = self.file.take();
+        let mut dropped = false;
         if let Some(f) = &file {
-            rustix::fs::fsync(f).map_err(|e| format!("writing {}: {}", self.shown, std::io::Error::from(e)))?;
+            let io = |e: rustix::io::Errno| format!("writing {}: {}", self.shown, std::io::Error::from(e));
+            let (keep, size) = whole_lines(f).map_err(io)?;
+            if keep < size {
+                rustix::fs::ftruncate(f, keep).map_err(io)?;
+                dropped = true;
+            }
+            if keep == 0 {
+                return Err(format!("{}: pdftotext wrote no whole line (it stopped mid-line)", self.shown));
+            }
+            rustix::fs::fsync(f).map_err(io)?;
         }
         drop(file);
         rustix::fs::renameat_with(&self.parent, &self.tmp, &self.parent, &self.name, RenameFlags::NOREPLACE)
             .map_err(|e| format!("renaming to {}: {}", self.shown, std::io::Error::from(e)))?;
         self.tmp.clear();
-        Ok(())
+        Ok(dropped)
     }
+}
+
+/// (the length up to and including the last newline, the file size), reading back from the end.
+fn whole_lines(f: &OwnedFd) -> Result<(u64, u64), rustix::io::Errno> {
+    let size = rustix::fs::fstat(f)?.st_size as u64;
+    let mut buf = vec![0u8; 1 << 16];
+    let mut end = size;
+    while end > 0 {
+        let start = end.saturating_sub(buf.len() as u64);
+        let chunk = &mut buf[..(end - start) as usize];
+        let mut got = 0;
+        while got < chunk.len() {
+            let n = rustix::io::pread(f, &mut chunk[got..], start + got as u64)?;
+            if n == 0 {
+                return Err(rustix::io::Errno::IO);
+            }
+            got += n;
+        }
+        if let Some(i) = chunk.iter().rposition(|&b| b == b'\n') {
+            return Ok((start + i as u64 + 1, size));
+        }
+        end = start;
+    }
+    Ok((0, size))
 }
 
 impl Drop for FactsFile {

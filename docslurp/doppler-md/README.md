@@ -410,14 +410,14 @@ the defaults; lossless output decodes to the same pixels).
 Page facts (schema `doppler-page-facts/1`: a doc line, one line per page, a run line; every
 field in [docslurp/page-facts/README.md](../page-facts/README.md)) are computed by pdftotext
 on the conversion's own pass (`-page-facts-fd`) and written unchanged: pdftomarkdown never
-reads or rewrites a line, so they are byte-identical to `pdfpagefacts` for the same range and
+rewrites a line (it only drops an unterminated last one from FILE), so they are byte-identical to `pdfpagefacts` for the same range and
 level, with or without `--stream`, `--markers` or `--math`. The Markdown is the same with or
 without them. Facts never go to stdout.
 
 | option | |
 |---|---|
-| `--page-facts FILE` | FILE must not exist and its folder is reached without following symbolic links; it is written mode 0600 under a temporary name and appears as soon as pdftotext has finished, before image extraction (also when the conversion failed: its lines say what was read; a FILE without a run line is incomplete) |
-| `--page-facts-fd N` | write them to descriptor N (3 or more), open for writing and inherited from the caller; pdfregions closes it (and every descriptor above 2) at start |
+| `--page-facts FILE` | FILE must not exist and its folder is reached without following symbolic links; it is written mode 0600 under a temporary name and appears as soon as pdftotext has finished, before image extraction (also when the conversion failed: its lines say what was read; a FILE without a run line is incomplete). It holds whole lines only: an unterminated last line (pdftotext stopped mid-write at its time limit) is dropped with a warning, and a FILE with no whole line is not created |
+| `--page-facts-fd N` | write them to descriptor N (3 or more), open for writing and inherited from the caller; pdfregions closes it (and every descriptor above 2) at start. Written unchanged: the reader must drop an unterminated last line (pdftotext stopped mid-write at its time limit) |
 | `--page-facts-level basic\|full` | `basic` (default) or every family |
 | `--page-facts-include LIST` | families added to basic: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure` |
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |

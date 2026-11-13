@@ -328,8 +328,10 @@ Wall-clock limit for the run, 0 for none (the default). With
 the limit is these seconds plus that many per page of the range (counted once the document is
 open), at most
 .BR \-timeout\-max " seconds"
-(0, the default: no cap). Past it pdftotext exits with 6; page facts lines already written are
-whole, and the run line is missing. pdftomarkdown passes
+(0, the default: no cap). Past it pdftotext exits with 6 and the run line is missing. Page facts
+lines already written are whole, except that the last one can end without its newline when the
+limit falls while a write is blocked (a pipe whose reader stalled): a reader must drop an
+unterminated last line. pdftomarkdown does so before it commits its facts file, and passes
 .B \-timeout 60 \-timeout\-per\-page 1 \-timeout\-max 3600
 when page facts are requested.
 .TP
