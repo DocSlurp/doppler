@@ -99,7 +99,7 @@ with t.TempDir() as d:
         "missing_prev": ("missing.py", ["prev"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -144,7 +144,8 @@ with t.TempDir() as d:
         if name == "lenstack":
             # the XHTML header's /Title (in an object stream both the doc line and the header
             # reach): each guarded scope parses it for itself
-            t.check(b"<title>Quarterly beat London</title>" in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, "-"])[0], "lenstack: the header reads /Title as drawing would, with or without facts")
+            on = with_facts(path, ["-bbox-layout"])[0]
+            t.check(b"<title>Quarterly beat London</title>" in on and b"<title>Quarterly beat London</title>" in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, "-"])[0], "lenstack: the header reads /Title as drawing would, with and without facts")
         if name in ("manysec999", "manysec1000", "tail_eof"):
             t.check(b">Record<" in outs[0] or b"Record" in outs[0], "%s: the page content (listed only by the oldest section) is drawn" % name)
         if name == "manysec1000":

@@ -19,49 +19,53 @@ python3 docslurp/page-facts/bench.py --bin build/utils \
 
 ## Issue #45: the /Prev chain read at open, read-only lookups for facts
 
-Measured 2026-11-13 at the council's round-2 commit, interleaving master (af38de11e) and this
-branch, CPU user+sys and peak RSS from `wait4`. Whole documents: median of 11 runs. `-l 1`
-(mostly open time): median of 7 runs. Shared 8-thread host at load average 5-9.
-
+Measured 2026-11-13 near the final commit, interleaving master (af38de11e) and this branch.
+CPU is user+sys and peak RSS comes from `wait4`.
+- **Runs:** whole documents are the median of 11 runs; `-l 1` (mostly open time) is the median
+  of 7 runs.
+- **Host:** the shared 8-thread host at load average 3-9.
 - **The pass** is `pdftotext -bbox-layout -wordmeta -rules -compact-layout`.
 - **`gs-incr-N`** is the Ghostscript manual with N classic incremental updates appended, each
   redefining `/Info`.
-- **The `h-*` files** are hostile chains made by the PR's generator.
+- **The `h-*` files** are made by `test/docslurp/page-facts/xref_hostile/chains.py`.
 
 | input | run | master CPU | branch CPU | change | RSS master / branch (MiB) |
 |---|---|---:|---:|---:|---:|
-| Ghostscript.pdf (477 pp) | the pass | 1.122 s | 1.128 s | +0.5 % | 25.2 / 25.1 |
-| Ghostscript.pdf | `pdfpagefacts -level full` | 0.448 s | 0.429 s | -4.3 % | 26.1 / 26.1 |
-| Ghostscript.pdf | `pdfpagefacts -level full -l 1` | 0.018 s | 0.017 s | -4.4 % | 19.6 / 19.7 |
-| gs-incr-999 (999 updates) | the pass | 0.652 s | 0.676 s | +3.8 % | 25.4 / 25.4 |
-| gs-incr-999 | `pdfpagefacts -level full` | 0.716 s | 0.697 s | -2.6 % | 26.1 / 26.1 |
-| gs-incr-999 | `pdftotext -l 1` | 0.016 s | 0.016 s | -0.8 % | 18.9 / 18.9 |
-| gs-incr-1200 (past the 1,000-section cap: rebuilt at open) | `pdftotext -l 1` | 0.017 s | 0.041 s | +24 ms | 18.9 / 19.6 |
-| h-deep (100,000 empty sections) | `pdftotext -l 1` | 2.797 s | 0.259 s | -91 % | 18.0 / 17.9 |
-| h-bomb (older xref stream, `/Size` 50,000,000, 340 KB of Flate) | `pdftotext -l 1` | 0.016 s | 0.018 s | +2 ms | 18.0 / 17.9 |
-| h-overlap (1,000 trailers, each a string over 4 MB) | `pdftotext -l 1` | 21.96 s | 0.88 s | -96 % | 26.4 / 25.3 |
+| Ghostscript.pdf (477 pp) | the pass | 0.537 s | 0.552 s | +2.9 % | 25.3 / 25.5 |
+| Ghostscript.pdf | `pdfpagefacts -level full` | 0.495 s | 0.440 s | -11.1 % (21 runs: -1.7 %) | 26.1 / 26.3 |
+| gs-incr-999 (999 updates) | the pass | 0.535 s | 0.542 s | +1.4 % | 25.5 / 25.4 |
+| gs-incr-999 | `pdfpagefacts -level full` | 0.451 s | 0.425 s | -5.7 % | 26.1 / 26.2 |
+| gs-incr-999 | `pdftotext -l 1` | 0.016 s | 0.016 s | -1.0 % | 19.0 / 18.9 |
+| gs-incr-1200 (past the 999-section cap) | `pdftotext -l 1` | 0.018 s | 0.046 s | +28 ms | 18.9 / 19.6 |
+| h-deep (100,000 empty sections) | `pdftotext -l 1` | 2.817 s | 0.262 s | -91 % | 17.8 / 18.0 |
+| h-bomb (older xref stream, `/Size` 50,000,000, 340 KB of Flate) | `pdftotext -l 1` | 0.010 s | 0.009 s | | 18.0 / 18.0 |
+| h-overlap (1,000 trailers, each a string over 4 MB) | `pdftotext -l 1` | 20.05 s | 0.105 s | -99.5 % | 26.4 / 26.5 |
 
 - **Whole documents** are within noise.
 - **Reading the chain at open** costs nothing measurable over 999 updates. Upstream already read
   most of the chain on the first fetch of an unchanged object.
-- **Past the section cap** the table is rebuilt at open (+24 ms here) instead of read lazily.
-- **The doc line** now reads under a guard instead of through a copy of the table: no extra
-  table memory and no cold object-stream cache.
+- **Past the section cap** the walk stops, and the first fetch of an object only the unread
+  sections list rebuilds the table (+28 ms here, flagged).
+- **The doc line** reads under a guard instead of through a copy of the table, so it needs no
+  extra table memory.
 - **Hostile chains** stay within the bounds:
-  - the 1,000-section cap ends the 100,000-section chain, which master walked with a quadratic
-    loop check;
-  - the growth and entry budgets refuse the 50,000,000-entry stream before allocating;
-  - the rebuild's trailer budget ends h-overlap's quadratic trailer parse (master re-parsed
-    4 MB once per trailer).
+  - the section cap ends the 100,000-section chain, which master walked with a quadratic loop
+    check;
+  - the growth budget refuses the 50,000,000-entry stream before allocating;
+  - the rebuild's trailer budget ends h-overlap's quadratic trailer parse (master re-parsed 4 MB
+    once per trailer).
 
-**Council repros** (round 1), branch vs master:
+**Council repros**, branch vs master, `pdftotext -q -l 1` (generators in `xref_hostile/`):
 
 | repro | master | branch |
 |---|---:|---:|
-| 4,000-deep nested `/XRefStm` in an older section, 4.2 MB | 0.01 s (never read) | 1.6 s, bounded by the shared parse budget and the trailer budget |
-| the same nesting in the main section | 2.6 s | 0.13 s |
-| 50 older xref streams with 268 MB predictor rows | 85 s | 0.02 s (rows past 4,096 bytes refused) |
-| `/Size` 9,000,000 in an older stream of a 702-byte file | 18 MiB | 17 MiB (growth budget: rebuilt at open) |
+| 4,000-deep nested `/XRefStm` in an older section, 4.2 MB | 0.01 s (never read) | 0.05 s |
+| 400-deep nested `/XRefStm` in the main section | 2.03 s | 0.04 s |
+| 50 older xref streams with 268 MB predictor rows | 21.9 s, 1,295 MiB | 1.22 s, 271 MiB (the decode budget ends the chain; the later rebuild still allocates the rows) |
+| 2,000 unterminated trailers in a rebuild | 8.99 s | 0.02 s |
+| 999 sections sharing one 65,536-entry Paeth `/XRefStm` | 0.01 s (never read) | 0.16 s (decode budget) |
+| 999 older 30,000-entry Paeth xref streams | 0.01 s (never read) | 0.18 s (decode budget) |
+| 1,000 sections, each an unterminated string to end of file | 0.01 s (never read) | 0.13 s (parse budget) |
 
 ## Issue #43: thin rules per grid, words centred inside images
 

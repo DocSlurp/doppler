@@ -2158,8 +2158,8 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
     // is first asked for, so the table no longer depends on fetch order. Bounds: at most 999
     // older sections (1,000 with the main one, as countSections), 30,000,000 entries listed
     // across them, table growth of at most max(65,536, the main section's /Size) slots, and twice
-    // the file's bytes plus 64 KiB of parsing shared with the main section; an xref stream's
-    // predictor row of at most 4,096 bytes.
+    // the file's bytes plus 64 KiB of parsing shared with the main section, and four times the
+    // file plus 16 MiB of decoding (entries' rows and predictor rows).
     //
     // Where the walk stops early (a loop, a broken section, a bound), what it read stands, the
     // section it stopped in is dropped (as the lazy read never used a section it could not read;
