@@ -82,8 +82,8 @@ OBJECTS = [
     image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 64 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 26
     image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8.0 /Filter /DCTDecode", JPEG),  # 27
     image("/Width 64 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 64 /Rows 40 >>", G4),  # 28
-    # 29, 30: a tall and a wide strip, 20000 samples along one axis (a 25th of a point each on
-    # the page): a 1 pt rounding slack would hide 25 rows or columns
+    # 29, 30: a tall and a wide strip, 20000 samples along one axis (25 or 33 to a point on
+    # a full page): a 1 pt rounding slack would hide 25 rows or columns
     image("/Width 10 /Height 20000 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 29
     image("/Width 20000 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 30
 ]
@@ -173,6 +173,18 @@ CASES = {
     "bpc-1": (b"q 612 0 0 792 0 0 cm /R8 Do Q\n" + OCR, "", "", 28, True),
     # a refused image next to the scan: the refused one paints nothing, the scan is still not
     # copied (a dictionary that rules a copy out denies the page wherever it is drawn)
+    # the rounding slack is at most half an image pixel: 0.9 pt hides over 20 rows of a strip with 25
+    # to a point, on any side, and a CropBox 0.9 pt short does the same
+    "strip-full": (b"q 612 0 0 792 0 0 cm /Tall Do Q\n", "", "", 29, True),
+    "strip-within-half-row": (b"q 0 0.01 612 791.98 re W n 612 0 0 792 0 0 cm /Tall Do Q\n", "", "", 29, True),
+    "strip-clip-top": (b"q 0 0 612 791.1 re W n 612 0 0 792 0 0 cm /Tall Do Q\n", "", "", 29, False),
+    "strip-clip-bottom": (b"q 0 0.9 612 791.1 re W n 612 0 0 792 0 0 cm /Tall Do Q\n", "", "", 29, False),
+    "strip-clip-left": (b"q 0.9 0 611.1 792 re W n 612 0 0 792 0 0 cm /Wide Do Q\n", "", "", 30, False),
+    "strip-clip-right": (b"q 0 0 611.1 792 re W n 612 0 0 792 0 0 cm /Wide Do Q\n", "", "", 30, False),
+    "strip-crop-box": (b"q 612 0 0 792 0 0 cm /Tall Do Q\n", "/CropBox [0 0 612 791.1]", "", 29, False),
+    "strip-crop-box-left": (b"q 612 0 0 792 0 0 cm /Wide Do Q\n", "/CropBox [0.9 0 612 792]", "", 30, False),
+    # a coarse scan (4 pt to a pixel) keeps the full point of slack
+    "coarse-clip-0.9": (b"q 0 0 612 791.1 re W n " + SCAN + b"Q\n", "", "", 6, True),
     "refused-and-scan": (SCAN + b"q 100 0 0 100 0 0 cm /R1 Do Q\n", "", "", 6, False),
 }
 

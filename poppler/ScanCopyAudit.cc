@@ -393,7 +393,10 @@ void ScanCopyAudit::imageDrawn(GfxState *state, GfxResources *res, Dict *dict, c
         deny(Reason::Orientation);
         return;
     }
-    const double tolX = tolerance, tolY = tolerance;
+    // the slack for rounding: at most a point, and less than half an image pixel on each axis,
+    // so no row or column of the image can sit outside what the page shows (a 60000-row image
+    // squeezed onto a page has 75 rows to a point)
+    const double tolX = std::min(tolerance, 0.5 * cx / width), tolY = std::min(tolerance, 0.5 * ry / height);
     const double ux0 = std::min({ x[0], x[1], x[2], x[3] }), ux1 = std::max({ x[0], x[1], x[2], x[3] });
     const double uy0 = std::min({ y[0], y[1], y[2], y[3] }), uy1 = std::max({ y[0], y[1], y[2], y[3] });
     double kx0, ky0, kx1, ky1;

@@ -26,7 +26,8 @@
 //    file, calibrated, ICC-based, Lab, separation or DeviceN colour, or Default colour spaces
 //    (an indexed space only over DeviceGray, DeviceRGB or DeviceCMYK; a stencil mask only in
 //    black), drawn upright, with a full fill opacity, the Normal blend mode, no transfer
-//    function and no overprint, and lying wholly inside the clip in force and the CropBox.
+//    function and no overprint, and lying wholly inside the clip in force and the CropBox
+//    (give or take rounding: at most a point and less than half an image pixel on each axis).
 //
 // Anything else, at any depth (forms, annotation appearances, charprocs), denies the page:
 // every other operator (fills, strokes, shadings, inline images, Type 3 glyph metrics),
@@ -119,7 +120,7 @@ private:
     int images = 0;
     Ref imageRef = Ref::INVALID();
     double cropX0 = 0, cropY0 = 0, cropX1 = 0, cropY1 = 0; // the CropBox in device space
-    double tolerance = 1; // a point, in device units
+    double tolerance = 1; // a point, in device units (at most half an image pixel is used)
 };
 
 #endif
