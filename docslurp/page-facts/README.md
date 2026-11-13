@@ -17,8 +17,16 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   inherited descriptor; `pdftomarkdown --page-facts` passes it one and never reads, parses
   or rewrites a line; `pdfpagefacts` drives the same code without laying out text. For the
   same input, page range, level and include list, all three write **byte-identical** lines
-  (tested), whatever else pdftomarkdown is asked for (`--markers`, `--math`, `--stream`).
-- **Never on stdout** for pdftomarkdown: Markdown stays on stdout, unchanged by facts.
+  (tested), whatever else pdftomarkdown is asked for (`--markers`, `--stream`). Exceptions:
+  `--math` adds `-glyphs`, which makes thin stencil image masks rules (grids drawn with them
+  differ); and pdftotext's XHTML header reads the document information (`/Title`, `/Author` and
+  so on), which `pdfpagefacts` never does: when such a read rebuilds the cross-reference table,
+  pdftotext's page lines say `xref-repaired-earlier` and withhold the thin-rule counts.
+- **Never on stdout** for pdftomarkdown: Markdown stays on stdout. Facts do not change it, except
+  on a damaged or unusual file where the `full` doc line's reads (outlines, names, page labels)
+  rebuild the cross-reference table or pull in an older `/Prev` section of it before the first
+  page is drawn: objects can then resolve that a run without facts leaves unresolved (see the
+  page-locality exceptions below).
 - The JSON Schema is [`doppler-page-facts-1.schema.json`](doppler-page-facts-1.schema.json).
   The man page is `utils/pdfpagefacts.1`. Benchmarks: [PERF.md](PERF.md).
 
@@ -73,7 +81,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
 | `pdfVersion` | `"M.m"` from the header and catalog `/Version`, absent when not 1.0-2.9 |
 | `linearized` | a linearization dictionary is present |
-| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening |
+| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or while the doc line read the catalog's outlines, names or page labels |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
 | `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
@@ -207,6 +215,14 @@ Each item also has (added within `/1`; absent from earlier builds):
   The box is axis-aligned: words in the corners of a rotated or skewed image, or outside a
   clip within its box, count as inside; and, as for `visibleWordCount`, paint over text is
   not tracked, so text drawn before an image that covers it still counts as visible.
+- `visibleWordsCentredInside`, `invisibleWordsCentredInside` (issue 43): the page's words whose
+  box *centre* lies inside the image's `bbox` (within the same 1 point), split the same way, for
+  the same 32 listed images. A caption line straddling the image's edge counts when its centre is
+  inside, which the whole-box counts above never do; a reader that tests word centres (the
+  layout walker's `wordsInside`) should read these. Against that walker: the walker's box is the
+  image's unclipped placement rounded to 0.01 point and it has no slack, while `bbox` here is the
+  part inside the clip and the page; a word centre within 1 point outside the box, or an image
+  clipped by its page or clip path, can count differently.
 - `bytesPerPixel`: the image stream's encoded bytes over `px` width x height, 6 decimals. The
   bytes are the stream's declared `/Length` (direct or by reference), and only when it is
   consistent: a non-negative integer below 2^31 as written in the file, within the file, with
@@ -261,8 +277,9 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing, and bar charts drawn only with filled boxes (the raw material of pdftomarkdown's vector figures, before its size and density tests). Bar charts follow doppler-md `vector::bar_regions` (below the table); one overlapping drawing clusters is joined with all of them (which can merge drawing clusters, so their count and order are not getGraphics' alone), otherwise it is listed after the drawing clusters, at most 64 a page |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`). A bar cluster has `curves` and `segments` 0 (unless joined into a drawing), and its `paths` count its boxes plus the stroked rules near it |
-| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`) |
-| `gridsTruncated` | more than 64 grids, or the grid search hit its rule or work cap: the list is incomplete |
+| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`), and `hRules`, `vRules`, `outerSides`, `connected` (issue 43, below) |
+| `gridsTruncated` | more than 64 grids, or the grid search (or the thin-rule search) hit its rule or work cap: the list is incomplete |
+| `unlistedRuledGrids` | walker-style ruled grids (connected thin rules) that no counted grid stands for (issue 43, below) |
 | `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far, or the page's bar-chart search hit its 64-run cap, its word cap or its budget (8M comparisons a page, 2^28 a run; never the run's figure budget) (`drawing-limit`) |
 
 **Bar charts** (doppler#38): a run is at least 3 filled boxes whose bases (bottom edge, or left edge for horizontal
@@ -319,6 +336,80 @@ so a router can see where a table is and how big it is without a layout pass:
   real table is drawn hides the table but not the flag. It adds nothing to `limitHit` or
   `limit-hit`.
 
+**Thin rules per grid** (issue 43, added within `/1`; absent from earlier builds). The grid
+search above also builds grids from shaded boxes, and finds column lines without outer sides;
+`hRules`, `vRules`, `outerSides` and `connected` on each grid, and `unlistedRuledGrids` on the
+page, say which of its lines are thin ruled lines, the way a reader that finds ruled grids from
+connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) counts them:
+
+- A thin rule is a `<rule>` of `pdftotext -rules` (a stroked line, or a fill at most 1.5 points
+  thin; never a shaded `<box>`), of any colour (white rules included, as the walker reads them),
+  taken at the 0.01 point the XHTML writes (rounded exactly as
+  its `%.2f` is), at most 3 points thick and at least 8 points long (horizontal: height ≤ 3,
+  width ≥ 8; vertical the other way round). Shaded fills thicker than 1.5 points and lines
+  stroked thicker than 3 are not thin rules; dashes and underlines 8 points or longer are.
+- Across the page, a horizontal and a vertical thin rule whose boxes come within 2.5 points join
+  one set (the walker's test); a set with at least 2 distinct horizontal lines and 3 vertical
+  ones is a walker grid.
+- A grid's rules are the thin rules whose centre line lies in its `bbox` grown by 2.5 points and
+  whose span overlaps that box. When some of them belong to a set of both directions, the grid
+  stands for the set with the most rules there (on a tie, the one holding the topmost horizontal
+  rule), and `connected` is true: a stray underline in a cell, or a separate checkbox, is not
+  counted. If that set reaches outside the box (a column line running on to a rule above or
+  below, a table the grid search splits in two) or another grid stands for it too, the grid
+  gets none of the four fields: its counts would not be the walker's. When no rule in the box
+  belongs to such a set, all of them count and `connected` is false.
+- `hRules` and `vRules` are the distinct lines counted: centres more than 2.5 points apart,
+  clustered from the lowest value as the walker does. A table drawn cell by cell has one line
+  per row border. A fully ruled table has `hRules` = rows + 1 and `vRules` = columns + 1 (its
+  walker grid's rows and columns); a zebra table of shaded rows with no rules of any kind has 0
+  and 0.
+- `outerSides` (0-4): the sides of `bbox` that the counted rules (centre within 2.5 points of
+  the side, each assigned to the nearer side) cover for at least 80% of its length. A fully
+  ruled table has 4; column lines only, 0.
+- `unlistedRuledGrids` (page): walker grids that no grid with `connected` true stands for,
+  because the grid search found no grid there (rules lighter than luminance 0.97, which it
+  skips; rows more than 8 body sizes apart) or the grid was left uncounted.
+- **Reading them as the walker's grids.** Take the facts and the XHTML the walker reads from one
+  `pdftotext -bbox-layout -rules -page-facts-fd N -page-facts-level full` run (no `-glyphs`), and
+  pair that run's facts with that run's XHTML. A page's walker grids are then known only when
+  `gridsTruncated` is false, `unlistedRuledGrids` is 0, every grid has `hRules`, and
+  `parseWarnings` holds no `xref-repaired` (a rebuild after the page's vector facts were taken
+  is not seen by them). They are the grids with `connected` true, `hRules` ≥ 2 and `vRules` ≥ 3,
+  of `hRules` - 1 rows and `vRules` - 1 columns, and they equal `ruled_grids` over that run's
+  XHTML (the walker's `layout_facts` then keeps the first 64 of its own, in its own order).
+  Otherwise treat the page's ruled grids as unknown. `test_walker_parity.py` checks this on the
+  walker's public fixtures and the grid fixtures here; council runs compared about 26,500 pages
+  of a local corpus in this pairing with no page known and wrong. Pages the grid search cannot
+  see (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are
+  unknown through `unlistedRuledGrids`, never known.
+- **One run, not two.** Anything else is outside the contract:
+  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). Two processes fetch
+    different objects (pdftotext's header reads the document information's `/Title`, `/Author`
+    and so on; the facts read outlines, names and page labels), and poppler resolves some
+    objects by what was fetched before: a fetch that rebuilds the cross-reference table, or one
+    that reads an older `/Prev` section of it (read only when a missing entry is asked for), can
+    make the same page draw differently in the two runs. A rebuild is visible (`pdftotext`
+    marks pages drawn after one `xrefRebuilt="1"` whenever `-rules` or `-images` is on); a
+    lazily read older section is not.
+  - Different flags or ranges: thin image-mask rules are rules only under `-glyphs` (which
+    `pdftomarkdown --math` adds), and the run's rule budget depends on where the range starts.
+  - `pdftomarkdown --page-facts`: it computes the same facts on its own pass, but keeps its
+    XHTML to itself, so there is no XHTML of that run for a walker to read.
+- Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
+  the page's rule list is partial (the page's rule cap); the walker would read fewer rules than
+  the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
+  budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
+  run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
+  were taken (by the doc line's reads of outlines, names or page labels, which pdftotext alone
+  never makes, or by an earlier fetch: an object may then resolve to another body than a run
+  that never rebuilt it reads; a rebuild at open is every run's and does not count); a thin
+  rule's corners or extent are not finite, or its centre is past 10^9 points; more than
+  4,096 thin rules run either
+  way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
+  the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
+  part of the rules could be too low.
+
 ### `forms` (`forms`)
 
 Widget annotations of the page and their fields (`/FT`, `/Ff` and `/V` inherited through at
@@ -367,7 +458,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
-| `xref-repaired-earlier` | an earlier page of the run rebuilt the table: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
+| `xref-repaired-earlier` | an earlier page of the run (or, in pdftotext, its XHTML header) rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
 
 Errors raised while loading a shared resource (a font, an image dictionary) are reported on
@@ -418,7 +509,14 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   read from an object the file holds twice can differ; a router wanting page-local facts of
   such a document should run the page alone), and the
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
-  colour-space budgets), past which `limit-hit` is set.
+  colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
+  grids also lose their thin-rule counts (`gridsTruncated`), as do a page's grids once the
+  cross-reference table was rebuilt after open. One more, older than issue 43: at levels that read the
+  catalog's outlines, names or page labels (`full`), a reference there to a missing or broken
+  object rebuilds the table before the first page is drawn (or, without a rebuild, reads an older
+  `/Prev` section of it, which makes an object resolve that a run without facts never reads), so
+  `pdftotext -page-facts-fd` can write different XHTML than the same run without facts on such a
+  file. A rebuild is flagged; an older section read is not.
 
 ## Hostile input
 

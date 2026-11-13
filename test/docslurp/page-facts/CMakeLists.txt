@@ -22,3 +22,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
   docslurp_add_test(page-facts-cost test_cost_bounds.py)
 endif()
+# Issue 43: per-grid thin-rule counts and words centred inside images against DocSlurp's
+# layout walker (docslurp-oss worker/scripts/pdf_layout_facts.py and its public fixtures).
+# Set -DDOCSLURP_OSS_DIR=<checkout> (or the DOCSLURP_OSS_DIR environment variable at test
+# time); without it the test is skipped.
+if(DOCSLURP_OSS_DIR)
+  docslurp_add_test(page-facts-walker-parity test_walker_parity.py --oss ${DOCSLURP_OSS_DIR})
+else()
+  docslurp_add_test(page-facts-walker-parity test_walker_parity.py)
+endif()
+set_tests_properties(docslurp-page-facts-walker-parity PROPERTIES SKIP_RETURN_CODE 77)

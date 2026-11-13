@@ -17,6 +17,36 @@ python3 docslurp/page-facts/bench.py --bin build/utils \
   /usr/share/doc/ghostscript/Ghostscript.pdf FILE.pdf ...
 ```
 
+## Issue #43: thin rules per grid, words centred inside images
+
+Measured 2026-11-13 on the same inputs (the Ghostscript manual, the three poppler-test files and
+bench.py's synthetic sets), interleaving master (dd02511ee) and this branch (e50929235), median of
+21 runs with bench.py's C harness, CPU user+sys, on the shared 8-thread host at load average 6-10.
+Same A/B method as #40: `pdftotext -bbox-layout -wordmeta -rules -compact-layout` (the pass),
+the pass with `-page-facts-fd` at `full`, and `pdfpagefacts -level full`.
+
+| input | full vs pass, master | full vs pass, #43 | pass + full CPU, #43 vs master | pdfpagefacts full, #43 vs master |
+|---|---:|---:|---:|---:|
+| Ghostscript.pdf (477 pp) | +8.5 % | +10.6 % | +1.3 % | -0.0 % |
+| ClarityOCGs.pdf | +3.5 % | +3.2 % | +0.9 % | +0.3 % |
+| checkbox_issue_159.pdf | +2.9 % | -0.2 % | -4.0 % | +1.2 % |
+| type3.pdf | +3.7 % | -3.8 % | +5.1 % | -1.0 % |
+| synthetic text, 500 pp | +16.5 % | +15.6 % | +1.0 % | -2.7 % |
+| synthetic scans + OCR layer, 300 pp | +18.5 % | +20.7 % | -2.2 % | +1.6 % |
+| synthetic MRC scans, 100 pp | +11.3 % | +9.4 % | +4.0 % | +1.9 % |
+
+No CPU this benchmark can tell from noise. The facts-only measure (`pdfpagefacts full`) is -2.7 %
+to +1.9 % (Ghostscript -0.0 %, 0.728 s both). The pass with facts on Ghostscript is +1.3 %
+(1.072 s against 1.058 s), while the bare pass, which this change does not touch, moved -0.7 %
+between the same two builds; the 14-19 ms files move ±5 % run to run (an earlier round on a busier
+host gave -4.6 % to +2.8 %). What the fields cost: at `vectors`, each page's non-box rules are
+rounded to 0.01 pt (`to_chars`/`from_chars`, four a rule) and the thin ones sorted; pages with
+both directions get a sorted sweep for touching pairs and a union-find over at most 8,192 rules,
+and each grid a run of its candidate rules (at most 2^20 visits a page in all); at
+`images-detail`, a second test of each word's centre against at most 32 images. Hostile cases
+are in `test_cost_bounds.py` (a 2,400 x 2,400 crossing mesh: the visit cap; 11 pages of 19,000
+rules then a table: the run's rule budget), within the bounds there.
+
 ## Issue #40: grids, words inside images, bytes per pixel
 
 Measured 2026-11-13 on the same inputs (the Ghostscript manual, the three poppler-test files and

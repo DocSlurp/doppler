@@ -842,6 +842,96 @@ def grid_caps_pdf():
     return doc([{"content": big + words(20, y=300) + table}, {"content": decoys + words(200, y=500) + table}, {"content": many}, {"content": tiny + table}])
 
 
+# --- issue 43: thin rules per grid, words centred inside images -----------------------------
+
+
+def grid_rules_pdf():
+    """Page 1: a 3 x 4 table ruled cell by cell (each cell a stroked rectangle). Page 2: a zebra
+    table of shaded row boxes and no rules. Page 3: shaded rows with two column lines (no outer
+    sides). Page 4: a table in a 4-point frame with thin inner rules (the frame is too thick to
+    count). Page 5: a fully ruled table with a stray underline in one cell and a white rule.
+    Page 6: a ruled table, then 20,005 tiny fills (the page's rule cap): no rule counts."""
+    xs, ys = [72, 172, 272, 372, 472], [700, 670, 640, 610]
+    p1 = "".join("%g %g %g %g re S\n" % (xs[c], ys[r + 1], xs[c + 1] - xs[c], ys[r] - ys[r + 1]) for r in range(3) for c in range(4)) + _cells(xs, ys, "c")
+    zebra = "0.85 g\n" + "".join("72 %d 400 18 re f\n" % (700 - 30 * k) for k in range(5)) + "0 g\n"
+    p2 = zebra + words(4, y=300)
+    p3 = zebra + "0.5 w\n" + _vlines([205, 338], 580, 718) + words(4, y=300)
+    frame = "4 w\n72 580 400 120 re S\n0.5 w\n" + _hlines(72, 472, [670, 640, 610]) + _vlines([172, 272, 372], 580, 700)
+    p4 = frame + _cells(xs, [700, 670, 640, 610, 580], "f")
+    p5 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + _cells(xs, ys, "u") + "0.6 w\n80 676 m 140 676 l S\n1 1 1 RG\n72 655 m 472 655 l S\n"
+    p6 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": "0.5 w\n" + p1}, {"content": p2}, {"content": p3}, {"content": p4}, {"content": p5}, {"content": p6}])
+
+
+def grid_split_pdf():
+    """Ruled tables whose connected thin rules the grid search does not see as one box (council,
+    issue 43). Page 1: column lines through two blocks of rules told apart by a jump in spacing
+    (one walker grid, two grid-search grids). Page 2: a 118-point row between two ruled blocks,
+    column lines through all of it. Page 3: the left column line rises to a 20-point rule above
+    the table. Page 4: the column lines drop to a 10-point rule below the last row. Page 5: a
+    table ruled only horizontally with one short vertical tick that touches nothing. Page 6:
+    5,001 short dashes, then a ruled table (the layout walker reads 5,000 rules a page and never
+    sees the table). Page 7: 4,990 dashes, then the same table (the walker sees it)."""
+    ys1 = [700, 680, 660, 640, 570, 550, 530, 510]
+    p1 = _hlines(72, 400, ys1) + _vlines([72, 236, 400], 510, 700)
+    ys2 = [700, 680, 660, 542, 522, 502]
+    p2 = _hlines(72, 400, ys2) + _vlines([72, 236, 400], 502, 700)
+    ys3 = [700, 680, 660, 640]
+    p3 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 640, 700) + _vlines([72], 700, 730) + _hlines(62, 82, [730])
+    p4 = _hlines(72, 400, ys3) + _vlines([72, 236, 400], 600, 700) + _hlines(230, 242, [600])
+    p5 = _hlines(72, 400, [700, 680, 660, 640, 620]) + _vlines([120], 645, 655)
+    def dashes(n):
+        return "".join("%d %d m %d %d l S\n" % (20 + 5 * (k % 110), 100 + 2 * (k // 110), 22 + 5 * (k % 110), 100 + 2 * (k // 110)) for k in range(n))
+
+    table = _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": "0.5 w\n" + c + words(4, y=300)} for c in (p1, p2, p3, p4, p5, dashes(5001) + table, dashes(4990) + table)])
+
+
+def grid_rebuilt_pdf():
+    """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
+    doc line does, and pdftotext never does) rebuilds the cross-reference table."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
+
+
+def grid_reopened_pdf():
+    """A ruled table on 2 pages of a file whose startxref is wrong: poppler rebuilds the
+    cross-reference table at open, as every run of it does."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    pdf = doc([{"content": table}, {"content": table}])
+    at = pdf.rindex(b"startxref\n") + len(b"startxref\n")
+    end = pdf.index(b"\n", at)
+    return pdf[:at] + b"%d" % (int(pdf[at:end]) + 7) + pdf[end:]
+
+
+def grid_titled_pdf():
+    """A ruled table in a file whose document information /Title names a missing object: only
+    pdftotext's XHTML header reads it (and rebuilds the table), never the page facts."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], extras=["<< /Title 99 0 R >>"], trailer_extra="/Info {0} 0 R")
+
+
+def grid_far_pdf():
+    """A ruled table at the foot of a 2 x 10^9-point page (displayed y near 2 x 10^9): past 10^9
+    points, no counts."""
+    y = 400
+    table = "0.5 w\n" + "".join("72 %d m 472 %d l S\n" % (v, v) for v in (y, y - 30, y - 60)) + "".join("%d %d m %d %d l S\n" % (x, y - 60, x, y) for x in (72, 272, 472))
+    return doc([{"content": table, "mediabox": (0, 0, 612, 2000000000)}])
+
+
+def caption_straddle_pdf():
+    """A photo (PDF y 400..600) with a caption line whose words straddle its bottom edge with
+    their centres inside, a line straddling it with centres outside, and a line well below."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Photo {0} 0 R >> >>"
+    photo = stream("/Type /XObject /Subtype /Image /Width 600 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(600 * 400 // 4))
+    # 4 words on a baseline at the photo's edge: boxes cross it, centres inside
+    text = "BT /F1 10 Tf 80 400 Td (Harbour at golden hour) Tj ET\n"
+    # 4 words 5 points lower: boxes cross the edge, centres below it
+    text += "BT /F1 10 Tf 200 395 Td (Photo by the crew) Tj ET\n"
+    text += words(10, y=300)
+    return doc([{"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + text, "resources": res}], extras=[photo])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -871,4 +961,11 @@ ALL = {
     "lengths": lengths_pdf,
     "lengths_rebuilt": lambda: lengths_pdf(break_xref=True),
     "grid_caps": grid_caps_pdf,
+    "grid_rules": grid_rules_pdf,
+    "caption_straddle": caption_straddle_pdf,
+    "grid_split": grid_split_pdf,
+    "grid_rebuilt": grid_rebuilt_pdf,
+    "grid_far": grid_far_pdf,
+    "grid_reopened": grid_reopened_pdf,
+    "grid_titled": grid_titled_pdf,
 }

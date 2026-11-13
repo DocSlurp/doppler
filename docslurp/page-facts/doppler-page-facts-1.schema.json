@@ -193,6 +193,8 @@
                   "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] },
                   "visibleWordsInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box lies inside this image's box (within 1 point). Added within /1: absent from earlier builds." },
                   "invisibleWordsInside": { "$ref": "#/$defs/count", "description": "Invisible words (render mode 3, or clipped) inside this image's box: an OCR layer over a scan. Added within /1: absent from earlier builds." },
+                  "visibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box centre lies inside this image's box (within 1 point): a caption line straddling the image's edge counts when its centre is inside. Added within /1 (issue 43): absent from earlier builds." },
+                  "invisibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Invisible words whose box centre lies inside this image's box (within 1 point), as visibleWordsCentredInside. Added within /1 (issue 43): absent from earlier builds." },
                   "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's declared /Length over px width x height, only when that /Length is the file's own non-negative integer and ends at endstream; never decoded. Absent otherwise, for inline images, external (/F) data and earlier builds." }
                 }
               }
@@ -238,11 +240,16 @@
                   "bbox": { "$ref": "#/$defs/box" },
                   "rows": { "type": "integer", "minimum": 1 },
                   "columns": { "type": "integer", "minimum": 1 },
-                  "coverage": { "$ref": "#/$defs/ratio" }
+                  "coverage": { "$ref": "#/$defs/ratio" },
+                  "hRules": { "type": "integer", "minimum": 0, "maximum": 4096, "description": "Distinct horizontal thin-rule lines of the grid (centres more than 2.5 points apart). A thin rule is a <rule> of pdftotext -rules (a stroked line or a fill at most 1.5 points thin, any colour; never a shaded <box>), at the 0.01 point the XHTML writes, at most 3 points thick and at least 8 points long. Rules of the two directions whose boxes come within 2.5 points join one set across the page. The grid's rules are the thin rules whose centre line lies in its box grown by 2.5 points and whose span overlaps it; when some belong to a set of both directions, only the set with the most rules there counts (connected true), and only when every rule of that set lies in the box and no other grid stands for it (otherwise the grid has no hRules, vRules, outerSides or connected); when none does, all of them count (connected false). A fully ruled table has rows + 1. Added within /1 (issue 43): absent from earlier builds, and from every grid of a page whose rule list is partial, that has more than 5,000 non-box rules or any past the run's 200,000-rule budget (the layout walker would read fewer), in a document whose cross-reference table was rebuilt after open, a thin rule not finite or centred past 10^9 points, or whose thin-rule search hit a cap (gridsTruncated is then set)." },
+                  "vRules": { "type": "integer", "minimum": 0, "maximum": 4096, "description": "Distinct vertical thin-rule lines of the grid, as hRules. A fully ruled table has columns + 1. Added within /1 (issue 43); absent as hRules is." },
+                  "outerSides": { "type": "integer", "minimum": 0, "maximum": 4, "description": "How many of the box's four sides the counted thin rules (centre within 2.5 points of the side, each rule assigned to the nearer side) cover for at least 80% of their length. Added within /1 (issue 43); absent as hRules is." },
+                  "connected": { "type": "boolean", "description": "The counts are one connected set of horizontal and vertical thin rules (a walker grid when hRules >= 2 and vRules >= 3); false: no horizontal and vertical thin rules in the box touch, and the counts are all of them. Added within /1 (issue 43); absent as hRules is." }
                 }
               }
             },
-            "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, or a word size outside the body-size bins." },
+            "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, a word size outside the body-size bins, or (with every grid's hRules, vRules, outerSides and connected, and unlistedRuledGrids, then absent) more than 5,000 non-box rules on the page, a non-box rule past the run's rule budget, a cross-reference table rebuilt after open, a thin rule not finite or centred past 10^9 points, more than 4,096 thin rules a direction or 2^20 thin-rule visits." },
+            "unlistedRuledGrids": { "$ref": "#/$defs/count", "description": "Connected sets of thin rules with at least 2 distinct horizontal and 3 vertical lines (the layout walker's ruled grids) that no counted grid (connected true) stands for: a ruled table the grid list misses or splits. A reader that wants the walker's grids has them only when gridsTruncated is false, this is 0 and every grid has hRules. Added within /1 (issue 43): absent from earlier builds and when the thin-rule search is incomplete." },
             "limitHit": { "type": "boolean" }
           }
         },
