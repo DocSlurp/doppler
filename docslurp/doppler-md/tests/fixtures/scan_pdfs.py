@@ -20,6 +20,11 @@ G4 stream), so no binary fixture is checked in:
   rebuilt.pdf p1 the DCT scan, p2 a Flate grey scan, p3 the DCT scan again (another object),
               whose content stream's cross-reference entry points at the font: fetching it
               rebuilds the table, after pages 1 and 2 were found copyable
+  kinds.pdf   one page per kind of scan, for --scan-pages copy (the default): p1 the DCT scan,
+              p2 another DCT object with an invisible OCR layer, p3 the DCT scan with an
+              invisible OCR layer and a visible page number, p4 a JPX scan, p5 four DCT strips
+              (tiled), p6 a JPX scan under a full-page CCITT stencil mask (layered), p7 a CCITT
+              G4 scan; only p1, p2 and p7 are copied
 """
 
 import os
@@ -170,3 +175,29 @@ scan = b"q 612 0 0 792 0 0 cm /%s Do Q"
 rebuilt = simple_doc([scan % b"S", scan % b"G", scan % b"U"], {"S": dct, "G": gray, "U": dct_again})
 with open(os.path.join(out, "rebuilt.pdf"), "wb") as f:
     f.write(break_entry(rebuilt, 12, 6))
+
+
+# a 32 x 40 grey JPEG 2000 codestream (Pillow/OpenJPEG, irreversible, one layer at 20:1),
+# stretched over the page: copy="decode", never copied byte for byte
+J2K = bytes.fromhex(
+    "ff4fff510029000000000020000000280000000000000000000000200000002800000000000000000001070101ff52000c00"
+    "000001000504040000ff5c002342772076f076f076c06f006f006ee067506750676850055005504757d357d35762ff640025"
+    "000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e34ff90000a00000000002c0001ff93c1"
+    "c1000563c38200030ec7c61014c37fd4c7080022ea1b28c8c033a19680ffd9"
+)
+jpx = img("/Width 32 /Height 40 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /JPXDecode", J2K)
+dct_ocr = img("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", jpeg)
+ccitt = img("/Width 800 /Height 1000 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 800 /Rows 1000 >>", g4)
+stencil = img("/Width 800 /Height 1000 /ImageMask true /BitsPerComponent 1 /Decode [1 0] /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 800 /Rows 1000 >>", g4)
+full = b"q 612 0 0 792 0 0 cm /%s Do Q\n"
+kinds = [
+    full % b"S",
+    full % b"O" + ocr,
+    full % b"S" + ocr + b"BT 0 Tr /F1 9 Tf 300 20 Td (17) Tj ET\n",
+    full % b"J",
+    b"".join(b"q 612 0 0 198 0 %d cm /T Do Q " % (198 * k) for k in range(4)),
+    full % b"J" + b"0 g " + full % b"M",
+    full % b"C",
+]
+with open(os.path.join(out, "kinds.pdf"), "wb") as f:
+    f.write(simple_doc(kinds, {"S": dct, "O": dct_ocr, "J": jpx, "T": dct_strip, "M": stencil, "C": ccitt}))

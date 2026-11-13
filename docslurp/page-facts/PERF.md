@@ -17,6 +17,36 @@ python3 docslurp/page-facts/bench.py --bin build/utils \
   /usr/share/doc/ghostscript/Ghostscript.pdf FILE.pdf ...
 ```
 
+## Issue #40: grids, words inside images, bytes per pixel
+
+Measured 2026-11-13 on the same inputs (the Ghostscript manual, the three poppler-test files and
+bench.py's synthetic sets), interleaving master (f4355280e) and this branch, median of 21 runs
+with bench.py's C harness, CPU user+sys. The host was much busier than for the tables below
+(load average 30-55 on 8 threads), so absolute CPU is about twice theirs; the comparison is
+between builds run alternately on the same load. Script: an A/B driver over `bench.run`
+(`pdftotext` pass, `+ -page-facts-fd basic`, `+ -page-facts-fd full`, `pdfpagefacts -level full`).
+
+| input | full vs pass, master | full vs pass, #40 | pass + full CPU, #40 vs master | pdfpagefacts full, #40 vs master |
+|---|---:|---:|---:|---:|
+| Ghostscript.pdf (477 pp) | +9.1 % | +9.4 % | -0.5 % | +0.8 % |
+| ClarityOCGs.pdf | +3.6 % | +2.1 % | +0.1 % | +0.4 % |
+| checkbox_issue_159.pdf | +3.4 % | +2.9 % | -1.4 % | +2.4 % |
+| type3.pdf | +1.4 % | +2.7 % | +0.2 % | +1.2 % |
+| synthetic text, 500 pp | +13.1 % | +13.3 % | +0.3 % | +1.5 % |
+| synthetic scans + OCR layer, 300 pp | +13.1 % | +13.5 % | -0.4 % | -2.4 % |
+| synthetic MRC scans, 100 pp | +16.5 % | +13.5 % | -1.4 % | -0.9 % |
+
+The new fields add no CPU this benchmark can tell from noise (-1.4 % to +0.3 % of the pass
+with facts at `full`; an earlier 15-run round gave -3.5 % to +3.1 %). The full-level overhead
+over the bare pass stays where master has it on the same load (Ghostscript +9.4 % against
+master's +9.1 %; the +6.0 % in the tables below was measured on a quieter host). What the
+fields cost: one box per word kept while `images-detail` is on (40 bytes), tested against at
+most 32 listed images at the end of the page; a half-point size histogram per word at
+`vectors`; the grid search over the page's rules (sorts plus the bounded grouping); and, once
+per image XObject, a 41-byte read after its declared `/Length`. Hostile cases are in
+`test_cost_bounds.py` (rules that never share a group: the 2^20-visit cap; 32 images under
+60,000 words a page), within the bounds there.
+
 ## Summary against the #32 targets
 
 | target | result |

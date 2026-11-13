@@ -185,6 +185,71 @@ with t.TempDir() as d:
     t.check(v3["shadings"] == 1 and v3["patterns"] == 1 and v3["clips"] == 1, "shading, pattern and clip counted", repr(v3))
     t.check(v4["limitHit"] and v4["paths"] == 100000 and "drawing-limit" in page(ls, 4)["unusualFeatures"] and "limit-hit" in page(ls, 4)["parseWarnings"], "drawing-limit at 100000 paths", repr(v4))
 
+    # --- D ruled grids (issue 40) --------------------------------------------------------------------------
+    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
+    t.check(v2["grids"] == [] and v3["grids"] == [] and not v2["gridsTruncated"], "chart and shading pages: no grid", repr((v2["grids"], v3["grids"])))
+    ls = lines(facts(paths["grids"], "-level", "full")[1])
+    g = [page(ls, n)["vectors"] for n in range(1, 7)]
+    shape = [[(x["rows"], x["columns"]) for x in v["grids"]] for v in g]
+    t.check(shape[0] == [(4, 4), (4, 3)] and [x["bbox"] for x in g[0]["grids"]] == [[72, 92, 472, 212], [72, 342, 462, 422]], "two ruled tables, one with a merged header: 4 x 4 and 4 rows x 3 columns", repr(g[0]["grids"]))
+    t.check(all(0 < x["coverage"] < 1 for x in g[0]["grids"]) and g[0]["grids"][0]["coverage"] == 0.099, "grid coverage: the box over the page", repr(g[0]["grids"]))
+    t.check(shape[1] == [(3, 2), (3, 2)], "two tables sharing a width: split where the rule spacing jumps", repr(g[1]["grids"]))
+    t.check(len(g[2]["grids"]) == 64 and g[2]["gridsTruncated"] and not g[2]["limitHit"], "72 grids: 64 listed, gridsTruncated", repr((len(g[2]["grids"]), g[2]["gridsTruncated"])))
+    t.check(shape[3] == [(2, 1)], "a table ruled only horizontally: one column", repr(g[3]["grids"]))
+    t.check(shape[4] == [] and not g[4]["gridsTruncated"], "white rules: no grid", repr(g[4]["grids"]))
+    t.check(shape[5] == [(7, 3)], "shaded row boxes with column rules: their edges are row lines", repr(g[5]["grids"]))
+    basic = page(lines(facts(paths["grids"])[1]), 1)
+    t.check("vectors" not in basic, "basic: no grids")
+
+    # --- C words inside images and bytes per pixel (issue 40) ------------------------------------------------
+    ls = lines(facts(paths["image_words"], "-level", "full")[1])
+    w1, w2, w3, w4, w5 = (page(ls, n) for n in range(1, 6))
+    it1 = w1["images"]["items"][0]
+    t.check(it1["invisibleWordsInside"] == w1["text"]["wordCount"] == 300 and it1["visibleWordsInside"] == 0, "scan with an invisible OCR layer: invisibleWordsInside is the page's word count", repr((it1, w1["text"]["wordCount"])))
+    it2 = w2["images"]["items"][0]
+    t.check(it2["visibleWordsInside"] == 6 and it2["invisibleWordsInside"] == 0 and w2["text"]["wordCount"] == 26, "photo with a caption over it: the caption's 6 words inside, the 20 below not", repr(it2))
+    jpeg, chart = w3["images"]["items"]
+    t.check(jpeg["filter"] == "dct" and chart["filter"] == "flate" and jpeg["bytesPerPixel"] == 0.375 and chart["bytesPerPixel"] < 0.01 and jpeg["bytesPerPixel"] > 30 * chart["bytesPerPixel"], "JPEG scan next to a flat chart: bytes per pixel far apart", repr((jpeg, chart)))
+    t.check(jpeg["visibleWordsInside"] == 0 and jpeg["invisibleWordsInside"] == 0, "no words: zero inside")
+    t.check(w4["images"]["items"][0]["bytesPerPixel"] == 1, "an indirect /Length: 5000 bytes over 100 x 50", repr(w4["images"]["items"]))
+    t.check("bytesPerPixel" not in w5["images"]["items"][0] and w5["images"]["items"][0]["inline"], "an inline image: no bytes per pixel", repr(w5["images"]["items"]))
+    rc, out, _ = facts("-", "-level", "full", stdin=open(paths["image_words"], "rb").read())
+    t.check(rc == 0 and out == facts(paths["image_words"], "-level", "full")[1], "stdin: the same bytes per pixel and words inside")
+    basic = page(lines(facts(paths["image_words"])[1]), 1)
+    t.check("items" not in basic["images"], "basic: no image items")
+    # bytesPerPixel only from a declared /Length that is the file's own and ends at endstream
+    ls = lines(facts(paths["lengths"], "-level", "full")[1])
+    got = [page(ls, n)["images"]["items"][0].get("bytesPerPixel") for n in range(1, 8)]
+    t.check(got == [1, None, None, None, None, None, 1], "/Length 5000, short, missing, 0, 10^12, past endstream, by reference: only the true ones", repr(got))
+    # a cross-reference table rebuilt by an earlier page does not change a later page's value
+    whole = lines(facts(paths["lengths_rebuilt"], "-level", "full")[1])
+    t.check("xref-repaired" in page(whole, 1)["parseWarnings"], "lengths_rebuilt: page 1 rebuilds the table", repr(page(whole, 1)["parseWarnings"]))
+    ok = True
+    for n in range(2, 9):
+        alone = page(lines(facts(paths["lengths_rebuilt"], "-level", "full", "-f", str(n), "-l", str(n))[1]), n)
+        a, b = dict(page(whole, n)), dict(alone)
+        a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
+        ok = ok and a == b
+    t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings equal its single-page run")
+    t.check(all("xref-repaired-earlier" in page(whole, n)["parseWarnings"] for n in range(2, 9)) and "xref-repaired-earlier" not in page(whole, 1)["parseWarnings"], "pages read after a mid-run rebuild: xref-repaired-earlier", repr([page(whole, n)["parseWarnings"] for n in range(1, 9)]))
+    t.check(all("xref-repaired-earlier" not in page(lines(facts(paths["lengths_rebuilt"], "-f", str(n), "-l", str(n))[1]), n)["parseWarnings"] for n in (2, 5)), "a single-page run without a rebuild: no xref-repaired-earlier")
+    t.check(all("xref-repaired-earlier" not in l.get("parseWarnings", []) for n in paths for l in lines(facts(paths[n])[1]) if n != "lengths_rebuilt"), "intact fixtures: no xref-repaired-earlier")
+    t.check([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)] == got, "after a mid-run xref rebuild: the same bytes per pixel", repr([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)]))
+
+    # the grid list says when it is incomplete
+    ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
+    c = [page(ls, n)["vectors"] for n in range(1, 5)]
+    t.check(c[0]["gridsTruncated"] and len(c[0]["grids"]) == 1, "a word size outside the body-size bins: gridsTruncated", repr(c[0]))
+    t.check(not c[1]["gridsTruncated"] and [(g["rows"], g["columns"]) for g in c[1]["grids"]] == [(3, 2)], "256 decoy sizes: the body size is still the text's, the table found", repr(c[1]["grids"]))
+    t.check(c[2]["gridsTruncated"] and c[2]["hRules"] == 4100, "4,100 horizontal rules: the grid search's rule cap, gridsTruncated", repr((c[2]["gridsTruncated"], c[2]["hRules"])))
+    t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
+
+    # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
+    for name, count in (("grids", 6), ("image_words", 5)):
+        whole = lines(facts(paths[name], "-level", "full")[1])
+        ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
+        t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)
+
     # --- D vectors: bar charts drawn only with filled boxes (doppler#38) ---------------------------------------
     started = time.monotonic()
     ls = lines(facts(paths["bars"], "-level", "full")[1])
@@ -345,6 +410,11 @@ with t.TempDir() as d:
     t.check(rc == 1 and lines(out)[0].get("error") == "open-failed" and b"missing" not in err and b"missing" not in out, "cannot open: exit 1, error line, no path echoed", repr((rc, out, err)))
     rc, out, err = facts(d.write("garbage.pdf", b"not a pdf at all"))
     t.check(rc == 1 and lines(out)[0]["type"] == "doc" and "error" in lines(out)[0], "not a PDF: exit 1 with an error doc line", repr((rc, out)))
+    # an odd-length UTF-16 /Producer (half a code unit at the end): pdftotext's HTML meta header
+    # used to read past the string and abort (found by the mutation fuzz)
+    odd = d.write("odd-producer.pdf", fx.doc([{"content": fx.words(3)}], extras=["<< /Producer <FEFF00410042> /Creator <FEFF0041004200> >>"], trailer_extra="/Info {0} 0 R"))
+    p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", odd, "-"], capture_output=True, timeout=60)
+    t.check(p.returncode == 0 and b'content="AB"' in p.stdout, "pdftotext: an odd-length UTF-16 /Creator ends its meta string, no abort", repr((p.returncode, p.stdout[:400])))
     rc, out, _ = facts("-", stdin=open(paths["multipage"], "rb").read())
     t.check(rc == 0 and out == facts(paths["multipage"])[1], "stdin (-) gives the same lines")
     rc, out, err = facts(paths["geometry"], "-max-pages", "2")

@@ -1446,6 +1446,9 @@ static void printInfoString(FILE *f, Dict *infoDict, const char *key, const char
         }
         while (i < obj.getString().size()) {
             if (isUnicode) {
+                if (i + 1 >= s1.size()) {
+                    break; // an odd byte count: the last byte is half a code unit
+                }
                 u = ((s1.at(i) & 0xff) << 8) | (s1.at(i + 1) & 0xff);
                 i += 2;
             } else {
