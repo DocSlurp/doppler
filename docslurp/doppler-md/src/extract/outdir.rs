@@ -4,8 +4,20 @@
 //! The parent is opened one path component at a time with `O_NOFOLLOW | O_DIRECTORY`, so no
 //! component may be a symbolic link; the folder is made with `mkdirat` (it must not exist) and
 //! opened with `O_NOFOLLOW`. Files are written to a temporary name created with
-//! `O_CREAT | O_EXCL | O_NOFOLLOW` and renamed into place with `RENAME_NOREPLACE`. Names are
-//! checked against the id pattern: no document string reaches a path.
+//! `O_CREAT | O_EXCL | O_NOFOLLOW`, synced to disk (`fsync`) and renamed into place with
+//! `RENAME_NOREPLACE`, so a name never holds a partial file after a crash; the folders' entries
+//! are synced before `manifest.jsonl` is written, and the folder again after it. Images go to
+//! one subfolder per page (`page-0012/image-003.webp`), made with `mkdirat` (mode 0700, it must
+//! not exist) under the folder's descriptor and opened with `O_NOFOLLOW`; files are 0600.
+//! Whatever the umask, nothing is readable by others: copy or `chmod` the files to share them.
+//! Names are checked against the layout's pattern ([`super::layout::valid_rel`]): no document
+//! string reaches a path.
+//!
+//! `--images-resume` opens an existing folder ([`OutDir::open_existing`]) the same way: page
+//! folders already there are reused (opened with `O_NOFOLLOW`), files are still created new
+//! (`RENAME_NOREPLACE`: an existing file is never overwritten), `manifest.jsonl` alone is
+//! replaced ([`OutDir::replace`], an atomic rename), and [`OutDir::remove`] removes only what
+//! this run created, never the folder or what was there.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -15,12 +27,20 @@ use std::path::{Component, Path};
 use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
 use rustix::io::Errno;
 
-/// The folder being written: its descriptor and its parent's, and the names created in it.
+/// The folder being written: its descriptor and its parent's, the page subfolders made in it
+/// (with the one in use held open), and the files created (subfolder, name).
 pub struct OutDir {
     parent: OwnedFd,
     name: std::ffi::OsString,
     dir: OwnedFd,
-    created: Vec<String>,
+    created: Vec<(Option<String>, String)>,
+    subdirs: std::collections::HashSet<String>,
+    /// the page subfolders this run made (the others were there: `existing`)
+    made: Vec<String>,
+    /// the folder was there before this run (`--images-resume`)
+    existing: bool,
+    /// the subfolder last written to, and its descriptor
+    current: Option<(String, OwnedFd)>,
 }
 
 fn err(what: &str, e: Errno) -> String {
@@ -52,12 +72,131 @@ impl OutDir {
                 return Err(err(&format!("opening {}", path.display()), e));
             }
         };
-        Ok(OutDir { parent, name, dir, created: Vec::new() })
+        Ok(OutDir {
+            parent,
+            name,
+            dir,
+            created: Vec::new(),
+            subdirs: std::collections::HashSet::new(),
+            made: Vec::new(),
+            existing: false,
+            current: None,
+        })
     }
 
-    /// Writes `data` as `name` (checked with [`valid_name`]), which must not exist.
+    /// Opens the existing folder `path` (no component may be a symbolic link), for
+    /// `--images-resume`.
+    pub fn open_existing(path: &Path) -> Result<OutDir, String> {
+        let (parent, name) = open_parent(path, "--images-resume must end in a folder name")?;
+        let dir = rustix::fs::openat(
+            &parent,
+            &name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| err(&format!("opening {}", path.display()), e))?;
+        Ok(OutDir {
+            parent,
+            name,
+            dir,
+            created: Vec::new(),
+            subdirs: std::collections::HashSet::new(),
+            made: Vec::new(),
+            existing: true,
+            current: None,
+        })
+    }
+
+    /// Regular file `name` (`manifest.jsonl`) in the folder, opened for reading without
+    /// following a symbolic link, with its length; `Ok(None)` when it does not exist.
+    pub fn open_read(&self, name: &str) -> Result<Option<(std::fs::File, u64)>, String> {
+        let fd = match rustix::fs::openat(
+            &self.dir,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(e) => return Err(err(&format!("opening {name}"), e)),
+        };
+        let st = rustix::fs::fstat(&fd).map_err(|e| err(&format!("reading {name}"), e))?;
+        if rustix::fs::FileType::from_raw_mode(st.st_mode) != rustix::fs::FileType::RegularFile {
+            return Err(format!("{name} is not a regular file"));
+        }
+        Ok(Some((std::fs::File::from(fd), st.st_size as u64)))
+    }
+
+    /// The descriptor of page subfolder `sub`: made (0700, must not exist) the first time,
+    /// reopened without following links after another subfolder was used.
+    fn subdir(&mut self, sub: &str) -> Result<&OwnedFd, String> {
+        if self.current.as_ref().is_none_or(|(n, _)| n != sub) {
+            self.current = None;
+            if !self.subdirs.contains(sub) {
+                match rustix::fs::mkdirat(&self.dir, sub, Mode::from_raw_mode(0o700)) {
+                    Ok(()) => self.made.push(sub.to_string()),
+                    // a resumed folder's page folder (opened below without following links)
+                    Err(Errno::EXIST) if self.existing => {}
+                    Err(e) => return Err(err(&format!("creating {sub}"), e)),
+                }
+                self.subdirs.insert(sub.to_string());
+            }
+            let fd = rustix::fs::openat(
+                &self.dir,
+                sub,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| err(&format!("opening {sub}"), e))?;
+            self.current = Some((sub.to_string(), fd));
+        }
+        Ok(&self.current.as_ref().expect("set above").1)
+    }
+
+    /// Writes `data` as `name` (checked with [`valid_name`]: `manifest.jsonl`, or a page
+    /// subfolder and a file in it), which must not exist.
     pub fn write(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
         if !valid_name(name) {
+            return Err("invalid file name".into());
+        }
+        let (sub, file) = match name.split_once('/') {
+            Some((d, f)) => (Some(d.to_string()), f),
+            None => (None, name),
+        };
+        if let Some(d) = &sub {
+            self.subdir(d)?;
+        }
+        let at: &OwnedFd = match (&sub, &self.current) {
+            (Some(_), Some((_, fd))) => fd,
+            _ => &self.dir,
+        };
+        let tmp = format!(".{file}.part");
+        let fd = rustix::fs::openat(
+            at,
+            tmp.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|e| err(&format!("creating {name}"), e))?;
+        self.created.push((sub.clone(), tmp.clone()));
+        let mut f = std::fs::File::from(fd);
+        f.write_all(data).map_err(|e| format!("writing {name}: {e}"))?;
+        // on disk before its name appears: after a crash the name holds the whole file or
+        // is absent, never an empty or partial one (the folder's entries are synced by
+        // `sync` and `sync_top`)
+        f.sync_all().map_err(|e| format!("syncing {name}: {e}"))?;
+        drop(f);
+        rustix::fs::renameat_with(at, tmp.as_str(), at, file, RenameFlags::NOREPLACE)
+            .map_err(|e| err(&format!("renaming {name}"), e))?;
+        self.created.pop();
+        self.created.push((sub, file.to_string()));
+        Ok(())
+    }
+
+    /// Replaces `manifest.jsonl` with `data` in one rename (a resumed folder's manifest): the
+    /// old one stays until the new one is whole on disk.
+    pub fn replace(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
+        if name != super::manifest::NAME {
             return Err("invalid file name".into());
         }
         let tmp = format!(".{name}.part");
@@ -68,27 +207,68 @@ impl OutDir {
             Mode::from_raw_mode(0o600),
         )
         .map_err(|e| err(&format!("creating {name}"), e))?;
-        self.created.push(tmp.clone());
+        self.created.push((None, tmp.clone()));
         let mut f = std::fs::File::from(fd);
-        f.write_all(data).map_err(|e| format!("writing {name}: {e}"))?;
+        f.write_all(data).and_then(|()| f.sync_all()).map_err(|e| format!("writing {name}: {e}"))?;
         drop(f);
-        rustix::fs::renameat_with(&self.dir, tmp.as_str(), &self.dir, name, RenameFlags::NOREPLACE)
+        rustix::fs::renameat(&self.dir, tmp.as_str(), &self.dir, name)
             .map_err(|e| err(&format!("renaming {name}"), e))?;
+        // the new manifest is not this run's to remove
         self.created.pop();
-        self.created.push(name.to_string());
         Ok(())
     }
 
-    /// Flushes the folder's entries to disk.
-    pub fn sync(&self) -> Result<(), String> {
+    /// Flushes the entries of the page subfolders and of the folder to disk.
+    pub fn sync(&mut self) -> Result<(), String> {
+        self.current = None;
+        let mut subs: Vec<&String> = self.subdirs.iter().collect();
+        subs.sort();
+        for d in subs {
+            let fd = rustix::fs::openat(
+                &self.dir,
+                d.as_str(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| err("opening a page folder", e))?;
+            rustix::fs::fsync(&fd).map_err(|e| err("syncing a page folder", e))?;
+        }
+        self.sync_top()
+    }
+
+    /// Flushes the folder's own entries (not its page subfolders') to disk.
+    pub fn sync_top(&self) -> Result<(), String> {
         rustix::fs::fsync(&self.dir).map_err(|e| err("syncing the folder", e))
     }
 
-    /// Removes the files written and the folder (which fails, leaving it, when something else
-    /// put a file in it).
-    pub fn remove(self) -> Result<(), String> {
-        for n in &self.created {
-            let _ = rustix::fs::unlinkat(&self.dir, n.as_str(), AtFlags::empty());
+    /// Removes the files written, the page subfolders made and the folder (a folder that
+    /// something else put a file in stays, and this fails). A resumed folder keeps itself and
+    /// everything that was in it: only this run's files and page folders go.
+    pub fn remove(mut self) -> Result<(), String> {
+        self.current = None;
+        for (sub, n) in &self.created {
+            match sub {
+                None => {
+                    let _ = rustix::fs::unlinkat(&self.dir, n.as_str(), AtFlags::empty());
+                }
+                Some(d) => {
+                    let opened = rustix::fs::openat(
+                        &self.dir,
+                        d.as_str(),
+                        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    );
+                    if let Ok(fd) = opened {
+                        let _ = rustix::fs::unlinkat(&fd, n.as_str(), AtFlags::empty());
+                    }
+                }
+            }
+        }
+        for d in &self.made {
+            let _ = rustix::fs::unlinkat(&self.dir, d.as_str(), AtFlags::REMOVEDIR);
+        }
+        if self.existing {
+            return Ok(());
         }
         drop(self.dir);
         rustix::fs::unlinkat(&self.parent, &self.name, AtFlags::REMOVEDIR).map_err(|e| err("removing the folder", e))
@@ -174,10 +354,16 @@ impl NewFile {
         )
         .map_err(|e| err(&format!("creating {}", self.shown), e))?;
         let mut f = std::fs::File::from(fd);
-        let written = f.write_all(data).map_err(|e| format!("writing {}: {e}", self.shown)).and_then(|()| {
-            rustix::fs::renameat_with(&self.parent, &tmp, &self.parent, &self.name, RenameFlags::NOREPLACE)
-                .map_err(|e| err(&format!("renaming to {}", self.shown), e))
-        });
+        // the data on disk before the name appears, then the name itself
+        let written = f
+            .write_all(data)
+            .and_then(|()| f.sync_all())
+            .map_err(|e| format!("writing {}: {e}", self.shown))
+            .and_then(|()| {
+                rustix::fs::renameat_with(&self.parent, &tmp, &self.parent, &self.name, RenameFlags::NOREPLACE)
+                    .map_err(|e| err(&format!("renaming to {}", self.shown), e))
+            })
+            .and_then(|()| rustix::fs::fsync(&self.parent).map_err(|e| err(&format!("syncing {}", self.shown), e)));
         drop(f);
         if written.is_err() {
             let _ = rustix::fs::unlinkat(&self.parent, &tmp, AtFlags::empty());
@@ -186,14 +372,10 @@ impl NewFile {
     }
 }
 
-/// `manifest.json`, or `p<page>.<n>` / `p<page>.g<n>` with a `.webp`, `.png` or `.svg`
-/// extension (page 1..=9 digits, n 1..=6, no leading zeros).
+/// `manifest.jsonl`, or an image path of the layout (`page-0012/image-003.webp`; see
+/// [`super::layout::valid_rel`]).
 pub fn valid_name(name: &str) -> bool {
-    if name == "manifest.json" {
-        return true;
-    }
-    let Some((stem, ext)) = name.rsplit_once('.') else { return false };
-    matches!(ext, "webp" | "png" | "svg") && valid_id(stem)
+    name == super::manifest::NAME || super::layout::valid_rel(name)
 }
 
 /// An image id as pdftotext and the converter make them: `p<page>.<n>` or `p<page>.g<n>`.
@@ -213,10 +395,11 @@ mod tests {
 
     #[test]
     fn names_come_only_from_ids() {
-        for ok in ["p1.1.webp", "p3.g12.svg", "p123456789.999999.png", "manifest.json"] {
+        for ok in ["page-0001/image-001.webp", "page-0003/figure-012.svg", "manifest.jsonl"] {
             assert!(valid_name(ok), "{ok}");
         }
         for bad in [
+            "p1.1.webp",
             "p1.1",
             "p0.1.webp",
             "p1.01.webp",
@@ -229,9 +412,50 @@ mod tests {
             "q1.1.png",
             "p1.1.webp\n",
             ".p1.1.webp",
+            "page-0001",
+            "page-0001/",
+            "/page-0001/image-001.webp",
+            "page-0001//image-001.webp",
+            "manifest.jsonl/x",
+            "manifest.json",
         ] {
             assert!(!valid_name(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn page_folders_are_private_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("doppler-outdir-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let dir = base.join("out");
+        let mut d = OutDir::create(&dir).unwrap();
+        d.write("page-0001/image-001.webp", b"a").unwrap();
+        d.write("page-0002/figure-001.svg", b"b").unwrap();
+        // back to a page folder made earlier
+        d.write("page-0001/image-002.webp", b"c").unwrap();
+        assert!(d.write("page-0001/image-001.webp", b"again").is_err(), "never replaces");
+        assert!(d.write("../x/image-001.webp", b"x").is_err());
+        d.write("manifest.jsonl", b"{}").unwrap();
+        d.sync().unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("page-0001")), 0o700);
+        assert_eq!(mode(&dir.join("page-0001/image-002.webp")), 0o600);
+        assert_eq!(std::fs::read(dir.join("page-0001/image-002.webp")).unwrap(), b"c");
+        // a page folder that something else made first is refused
+        std::fs::create_dir(dir.join("page-0003")).unwrap();
+        assert!(d.write("page-0003/image-001.webp", b"x").is_err());
+        std::fs::remove_dir(dir.join("page-0003")).unwrap();
+        // a symbolic link planted as a page folder is not followed
+        std::os::unix::fs::symlink(&base, dir.join("page-0004")).unwrap();
+        assert!(d.write("page-0004/image-001.webp", b"x").is_err());
+        std::fs::remove_file(dir.join("page-0004")).unwrap();
+        d.remove().unwrap();
+        assert!(!dir.exists());
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

@@ -300,6 +300,48 @@ pub struct Image {
     /// the image XObject's object and generation numbers (`ref="num gen"`), so repeats of one
     /// object can be found; `None` for an inline image or a producer without it
     pub obj: Option<(u32, u32)>,
+    /// how its pixels can be taken out without rendering (`copy=`, from its dictionary only)
+    pub copy: CopyClass,
+    /// a copy of its pixels shows what the page shows: its page passed the producer's copy
+    /// allow-list (`copyable="1"`: nothing but this one image paints on the page, drawn
+    /// plainly), its rows and columns land on the page as stored (`orient="0"`) and the overpaint
+    /// estimate saw nothing over it (`overlaid="0"`, an extra refusal). Any attribute missing
+    /// reads as not, so an older producer renders.
+    pub copy_exact: bool,
+    /// a render of its box shows its own pixels and nothing else, so another placement of the
+    /// same object at the same size renders the same: [`Image::copy_exact`], not an image mask
+    /// (painted in the fill colour) and not masked (`smask=`, it shows what lies under it)
+    pub plain: bool,
+}
+
+/// An image's copy class, as the producer's `copy=` says it: `jpeg` (a JPEG to copy unchanged),
+/// `bilevel` (1-bit samples), `decode` (other samples decodable at native size), or `render`
+/// (anything else, an inline image, or a producer without the attribute).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CopyClass {
+    #[default]
+    Render,
+    Jpeg,
+    Bilevel,
+    Decode,
+}
+
+/// A full-page scan, as the producer's `scan=` and `scanImage=` on `<page>` say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanInfo {
+    pub kind: ScanKind,
+    /// the covering image's one-based position in the page's image list
+    pub image: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanKind {
+    /// one image covers the page
+    Single,
+    /// several images (strips, tiles) do together
+    Tiled,
+    /// the covering image is masked or carries another page-sized image (mixed raster content)
+    Layered,
 }
 
 /// The most images one page keeps; a page with more is `images_truncated`.
@@ -334,6 +376,8 @@ pub struct Page {
     pub images: Vec<Image>,
     /// the producer or the parser dropped images of this page
     pub images_truncated: bool,
+    /// doppler `-images`: the page is a full-page scan (`scan=`, `scanImage=`)
+    pub scan: Option<ScanInfo>,
     /// doppler `-images`: clusters of drawing that is not axis-aligned
     pub graphics: Vec<Graphic>,
     pub width: f64,
@@ -368,7 +412,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 24] = [
+const KEYS: [&str; 33] = [
     "xMin",
     "yMin",
     "xMax",
@@ -393,6 +437,15 @@ const KEYS: [&str; 24] = [
     "directions",
     "ref",
     "crop",
+    "copy",
+    "orient",
+    "scan",
+    "scanImage",
+    "overlaid",
+    "smask",
+    "copyable",
+    "xrefRebuilt",
+    "rebuilt",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -422,6 +475,15 @@ fn key_index(name: &str) -> Option<usize> {
         "directions" => 21,
         "ref" => 22,
         "crop" => 23,
+        "copy" => 24,
+        "orient" => 25,
+        "scan" => 26,
+        "scanImage" => 27,
+        "overlaid" => 28,
+        "smask" => 29,
+        "copyable" => 30,
+        "xrefRebuilt" => 31,
+        "rebuilt" => 32,
         _ => return None,
     })
 }
@@ -588,6 +650,8 @@ enum Tag<'a> {
     Image(&'a str),
     /// `<graphic .../>`
     Graphic(&'a str),
+    /// `<xref .../>`: the cross-reference table, after the last page
+    Xref(&'a str),
     /// `<g .../>` (only when parsing glyphs)
     Glyph(&'a str),
     /// `<font .../>` (only when parsing glyphs)
@@ -722,6 +786,15 @@ fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan, glyphs: bool) -> Option<(T
         }
         return None;
     }
+    // <xref ([^>]*)/>
+    if rest.starts_with("xref ") {
+        let a = lt + 1 + "xref ".len();
+        let gt = scan.gt(b, a)?;
+        if gt > a && b[gt - 1] == b'/' {
+            return Some((Tag::Xref(&s[a..gt - 1]), gt + 1));
+        }
+        return None;
+    }
     // <(rule|box) ([^>]*)/>
     for (n, boxed) in [("rule ", false), ("box ", true)] {
         if rest.starts_with(n) {
@@ -761,6 +834,15 @@ const CURVES: usize = 20;
 const DIRECTIONS: usize = 21;
 const REF: usize = 22;
 const CROP: usize = 23;
+const COPY: usize = 24;
+const ORIENT: usize = 25;
+const SCAN: usize = 26;
+const SCAN_IMAGE: usize = 27;
+const OVERLAID: usize = 28;
+const SMASK: usize = 29;
+const COPYABLE: usize = 30;
+const XREF_REBUILT: usize = 31;
+const REBUILT: usize = 32;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -857,6 +939,11 @@ pub struct ParseReport {
     pub glyphs_truncated_pages: Vec<usize>,
     /// one entry per `<page>`, in order: its text layer and size (see [`PageInfo`])
     pub page_info: Vec<PageInfo>,
+    /// The producer rebuilt the document's cross-reference table from a scan of the file (a
+    /// page's `xrefRebuilt="1"`, or `<xref rebuilt="1"/>` after the last page): one reference
+    /// may resolve to different object bodies, so no image is copied. From the page that says
+    /// so on, images are neither copyable nor plain; extraction renders every page scan.
+    pub xref_rebuilt: bool,
 }
 
 /// What one page holds: kept words, how many of them are invisible (render mode 3, usually an
@@ -882,6 +969,22 @@ impl PageInfo {
             _ => "mixed",
         }
     }
+}
+
+/// `scan="single|tiled|layered"` with `scanImage="K"` (K from 1 to [`MAX_PAGE_IMAGES`]).
+fn scan_of(kind: Option<&str>, image: Option<&str>) -> Option<ScanInfo> {
+    let kind = match kind? {
+        "single" => ScanKind::Single,
+        "tiled" => ScanKind::Tiled,
+        "layered" => ScanKind::Layered,
+        _ => return None,
+    };
+    let image = image?;
+    if image.is_empty() || image.len() > 6 || !image.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let image: usize = image.parse().ok()?;
+    (1..=MAX_PAGE_IMAGES).contains(&image).then_some(ScanInfo { kind, image })
 }
 
 /// A `crop="W H"` value worth passing on: short, and only number characters.
@@ -1201,6 +1304,21 @@ impl ParseState {
                         px_h: px(HEIGHT),
                         mask: a.0[KIND] == Some("mask"),
                         obj: a.0[REF].and_then(object_ref),
+                        copy: match a.0[COPY] {
+                            Some("jpeg") => CopyClass::Jpeg,
+                            Some("bilevel") => CopyClass::Bilevel,
+                            Some("decode") => CopyClass::Decode,
+                            _ => CopyClass::Render,
+                        },
+                        copy_exact: a.0[ORIENT] == Some("0")
+                            && a.0[OVERLAID] == Some("0")
+                            && a.0[COPYABLE] == Some("1")
+                            && !report.xref_rebuilt,
+                        plain: !report.xref_rebuilt
+                            && a.0[ORIENT] == Some("0")
+                            && a.0[OVERLAID] == Some("0")
+                            && a.0[SMASK].is_none()
+                            && a.0[KIND] != Some("mask"),
                     };
                     if let Some(pg) = page.as_mut() {
                         if pg.images.len() < MAX_PAGE_IMAGES {
@@ -1210,6 +1328,10 @@ impl ParseState {
                             report.images_skipped += 1;
                         }
                     }
+                }
+                Tag::Xref(attrs) => {
+                    a.parse_into(attrs);
+                    report.xref_rebuilt |= a.0[REBUILT] == Some("1");
                 }
                 Tag::Graphic(attrs) => {
                     if !have_page {
@@ -1248,6 +1370,7 @@ impl ParseState {
                 Tag::Open("page", attrs) => {
                     report.pages += 1;
                     a.parse_into(attrs);
+                    report.xref_rebuilt |= a.0[XREF_REBUILT] == Some("1");
                     let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
                     let rules_truncated = match a.0[RULES_TRUNCATED] {
                         Some("1") => Some(true),
@@ -1269,6 +1392,7 @@ impl ParseState {
                         number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
                         images: Vec::new(),
                         images_truncated: a.0[IMAGES_TRUNCATED] == Some("1"),
+                        scan: scan_of(a.0[SCAN], a.0[SCAN_IMAGE]),
                         graphics: Vec::new(),
                         glyphs: Vec::new(),
                         fonts: Vec::new(),

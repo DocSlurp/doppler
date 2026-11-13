@@ -152,7 +152,7 @@ fn a_picture_between_the_halves_is_a_figure() {
     let joined = convert_with(&xhtml, true, true);
     assert!(split.iter().any(|b| b.starts_with("continues")), "{split:?}");
     assert!(joined[0].contains("which continues alpha"), "{joined:?}");
-    assert!(joined[1].starts_with("![image](doppler-image:p1."), "{joined:?}");
+    assert!(joined[1].starts_with("![image](images/page-0001/image-"), "{joined:?}");
     // without markers the picture is not seen: a gap alone is no interruption
     let plain = convert_with(&xhtml, true, false);
     assert!(plain.iter().any(|b| b.starts_with("continues")), "{plain:?}");

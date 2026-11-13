@@ -186,10 +186,13 @@ per inch along the image's own axes), `filter` (the codec, the last `/Filter`: `
 XObject's object number: the same picture on several pages has the same `obj`; callers
 aggregate across lines, a page line never depends on other pages), and `copy`, how its
 pixels can be taken out without rendering: `jpeg` (copy the stream: sole DCT filter, 8 bits,
-gray or RGB, no `/Decode`, no `/DecodeParms` that could set `/ColorTransform`, no mask),
-`bilevel` (1-bit CCITT, JBIG2 or gray, no `/Decode`, no soft mask), `decode` (a single image
-to decode at native size), `render` (inline, masked or soft-masked images, unusual
-encodings, an XObject whose data is an external file (`/F`): render the region). The class
+`DeviceGray` or `DeviceRGB`, no `/Decode`, no `/DecodeParms` that could set `/ColorTransform`,
+no mask), `bilevel` (1-bit CCITT, JBIG2 or `DeviceGray`, no `/Decode`, no soft mask), `decode`
+(a single image to decode at native size through its colour space: ICC-based and calibrated
+images, whose profile or gamma can change what the page shows, are never copied as stored),
+`render` (inline, masked or soft-masked images, unusual encodings, an XObject whose data is an
+external file (`/F`), or resources that define `DefaultGray`, `DefaultRGB` or `DefaultCMYK`:
+render the region). The class
 reads the dictionary only: a copier must still check the bytes (for `jpeg`: a baseline SOF
 whose component count matches the colour space and whose size matches `/Width` and
 `/Height`), since a hostile dictionary can say anything.
@@ -203,7 +206,8 @@ union reaches 0.85 (strips, tiles), `layered` again if two half-page images of t
 overlap.
 
 Three thresholds can be changed, in `pdfpagefacts` and `pdftotext` (both the facts and
-`scan=`; `pdftomarkdown --scan-max-words N` passes the word threshold on). A changed threshold
+`scan=`) and in `pdftomarkdown` (`--scan-min-coverage`, `--scan-max-words`,
+`--scan-layer-overlap`, passed on to pdftotext). A changed threshold
 is recorded on the doc line (`scanThresholds`, all three values); with the defaults the
 output is unchanged, byte for byte.
 
@@ -398,11 +402,12 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   no run line). Facts lines written are whole, except the last one when the limit falls while
   a facts write is blocked (a reader that stalled): it can end without its newline, so a
   reader must drop an unterminated last line; pdftomarkdown drops it before committing
-  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
-  -timeout-max 3600` when, and only when, page facts are requested.
+  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown always passes `-timeout 60 -timeout-per-page 1
+  -timeout-max 3600` (with or without page facts; `--text-timeout`, `--text-timeout-per-page`
+  and `--text-timeout-max` override them).
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and
-  exits 5.
+  exits 6.
 - Tests: a mutation fuzz of the fixtures (`test/docslurp/page-facts/test_mutation_fuzz.py`,
   320 cases in ctest; `PAGE_FACTS_FUZZ_CASES=2000` locally): no signal, exit 0-3, every line
   valid JSON and valid against the schema, pdftotext agreeing with pdfpagefacts.

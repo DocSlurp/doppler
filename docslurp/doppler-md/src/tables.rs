@@ -1842,6 +1842,7 @@ mod span_tests {
         let mut page = Page {
             number: None,
             images: vec![],
+            scan: None,
             images_truncated: false,
             graphics: Vec::new(),
             width: 300.,

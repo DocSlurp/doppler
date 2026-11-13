@@ -120,16 +120,25 @@ const char *imageCopyName(ImageCopy c)
 
 ImageCopy classifyImageCopy(const ImageDictInfo &info)
 {
-    if (info.inlineImg || info.softMask || info.mask || info.external) {
+    // Default colour spaces replace Device ones under the page's resources, which a copy job
+    // does not see: rendered
+    // an image Gfx refuses to draw shows nothing: a copy would show its samples
+    if (!info.drawable || info.inlineImg || info.softMask || info.mask || info.external || info.defaultSpaces) {
         return ImageCopy::Render;
     }
-    const bool grayOrRgb = info.color == ImageColor::Gray || info.color == ImageColor::RGB || info.color == ImageColor::ICC1 || info.color == ImageColor::ICC3;
+    // stored samples are copied only in a Device space: an ICC profile (or a CalGray/CalRGB
+    // gamma and matrix) can make a viewer show something else entirely (a constant-white curve
+    // hides the scan); those are decoded through their colour space instead
+    const bool grayOrRgb = (info.color == ImageColor::Gray || info.color == ImageColor::RGB) && !info.calibrated;
     if (info.filter == ImageFilter::DCT && info.filters == 1 && info.bpc == 8 && grayOrRgb && !info.decode && !info.colorTransform && !info.imageMask) {
         return ImageCopy::Jpeg;
     }
     const bool oneBit = info.bpc == 1 || info.imageMask || info.filter == ImageFilter::CCITT || info.filter == ImageFilter::JBIG2;
-    const bool grayish = info.imageMask || info.color == ImageColor::Gray || info.color == ImageColor::ICC1 || info.color == ImageColor::None;
-    if (oneBit && grayish && (info.bpc == 1 || info.bpc == 0) && !info.decode) {
+    const bool grayish = info.imageMask || (info.color == ImageColor::Gray && !info.calibrated) || info.color == ImageColor::None;
+    // one bit for certain: an integer /BitsPerComponent 1, or a stencil (/ImageMask true).
+    // Never a JPEG 2000 stream: it decodes to 8 bits a component whatever its dictionary says
+    // (JPXStream::getImageParams), so its samples go through the Decode path as Splash reads them
+    if (info.filter != ImageFilter::JPX && oneBit && grayish && (info.bpc == 1 || (info.imageMask && info.bpc == 0)) && !info.decode) {
         return ImageCopy::Bilevel;
     }
     if (info.filter == ImageFilter::Other || info.imageMask) {
@@ -2360,6 +2369,16 @@ ImageColor colorOfName(const std::string &n)
     return ImageColor::Other;
 }
 
+bool isDeviceName(const std::string &n)
+{
+    return n == "DeviceGray" || n == "DeviceRGB" || n == "DeviceCMYK";
+}
+
+ImageInfoCache::Space spaceOfName(const std::string &n)
+{
+    return { colorOfName(n), n == "CalGray" || n == "CalRGB", isDeviceName(n) };
+}
+
 } // namespace
 
 void ImageInfoCache::sync(XRef *xref)
@@ -2399,7 +2418,7 @@ bool ImageInfoCache::takeFetch()
     return true;
 }
 
-ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
+ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
 {
     sync(xref);
     if (!cs.isRef()) {
@@ -2410,13 +2429,13 @@ ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
         return it->second;
     }
     if (!xref || !takeFetch()) {
-        return ImageColor::Other;
+        return { ImageColor::Other, false, false };
     }
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
     const size_t before = refused;
     const Object resolved = xref->fetch(cs.getRef());
-    const ImageColor c = classify(resolved, xref);
+    const Space c = classify(resolved, xref);
     // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
     // without saying so (and a retry past the budget is refused at once)
     if (refused == before && spaces.size() < maxEntries) {
@@ -2425,43 +2444,50 @@ ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     return c;
 }
 
-ImageColor ImageInfoCache::classify(const Object &cs, XRef *xref)
+ImageInfoCache::Space ImageInfoCache::classify(const Object &cs, XRef *xref)
 {
     if (cs.isNull()) {
-        return ImageColor::None;
+        return { ImageColor::None, false, false };
     }
     if (cs.isName()) {
-        return colorOfName(cs.getNameString());
+        return spaceOfName(cs.getNameString());
     }
     if (!cs.isArray() || cs.arrayGetLength() < 1) {
-        return ImageColor::Other;
+        return { ImageColor::Other, false, false };
     }
     // the family, by name (None stands for ICCBased, which colorOfName never returns)
     const Object &family = cs.getArray()->getNF(0);
-    ImageColor c = ImageColor::Other;
+    Space c { ImageColor::Other, false, false };
     if (family.isName()) {
-        c = family.isName("ICCBased") ? ImageColor::None : colorOfName(family.getNameString());
+        c = family.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(family.getNameString());
     } else if (family.isRef()) {
         c = familyOf(family, xref);
     }
-    if (c == ImageColor::None) {
-        return cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other;
+    if (c.color == ImageColor::None) {
+        return { cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other, false, false };
+    }
+    // a device space only as a bare name; an array is one only as [/Indexed /Device... ...],
+    // both names given directly
+    c.device = false;
+    if (family.isName("Indexed") && cs.arrayGetLength() >= 2) {
+        const Object &base = cs.getArray()->getNF(1);
+        c.device = base.isName() && isDeviceName(base.getNameString());
     }
     return c;
 }
 
 // An indirect family name: its colour (None for ICCBased), once per reference.
-ImageColor ImageInfoCache::familyOf(const Object &family, XRef *xref)
+ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
 {
     const auto it = families.find(family.getRef());
     if (it != families.end()) {
         return it->second;
     }
     if (!xref || !takeFetch()) {
-        return ImageColor::Other;
+        return { ImageColor::Other, false, false };
     }
     const Object name = xref->fetch(family.getRef());
-    const ImageColor c = !name.isName() ? ImageColor::Other : name.isName("ICCBased") ? ImageColor::None : colorOfName(name.getNameString());
+    const Space c = !name.isName() ? Space { ImageColor::Other, false, false } : name.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(name.getNameString());
     if (families.size() < maxEntries) {
         families.emplace(family.getRef(), c);
     }

@@ -173,6 +173,9 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
         if (seen != budget->answered.end()) {
             if (seen->second.limited) {
                 error(errSyntaxWarning, -1, exprTooLarge);
+                if (budget) {
+                    budget->unevaluated = true;
+                }
             }
             return seen->second.visible;
         }
@@ -180,6 +183,7 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
     std::lock_guard<std::mutex> lock(cacheMutex);
     syncCache();
     if (budget && budget->operandsLeft <= 0) {
+        budget->unevaluated = true;
         if (!budget->limitHit) {
             budget->limitHit = true;
             error(errSyntaxWarning, -1, budgetSpent);
@@ -194,6 +198,9 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
                 error(errSyntaxWarning, -1, exprTooLarge);
             }
             if (budget) {
+                if (cached.limited) {
+                    budget->unevaluated = true;
+                }
                 budget->operandsLeft -= cached.cost;
                 budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { cached.visible, cached.limited });
             }
@@ -213,6 +220,9 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
     }
     if (budget) {
         budget->operandsLeft -= cost;
+        if (limited) {
+            budget->unevaluated = true;
+        }
     }
     return result;
 }

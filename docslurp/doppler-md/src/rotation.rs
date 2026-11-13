@@ -153,6 +153,7 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
         let sub = Page {
             number: page.number,
             images: Vec::new(),
+            scan: None,
             images_truncated: false,
             graphics: Vec::new(),
             width,

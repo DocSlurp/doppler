@@ -10,11 +10,13 @@
 //! plan that differs in any of them.
 //!
 //! Text. The header lines, tab-separated:
-//! `doppler-images-plan 2`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
-//! `settings SHA256-HEX`, `version VERSION`; then one line per image:
-//! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj`, where `id-hex` is the id's UTF-8 bytes in
-//! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is three of `0`/`1`
-//! (mask, vector, text), `fate` the report's word, and `obj` `num.gen` or `-`. Ids are image ids
+//! `doppler-images-plan 6`, `source SHA256-HEX SIZE`, `pages FIRST LAST` (`-` when not given),
+//! `settings SHA256-HEX`, `version VERSION`, `converted N` (the pages the conversion wrote,
+//! which scale the default `--images-deadline`); then one line per image:
+//! `id-hex page x0 y0 x1 y1 px-w px-h flags fate obj scan`, where `id-hex` is the id's UTF-8 bytes in
+//! hex, the box is four `f64` bit patterns in hex (exact, finite), `flags` is four of `0`/`1`
+//! (mask, vector, text, plain), `fate` the report's word, `obj` `num.gen` or `-`, and `scan` how a
+//! page scan's file is made (`jpeg`, `bilevel`, `decode`, `render`) or `-`. Ids are image ids
 //! (`pN.M`, `pN.gK`), unique, and their page is the line's page, inside the page range.
 
 use std::fmt::Write as _;
@@ -24,9 +26,9 @@ use std::collections::HashSet;
 use sha2::{Digest, Sha256};
 
 use crate::extract::outdir::valid_id;
-use crate::images::{Fate, Note};
+use crate::images::{Fate, Note, ScanSource};
 
-const HEADER: &str = "doppler-images-plan\t2";
+const HEADER: &str = "doppler-images-plan\t6";
 
 /// What a plan is bound to: the conversion that wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +61,10 @@ impl Binding {
             ))
         } else if self.settings != plan.settings {
             Some(
-                "written with other conversion settings (--params, --strict, --stream/--window, --math, --html)".into(),
+                "written with other conversion settings (--params, --strict, --stream/--window, --math, --html, \
+                 --images-link-prefix, --images-repeats, --raster-format, --vector-format, --scan-pages, \
+                 --scan-min-coverage, --scan-max-words, --scan-layer-overlap)"
+                    .into(),
             )
         } else if self.version != plan.version {
             Some(format!("written by version {}, this is {}", plan.version, self.version))
@@ -106,7 +111,7 @@ fn is_hex64(s: &str) -> bool {
 /// A plan larger than this is refused.
 pub const MAX_PLAN_BYTES: u64 = 64 << 20;
 
-const FATES: [Fate; 10] = [
+const FATES: [Fate; 11] = [
     Fate::Block,
     Fate::Inline,
     Fate::Background,
@@ -117,22 +122,26 @@ const FATES: [Fate; 10] = [
     Fate::Fragment,
     Fate::Grouped,
     Fate::Text,
+    Fate::PageScan,
 ];
 
-/// The plan of `notes`, bound to `b`.
-pub fn write(b: &Binding, notes: &[Note]) -> String {
+const SCAN_SOURCES: [ScanSource; 4] = [ScanSource::Jpeg, ScanSource::Bilevel, ScanSource::Decode, ScanSource::Render];
+
+/// The plan of `notes` from a conversion of `converted` pages, bound to `b`.
+pub fn write(b: &Binding, converted: usize, notes: &[Note]) -> String {
     let opt = |v: Option<u32>| v.map_or("-".to_string(), |n| n.to_string());
     let mut out = String::with_capacity(256 + notes.len() * 128);
     out.push_str(HEADER);
     let _ = write!(
         out,
-        "\nsource\t{}\t{}\npages\t{}\t{}\nsettings\t{}\nversion\t{}\n",
+        "\nsource\t{}\t{}\npages\t{}\t{}\nsettings\t{}\nversion\t{}\nconverted\t{}\n",
         b.source_sha256,
         b.source_len,
         opt(b.first),
         opt(b.last),
         b.settings,
-        b.version
+        b.version,
+        converted
     );
     for n in notes {
         for b in n.id.bytes() {
@@ -141,7 +150,7 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
         let (x0, y0, x1, y1) = n.bbox;
         let _ = write!(
             out,
-            "\t{}\t{:016x}\t{:016x}\t{:016x}\t{:016x}\t{}\t{}\t{}{}{}\t{}\t",
+            "\t{}\t{:016x}\t{:016x}\t{:016x}\t{:016x}\t{}\t{}\t{}{}{}{}\t{}\t",
             n.page,
             x0.to_bits(),
             y0.to_bits(),
@@ -152,6 +161,7 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
             u8::from(n.mask),
             u8::from(n.vector),
             u8::from(n.text),
+            u8::from(n.plain),
             n.fate.as_str(),
         );
         match n.obj {
@@ -160,23 +170,31 @@ pub fn write(b: &Binding, notes: &[Note]) -> String {
             }
             None => out.push('-'),
         }
+        out.push('\t');
+        out.push_str(n.scan.map_or("-", ScanSource::as_str));
         out.push('\n');
     }
     out
 }
 
-/// The binding and notes of a plan; `Err` for anything that is not a plan this module wrote:
+/// The binding, converted page count and notes of a plan; `Err` for anything that is not a plan this module wrote:
 /// a bad header, a malformed or non-finite field, an invalid or repeated id, or an id whose
 /// page is not its line's page or lies outside the plan's page range.
-pub fn read(text: &str) -> Result<(Binding, Vec<Note>), String> {
+pub fn read(text: &str) -> Result<(Binding, usize, Vec<Note>), String> {
     if !text.ends_with('\n') {
         return Err("images plan: truncated".into());
     }
     let mut lines = text.split('\n');
     if lines.next() != Some(HEADER) {
-        return Err("not an images plan (version 2)".into());
+        return Err("not an images plan (version 6)".into());
     }
     let binding = read_binding(&mut lines).ok_or("images plan: bad header")?;
+    let converted = lines
+        .next()
+        .and_then(|l| l.strip_prefix("converted\t"))
+        .filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()) && (n.len() == 1 || !n.starts_with('0')))
+        .and_then(|n| n.parse::<u32>().ok())
+        .ok_or("images plan: bad header")? as usize;
     let mut notes = Vec::new();
     let mut ids = HashSet::new();
     for (k, line) in lines.enumerate() {
@@ -186,21 +204,21 @@ pub fn read(text: &str) -> Result<(Binding, Vec<Note>), String> {
         if notes.len() >= crate::MAX_DOC_IMAGES {
             return Err("images plan: too many images".into());
         }
-        let bad = || format!("images plan: bad line {}", k + 6);
+        let bad = || format!("images plan: bad line {}", k + 7);
         let n = parse_line(line).ok_or_else(bad)?;
         let in_range = binding.first.is_none_or(|f| n.page >= f) && binding.last.is_none_or(|l| n.page <= l);
         if id_page(&n.id) != Some(n.page) || !in_range {
             return Err(format!(
                 "images plan: line {}: the id's page is not the line's page or is outside the page range",
-                k + 6
+                k + 7
             ));
         }
         if !ids.insert(n.id.clone()) {
-            return Err(format!("images plan: line {}: repeated id", k + 6));
+            return Err(format!("images plan: line {}: repeated id", k + 7));
         }
         notes.push(n);
     }
-    Ok((binding, notes))
+    Ok((binding, converted, notes))
 }
 
 /// The page of a valid image id.
@@ -240,7 +258,7 @@ fn read_binding<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Option<Binding
 
 fn parse_line(line: &str) -> Option<Note> {
     let f: Vec<&str> = line.split('\t').collect();
-    if f.len() != 11 {
+    if f.len() != 12 {
         return None;
     }
     let id = unhex(f[0])?;
@@ -251,7 +269,7 @@ fn parse_line(line: &str) -> Option<Note> {
     let bbox = (bits(f[2])?, bits(f[3])?, bits(f[4])?, bits(f[5])?);
     let px = (f[6].parse().ok()?, f[7].parse().ok()?);
     let flags = f[8].as_bytes();
-    if flags.len() != 3 || !flags.iter().all(|b| *b == b'0' || *b == b'1') {
+    if flags.len() != 4 || !flags.iter().all(|b| *b == b'0' || *b == b'1') {
         return None;
     }
     let fate = *FATES.iter().find(|x| x.as_str() == f[9])?;
@@ -261,6 +279,10 @@ fn parse_line(line: &str) -> Option<Note> {
             let (num, gen_) = s.split_once('.')?;
             Some((num.parse().ok()?, gen_.parse().ok()?))
         }
+    };
+    let scan = match f[11] {
+        "-" => None,
+        s => Some(*SCAN_SOURCES.iter().find(|x| x.as_str() == s)?),
     };
     Some(Note {
         id,
@@ -273,9 +295,13 @@ fn parse_line(line: &str) -> Option<Note> {
         members: 1,
         group: None,
         obj,
+        plain: flags[3] == b'1',
         text: flags[2] == b'1',
         file: None,
         degraded: false,
+        link: None,
+        repeat_of: None,
+        scan,
     })
 }
 
@@ -304,9 +330,13 @@ mod tests {
             members: 1,
             group: None,
             obj,
+            plain: true,
             text: true,
             file: None,
             degraded: false,
+            link: None,
+            repeat_of: None,
+            scan: None,
         }
     }
 
@@ -323,9 +353,11 @@ mod tests {
 
     #[test]
     fn round_trips_exactly() {
-        let notes = vec![note("p3.1", false, Some((12, 0))), note("p3.g1", true, None), note("p3.2", false, None)];
-        let (b, back) = read(&write(&binding(), &notes)).unwrap();
-        assert_eq!(b, binding());
+        let mut notes = vec![note("p3.1", false, Some((12, 0))), note("p3.g1", true, None), note("p3.2", false, None)];
+        notes[0].fate = Fate::PageScan;
+        notes[0].scan = Some(ScanSource::Jpeg);
+        let (b, converted, back) = read(&write(&binding(), 7, &notes)).unwrap();
+        assert_eq!((b, converted), (binding(), 7));
         assert_eq!(back.len(), 3);
         for (a, b) in notes.iter().zip(&back) {
             assert_eq!(a.id, b.id);
@@ -333,22 +365,28 @@ mod tests {
             assert_eq!(a.bbox.0.to_bits(), b.bbox.0.to_bits());
             assert_eq!(a.bbox.3.to_bits(), b.bbox.3.to_bits());
             assert_eq!(
-                (a.px, a.mask, a.vector, a.text, a.fate, a.obj),
-                (b.px, b.mask, b.vector, b.text, b.fate, b.obj)
+                (a.px, a.mask, a.vector, a.text, a.plain, a.fate, a.obj, a.scan),
+                (b.px, b.mask, b.vector, b.text, b.plain, b.fate, b.obj, b.scan)
             );
         }
         let open = Binding { first: None, last: None, ..binding() };
-        assert_eq!(read(&write(&open, &notes)).unwrap().0, open);
+        assert_eq!(read(&write(&open, 0, &notes)).unwrap().0, open);
     }
 
     #[test]
     fn refuses_anything_else() {
         assert!(read("").is_err());
         assert!(read("doppler-images-plan\t1\n").is_err());
-        let good = write(&binding(), &[note("p3.1", false, None)]);
+        assert!(read(&write(&binding(), 3, &[note("p3.1", false, None)]).replace("plan\t6", "plan\t5")).is_err());
+        let good = write(&binding(), 3, &[note("p3.1", false, None)]);
+        assert!(read(&good.replace("\nconverted\t3\n", "\n")).is_err(), "no page count");
+        assert!(read(&good.replace("converted\t3", "converted\t03")).is_err());
+        assert!(read(&good.replace("converted\t3", "converted\t-3")).is_err());
+        assert!(read(&good.replace("converted\t3", "converted\t")).is_err());
         assert!(read(&good).is_ok());
         assert!(read(&good[..good.len() - 1]).is_err());
         assert!(read(&good.replace("block", "nope")).is_err());
+        assert!(read(&good.replace("\t-\n", "\tcopy\n")).is_err(), "unknown scan source");
         assert!(read(&good.replace("\nversion\t0.1.0\n", "\n")).is_err(), "header line missing");
         assert!(read(&good.replace("pages\t2\t5", "pages\t0\t5")).is_err());
         assert!(read(&good.replace("pages\t2\t5", "pages\t02\t5")).is_err());
@@ -359,7 +397,7 @@ mod tests {
     #[test]
     fn refuses_bad_image_lines() {
         let b = binding();
-        let one = |n: Note| read(&write(&b, &[n]));
+        let one = |n: Note| read(&write(&b, 3, &[n]));
         // non-finite coordinates (NaN would otherwise reach the manifest as invalid JSON)
         for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let mut n = note("p3.1", false, None);
@@ -382,7 +420,7 @@ mod tests {
         n.page = 1;
         assert!(one(n).is_err());
         // a repeated id
-        assert!(read(&write(&b, &[note("p3.1", false, None), note("p3.1", false, None)])).is_err());
+        assert!(read(&write(&b, 3, &[note("p3.1", false, None), note("p3.1", false, None)])).is_err());
     }
 
     #[test]

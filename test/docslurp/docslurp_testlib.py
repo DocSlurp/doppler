@@ -71,6 +71,84 @@ def simple_page_pdf(content, resources="<< /Font << /F1 4 0 R >> >>", extra_obje
     return build_pdf(objects)
 
 
+# Standard JPEG luminance DC Huffman table (ITU T.81 K.3): code lengths and symbols.
+_DC_BITS = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]
+_DC_VALS = list(range(12))
+
+
+def _huffman_codes(bits, vals):
+    codes, code, k = {}, 0, 0
+    for length in range(1, 17):
+        for _ in range(bits[length - 1]):
+            codes[vals[k]] = (code, length)
+            code += 1
+            k += 1
+        code <<= 1
+    return codes
+
+
+def jpeg(width, height, comps=1, level=None):
+    """A baseline JPEG (SOF0, no subsampling) built from DC terms only: every 8x8 block is one
+    flat level, ``level(bx, by, c) -> 0..255`` (default: a gradient on component 0, 128 on the
+    others), so any decoder gives exact blocks. Stdlib only, for fixtures that need a real
+    DCT stream (copy jobs, scans). ``comps`` is 1 (grey) or 3 (YCbCr, JFIF)."""
+    if level is None:
+        level = lambda bx, by, c: (bx * 37 + by * 23) % 200 + 28 if c == 0 else 128  # noqa: E731
+    dc = _huffman_codes(_DC_BITS, _DC_VALS)
+    out = bytearray(b"\xff\xd8")
+    # JFIF APP0 (density 1:1)
+    out += b"\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    # one quantisation table, all 16 (DC term = (level - 128) * 8 / 16)
+    out += b"\xff\xdb\x00\x43\x00" + bytes([16] * 64)
+    out += b"\xff\xc0" + (8 + 3 * comps).to_bytes(2, "big") + b"\x08" + height.to_bytes(2, "big") + width.to_bytes(2, "big") + bytes([comps])
+    for c in range(comps):
+        out += bytes([c + 1, 0x11, 0])
+    # DC table 0 (standard), AC table 0: one symbol, end of block, code "0"
+    out += b"\xff\xc4" + (3 + 16 + 12).to_bytes(2, "big") + b"\x00" + bytes(_DC_BITS) + bytes(_DC_VALS)
+    out += b"\xff\xc4" + (3 + 16 + 1).to_bytes(2, "big") + b"\x10" + bytes([1] + [0] * 15) + b"\x00"
+    out += b"\xff\xda" + (6 + 2 * comps).to_bytes(2, "big") + bytes([comps])
+    for c in range(comps):
+        out += bytes([c + 1, 0x00])
+    out += b"\x00\x3f\x00"
+    bits = []
+
+    def put(value, length):
+        for i in range(length - 1, -1, -1):
+            bits.append((value >> i) & 1)
+
+    pred = [0] * comps
+    for by in range((height + 7) // 8):
+        for bx in range((width + 7) // 8):
+            for c in range(comps):
+                coef = (max(0, min(255, int(level(bx, by, c)))) - 128) // 2
+                diff = coef - pred[c]
+                pred[c] = coef
+                size = abs(diff).bit_length()
+                code, length = dc[size]
+                put(code, length)
+                if size:
+                    put(diff if diff > 0 else diff + (1 << size) - 1, size)
+                bits.append(0)  # end of block
+    while len(bits) % 8:
+        bits.append(1)
+    for i in range(0, len(bits), 8):
+        byte = int("".join(map(str, bits[i : i + 8])), 2)
+        out.append(byte)
+        if byte == 0xFF:
+            out.append(0)
+    out += b"\xff\xd9"
+    return bytes(out)
+
+
+def ccitt_g4_white(width, height):
+    """A CCITT Group 4 (K -1) stream of an all-white image: each row repeats the imaginary
+    white reference line (one vertical-0 code, bit 1), then EOFB."""
+    bits = [1] * height + [0] * 11 + [1] + [0] * 11 + [1]
+    while len(bits) % 8:
+        bits.append(0)
+    return bytes(int("".join(map(str, bits[i : i + 8])), 2) for i in range(0, len(bits), 8))
+
+
 class TempDir:
     """Scratch directory under $TMPDIR (never hardcoded /tmp), removed on exit."""
 

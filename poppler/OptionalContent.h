@@ -40,6 +40,9 @@ struct OCVisibilityBudget
     static constexpr long perPage = 200000;
     long operandsLeft = perPage;
     bool limitHit = false;
+    // some evaluation charged here answered visible without being worked out: this budget was
+    // spent, or the expression was too large (now or when its cached answer was found)
+    bool unevaluated = false;
     struct Answer
     {
         bool visible;

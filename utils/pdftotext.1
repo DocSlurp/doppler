@@ -263,7 +263,27 @@ with /Decode,
 for an inline image, and
 .I copy
 (jpeg, bilevel, decode or render: how its pixels can be taken out without rendering, see
-docslurp/page-facts/README.md). The PDF page number is
+docslurp/page-facts/README.md), and last
+.I orient
+(0 when the image's rows and columns land on the page as stored; 90, 180 or 270
+when turned clockwise, other when mirrored or skewed; page rotation included) and
+.I overlaid
+(0 when nothing else shows over the image: no later fill, stroke, shading,
+pattern, visible glyph, image or annotation appearance overlaps it, no clip or
+page edge cuts it, no non-rectangular clip applies, and it is not drawn through
+a soft mask, blend mode, opacity below 1 or transfer function, nor inside a
+transparency group; a stroke counts its pen along each device axis, and a
+Type 3 glyph may paint anywhere within the clip; 1 otherwise, and for every
+image past the first 64 drawn plainly on a page), and on a single scan's image
+.I copyable="1"
+when its page passed the copy allow-list: the only thing that paints on the page
+is that one image XObject, drawn once, upright, plainly (no mask, soft mask,
+group, blend mode, opacity, transfer function or overprint, device colour only)
+and wholly inside the clip and the CropBox, beside invisible (render mode 3)
+text; any other operator that paints, visible text, a Type 3 font, a second
+image, an annotation that draws, a page group or a clip that is not a rectangle
+leaves it out (see poppler/ScanCopyAudit.h). Absent means render the page.
+The PDF page number is
 .I number
 on
 .BR <page> ,

@@ -1,5 +1,6 @@
-//! Image markers: `<image>` records from `pdftotext -images` become `![image](doppler-image:pN.M)`
-//! between paragraphs or inside a line, only with `Options::markers`.
+//! Image markers: `<image>` records from `pdftotext -images` become
+//! `![image](images/page-NNNN/image-MMM.webp)` between paragraphs or inside a line, only with
+//! `Options::markers`.
 
 use doppler_md::{Options, Params, to_markdown_report_with};
 
@@ -58,7 +59,7 @@ fn sample() -> String {
 #[test]
 fn markers_are_off_unless_asked() {
     let (md, report) = convert(&sample(), false);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     assert!(report.images.is_empty());
 }
 
@@ -66,15 +67,15 @@ fn markers_are_off_unless_asked() {
 fn a_picture_between_paragraphs_is_its_own_paragraph_in_reading_order() {
     let (md, _) = convert(&sample(), true);
     let at = |s: &str| md.find(s).unwrap_or_else(|| panic!("{s:?} missing from {md}"));
-    assert!(at("A paragraph above") < at("![image](doppler-image:p7.1)"), "{md}");
-    assert!(at("![image](doppler-image:p7.1)") < at("Figure 1: the caption"), "{md}");
-    assert!(md.contains("\n\n![image](doppler-image:p7.1)\n\n"), "{md}");
+    assert!(at("A paragraph above") < at("![image](images/page-0007/image-001.webp)"), "{md}");
+    assert!(at("![image](images/page-0007/image-001.webp)") < at("Figure 1: the caption"), "{md}");
+    assert!(md.contains("\n\n![image](images/page-0007/image-001.webp)\n\n"), "{md}");
 }
 
 #[test]
 fn a_text_sized_picture_sits_inside_its_line() {
     let (md, report) = convert(&sample(), true);
-    assert!(md.contains("An inline icon sits ![image](doppler-image:p7.2) in the middle ."), "{md}");
+    assert!(md.contains("An inline icon sits ![image](images/page-0007/image-002.webp) in the middle ."), "{md}");
     let fates: Vec<&str> = report.images.iter().map(|n| n.fate.as_str()).collect();
     assert_eq!(fates, ["block", "inline"]);
     assert_eq!(report.images[0].id, "p7.1");
@@ -91,7 +92,7 @@ fn page_backgrounds_slivers_and_header_logos_get_no_marker() {
         + &image(72.0, 500.0, 300.0, 600.0)
         + &image(72.5, 500.5, 300.0, 600.0);
     let (md, report) = convert(&page(2, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
     let fates: Vec<&str> = report.images.iter().map(|n| n.fate.as_str()).collect();
     assert_eq!(fates, ["background", "small", "furniture", "block", "duplicate"]);
 }
@@ -103,7 +104,7 @@ fn ids_use_the_page_index_without_a_page_number() {
         + &image(72.0, 200.0, 300.0, 300.0)
         + "</page>";
     let (md, _) = convert(&xhtml, true);
-    assert!(md.contains("doppler-image:p1.1"), "{md}");
+    assert!(md.contains("images/page-0001/image-001.webp"), "{md}");
 }
 
 #[test]
@@ -117,8 +118,12 @@ fn neighbouring_images_are_one_figure_with_one_marker() {
     body += &image(100.0, 202.0, 300.0, 260.0);
     body += &image(100.0, 500.0, 300.0, 560.0);
     let (md, report) = convert(&page(3, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 2, "{md}");
-    assert!(md.contains("![image](doppler-image:p3.1)") && md.contains("![image](doppler-image:p3.7)"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 2, "{md}");
+    assert!(
+        md.contains("![image](images/page-0003/image-001.webp)")
+            && md.contains("![image](images/page-0003/image-007.webp)"),
+        "{md}"
+    );
     let fates: Vec<&str> = report.images.iter().map(|n| n.fate.as_str()).collect();
     assert_eq!(fates, ["block", "grouped", "grouped", "grouped", "grouped", "grouped", "block"]);
     assert_eq!(report.images[0].members, 6);
@@ -134,8 +139,8 @@ fn a_row_of_text_sized_icons_is_one_inline_marker() {
     let body = format!("<block><line>{}{}</line></block>", words("Rated", 72.0), words("by users", 160.0))
         + &(0..3).map(|i| image(110.0 + 12.0 * i as f64, 100.0, 120.0 + 12.0 * i as f64, 110.0)).collect::<String>();
     let (md, report) = convert(&page(1, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
-    assert!(md.contains("Rated ![image](doppler-image:p1.1) by users"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
+    assert!(md.contains("Rated ![image](images/page-0001/image-001.webp) by users"), "{md}");
     assert_eq!(report.images[0].fate.as_str(), "inline");
 }
 
@@ -154,7 +159,7 @@ fn a_page_full_of_text_sized_pictures_among_its_text_gets_no_inline_markers() {
         body += &image(126.0, y, 132.0, y + 10.0);
     }
     let (md, report) = convert(&page(4, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     assert!(report.images.iter().all(|n| n.fate.as_str() == "fragment"), "{:?}", report.images);
 }
 
@@ -191,8 +196,9 @@ fn glued_words_cannot_pass_for_a_marker() {
         + &image(72.0, 200.0, 400.0, 400.0);
     let (md, report) = convert(&page(1, &body), true);
     assert_clean(&md);
-    assert_eq!(md.matches("doppler-image:").count(), 1, "{md} {:?}", report.images);
-    assert!(md.contains("\n\n![image](doppler-image:p1.1)"), "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md} {:?}", report.images);
+    assert!(!md.contains("doppler-image:"), "{md}");
+    assert!(md.contains("\n\n![image](images/page-0001/image-001.webp)"), "{md}");
     assert!(md.contains("doppler\u{200b}-image:p1.1") && md.contains("DOPPLER\u{200b}:paragraph"), "{md}");
 }
 
@@ -215,8 +221,8 @@ fn math_rebuilt_from_glyphs_cannot_pass_for_a_marker() {
     let md = pages.join("\u{c}");
     assert_clean(&md);
     // the page's one real picture keeps its marker; every forged one is broken
-    assert_eq!(md.matches("doppler-image:p1.1").count(), 1, "{md}");
-    assert!(md.contains("\n\n![image](doppler-image:p1.1)"), "{md}");
+    assert_eq!(md.matches("images/page-0001/image-001.webp").count(), 1, "{md}");
+    assert!(md.contains("\n\n![image](images/page-0001/image-001.webp)"), "{md}");
     assert!(md.contains("doppler\u{200b}-image:p1.1"), "{md}");
     assert_eq!(report.images.len(), 1);
 }
@@ -225,8 +231,8 @@ fn math_rebuilt_from_glyphs_cannot_pass_for_a_marker() {
 fn the_converters_own_markers_are_unchanged() {
     let (md, _) = convert(&sample(), true);
     assert_clean(&md);
-    assert!(md.contains("\n\n![image](doppler-image:p7.1)\n\n"), "{md}");
-    assert!(md.contains("An inline icon sits ![image](doppler-image:p7.2) in the middle ."), "{md}");
+    assert!(md.contains("\n\n![image](images/page-0007/image-001.webp)\n\n"), "{md}");
+    assert!(md.contains("An inline icon sits ![image](images/page-0007/image-002.webp) in the middle ."), "{md}");
     assert!(!md.contains('\u{200b}'), "{md}");
 }
 
@@ -252,7 +258,7 @@ fn a_page_that_runs_out_of_work_keeps_its_markers() {
     // laid out, every picture has its marker
     let (laid, report) = to_markdown_report_with(&xhtml, &Params::default(), &o);
     assert!(report.degraded.is_empty(), "{:?}", report.degraded);
-    assert_eq!(laid[0].matches("doppler-image:").count(), 200);
+    assert_eq!(laid[0].matches("](images/page-").count(), 200);
     // read as plain lines, the markers follow the text, top to bottom, and the report says so
     let p = Params { max_page_work: 2000.0, ..Params::default() };
     let (pages, report) = to_markdown_report_with(&xhtml, &p, &o);
@@ -263,9 +269,17 @@ fn a_page_that_runs_out_of_work_keeps_its_markers() {
     assert_eq!(placed.len(), 200);
     for n in &placed {
         assert!(n.degraded, "{n:?}");
-        assert_eq!(md.matches(&format!("(doppler-image:{})", n.id)).count(), 1, "{}", n.id);
+        assert_eq!(md.matches(&format!("(images/{})", n.link.as_deref().unwrap())).count(), 1, "{}", n.id);
     }
-    let at = |id: &str| md.find(&format!("(doppler-image:{id})")).unwrap();
+    let at = |id: &str| {
+        let (page, n) = id[1..].split_once('.').unwrap();
+        md.find(&format!(
+            "(images/page-{:04}/image-{:03}.webp)",
+            page.parse::<u32>().unwrap(),
+            n.parse::<u32>().unwrap()
+        ))
+        .unwrap()
+    };
     assert!(at("p1.1") < at("p1.2") && at("p1.40") < at("p1.41"), "{md}");
     assert!(md.find("word word").unwrap() < at("p1.1"), "{md}");
     assert!(report.to_json().contains("\"placed\":\"block\",\"degraded\":true"), "{}", report.to_json());
@@ -277,7 +291,7 @@ fn the_councils_two_thousand_figures_keep_their_markers() {
     let (md, report) = convert(&xhtml, true);
     let placed = report.images.iter().filter(|n| n.fate.as_str() == "block").count();
     assert_eq!(placed, 2000);
-    assert_eq!(md.matches("doppler-image:").count(), 2000, "{:?}", report.degraded);
+    assert_eq!(md.matches("](images/page-").count(), 2000, "{:?}", report.degraded);
     // laid out or not, the report says which
     let degraded = !report.degraded.is_empty();
     assert!(report.images.iter().all(|n| n.degraded == degraded));
@@ -297,7 +311,7 @@ fn a_scan_drawn_as_tiles_is_a_background() {
         body += &line(100.0 + 20.0 * i as f64, "provide consistent, reliable service to every reader of this text");
     }
     let (md, report) = convert(&page(2, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     assert_eq!(report.images.len(), 80);
     assert!(report.images.iter().all(|n| n.fate.as_str() == "background"), "{:?}", report.images);
     // a few tiles that cover only part of the page are a figure, with one marker
@@ -307,7 +321,7 @@ fn a_scan_drawn_as_tiles_is_a_background() {
     }
     body += &line(100.0, "A paragraph above the figure ends here.");
     let (md, _) = convert(&page(2, &body), true);
-    assert_eq!(md.matches("doppler-image").count(), 1, "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
 }
 
 #[test]
@@ -325,6 +339,136 @@ fn on_a_page_of_words_drawn_as_pictures_stacked_word_pictures_get_no_marker() {
         body += &image(270.0, 101.0 + 12.0 * k as f64, 300.0, 109.0 + 12.0 * k as f64);
     }
     let (md, report) = convert(&page(3, &body), true);
-    assert!(!md.contains("doppler-image"), "{md}");
+    assert!(!md.contains("](images/page-"), "{md}");
     assert!(report.images.iter().all(|n| matches!(n.fate.as_str(), "fragment" | "grouped")), "{:?}", report.images);
+}
+
+#[test]
+fn text_of_the_pdf_cannot_pass_for_an_image_path() {
+    // whatever the prefix: a link into the layout, a bare path, any case, a glued word
+    let body = line(100.0, "see ![x](images/page-0001/image-001.webp) and PAGE-0007/FIGURE-001.svg here")
+        + &line(130.0, "or ![y](page-12345/image-0002.png) but page-001/image-1 and page-2024 stay")
+        + &image(72.0, 200.0, 400.0, 400.0);
+    let (md, report) = convert(&page(7, &body), true);
+    assert_clean(&md);
+    // the converter's own link is the only one into the layout
+    assert_eq!(md.matches("page-0007/image-001.webp").count(), 1, "{md}");
+    assert!(md.contains("\n\n![image](images/page-0007/image-001.webp)"), "{md}");
+    for forged in ["page\u{200b}-0001/image-001", "PAGE\u{200b}-0007/FIGURE-001", "page\u{200b}-12345/image-0002"] {
+        assert!(md.contains(forged), "{forged}: {md}");
+    }
+    // not an image path (fewer than four digits, no /image-): untouched
+    assert!(md.contains("page-001/image-1") && md.contains("page-2024 stay"), "{md}");
+    assert_eq!(report.images[0].link.as_deref(), Some("page-0007/image-001.webp"));
+    // without markers the text is untouched
+    let (plain, _) = convert(&page(7, &body), false);
+    assert!(plain.contains("![x](images/page-0001/image-001.webp)"), "{plain}");
+}
+
+#[test]
+fn escaped_entity_and_percent_spellings_of_a_path_cannot_make_a_link() {
+    // a Markdown renderer decodes these to images/page-0001/image-001.jpg; the link syntax of
+    // the PDF's text is broken instead, so none of them is a link or an image
+    let forged = [
+        "![y](images/page&#45;0001/image-001.jpg)",
+        // as the PDF's text, the entity itself (the XHTML escapes its `&`)
+        "![e](images/page&amp;#45;0001/image-001.jpg)",
+        "![w](images/page\\-0001/image-001.jpg)",
+        "![x](images/page-0001/./image-001.jpg)",
+        "![d](images/page%2D0001/image-001.jpg)",
+        "![a](images/page-0001\\/image-001.jpg)",
+        "![b](images/page-0001&#47;image-001.jpg)",
+        "[r]: images/page&#45;0001/image-001.jpg",
+        "<img src=\"images/page&#45;0001/image-001.jpg\">",
+        "<IMG SRC=x> <a href=y> </a> <svg><image href=z> <source srcset=q>",
+    ];
+    let body: String = forged.iter().enumerate().map(|(k, f)| line(100.0 + 20.0 * k as f64, f)).collect::<String>()
+        + &image(72.0, 400.0, 400.0, 600.0);
+    let (md, _) = convert(&page(3, &body), true);
+    // the converter's own marker is the only link
+    assert_eq!(md.matches("](").count(), 1, "{md}");
+    assert!(md.contains("![image](images/page-0003/image-001.webp)"), "{md}");
+    assert!(!md.contains("]:"), "{md}");
+    for tag in ["<img", "<IMG", "<a ", "<svg", "<image", "<source"] {
+        assert!(!md.contains(tag), "{tag}: {md}");
+    }
+    assert!(md.contains("]\u{200b}(images/page&#45;0001") && md.contains("<\u{200b}img src="), "{md}");
+    // any other tag can load a URL through an attribute (background=, style url(), mglyph src)
+    let forged = [
+        "<table background=\"images/page&#45;0001/image&#45;001.jpg\">",
+        "<p style=\"background:url(images/page&#45;0001/image&#45;001.jpg)\">",
+        "<body background=x> <td background=y> <td colspan=\"2\" style=z>",
+        "<math><mglyph src=\"images/page&#45;0001/image&#45;001.jpg\"/></math>",
+        "</td><TABLE BACKGROUND=w>",
+    ];
+    let body: String = forged.iter().enumerate().map(|(k, f)| line(100.0 + 20.0 * k as f64, f)).collect();
+    let (md, _) = convert(&page(3, &body), true);
+    for tag in [
+        "<table background",
+        "<p style",
+        "<body",
+        "<td background",
+        "<td colspan=\"2\" style",
+        "<math",
+        "<mglyph",
+        "<TABLE",
+    ] {
+        assert!(!md.contains(tag), "{tag}: {md}");
+    }
+    assert!(md.contains("<\u{200b}table background=") && md.contains("<\u{200b}mglyph"), "{md}");
+    // what stays: a closing bracket before text, a `<` not before a letter, and table markup
+    // as the converter writes it (which loads nothing)
+    let body =
+        line(100.0, "see [1] (above) and 3 < 4, <table dir=\"rtl\"><tr><td rowspan=\"2\">x</td></tr></table>, x<y");
+    let (md, _) = convert(&page(3, &body), true);
+    assert!(
+        md.contains("[1] (above)")
+            && md.contains("3 < 4")
+            && md.contains("<table dir=\"rtl\"><tr><td rowspan=\"2\">x</td></tr></table>")
+            && md.contains("x<\u{200b}y"),
+        "{md}"
+    );
+}
+
+#[test]
+fn a_repeated_image_object_links_to_its_first_placement() {
+    let pic_with = |x0: f64, y0: f64, extra: &str| {
+        format!(
+            "<image xMin=\"{x0}\" yMin=\"{y0}\" xMax=\"{}\" yMax=\"{}\" width=\"600\" height=\"300\" ref=\"12 0\"{extra}/>",
+            x0 + 300.0,
+            y0 + 150.0
+        )
+    };
+    let plain = " orient=\"0\" overlaid=\"0\"";
+    let one_with = |n: u32, y: f64, extra: &str| {
+        page(n, &(line(100.0, "A paragraph above the figure ends here.") + &pic_with(72.0, y, extra)))
+    };
+    let one = |n: u32, y: f64| one_with(n, y, plain);
+    // pages 3 to 7 draw the same object at the same size but turned, covered (a redaction
+    // box), soft-masked, as a stencil mask, or from a producer that does not say: their
+    // renders may differ, so each gets its own file
+    let xhtml = format!(
+        "<doc>{}{}{}{}{}{}{}</doc>",
+        one(1, 200.0),
+        one(2, 300.0),
+        one_with(3, 240.0, " orient=\"180\" overlaid=\"0\""),
+        one_with(4, 260.0, " orient=\"0\" overlaid=\"1\""),
+        one_with(5, 280.0, " smask=\"1\" orient=\"0\" overlaid=\"0\""),
+        one_with(6, 320.0, " kind=\"mask\" orient=\"0\" overlaid=\"0\""),
+        one_with(7, 340.0, ""),
+    );
+    let (md, report) = convert(&xhtml, true);
+    let pages: Vec<&str> = md.split('\u{c}').collect();
+    assert!(pages[0].contains("![image](images/page-0001/image-001.webp)"), "{md}");
+    assert!(pages[1].contains("![image](images/page-0001/image-001.webp)"), "{md}");
+    for n in 3..=7 {
+        assert!(pages[n - 1].contains(&format!("](images/page-{n:04}/image-001.webp)")), "page {n}: {md}");
+        assert_eq!(report.images[n - 1].repeat_of, None, "page {n}");
+    }
+    assert_eq!(report.images[1].repeat_of.as_deref(), Some("p1.1"));
+    assert!(
+        report.to_json().contains("\"path\":\"page-0001/image-001.webp\",\"repeat_of\":\"p1.1\""),
+        "{}",
+        report.to_json()
+    );
 }

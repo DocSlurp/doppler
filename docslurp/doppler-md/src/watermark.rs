@@ -364,6 +364,7 @@ mod tests {
         Page {
             number: Some(1),
             images: Vec::new(),
+            scan: None,
             images_truncated: false,
             graphics: Vec::new(),
             width: 612.0,

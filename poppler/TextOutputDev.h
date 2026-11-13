@@ -47,6 +47,7 @@
 #include "OutputDev.h"
 #include "PDFRectangle.h"
 #include "PageFacts.h"
+#include "ScanCopyAudit.h"
 
 #include <array>
 #include <vector>
@@ -618,6 +619,26 @@ struct TextImage
     ImageDictInfo info {}; // what its dictionary says (filter, bits, colour space, masks)
     double dpiX = 0, dpiY = 0; // samples per inch along the image's own axes
     bool pastDocumentCap = false; // kept for page facts and scans only: the document's budget was spent
+    // how the image's rows and columns land on the page (page rotation applied): its first row
+    // at the top and its columns left to right (Upright), turned clockwise by 90, 180 or 270
+    // degrees, or anything else (mirrored, skewed). A copy of the image's own pixels shows the
+    // page only when Upright.
+    enum Orientation : uint8_t
+    {
+        Upright,
+        Turned90,
+        Turned180,
+        Turned270,
+        OtherOrientation
+    };
+    Orientation orientation = Upright;
+    // a copy of its pixels may not show what the page shows there: something is painted over
+    // it later on the page (a fill, stroke, shading, pattern, visible glyph or another image,
+    // annotation appearances included), a clip or the page edge cuts it, a non-rectangular
+    // clip applies, or it is drawn through a soft mask, a blend mode, an opacity below 1 or a
+    // transfer function. The first TextPage::maxOverpaintWatch images drawn plainly on a page
+    // are checked; any other image keeps true.
+    bool overlaid = true;
 };
 
 // A cluster of painted vector drawing that is not axis-aligned (see
@@ -707,6 +728,11 @@ public:
     bool getImagesTruncated() const { return imagesTruncated; }
     bool getImagesPageTruncated() const { return imagesPageTruncated; }
     static constexpr size_t maxImages = 2000;
+    // Something is painted on the device box (x0,y0)-(x1,y1): mark the watched images it
+    // overlaps as overlaid (TextImage::overlaid). Images are watched from addImage on.
+    void noteOverpaint(double x0, double y0, double x1, double y1);
+    bool watchingOverpaint() const { return overpaintWatched > 0; }
+    static constexpr size_t maxOverpaintWatch = 64;
 
     // Add one painted path that is not axis-aligned (TextOutputDev::setCollectImages). The page
     // keeps a fixed grid of cells, each the summary of the paths centred in it, so memory and
@@ -858,6 +884,8 @@ private:
     bool rulesTruncated = false, rulesPageTruncated = false;
     std::vector<TextImage> images;
     bool imagesTruncated = false, imagesPageTruncated = false;
+    std::array<size_t, maxOverpaintWatch> overpaintWatch {}; // indexes into images
+    size_t overpaintWatched = 0;
     std::array<TextGraphic, graphicGrid * graphicGrid> graphicCells {};
     bool actualTextChars = false;
     bool collectDropped = false;
@@ -969,7 +997,17 @@ public:
     void endPage() override;
 
     //----- save/restore graphics state
+    void saveState(GfxState *state) override;
     void restoreState(GfxState *state) override;
+
+    //----- clipping and paints this device does not draw, for TextImage::overlaid
+    void clip(GfxState *state) override;
+    void eoClip(GfxState *state) override;
+    void clipToStrokePath(GfxState *state) override;
+    void skippedPaint(GfxState *state, bool path, bool stroke) override;
+    void skippedSoftMask(GfxState *state) override;
+    void beginTransparencyGroup(GfxState *state, const std::array<double, 4> &bbox, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool forSoftMask) override;
+    void endTransparencyGroup(GfxState *state) override;
 
     //----- update text state
     void updateFont(GfxState *state) override;
@@ -1070,6 +1108,13 @@ public:
     // text output); for a caller that needs only page facts and word counts.
     void setWordsOnly(bool on) { wordsOnly = on; }
     GfxOpTally *getOpTally() override;
+    // page-scan copies: the page's allow-list (with setCollectImages), see ScanCopyAudit.h
+    ScanCopyAudit *getScanCopyAudit() override
+    {
+        scanAudit.setColorCache(&imageInfoCache);
+        return collectImages ? &scanAudit : nullptr;
+    }
+    const ScanCopyAudit &getPageScanAudit() const { return scanAudit; }
     ImageInfoCache *getImageInfoCache() override { return &imageInfoCache; }
     void beginAnnot(Annot *annot) override;
     void endAnnot(Annot *annot) override;
@@ -1120,6 +1165,15 @@ private:
     ImageInfoCache imageInfoCache; // DocSlurp: see getImageInfoCache
     bool graphicsTruncated = false;
     void collectPathGraphic(const GfxState *state, bool filled);
+    // TextImage::overlaid: the graphics state depth, and the shallowest depth at which a
+    // non-rectangular clip or a skipped soft mask was set (-1: none in force)
+    int gsDepth = 0, oddClipDepth = -1, softMaskDepth = -1;
+    // transparency groups open around the current content
+    int transparencyGroupDepth = 0;
+    ScanCopyAudit scanAudit;
+    void noteClip(GfxState *state, bool rectangular);
+    void overpaintPath(GfxState *state, bool stroke);
+    void overpaintGlyph(GfxState *state, double x, double y, double dx, double dy);
     static constexpr size_t maxDocRules = 200000;
     // Budget for visible rule candidates across pages, including candidates
     // rejected by a full page. TextPage consumes it but does not own its lifetime.

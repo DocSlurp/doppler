@@ -43,7 +43,7 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `pdftotext -upw PW FILE.pdf -` | `pdftomarkdown --upw PW FILE.pdf` |
 | `pdftotext -bbox-layout -wordmeta -rules FILE.pdf - \| doppler-md` | `pdftomarkdown --strict FILE.pdf` |
 | (restitching pictures, tables and paragraphs across pages) | `pdftomarkdown --markers FILE.pdf`, see [doppler-md](docslurp/doppler-md/README.md#restitching-markers---markers) |
-| `pdfimages` / cropping figures yourself | `pdftomarkdown --images-dir DIR FILE.pdf` (WebP/SVG per marked picture and figure, `manifest.json`), see [doppler-md](docslurp/doppler-md/README.md#extracting-images-and-figures---images-dir) |
+| `pdfimages` / cropping figures yourself | `pdftomarkdown --images-dir DIR FILE.pdf` (WebP/SVG per marked picture and figure, the original JPEG (metadata stripped) or a 1-bit PNG per scanned page, at the path its Markdown link names, `manifest.json`), see [doppler-md](docslurp/doppler-md/README.md#extracting-images-and-figures---images-dir) |
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
 
@@ -140,11 +140,23 @@ benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
   except the capped, sanitised and untrusted `producer`/`creator`.
 - `pdftotext -images` also writes the scan verdict (`scan=`, `scanImage=` on `<page>`) and
   each image's dictionary facts (`filter=`, `bpc=`, `cs=`, `smask=`, `decode=`, `inline=`,
-  `copy=` on `<image>`), appended last; the facts and the XHTML use the same classifier.
+  `copy=` on `<image>`, then `orient=`, `overlaid=` and `copyable="1"`: how its pixels land
+  on the page, whether the overpaint estimate saw anything over them, and whether the page
+  passed the copy allow-list), appended last; the facts and the XHTML use the same classifier.
+  `pdftomarkdown` places such pages as `page-scan` (`![page N scan](...)` first) and, with
+  `--images-dir`, copies the pixels of a scan through `pdfregions` copy jobs (a JPEG without
+  its metadata, bilevel as 1-bit PNG) instead of rendering it only when the page passes a
+  fail-closed allow-list (`poppler/ScanCopyAudit.h`): nothing on the page but that one image
+  paints (invisible OCR text and non-painting state are allowed), checked by pdftotext and
+  again by pdfregions. Anything else (a page number, a redaction box, a clip, an annotation, a
+  group, an ICC profile) renders the scan at `--scan-dpi` (200); see
+  [Page scans](docslurp/doppler-md/README.md#page-scans).
 - The scan test's thresholds are options of all three tools: `-scan-min-coverage F`
   (0.85), `-scan-max-words N` (20) and `-scan-layer-overlap F` (0.5) in pdfpagefacts and
-  pdftotext (`pdftomarkdown --scan-max-words N`). A changed one is recorded on the doc line (`scanThresholds`); with the
-  defaults the lines are byte-identical to before.
+  pdftotext, `--scan-min-coverage`, `--scan-max-words`, `--scan-layer-overlap` in
+  pdftomarkdown (passed to pdftotext, and part of the images-plan digest). A changed one is
+  recorded on the doc line (`scanThresholds`); with the defaults the lines are
+  byte-identical to before.
 - Page counts for billing stay with `pdfpagecount`: `pageCount` in the doc line is what
   poppler processes.
 

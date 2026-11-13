@@ -29,7 +29,7 @@ png = "0.18"
 crc32fast = "1"
 roxmltree = "0.21"
 sha2 = "0.11"
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "param", "process", "stdio"] }
 
 [dev-dependencies]
 # the original patterns, to check the hand-written matchers in src/patterns.rs

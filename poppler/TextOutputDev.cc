@@ -2589,6 +2589,7 @@ void TextPage::clear()
     images.clear();
     imagesTruncated = false;
     imagesPageTruncated = false;
+    overpaintWatched = 0;
     graphicCells.fill(TextGraphic {});
     dropped.clear();
     links.clear();
@@ -3031,6 +3032,8 @@ void TextPage::addRule(const TextRule &rule, size_t &remainingDocumentRules)
 
 void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
 {
+    // it is painted over the images before it, kept or not
+    noteOverpaint(image.xMin, image.yMin, image.xMax, image.yMax);
     const bool documentFull = remainingDocumentImages == 0;
     if (!documentFull) {
         --remainingDocumentImages;
@@ -3041,9 +3044,29 @@ void TextPage::addImage(const TextImage &image, size_t &remainingDocumentImages)
         return;
     }
     images.push_back(image);
+    TextImage &added = images.back();
     if (documentFull) {
-        images.back().pastDocumentCap = true;
+        added.pastDocumentCap = true;
         imagesTruncated = true;
+    }
+    // watch an image drawn plainly for paint over it (a scan may be copied, and a repeat linked
+    // to an earlier placement, only when nothing is); past the watch list it stays overlaid
+    if (!added.overlaid && overpaintWatched < maxOverpaintWatch) {
+        overpaintWatch[overpaintWatched++] = images.size() - 1;
+    } else {
+        added.overlaid = true;
+    }
+}
+
+void TextPage::noteOverpaint(double x0, double y0, double x1, double y1)
+{
+    // a box that is not finite (or NaN) may be anywhere: it overlaps everything
+    const bool anywhere = !(std::isfinite(x0) && std::isfinite(y0) && std::isfinite(x1) && std::isfinite(y1));
+    for (size_t i = 0; i < overpaintWatched; ++i) {
+        TextImage &im = images[overpaintWatch[i]];
+        if (anywhere || (x0 <= im.xMax && x1 >= im.xMin && y0 <= im.yMax && y1 >= im.yMin)) {
+            im.overlaid = true;
+        }
     }
 }
 
@@ -6073,6 +6096,11 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
 void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
 {
     text->startPage(state);
+    gsDepth = 0;
+    oddClipDepth = -1;
+    softMaskDepth = -1;
+    transparencyGroupDepth = 0;
+    scanAudit.startPage(currentPage, state);
     if (facts) {
         facts->startPage(currentPage, text->getPageWidth(), text->getPageHeight());
     }
@@ -6143,9 +6171,232 @@ void TextOutputDev::endPage()
     currentPage = nullptr;
 }
 
+void TextOutputDev::saveState(GfxState * /*state*/)
+{
+    ++gsDepth;
+}
+
 void TextOutputDev::restoreState(GfxState *state)
 {
     text->updateFont(state);
+    if (gsDepth > 0) {
+        --gsDepth;
+    }
+    // a clip or soft mask set at a deeper level is gone
+    if (oddClipDepth > gsDepth) {
+        oddClipDepth = -1;
+    }
+    if (softMaskDepth > gsDepth) {
+        softMaskDepth = -1;
+    }
+}
+
+void TextOutputDev::noteClip(GfxState *state, bool rectangular)
+{
+    // an axis-aligned rectangle is what the clip box already says; anything else may hide part
+    // of an image inside that box
+    if (rectangular) {
+        const GfxPath *path = state->getPath();
+        rectangular = path && path->getNumSubpaths() == 1;
+        if (rectangular) {
+            const GfxSubpath *sub = path->getSubpath(0);
+            const int n = sub->getNumPoints();
+            rectangular = n == 4 || n == 5;
+            double px[5], py[5];
+            for (int i = 0; rectangular && i < n; ++i) {
+                rectangular = !sub->getCurve(i);
+                state->transform(sub->getX(i), sub->getY(i), &px[i], &py[i]);
+                rectangular = rectangular && std::isfinite(px[i]) && std::isfinite(py[i]);
+            }
+            if (rectangular) {
+                const double bx0 = *std::min_element(px, px + n), bx1 = *std::max_element(px, px + n);
+                const double by0 = *std::min_element(py, py + n), by1 = *std::max_element(py, py + n);
+                const double eps = 0.01;
+                int corners = 0; // bit per corner seen
+                for (int i = 0; rectangular && i < n; ++i) {
+                    const bool left = std::fabs(px[i] - bx0) <= eps, right = std::fabs(px[i] - bx1) <= eps;
+                    const bool top = std::fabs(py[i] - by0) <= eps, bottom = std::fabs(py[i] - by1) <= eps;
+                    rectangular = (left || right) && (top || bottom);
+                    corners |= 1 << ((right ? 1 : 0) + (bottom ? 2 : 0));
+                }
+                // four corners, visited around the rectangle (no point repeated but the closing one)
+                rectangular = rectangular && corners == 15;
+                for (int i = 0; rectangular && i + 1 < n; ++i) {
+                    rectangular = std::fabs(px[i] - px[i + 1]) <= eps || std::fabs(py[i] - py[i + 1]) <= eps;
+                }
+            }
+        }
+    }
+    if (!rectangular && oddClipDepth < 0) {
+        oddClipDepth = gsDepth;
+    }
+}
+
+void TextOutputDev::clip(GfxState *state)
+{
+    noteClip(state, true);
+    scanAudit.clip(state);
+}
+
+void TextOutputDev::eoClip(GfxState *state)
+{
+    noteClip(state, true);
+    scanAudit.clip(state);
+}
+
+void TextOutputDev::clipToStrokePath(GfxState *state)
+{
+    noteClip(state, false);
+    scanAudit.deny(ScanCopyAudit::Reason::Clip);
+}
+
+// Gfx::drawForm resets the fill and stroke opacity, the blend mode and the soft mask before a
+// transparency group's content, and applies them only when the group is composited, which this
+// device never sees: an image inside a group may be invisible however plainly it is drawn
+void TextOutputDev::beginTransparencyGroup(GfxState * /*state*/, const std::array<double, 4> & /*bbox*/, GfxColorSpace * /*blendingColorSpace*/, bool /*isolated*/, bool /*knockout*/, bool /*forSoftMask*/)
+{
+    ++transparencyGroupDepth;
+    scanAudit.deny(ScanCopyAudit::Reason::Group);
+}
+
+void TextOutputDev::endTransparencyGroup(GfxState * /*state*/)
+{
+    if (transparencyGroupDepth > 0) {
+        --transparencyGroupDepth;
+    }
+}
+
+void TextOutputDev::skippedSoftMask(GfxState * /*state*/)
+{
+    scanAudit.deny(ScanCopyAudit::Reason::SoftMask);
+    if (softMaskDepth < 0) {
+        softMaskDepth = gsDepth;
+    }
+}
+
+void TextOutputDev::skippedPaint(GfxState *state, bool path, bool stroke)
+{
+    if (!text->watchingOverpaint()) {
+        return;
+    }
+    if (path) {
+        overpaintPath(state, stroke);
+        return;
+    }
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    text->noteOverpaint(cx0, cy0, cx1, cy1);
+}
+
+void TextOutputDev::overpaintPath(GfxState *state, bool stroke)
+{
+    if (!text->watchingOverpaint()) {
+        return;
+    }
+    const GfxPath *path = state->getPath();
+    double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    for (int i = 0; path && i < path->getNumSubpaths(); ++i) {
+        const GfxSubpath *sub = path->getSubpath(i);
+        for (int j = 0; j < sub->getNumPoints(); ++j) {
+            double tx, ty;
+            state->transform(sub->getX(j), sub->getY(j), &tx, &ty);
+            if (!std::isfinite(tx) || !std::isfinite(ty)) {
+                text->noteOverpaint(NAN, NAN, NAN, NAN);
+                return;
+            }
+            x0 = std::min(x0, tx);
+            y0 = std::min(y0, ty);
+            x1 = std::max(x1, tx);
+            y1 = std::max(y1, ty);
+        }
+    }
+    if (!(x0 <= x1 && y0 <= y1)) {
+        return;
+    }
+    if (stroke) {
+        // half the pen either side along each device axis: the pen circle under the CTM is an
+        // ellipse whose x extent is r * |(a, c)| and y extent r * |(b, d)| (an RMS width
+        // undercounts a pen the CTM stretches along one axis); more at mitred corners (up to the
+        // miter limit) and square caps (sqrt 2); a zero width is a hairline
+        const std::array<double, 6> &m = state->getCTM();
+        const double r = 0.5 * std::fabs(state->getLineWidth());
+        const double miter = state->getLineJoin() == GfxState::LineJoinMitre ? state->getMiterLimit() : 1.0;
+        const double factor = std::max(M_SQRT2, miter);
+        const double growX = std::max(r * std::hypot(m[0], m[2]), 0.5) * factor + 1.0;
+        const double growY = std::max(r * std::hypot(m[1], m[3]), 0.5) * factor + 1.0;
+        if (!std::isfinite(growX) || !std::isfinite(growY)) {
+            text->noteOverpaint(NAN, NAN, NAN, NAN);
+            return;
+        }
+        x0 -= growX;
+        y0 -= growY;
+        x1 += growX;
+        y1 += growY;
+    }
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    x0 = std::max(x0, cx0);
+    y0 = std::max(y0, cy0);
+    x1 = std::min(x1, cx1);
+    y1 = std::min(y1, cy1);
+    if (x0 <= x1 && y0 <= y1) {
+        text->noteOverpaint(x0, y0, x1, y1);
+    }
+}
+
+void TextOutputDev::overpaintGlyph(GfxState *state, double x, double y, double dx, double dy)
+{
+    // glyphs in render mode 4 to 7 add to the clip (whatever its shape)
+    const int render = state->getRender();
+    if ((render & 4) && oddClipDepth < 0) {
+        oddClipDepth = gsDepth;
+    }
+    // modes 3 and 7 paint nothing
+    if ((render & 3) == 3 || !text->watchingOverpaint()) {
+        return;
+    }
+    double cx0, cy0, cx1, cy1;
+    state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
+    // a Type 3 glyph is a content stream this device does not run: it may paint anywhere the
+    // clip allows, whatever its FontMatrix, FontBBox and advance say
+    const GfxFont *font = state->getFont().get();
+    if (!font || font->getType() == fontType3) {
+        text->noteOverpaint(cx0, cy0, cx1, cy1);
+        return;
+    }
+    // the glyph's box in user space: its advance, and a font size up from a quarter below the
+    // baseline (a generous em box), any glyph whatever its Unicode value; and the font's
+    // bounding box (text space units) about the origin, for glyphs drawn outside the em
+    double upX, upY;
+    state->textTransformDelta(0, state->getFontSize(), &upX, &upY);
+    const std::array<double, 4> &bb = font->getFontBBox();
+    const double fs = state->getFontSize(), hs = state->getHorizScaling();
+    double bx[4], by[4];
+    for (int i = 0; i < 4; ++i) {
+        state->textTransformDelta(bb[i & 1 ? 2 : 0] * fs * hs, bb[i & 2 ? 3 : 1] * fs, &bx[i], &by[i]);
+    }
+    const double ux[8] = { x - 0.25 * upX, x + dx - 0.25 * upX, x + upX, x + dx + upX, x + bx[0], x + bx[1], x + bx[2], x + bx[3] };
+    const double uy[8] = { y - 0.25 * upY, y + dy - 0.25 * upY, y + upY, y + dy + upY, y + by[0], y + by[1], y + by[2], y + by[3] };
+    double x0 = INFINITY, y0 = INFINITY, x1 = -INFINITY, y1 = -INFINITY;
+    for (int i = 0; i < 8; ++i) {
+        double tx, ty;
+        state->transform(ux[i], uy[i], &tx, &ty);
+        if (!std::isfinite(tx) || !std::isfinite(ty)) {
+            text->noteOverpaint(NAN, NAN, NAN, NAN);
+            return;
+        }
+        x0 = std::min(x0, tx);
+        y0 = std::min(y0, ty);
+        x1 = std::max(x1, tx);
+        y1 = std::max(y1, ty);
+    }
+    x0 = std::max(x0, cx0);
+    y0 = std::max(y0, cy0);
+    x1 = std::min(x1, cx1);
+    y1 = std::min(y1, cy1);
+    if (x0 <= x1 && y0 <= y1) {
+        text->noteOverpaint(x0, y0, x1, y1);
+    }
 }
 
 void TextOutputDev::updateFont(GfxState *state)
@@ -6159,6 +6410,7 @@ void TextOutputDev::endString(GfxState * /*state*/) { }
 
 void TextOutputDev::drawChar(GfxState *state, double x, double y, double dx, double dy, double /*originX*/, double /*originY*/, CharCode c, int nBytes, const Unicode *u, int uLen)
 {
+    overpaintGlyph(state, x, y, dx, dy);
     actualText->addChar(state, x, y, dx, dy, c, nBytes, u, uLen);
 }
 
@@ -6218,19 +6470,23 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     state->transform(1, 1, &x[3], &y[3]);
     for (int i = 0; i < 4; ++i) {
         if (!std::isfinite(x[i]) || !std::isfinite(y[i])) {
+            text->noteOverpaint(NAN, NAN, NAN, NAN);
             return;
         }
     }
-    double x0 = std::min({ x[0], x[1], x[2], x[3] }), x1 = std::max({ x[0], x[1], x[2], x[3] });
-    double y0 = std::min({ y[0], y[1], y[2], y[3] }), y1 = std::max({ y[0], y[1], y[2], y[3] });
+    const double ux0 = std::min({ x[0], x[1], x[2], x[3] }), ux1 = std::max({ x[0], x[1], x[2], x[3] });
+    const double uy0 = std::min({ y[0], y[1], y[2], y[3] }), uy1 = std::max({ y[0], y[1], y[2], y[3] });
     double cx0, cy0, cx1, cy1;
     state->getClipBBox(&cx0, &cy0, &cx1, &cy1);
-    x0 = std::max({ x0, cx0, 0.0 });
-    y0 = std::max({ y0, cy0, 0.0 });
-    x1 = std::min({ x1, cx1, text->getPageWidth() });
-    y1 = std::min({ y1, cy1, text->getPageHeight() });
+    const double x0 = std::max({ ux0, cx0, 0.0 });
+    const double y0 = std::max({ uy0, cy0, 0.0 });
+    const double x1 = std::min({ ux1, cx1, text->getPageWidth() });
+    const double y1 = std::min({ uy1, cy1, text->getPageHeight() });
     constexpr double minExtent = 2.0;
     if (x1 - x0 < minExtent || y1 - y0 < minExtent) {
+        if (x1 > x0 && y1 > y0) {
+            text->noteOverpaint(x0, y0, x1, y1);
+        }
         return;
     }
     // samples per inch along the image's axes: its unit square's sides in points
@@ -6239,8 +6495,34 @@ void TextOutputDev::imageGeometry(GfxState *state, int width, int height, bool s
     const double sideY = std::hypot((x[2] - x[0]) * 72.0 / hdpi, (y[2] - y[0]) * 72.0 / vdpi);
     TextImage image { x0, y0, x1, y1, width, height, stencil, ref };
     image.info = info;
+    // the image's column direction (unit x) and row direction (from its first row, at unit
+    // y = 1, down to its last) in device space, which is y down
+    {
+        const double cx = x[1] - x[0], cy = y[1] - y[0], rx = x[0] - x[2], ry = y[0] - y[2];
+        auto along = [](double major, double minor) { return std::fabs(minor) <= 1e-3 * std::fabs(major); };
+        if (cx > 0 && ry > 0 && along(cx, cy) && along(ry, rx)) {
+            image.orientation = TextImage::Upright;
+        } else if (cy > 0 && rx < 0 && along(cy, cx) && along(rx, ry)) {
+            image.orientation = TextImage::Turned90;
+        } else if (cx < 0 && ry < 0 && along(cx, cy) && along(ry, rx)) {
+            image.orientation = TextImage::Turned180;
+        } else if (cy < 0 && rx > 0 && along(cy, cx) && along(rx, ry)) {
+            image.orientation = TextImage::Turned270;
+        } else {
+            image.orientation = TextImage::OtherOrientation;
+        }
+    }
     image.dpiX = sideX > 0 ? width / (sideX / 72.0) : 0;
     image.dpiY = sideY > 0 ? height / (sideY / 72.0) : 0;
+    // drawn plainly: whole (no clip or page edge cuts more than a point or 0.5% of a side), no
+    // non-rectangular clip, no transparency group around it, and no soft mask, blend mode,
+    // opacity or transfer function
+    {
+        const double tolX = std::max(1.0, 0.005 * (ux1 - ux0)), tolY = std::max(1.0, 0.005 * (uy1 - uy0));
+        const bool whole = x0 - ux0 <= tolX && ux1 - x1 <= tolX && y0 - uy0 <= tolY && uy1 - y1 <= tolY;
+        const bool plainPaint = state->getFillOpacity() >= 1.0 && state->getBlendMode() == gfxBlendNormal && state->getTransfer().empty();
+        image.overlaid = !(whole && plainPaint && oddClipDepth < 0 && softMaskDepth < 0 && transparencyGroupDepth == 0);
+    }
     text->addImage(image, remainingDocImages);
 }
 
@@ -6468,6 +6750,8 @@ void TextOutputDev::stroke(GfxState *state)
 {
     double x[2], y[2];
 
+    overpaintPath(state, true);
+
     if (collectRules || (facts && facts->wantsRules())) {
         collectPathRules(state, false);
     }
@@ -6503,6 +6787,7 @@ void TextOutputDev::fill(GfxState *state)
     double rx0, ry0, rx1, ry1, t;
     int i;
 
+    overpaintPath(state, false);
     if (collectRules || (facts && facts->wantsRules())) {
         collectPathRules(state, true);
     }
@@ -6574,6 +6859,7 @@ void TextOutputDev::fill(GfxState *state)
 void TextOutputDev::eoFill(GfxState *state)
 {
     if (!doHTML && !collectRules && !collectImages && !facts) {
+        overpaintPath(state, false);
         return;
     }
     fill(state);
