@@ -13,6 +13,7 @@
 mod box_cells;
 mod entities;
 pub mod extract;
+pub mod heading_levels;
 pub mod images;
 pub mod layout;
 pub mod math;
@@ -252,7 +253,7 @@ pub fn body_color_ok(c: &str) -> bool {
 /// The size is a multiple of 0.5 within [`body_size_ok`] (a document's sizes outside it are
 /// clamped) and the colour passes [`body_color_ok`] (other colours are not counted), so a
 /// caller can always give an estimate back as `--body-size` / `--body-color`.
-fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, String) {
+pub(crate) fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, String) {
     let mut c = FloatCounter::new();
     let mut colors: Counter<Rc<str>> = Counter::new();
     for page in pages {
@@ -338,6 +339,8 @@ pub struct Report {
     pub body: BodyInfo,
     /// a page range converted with context (see [`Window::skip`])
     pub range: Option<RangeInfo>,
+    /// with [`HeadingLevels::Rank`]: heading sizes ranked by the seed, and in all at the end
+    pub heading_sizes: Option<(usize, usize)>,
     /// pages read, context pages included (`parse.pages` of a range counts its own pages only);
     /// not in the JSON
     pub pages_read: usize,
@@ -378,6 +381,9 @@ impl Report {
     /// The body estimate and the range, as JSON members (each with a leading comma).
     fn body_json(&self) -> String {
         let mut s = self.body_members();
+        if let Some((seeded, all)) = self.heading_sizes {
+            s += &format!(",\"heading_sizes\":{{\"seeded\":{seeded},\"total\":{all}}}");
+        }
         if let Some(r) = &self.range {
             let why: Vec<String> = r.identity.iter().map(|w| format!("\"{w}\"")).collect();
             s += &format!(
@@ -672,9 +678,23 @@ pub struct Window {
     pub emit: Option<usize>,
     /// Trailing context pages asked for (for the report's identity check only).
     pub after: usize,
-    /// The PDF page number of the first page read (1 for a whole document; for the report's
-    /// identity check only).
+    /// The PDF page number of the first page read (1 for a whole document): the document
+    /// work budget at a page depends on it, and the report's identity check.
     pub first_page: u32,
+    /// How heading levels are set (see [`HeadingLevels`]).
+    pub headings: HeadingLevels,
+}
+
+/// How heading levels are set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HeadingLevels {
+    /// by the heading's size relative to the body size (`h1_ratio`, `h2_ratio`)
+    #[default]
+    Size,
+    /// by the rank of the heading's size among the document's heading sizes, seeded from the
+    /// first pages and only added to after (see [`heading_levels`]); the body size still
+    /// decides which paragraphs are headings
+    Rank,
 }
 
 impl Default for Window {
@@ -688,6 +708,7 @@ impl Default for Window {
             emit: None,
             after: 0,
             first_page: 1,
+            headings: HeadingLevels::Size,
         }
     }
 }
@@ -797,6 +818,10 @@ pub struct Converter<'p> {
     context_words: usize,
     /// this conversion's seal on its own markers (see [`images::seal`])
     seal: String,
+    /// with [`HeadingLevels::Rank`], the document's heading sizes once seeded
+    headings: Option<heading_levels::HeadingTable>,
+    /// the heading seed was fixed by the end of the input, not by a complete sample
+    headings_at_end: bool,
 }
 
 impl<'p> Converter<'p> {
@@ -839,6 +864,8 @@ impl<'p> Converter<'p> {
             context_lines: 0,
             context_words: 0,
             seal: if o.markers { images::seal() } else { String::new() },
+            headings: None,
+            headings_at_end: false,
         };
         c.decide_body(false);
         c
@@ -888,6 +915,30 @@ impl<'p> Converter<'p> {
         self.body = Some((size, color));
     }
 
+    /// Seeds the heading table (with [`HeadingLevels::Rank`]) once the first
+    /// [`DEFAULT_BODY_PAGES`] pages with text are read, as the body's `TextPages` sample (`end`:
+    /// the input ended). Nothing is written before.
+    fn decide_headings(&mut self, end: bool) {
+        if self.win.headings != HeadingLevels::Rank || self.headings.is_some() {
+            return;
+        }
+        let n = DEFAULT_BODY_PAGES;
+        let complete =
+            self.text_pages >= n || self.received >= n.saturating_mul(2) || self.items >= BODY_SAMPLE_MAX_ITEMS;
+        if !(end || complete) {
+            return;
+        }
+        self.headings_at_end = !complete;
+        // no page has been written yet: `ahead` holds every page read
+        self.headings = Some(heading_levels::HeadingTable::seed(self.ahead.iter().map(|(pg, _)| pg), self.p));
+    }
+
+    /// Whether pages can be written: the body is fixed, and the heading table seeded when
+    /// levels are ranked.
+    fn ready(&self) -> bool {
+        self.body.is_some() && (self.win.headings != HeadingLevels::Rank || self.headings.is_some())
+    }
+
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
     /// is now complete. Page indices count the written pages only (context pages are not).
     pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
@@ -931,7 +982,8 @@ impl<'p> Converter<'p> {
         self.received += 1;
         self.ahead.push_back((page, m));
         self.decide_body(false);
-        while self.body.is_some() && self.win.furniture.is_some_and(|w| self.ahead.len() > w) {
+        self.decide_headings(false);
+        while self.ready() && self.win.furniture.is_some_and(|w| self.ahead.len() > w) {
             self.write_next(out);
         }
     }
@@ -940,6 +992,7 @@ impl<'p> Converter<'p> {
     /// parse report.
     pub fn finish(mut self, mut parse: ParseReport, out: &mut dyn FnMut(usize, String)) -> Report {
         self.decide_body(true);
+        self.decide_headings(true);
         while !self.ahead.is_empty() {
             self.write_next(out);
         }
@@ -967,6 +1020,7 @@ impl<'p> Converter<'p> {
         self.report.doc_work_limit =
             self.p.doc_work_limit((self.win.first_page as usize).saturating_sub(1) + self.received);
         self.report.body = self.body_info.clone();
+        self.report.heading_sizes = self.headings.as_ref().map(|t| (t.seeded, t.len()));
         self.report
     }
 
@@ -1002,6 +1056,11 @@ impl<'p> Converter<'p> {
         }
         if self.carry_unsure_at_first {
             identity.push("markers");
+        }
+        // ranked heading levels: the seed is the document's first pages, and sizes are added
+        // in page order from there
+        if w.headings == HeadingLevels::Rank && (w.first_page > 1 || (w.emit.is_some() && self.headings_at_end)) {
+            identity.push("headings");
         }
         if first_written > 1 {
             // the work of the pages before the range is not charged here
@@ -1169,6 +1228,9 @@ impl<'p> Converter<'p> {
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
         let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
             Some(mut layout) => {
+                if let Some(table) = &mut self.headings {
+                    layout.relevel(table, p);
+                }
                 if self.o.markers {
                     self.carry = layout.stitch(&self.carry, page.height, p, &self.seal);
                 }

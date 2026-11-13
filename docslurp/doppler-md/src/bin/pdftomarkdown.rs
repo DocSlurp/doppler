@@ -35,7 +35,8 @@ mod cli;
 const USAGE: &str = "\
 usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--body-pages N]
                      [--body-size PT] [--body-color C] [--report] [--params JSON] [-f N] [-l N] [--context N]
-                     [--estimate-body] [--opw PW] [--upw PW] [--images-dir DIR [image options]] [--] FILE.pdf
+                     [--heading-levels size|rank] [--estimate-body] [--opw PW] [--upw PW]
+                     [--images-dir DIR [image options]] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
@@ -313,6 +314,9 @@ fn main() -> ExitCode {
     code
 }
 
+/// `--images-plan-out`: the file, the page range and the image settings.
+type PlanOut = (NewFile, (Option<u32>, Option<u32>), String);
+
 /// Runs pdftotext, converts, and extracts the images when asked (`out_dir` is taken once
 /// extraction succeeds).
 #[allow(clippy::too_many_arguments)]
@@ -329,7 +333,7 @@ fn convert(
     images: &Settings,
     passwords: &[OsString],
     out_dir: &mut Option<OutDir>,
-    plan_out: Option<(NewFile, (Option<u32>, Option<u32>), String)>,
+    plan_out: Option<PlanOut>,
 ) -> ExitCode {
     // the plan names the bytes converted: hash them first
     let plan_out = match plan_out.map(|(f, pages, settings)| binding(file, pages, settings).map(|b| (f, b))) {

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::TableFormat;
+use crate::heading_levels::HeadingTable;
 use crate::images::Figure;
 use crate::layout::{Budget, Elem, regions_within};
 use crate::model::{Line, Page, Word};
@@ -36,7 +37,9 @@ pub(crate) enum FlowItem {
 }
 
 pub(crate) enum Block {
-    /// `small`: set in print smaller than the body's (by `aside_size`); `lines`: how many
+    /// `small`: set in print smaller than the body's (by `aside_size`); `lines`: how many;
+    /// `size`: a heading's size in points when it is at least `heading_ratio` times the body
+    /// (ranked by `--heading-levels rank`), else 0
     Text {
         text: String,
         heading: u8,
@@ -44,6 +47,7 @@ pub(crate) enum Block {
         caption: bool,
         small: bool,
         lines: usize,
+        size: f64,
     },
     Table(PlacedTable),
     Rendered(Rc<Vec<String>>),
@@ -189,6 +193,19 @@ impl PageLayout {
     /// leaves open.
     pub(crate) fn stitch(&mut self, prev: &Carry, page_height: f64, p: &Params, seal: &str) -> Carry {
         stitch(&mut self.blocks, prev, page_height, p, seal)
+    }
+
+    /// Sets the level of every heading of at least `heading_ratio` times the body by its size's
+    /// rank in the document (see [`crate::heading_levels`]), in reading order.
+    pub(crate) fn relevel(&mut self, table: &mut HeadingTable, p: &Params) {
+        for b in &mut self.blocks {
+            if let Block::Text { heading, size, .. } = b
+                && *heading != 0
+                && *size > 0.0
+            {
+                *heading = table.level(*size, p);
+            }
+        }
     }
 
     pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
@@ -626,14 +643,25 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                         && section_number(&it.text);
                     let caption = minor && p.captions && near_table && !section_after_table;
                     let mut heading = it.level;
-                    if minor && !caption {
-                        if !body_follows {
-                            heading = 0;
-                        }
+                    if minor && !caption && !body_follows {
+                        heading = 0;
                     }
                     let small = it.ratio <= p.aside_size;
                     let lines = it.lines.len();
-                    out.push(Block::Text { text: it.text, heading, list: it.kind.is_some(), caption, small, lines });
+                    let size = if heading != 0 && it.ratio >= p.heading_ratio {
+                        median(it.lines.iter().map(|l| l.size()).collect())
+                    } else {
+                        0.0
+                    };
+                    out.push(Block::Text {
+                        text: it.text,
+                        heading,
+                        list: it.kind.is_some(),
+                        caption,
+                        small,
+                        lines,
+                        size,
+                    });
                 }
                 previous_table = false;
             }

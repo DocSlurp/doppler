@@ -18,7 +18,7 @@ use doppler_md::{Options, Params, TableFormat};
 mod cli;
 
 const USAGE: &str = "usage: doppler-md [--html] [--math] [--markers] [--stream | --window N] [--body-pages N]
-                  [--body-size PT] [--body-color C] [--params JSON] [--report] [FILE|-]
+                  [--body-size PT] [--body-color C] [--heading-levels size|rank] [--params JSON] [--report] [FILE|-]
 ";
 
 fn main() -> ExitCode {

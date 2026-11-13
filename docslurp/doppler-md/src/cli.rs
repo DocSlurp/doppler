@@ -6,7 +6,7 @@ use std::io::{BufWriter, Read, StdoutLock, Write};
 use std::process::ExitCode;
 
 use doppler_md::model::{self, Parser};
-use doppler_md::{BodySample, Converter, Options, Params, Report, Window};
+use doppler_md::{BodySample, Converter, HeadingLevels, Options, Params, Report, Window};
 
 /// Read size. Pages are written as soon as the converter's window allows, so this bounds the
 /// input buffered ahead of the parser, not the latency.
@@ -190,6 +190,7 @@ pub struct WindowArgs {
     body_pages: Option<usize>,
     body_size: Option<f64>,
     body_color: Option<String>,
+    headings: HeadingLevels,
 }
 
 /// Help text for [`WindowArgs`].
@@ -203,11 +204,15 @@ pub const WINDOW_HELP: &str = concat!(
     "                 0 removes no repeated content at all\n",
     "  --body-pages N estimate the body font size and colour from the pages up to the N-th with\n",
     "                 text, 1 to 256 (at most 2N pages, and fewer when they hold over 262144\n",
-    "                 words and rules); none is written before then (default with a window: 32;\n",
+    "                 words and rules); none is written before then (default with a window: 16;\n",
     "                 without one, the whole document)\n",
     "  --body-size PT use this body font size, 0.5 to 1000, not an estimate (the report's\n",
     "                 body_size, exactly as printed)\n",
     "  --body-color C use this body colour, not an estimate (the report's body_color, exactly)\n",
+    "  --heading-levels size|rank\n",
+    "                 size (default): a heading's level from its size relative to the body size;\n",
+    "                 rank: from its size's rank among the document's heading sizes (the first\n",
+    "                 16 pages with text are read before any page is written)\n",
 );
 
 impl WindowArgs {
@@ -246,6 +251,18 @@ impl WindowArgs {
                 Some(_) => Err("--body-color: at most 64 characters, no control characters".into()),
                 None => Err("--body-color needs a colour (as the report's body_color)".into()),
             },
+            "--heading-levels" => match next().as_deref() {
+                Some("size") => {
+                    self.headings = HeadingLevels::Size;
+                    Ok(())
+                }
+                Some("rank") => {
+                    self.headings = HeadingLevels::Rank;
+                    Ok(())
+                }
+                Some(v) => Err(format!("--heading-levels: size or rank, not {v:?}")),
+                None => Err("--heading-levels needs size or rank".into()),
+            },
             _ => return None,
         };
         Some(r)
@@ -266,6 +283,7 @@ impl WindowArgs {
             body: self.body_pages.map(BodySample::TextPages),
             body_size: self.body_size,
             body_color: self.body_color.clone(),
+            headings: self.headings,
             ..Window::default()
         }
     }

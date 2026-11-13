@@ -9,7 +9,7 @@ use crate::tables::{Table, bullet, numbered};
 use std::rc::Rc;
 
 /// `re.search(r'[^\W\d_]', text)`: a letter, or a number that is not a decimal digit.
-fn has_letter(text: &str) -> bool {
+pub(crate) fn has_letter(text: &str) -> bool {
     text.chars().any(|c| c != '_' && pyc::is_word_char(c) && !pyc::is_decimal(c))
 }
 

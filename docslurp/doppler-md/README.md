@@ -4,9 +4,9 @@ Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML. 
 byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-10-26/`, v24).
 
 ```sh
-doppler-md [--html] [--math] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--params JSON] [--report] [FILE|-]
+doppler-md [--html] [--math] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--heading-levels size|rank] [--params JSON] [--report] [FILE|-]
 pdftomarkdown [--html] [--math] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
-              [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW] [--] FILE.pdf
+              [--heading-levels size|rank] [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -300,6 +300,43 @@ instead of 69 MB; the converter alone stays at 16 MiB with a 32-page body sample
 
 With a window, pages already written stay written when pdftotext later fails: the exit
 status, not the output, says whether the conversion finished.
+
+### Heading levels (`--heading-levels size|rank`)
+
+By default (`size`) a heading's level comes from its size relative to the body size: at least
+`h1_ratio` (1.6) times is `#`, `h2_ratio` (1.25) `##`, `heading_ratio` (1.15) `###`. A body
+estimate that is off (front matter in the body sample) shifts those levels.
+`--heading-levels rank` sets the level of every such heading by the rank of its size among the
+document's heading sizes instead, so the body size only decides which paragraphs are headings,
+not their level. It is built to stream (design and measurements in
+[FURNITURE.md](FURNITURE.md#heading-levels-by-rank-2026-11-12)):
+
+- **Seed.** Before any page is written, the first 16 pages with text (at most 32 pages, fewer
+  once they hold 262,144 items) are read whatever the body sample, and the sizes of their
+  heading-like lines are ranked: outside the margin bands, at most `heading_max_chars`, at
+  least `heading_ratio` times those pages' own most common size, not in a run of more than three
+  lines of one size. Sizes within `style_size` (5%) are one size; neighbouring sizes less than
+  `h2_ratio / heading_ratio` (1.087) apart share a level; the largest is `#`, then `##`, then
+  `###`.
+- **Additions.** A heading of a size the table does not have is added where it falls, at a
+  level that keeps the order without renumbering anything written: above every size `#`;
+  close to the size above (within 1.087) that size's level; else one level deeper than it when
+  the size below is deeper still.
+
+A whole run and a `--stream` (or `--window`) run take both steps the same way, so they give
+the same levels whenever the same paragraphs are headings. A range after page 1 cannot see the
+seed: its report's `identity` lists `headings`. Minor headings (bold or coloured body-size
+lines, `###`) are not ranked. The report gains `heading_sizes` (`seeded`, `total`).
+
+It is **off by default**. On the 254 judged golden cases the v3.6 judge's scores do not move
+(quality 0.7501 either way: its `headingF1` matches heading text, not level), but measured
+against the authored references' levels, `rank` gets fewer right: of the headings whose text
+matches, 73.6% are at the reference's level against 94.9% with `size` (level-aware heading F1
+0.560 against 0.707); the references level by size relative to the body, and ranking spreads
+title, subtitle and section sizes over three levels where they use two. On 14 long PDFs under
+`--stream`, levels agree with the whole run on 88.8% of its headings against 83.4% with
+`size`, and with a body sample of 2 pages (a different body size on 9 of the 14) 30.4% against 10.6%; that
+remaining gap is which lines are headings at all, which ranking does not change.
 
 ### Page ranges and sharding (`--context`, `--body-size`, `--estimate-body`)
 

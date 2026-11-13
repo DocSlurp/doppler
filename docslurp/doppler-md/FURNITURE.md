@@ -184,3 +184,63 @@ DocSlurp uses PDFust for rendering/probing as well as optional extraction surfac
 Six interleaved four-page/100-DPI runs per lane count produced identical image hashes. One lane: median wall 36.16 ms, CPU 36.55 ms. Four lanes: wall 12.77 ms, CPU 41.72 ms. Four lanes are already the default; this is configuration evidence, not a new engine optimization. No PDFust code or global concurrency default changed. Broader rendering/probing throughput and live VM behavior are unmeasured.
 
 Raw outputs, hashes, source provenance, rejected-candidate evidence, scripts and measurements are retained in the app's `performance/engine-pass-2026-10-30/`. Only aggregate evidence is committed here. No customer inputs, paid calls, merges, deployments or releases were used.
+
+# Heading levels by rank (2026-11-12)
+
+`--heading-levels rank` (README, Heading levels) sets a heading's level by the rank of its size
+among the document's heading sizes, so a body size that is off no longer shifts the levels.
+
+**Design for streaming.** A written heading cannot be renumbered, so the table is fixed in two
+steps a whole run and a stream take identically. The seed is the first 16 pages with text
+(always, not the body sample: `--body-pages` does not change it), read before any page is
+written: their heading-like lines (outside the margin bands, short, at least `heading_ratio`
+times those pages' own most common size, not in a run of more than three lines of one size) are
+grouped by size (within 5%), and neighbouring sizes a level apart (`h2_ratio / heading_ratio`)
+get `#`, `##`, `###`. After that, a heading whose size is new is added between the sizes above
+and below it at a level that keeps the order without changing any given level. Rejected:
+ranking within the furniture window (levels would change with the window and from window to
+window), ranking from the body sample (a 2-page sample would seed from front matter, and
+`--body-pages` would change the levels), and laying out the seed pages to rank real headings
+(a second layout of up to 32 pages, and with a window those pages' furniture differs from when
+they are written). Only detection (which paragraphs are headings, by `heading_ratio` against
+the body) still depends on the body size; minor headings are not ranked.
+
+**Judged.** 254 golden cases, v3.6 judge (`docslurp-review/heading-levels-20261112/score_headings.py`).
+The judge's `headingF1` ignores levels, so two harness-local level measures are added against the
+same authored references: `levelF1` (text and level must match) and `levelAcc` (of headings
+whose text matches, the share at the reference's level).
+
+| arm | quality | content | tables | headings | levelF1 | levelAcc | cases changed |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| size (default) | 0.7501 | 0.9087 | 0.811 | 0.7453 | 0.7069 | 0.9487 | 0 |
+| rank | 0.7501 | 0.9087 | 0.811 | 0.7453 | 0.5603 | 0.7361 | 154 |
+| --stream, size | 0.7501 | 0.9087 | 0.811 | 0.7453 | 0.7069 | 0.9487 | 0 |
+| --stream, rank | 0.7501 | 0.9087 | 0.811 | 0.7453 | 0.5603 | 0.7361 | 154 |
+
+Matched headings by (reference level, rank level): (1,1) 360, (1,2) 62, (2,1) 106, (2,2) 601,
+(2,3) 306, (3,2) 12, (3,3) 125; with `size` (1,1) 401, (1,3) 21, (2,2) 940, (2,3) 73, (3,3) 137.
+The references level by size relative to the body (as `size` does); ranking spreads a title, a
+subtitle or deck and the section headings over three levels where the references use two. Two
+seed choices were made after a first look at these cases, and are disclosed as such: single
+lines count in the seed (a one-line title is a size; requiring two lines dropped levelAcc to
+0.50), and neighbouring sizes share a level unless a step apart (levelAcc 0.67 without it,
+0.74 with it; the step is the existing `h2_ratio / heading_ratio`, not tuned).
+
+**Agreement with the whole run on long PDFs** (`agreement.py`; 14 burn-corpus PDFs, 21,102
+headings in the whole runs; a heading agrees when the arm's same page has the same text at the
+same level):
+
+| arm | size: same level | rank: same level | same text (both) |
+|---|---:|---:|---:|
+| `--stream` (16-page body sample) | 83.35% | 88.79% | 88.79% |
+| `--stream --body-pages 2` | 10.58% | 30.39% | 30.46% |
+
+With `rank` a heading's level agrees almost whenever its text does (30.39% against 30.46%);
+what still differs is detection: with a 2-page sample 9 of
+the 14 documents get a different body size and most headings are found or lost differently.
+
+**Decision: off by default.** The judged score does not drop and agreement improves, but the
+judge cannot see levels, and measured against the same references' levels `rank` is worse
+(levelAcc 0.949 to 0.736). Ranking makes levels consistent, not more correct; the error it
+removes (a shifted body) is better removed at the body estimate. `--heading-levels rank` stays
+for hosts that shard or stream with an uncertain body and value consistency across pages.
