@@ -64,8 +64,10 @@ pub(crate) fn seal() -> String {
 /// matched reliably; so the syntax that makes a link is broken too: a zero-width space goes
 /// between `]` and `(` (an inline link or image) and between `]` and `:` (a reference
 /// definition), and after the `<` of every HTML tag (`<img`, `<a`, `<table background=...>`,
-/// `<p style=...>`: any element can load a URL), except table markup as the converter writes it
-/// (attribute-free, or `dir="rtl"`, `rowspan`, `colspan`). Then the converter's own sealed
+/// `<p style=...>`: any element can load a URL), and after the `<` of every `<!` and `<?` (a
+/// comment, CDATA section or processing instruction would hide the converter's links that
+/// follow), except table markup as the converter writes it (attribute-free, or `dir="rtl"`,
+/// `rowspan`, `colspan`) and the converter's sealed page markers. Then the converter's own sealed
 /// picture markers are expanded:
 /// `expand` maps a marker's id (`pN.M`, `pN.gK`) to its link (`None` keeps
 /// `doppler-image:<id>`). Last, the seal goes, leaving the converter's other markers exactly as
@@ -75,8 +77,10 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
     let mut out = String::with_capacity(md.len());
     let mut from = 0;
     let at = |i: usize, s: &str| bytes.len() >= i + s.len() && bytes[i..i + s.len()].eq_ignore_ascii_case(s.as_bytes());
-    // the converter's own markers open with `](doppler<seal>-image:`
+    // the converter's own markers open with `](doppler<seal>-image:`, its page markers with
+    // `<!-- doppler<seal>:`
     let own = format!("](doppler{seal}");
+    let own_comment = format!("<!-- doppler{seal}:");
     let mut i = 0;
     while i + 1 < bytes.len() {
         // a link of the PDF's text: `](` or `]:`, unless it is a sealed marker of the converter
@@ -96,6 +100,10 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
         if bytes[i] == b'<' && tag_start_at(bytes, i + 1) {
             if let Some(len) = own_table_tag_at(bytes, i) {
                 i += len;
+                continue;
+            }
+            if !seal.is_empty() && md[i..].starts_with(&own_comment) {
+                i += own_comment.len();
                 continue;
             }
             out.push_str(&md[from..i + 1]);
@@ -158,10 +166,14 @@ pub(crate) fn unseal(md: &str, seal: &str, expand: &dyn Fn(&str) -> Option<Strin
     out.replace(seal, "")
 }
 
-/// Whether `b[i..]` (just after a `<`) starts an HTML tag: an ASCII letter, or `/` and one.
+/// Whether `b[i..]` (just after a `<`) starts an HTML tag: an ASCII letter, or `/` and one;
+/// or a comment, CDATA section, declaration or processing instruction (`<!--`, `<![CDATA[`,
+/// `<!X`, `<?`), each of which hides what follows it up to its end, the converter's links
+/// included.
 fn tag_start_at(b: &[u8], i: usize) -> bool {
     match b.get(i) {
         Some(c) if c.is_ascii_alphabetic() => true,
+        Some(b'!' | b'?') => true,
         Some(b'/') => b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()),
         _ => false,
     }

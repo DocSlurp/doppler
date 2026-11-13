@@ -73,3 +73,30 @@ fn text_of_the_pdf_cannot_pass_for_a_page_marker() {
     assert!(pages[0].contains("doppler\u{200b}:page 7") && pages[0].contains("DOPPLER\u{200b}:page"), "{pages:?}");
     assert!(!pages[0].chars().any(|c| ('\u{F0000}'..='\u{FFFFD}').contains(&c)));
 }
+
+#[test]
+fn text_of_the_pdf_cannot_open_a_comment_or_instruction() {
+    // a comment, CDATA section, declaration or processing instruction started by the PDF's
+    // text would hide the converter's links after it in rendered Markdown: each `<!` and `<?`
+    // gets a zero-width space after its `<`; the converter's own page markers stay intact
+    let text = "a &lt;!-- b &lt;![CDATA[ c &lt;?php d &lt;!DOCTYPE e";
+    for o in [
+        Options { page_markers: true, ..Options::default() },
+        Options { page_markers: true, markers: true, ..Options::default() },
+        Options { markers: true, ..Options::default() },
+    ] {
+        let (pages, _) = convert(&format!("<doc>{}{}</doc>", page(Some(3), text), page(Some(4), "next")), &o);
+        // every `<!` left is one of the converter's own markers
+        for p in &pages {
+            assert_eq!(p.matches("<!").count(), p.matches("<!-- doppler:").count(), "{p:?}");
+            assert!(!p.contains("<?"), "{p:?}");
+        }
+        for open in ["<\u{200b}!-- b", "<\u{200b}![CDATA[ c", "<\u{200b}?php d", "<\u{200b}!DOCTYPE e"] {
+            assert!(pages[0].contains(open), "{open}: {:?}", pages[0]);
+        }
+        if o.page_markers {
+            assert!(pages[0].starts_with("<!-- doppler:page 3 -->\n\n"), "{pages:?}");
+            assert!(pages[1].starts_with("<!-- doppler:page 4 -->\n\n") && pages[1].contains("next"), "{pages:?}");
+        }
+    }
+}

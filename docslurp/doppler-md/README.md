@@ -191,8 +191,10 @@ percent signs in a link (`page&#45;0001`, `page\-0001`, `page%2D0001`, `./`), th
 of the PDF's text is broken as well: a zero-width space goes between `]` and `(` and between
 `]` and `:` (inline links, images, reference definitions), and after the `<` of every HTML tag
 (any element can load a URL: `<img src>`, `<table background>`, `style="...url(...)"`,
-`<mglyph src>`), except table markup as the converter writes it (`<table>`, `<tr>`, `<td>`, ...
-with no attribute but `dir="rtl"`, `rowspan` and `colspan`, which loads nothing). Only the converter can
+`<mglyph src>`) and of every `<!` and `<?` (a comment, CDATA section, declaration or processing
+instruction would hide the converter's links after it), except table markup as the converter
+writes it (`<table>`, `<tr>`, `<td>`, ... with no attribute but `dir="rtl"`, `rowspan` and
+`colspan`, which loads nothing) and the converter's own sealed comments. Only the converter can
 therefore put a link, an image path or a `doppler:` comment into the Markdown. A marker whose
 note was dropped (past 100,000 images in a document) keeps the neutral `doppler-image:<id>`
 form: it has no manifest entry and no file. A caller should parse markers only from runs made with
