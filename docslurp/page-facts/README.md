@@ -282,7 +282,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `bad-content-stream` | content-stream errors (unknown operators, wrong operands, unbalanced state) |
 | `missing-font` | text shown without a usable font |
 | `broken-image` | bad image parameters or codec errors |
-| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget, an optional-content expression past 10,000 operands, which then counts as visible) |
+| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
@@ -352,14 +352,21 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   only from a later ABI: chmod, chown, utimes and their variants, truncate and ftruncate,
   fallocate, extended attributes, unlink/rename/mkdir/link/symlink/mknod, signals to other
   processes (kill and tgkill reach only this process; tkill, sigqueue and pidfds never),
-  System V and POSIX IPC and memfd_create. Landlock ABI 1 (Linux 5.13) is enough for
+  System V and POSIX IPC and memfd_create, resource limits, priority, scheduling and memory
+  placement of any other process (prlimit64, setpriority, sched_set*, ioprio_set,
+  migrate_pages and move_pages only for pid 0 or this process), sessions and process groups,
+  namespaces, keyrings, flock, new processes (fork, vfork, clone without CLONE_THREAD;
+  clone3 is ENOSYS, threads still work) and every ioctl outside TCGETS, TIOCGWINSZ,
+  FIONREAD, FIONBIO, FIOCLEX and FIONCLEX (neither tool forks; a strace of both on
+  Ghostscript.pdf shows no clone, fork or ioctl after confinement). Landlock ABI 1 (Linux 5.13) is enough for
   `require`; ABI 2 adds cross-directory link and rename checks, ABI 3 truncation, ABI 4 TCP,
   ABI 5 device ioctls and ABI 6 signal and abstract-socket scoping, all but device ioctls also
   denied by seccomp (tested with a probe, `test/docslurp/page-facts/confine_probe.cc`). It must still run inside the credential-free, network-blocked VM boundary
   DocSlurp requires for customer files.
 - pdftomarkdown's `--page-facts FILE` must not exist, is reached without following symbolic
   links, is created mode 0600 under a temporary name and renamed into place as soon as
-  pdftotext has finished (before image extraction); a FILE without a run line is incomplete.
+  pdftotext has finished (before image extraction), holding whole lines only (an
+  unterminated last line is dropped); a FILE without a run line is incomplete.
   The descriptor is inheritable only while pdftotext starts; a caller's `--page-facts-fd`
   descriptor cannot be marked close-on-exec from safe Rust, so pdfregions (and pdfpagefacts)
   close every descriptor above 2 at start.
@@ -374,14 +381,28 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   the pass on each hostile case): an image XObject's dictionary is read once per document,
   and a colour space (or an ICC profile's `/N`) reached by reference is classified once per
   document without copying its lookup string, within a budget of 65,536 fetches (then
-  `other`, with `limit-hit`); optional-content visibility is computed once per `/OC`
-  reference and page, and poppler evaluates a `/VE` expression visiting each shared indirect
-  level once, at most 10,000 operands (then visible, `limit-hit`); poppler's errors are
+  `other`, with `limit-hit` on each page that draws an image whose own lookup was refused,
+  including when that image is drawn again); poppler keeps optional-content visibility by
+  reference (an OCMD and each indirect `/VE` sub-expression) until a group's state changes,
+  so an OCMD named by many `BDC /OC` or XObject `/OC` entries is evaluated once; it evaluates
+  a `/VE` expression visiting each shared indirect level once, at most 10,000 operands (then
+  visible, `limit-hit`), and never reuses a sub-expression cut short by the 50-level
+  recursion limit; what is not cached (a direct OCMD) is charged to a budget of 200,000
+  operands per page, after which uncached `/OC` counts as visible, with `limit-hit`. Whether
+  content is hidden is O(1) per `BMC`/`BDC`/`EMC`, and marked content nested past 4,096
+  levels is not tracked (`limit-hit`; content inside takes the visibility of the deepest
+  tracked level). A stream's `/Filter` or `/DecodeParms` given by reference is fetched once
+  per document (an XObject is fetched again on every `Do`, so a large shared filter array
+  was parsed per draw), and a chain of more than 16 filters is refused (an empty stream,
+  `limit-hit`). These hold for plain pdftotext too. Poppler's errors are
   classified from their unformatted format strings; figure clusters merge by union-find over
   a sweep, within a run budget; the rule-grid score is a sweep over x with a Fenwick tree.
 - pdftotext has no time limit by default; `-timeout S`, `-timeout-per-page P` and
   `-timeout-max M` bound the run to S + P x pages of the range, at most M seconds (exit 6,
-  facts lines whole, no run line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
+  no run line). Facts lines written are whole, except the last one when the limit falls while
+  a facts write is blocked (a reader that stalled): it can end without its newline, so a
+  reader must drop an unterminated last line; pdftomarkdown drops it before committing
+  `--page-facts FILE` (and removes a FILE left with no whole line). pdftomarkdown passes `-timeout 60 -timeout-per-page 1
   -timeout-max 3600` when, and only when, page facts are requested.
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and

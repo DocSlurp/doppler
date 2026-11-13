@@ -415,3 +415,47 @@ fn a_pdftotext_timeout_is_named() {
     assert!(out.stdout.is_empty());
     assert!(message.contains("ran past its time limit"), "{message}");
 }
+
+#[test]
+fn an_unterminated_last_facts_line_is_dropped() {
+    let Some(_) = tools() else { return };
+    let s = Scratch::new("partial-line");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    // a pdftotext that stops mid-line on the facts descriptor, as at its time limit while a
+    // reader stalled (exit status 6), after <whole> whole lines
+    let fake = |name: &str, whole: &str| {
+        let p = s.0.join(name);
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = -page-facts-fd ] && fd=$2; shift; done\n\
+                 eval \"printf '%b' '{whole}{{\\\"type\\\":\\\"pa' >&$fd\"\nexit 6\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    };
+    let f = s.0.join("facts.jsonl");
+    let out = md(&fake("one.sh", "{\\\"type\\\":\\\"doc\\\"}\\n"), &["--page-facts", f.to_str().unwrap()], &pdf);
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(message.contains("dropped an unterminated last line"), "{message}");
+    assert_eq!(std::fs::read(&f).unwrap(), b"{\"type\":\"doc\"}\n");
+    // nothing whole: no file at all
+    let g = s.0.join("none.jsonl");
+    let out = md(&fake("none.sh", ""), &["--page-facts", g.to_str().unwrap()], &pdf);
+    let message = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(message.contains("no whole line"), "{message}");
+    assert!(!g.exists());
+    assert_eq!(
+        std::fs::read_dir(&s.0)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".part"))
+            .count(),
+        0
+    );
+}

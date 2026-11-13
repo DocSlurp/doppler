@@ -135,6 +135,8 @@ const char *ScanCopyAudit::reasonName(Reason r)
         return "page-group";
     case Reason::OutputIntent:
         return "output-intent";
+    case Reason::Unevaluated:
+        return "unevaluated";
     case Reason::Group:
         return "group";
     case Reason::SoftMask:
@@ -339,7 +341,13 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
     }
     // the dictionary: a copy class (which Gfx can draw), nothing masked, device colour only
     // (the cache only classifies colour spaces by reference; every image fact is read here)
-    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res, colorCache);
+    bool limited = false;
+    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res, colorCache, &limited);
+    // a colour space the cache's fetch budget refused to look up is not known to be a device one
+    if (limited) {
+        deny(Reason::Unevaluated);
+        return false;
+    }
     if (!info.drawable || info.copy == ImageCopy::Render || info.external || info.softMask || info.mask || info.calibrated || info.defaultSpaces || info.inlineImg) {
         deny(Reason::ImageDict);
         return false;

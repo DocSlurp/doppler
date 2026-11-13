@@ -22,6 +22,8 @@
 #include "Error.h"
 #include "OptionalContent.h"
 
+#include <atomic>
+
 // Max depth of nested visibility expressions.  This is used to catch
 // infinite loops in the visibility expression object structure.
 constexpr int visibilityExprRecursionLimit = 50;
@@ -128,13 +130,28 @@ OptionalContentGroup *OCGs::findOcgByRef(const Ref ref) const
     return ocg != optionalContentGroups.end() ? ocg->second.get() : nullptr;
 }
 
-bool OCGs::optContentIsVisible(const Object *dictRef) const
-{
-    Dict *dict;
-    bool result = true;
+// DocSlurp: every OptionalContentGroup::setState bumps this; an OCGs cache filled under an
+// older value is dropped before its next use
+static std::atomic<unsigned long> ocgStateGeneration { 0 };
 
+void OCGs::syncCache() const
+{
+    const unsigned long g = OptionalContentGroup::stateGeneration();
+    if (g != cacheGeneration) {
+        ocmdCache.clear();
+        exprCache.clear();
+        cacheGeneration = g;
+    }
+}
+
+// fixed texts (no arguments): page facts classify them as limit-hit from the format string
+static const char *const exprTooLarge = "Optional content visibility expression too large; treated as visible";
+static const char *const budgetSpent = "Optional content visibility budget for the page spent; treated as visible";
+
+bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget) const
+{
     if (dictRef->isNull()) {
-        return result;
+        return true;
     }
 
     if (dictRef->isRef()) {
@@ -144,9 +161,54 @@ bool OCGs::optContentIsVisible(const Object *dictRef) const
         }
     }
 
+    // DocSlurp: an OCMD named by many BDC /OC or XObject /OC entries is evaluated once (until a
+    // group's state changes), and what is not cached is charged to the page's budget
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    syncCache();
+    if (dictRef->isRef()) {
+        const auto hit = ocmdCache.find(dictRef->getRef());
+        if (hit != ocmdCache.end()) {
+            if (hit->second.limited) {
+                error(errSyntaxWarning, -1, exprTooLarge);
+                if (budget) {
+                    budget->unevaluated = true;
+                }
+            }
+            return hit->second.visible;
+        }
+    }
+    if (budget && budget->operandsLeft <= 0) {
+        budget->unevaluated = true;
+        if (!budget->limitHit) {
+            budget->limitHit = true;
+            error(errSyntaxWarning, -1, budgetSpent);
+        }
+        return true;
+    }
+    long cost = 1;
+    bool cacheable = true, limited = false;
+    const bool result = evalVisibility(dictRef, cost, cacheable, limited);
+    if (budget) {
+        budget->operandsLeft -= cost;
+        if (limited) {
+            budget->unevaluated = true;
+        }
+    }
+    if (dictRef->isRef() && cacheable && ocmdCache.size() < cacheLimit) {
+        ocmdCache.emplace(dictRef->getRef(), CachedVisibility { result, limited });
+    }
+    return result;
+}
+
+bool OCGs::evalVisibility(const Object *dictRef, long &cost, bool &cacheable, bool &limited) const
+{
+    Dict *dict;
+    bool result = true;
+
     Object dictObj = dictRef->fetch(m_xref);
     if (!dictObj.isDict()) {
         error(errSyntaxWarning, -1, "Unexpected oc reference target: {0:d}", dictObj.getType());
+        cacheable = false;
         return result;
     }
     dict = dictObj.getDict();
@@ -154,10 +216,24 @@ bool OCGs::optContentIsVisible(const Object *dictRef) const
     if (dictType.isName("OCMD")) {
         Object ve = dict->lookup("VE");
         if (ve.isArray()) {
-            result = evalOCVisibilityExpr(&ve, 0);
+            // DocSlurp: one evaluation visits each indirect sub-expression once (an expression
+            // whose levels share indirect arrays would otherwise take 2^depth steps) and at most
+            // visibilityExprNodeLimit operands in all; past that the expression counts as visible
+            VisibilityEval eval;
+            result = evalOCVisibilityExpr(&ve, 0, eval);
+            cost = eval.nodes > 1 ? eval.nodes : 1;
+            if (eval.overBudget) {
+                error(errSyntaxWarning, -1, exprTooLarge);
+                result = true;
+                limited = true;
+            }
+            if (eval.truncations > 0 || eval.errors > 0) {
+                cacheable = false;
+            }
         } else {
             const Object &ocg = dict->lookupNF("OCGs");
             if (ocg.isArray()) {
+                cost = ocg.arrayGetLength() > 1 ? ocg.arrayGetLength() : 1;
                 Object policy = dict->lookup("P");
                 if (policy.isName("AllOn")) {
                     result = allOn(*ocg.getArray());
@@ -183,21 +259,6 @@ bool OCGs::optContentIsVisible(const Object *dictRef) const
     return result;
 }
 
-// DocSlurp: one evaluation visits each indirect sub-expression once (an expression whose
-// levels share indirect arrays would otherwise take 2^depth steps) and at most
-// visibilityExprNodeLimit operands in all; past that the expression counts as visible.
-bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion) const
-{
-    VisibilityEval eval;
-    const bool ret = evalOCVisibilityExpr(expr, recursion, eval);
-    if (eval.overBudget) {
-        // fixed text (no arguments): page facts classify it as limit-hit from the format string
-        error(errSyntaxWarning, -1, "Optional content visibility expression too large; treated as visible");
-        return true;
-    }
-    return ret;
-}
-
 bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEval &eval) const
 {
     OptionalContentGroup *ocg;
@@ -209,6 +270,8 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEva
     }
     if (recursion > visibilityExprRecursionLimit) {
         error(errSyntaxError, -1, "Loop detected in optional content visibility expression");
+        // cut short: the answer depends on the depth, so nothing above it is memoised
+        ++eval.truncations;
         return true;
     }
     if (expr->isRef()) {
@@ -217,42 +280,58 @@ bool OCGs::evalOCVisibilityExpr(const Object *expr, int recursion, VisibilityEva
         }
         const auto seen = eval.memo.find(expr->getRef());
         if (seen != eval.memo.end()) {
-            return seen->second;
+            if (seen->second.errored) {
+                ++eval.errors;
+            }
+            return seen->second.visible;
+        }
+        const auto kept = exprCache.find(expr->getRef());
+        if (kept != exprCache.end()) {
+            return kept->second;
         }
     }
+    const int truncations = eval.truncations, errors = eval.errors;
     Object expr2 = expr->fetch(m_xref);
     if (!expr2.isArrayOfLengthAtLeast(1)) {
         error(errSyntaxError, -1, "Invalid optional content visibility expression");
-        return true;
-    }
-    Array *expr2Array = expr2.getArray();
-    Object op = expr2Array->get(0);
-    if (op.isName("Not")) {
-        if (expr2Array->getLength() == 2) {
-            const Object &obj = expr2Array->getNF(1);
-            ret = !evalOCVisibilityExpr(&obj, recursion + 1, eval);
+        ++eval.errors;
+        ret = true;
+    } else {
+        Array *expr2Array = expr2.getArray();
+        Object op = expr2Array->get(0);
+        if (op.isName("Not")) {
+            if (expr2Array->getLength() == 2) {
+                const Object &obj = expr2Array->getNF(1);
+                ret = !evalOCVisibilityExpr(&obj, recursion + 1, eval);
+            } else {
+                error(errSyntaxError, -1, "Invalid optional content visibility expression");
+                ++eval.errors;
+                ret = true;
+            }
+        } else if (op.isName("And")) {
+            ret = true;
+            for (int i = 1; i < expr2Array->getLength() && ret && !eval.overBudget; ++i) {
+                const Object &obj = expr2Array->getNF(i);
+                ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
+            }
+        } else if (op.isName("Or")) {
+            ret = false;
+            for (int i = 1; i < expr2Array->getLength() && !ret && !eval.overBudget; ++i) {
+                const Object &obj = expr2Array->getNF(i);
+                ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
+            }
         } else {
             error(errSyntaxError, -1, "Invalid optional content visibility expression");
+            ++eval.errors;
             ret = true;
         }
-    } else if (op.isName("And")) {
-        ret = true;
-        for (int i = 1; i < expr2Array->getLength() && ret && !eval.overBudget; ++i) {
-            const Object &obj = expr2Array->getNF(i);
-            ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
-        }
-    } else if (op.isName("Or")) {
-        ret = false;
-        for (int i = 1; i < expr2Array->getLength() && !ret && !eval.overBudget; ++i) {
-            const Object &obj = expr2Array->getNF(i);
-            ret = evalOCVisibilityExpr(&obj, recursion + 1, eval);
-        }
-    } else {
-        error(errSyntaxError, -1, "Invalid optional content visibility expression");
-        ret = true;
     }
-    if (expr->isRef() && !eval.overBudget) {
-        eval.memo.emplace(expr->getRef(), ret);
+    if (expr->isRef() && !eval.overBudget && eval.truncations == truncations) {
+        const bool errored = eval.errors != errors;
+        eval.memo.emplace(expr->getRef(), VisibilityEval::Result { ret, errored });
+        if (!errored && exprCache.size() < cacheLimit) {
+            exprCache.emplace(expr->getRef(), ret);
+        }
     }
     return ret;
 }
@@ -368,3 +447,14 @@ Ref OptionalContentGroup::getRef() const
 }
 
 OptionalContentGroup::~OptionalContentGroup() = default;
+
+void OptionalContentGroup::setState(State state)
+{
+    m_state = state;
+    ++ocgStateGeneration;
+}
+
+unsigned long OptionalContentGroup::stateGeneration()
+{
+    return ocgStateGeneration.load();
+}

@@ -1387,8 +1387,10 @@ void PageFacts::noteError(ErrorCategory category, const char *format)
     };
     static const char *const fontPrefixes[] = { "No font in show", "Unknown font tag", "Unknown font type", "Couldn't find a font", "Couldn't create a font", "Bad font type" };
     static const char *const imagePrefixes[] = { "Bad image parameters", "Bad image", "Unknown image", "JPX", "JBIG2", "Bad DCT", "DCT", "CCITT", "Invalid Code", "Bad 2D code", "Bad white code", "Bad black code" };
-    // fixed messages of poppler's own budgets (optional content expressions, image colour spaces)
-    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Image colour space budget exhausted" };
+    // fixed messages of poppler's own budgets (optional content expressions and the page's operand budget,
+    // image colour spaces, marked-content nesting, filter chains)
+    static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Optional content visibility budget", "Image colour space budget exhausted", "Marked content nested too deeply",
+                                                 "Too many stream filters" };
     auto note = [&w, format](Warning warning, const auto &prefixes) {
         if (w & (1u << warning)) {
             return;
@@ -2407,7 +2409,7 @@ void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
 bool ImageInfoCache::takeFetch()
 {
     if (fetchesLeft == 0) {
-        fetchLimitHit = true;
+        ++refused;
         return false;
     }
     --fetchesLeft;
@@ -2429,9 +2431,12 @@ ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     }
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
+    const size_t before = refused;
     const Object resolved = xref->fetch(cs.getRef());
     const Space c = classify(resolved, xref);
-    if (spaces.size() < maxEntries) {
+    // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
+    // without saying so (and a retry past the budget is refused at once)
+    if (refused == before && spaces.size() < maxEntries) {
         spaces.emplace(cs.getRef(), c);
     }
     return c;
@@ -2502,6 +2507,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
     }
     ImageColor c = ImageColor::Other;
     const Object icc = xref->fetch(profile.getRef());
+    const size_t before = refused;
     if (icc.isStream()) {
         // /N by reference is resolved too, within the same budget
         const Object &nRaw = icc.getStream()->getDict()->lookupNF("N");
@@ -2529,7 +2535,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
             }
         }
     }
-    if (profiles.size() < maxEntries) {
+    if (refused == before && profiles.size() < maxEntries) {
         profiles.emplace(profile.getRef(), c);
     }
     return c;

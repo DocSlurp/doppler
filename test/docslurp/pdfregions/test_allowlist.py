@@ -238,6 +238,66 @@ with t.TempDir() as d:
             t.check(rc == 0 and head[1] == "err:copy", "%s: pdfregions refuses the copy (err:copy)" % name, head)
         if name in ("plain", "ocr-layer"):
             t.check(head[2] == "jpeg" and payload[: int(head[5])] == JPEG, "%s: the copy is the stored JPEG byte for byte" % name, head)
+    # cost limits: whatever Gfx left undecided denies the copy, since what it then draws may not
+    # be what a full evaluation shows. Optional content past the page's operand budget (each
+    # direct OCMD below, an /And over a shown group, costs 9,991 of 200,000 and is never cached:
+    # the 21st is still worked out, the 22nd is taken as visible) ...
+    and_ocmd = "<< /Type /OCMD /VE [/And %s] >>" % " ".join(["17 0 R"] * 9990)
+    oc_res = RES.replace("/Properties << /oc1 17 0 R >>", "/Properties << /oc1 17 0 R /big %s >>" % and_ocmd, 1)
+    for spent, want in ((20, True), (21, False)):
+        content = b"/OC /big BDC EMC\n" * spent + b"/OC /big BDC " + SCAN + b"EMC\n"
+        path = d.write("oc-budget-%d.pdf" % spent, t.simple_page_pdf(content, resources=oc_res, extra_objects=OBJECTS, catalog_extra=SHOWN))
+        _, images = attrs(path)
+        marked = [i for i in images if ' copyable="1"' in i]
+        rc, head, _ = copy_job(path, 6)
+        what = "the scan in the %s OCMD section (%s the page's budget)" % ("22nd" if not want else "21st", "past" if not want else "within")
+        if want:
+            t.check(len(marked) == 1 and rc == 0 and head[1] == "ok", what + ": copied", (images, head))
+        else:
+            t.check(not marked and rc == 0 and head[1] == "err:copy", what + ": not copied", (images, head))
+    # ... marked content nested past 4,096 (its visibility is not tracked) ...
+    for depth, want in ((4096, True), (4097, False)):
+        content = b"/A BMC\n" * depth + SCAN + b"EMC\n" * depth
+        path = d.write("nested-%d.pdf" % depth, t.simple_page_pdf(content, resources=RES, extra_objects=OBJECTS))
+        _, images = attrs(path)
+        marked = [i for i in images if ' copyable="1"' in i]
+        rc, head, _ = copy_job(path, 6)
+        if want:
+            t.check(len(marked) == 1 and rc == 0 and head[1] == "ok", "the scan inside %d nested BMC: copied" % depth, (images, head))
+        else:
+            t.check(not marked and rc == 0 and head[1] == "err:copy", "the scan inside %d nested BMC (past the cap): not copied" % depth, (images, head))
+    # ... and an image whose colour-space lookup the document's ImageInfoCache refused (its fetch
+    # budget, 65,536, spent on page 1 by 22,000 images costing 3 fetches each). pdfregions runs
+    # page 2 alone, with a fresh cache: pdftotext, which a copy also needs, denies it.
+    for spenders, want in ((0, True), (22000, False)):
+        objs = [None, None, b"null"]  # 1 catalog, 2 pages, 3 Helvetica (unused)
+        objs += [b"null"] * 4  # 4, 5: page 1 and its contents; 6, 7: page 2 and its contents
+        gray = len(objs) + 1
+        objs.append(b"/DeviceGray")
+        scan = len(objs) + 1
+        objs.append(image("/Width 160 /Height 200 /ColorSpace %d 0 R /BitsPerComponent 8 /Filter /DCTDecode" % gray, JPEG))
+        xs = []
+        for _ in range(spenders):
+            fam = len(objs) + 1
+            objs += [b"/ICCBased", b"3"]
+            objs.append(t.stream("/N %d 0 R" % (fam + 1), b"x"))
+            objs.append(image("/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [%d 0 R %d 0 R]" % (fam, fam + 2), b"\x80\x80\x80"))
+            xs.append(len(objs))
+        kids = ([4] if spenders else []) + [6]
+        objs[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+        objs[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % k for k in kids), len(kids))
+        busy = "".join("q 1 0 0 1 %d %d cm /X%d Do Q\n" % (i % 600, i // 600 % 780, i) for i in range(spenders))
+        objs[3] = ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << %s >> >> /Contents 5 0 R >>" % " ".join("/X%d %d 0 R" % (i, x) for i, x in enumerate(xs))).encode()
+        objs[4] = t.stream("", busy.encode(), compress=True)
+        objs[5] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /S %d 0 R >> >> /Contents 7 0 R >>" % scan
+        objs[6] = t.stream("", SCAN)
+        path = d.write("refused-%d.pdf" % spenders, t.build_pdf(objs))
+        _, images = attrs(path)
+        marked = [i for i in images if ' copyable="1"' in i]
+        if want:
+            t.check(len(marked) == 1 and ' ref="%d 0"' % scan in marked[0], "a scan with its colour space by reference: copyable", images[-1:])
+        else:
+            t.check(not marked, "a scan whose colour-space lookup the image cache refused: not copyable", images[-1:])
     # the job's object must be the image the page draws: another image of the file is refused
     path = d.write("other.pdf", t.simple_page_pdf(SCAN, resources=RES, extra_objects=OBJECTS))
     rc, head, _ = copy_job(path, 13)

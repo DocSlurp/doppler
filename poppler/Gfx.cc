@@ -4307,6 +4307,22 @@ static void skipStreamBytes(Stream *str, int64_t n)
     }
 }
 
+// DocSlurp: whether optional content <oc> is drawn, charged to the page's drawing budget. An
+// answer a cost limit gave without working it out (taken as visible) denies the scan copy:
+// what Gfx then draws may not be what a full evaluation shows.
+bool Gfx::ocIsVisible(const Object *oc)
+{
+    const OCGs *ocgs = catalog->getOptContentConfig();
+    if (!ocgs) {
+        return true;
+    }
+    const bool visible = ocgs->optContentIsVisible(oc, &ocBudget);
+    if (ocBudget.unevaluated && scanAudit) [[unlikely]] {
+        scanAudit->deny(ScanCopyAudit::Reason::Unevaluated);
+    }
+    return visible;
+}
+
 // DocSlurp page facts: optContentIsVisible, remembered per reference for this page (OCG states
 // do not change while a page is drawn).
 bool Gfx::factsOcIsVisible(const Object &oc)
@@ -4316,13 +4332,13 @@ bool Gfx::factsOcIsVisible(const Object &oc)
         return true;
     }
     if (!oc.isRef()) {
-        return ocgs->optContentIsVisible(&oc);
+        return ocgs->optContentIsVisible(&oc, &factsOcBudget);
     }
     const auto it = factsOcVisible.find(oc.getRef());
     if (it != factsOcVisible.end()) {
         return it->second;
     }
-    const bool visible = ocgs->optContentIsVisible(&oc);
+    const bool visible = ocgs->optContentIsVisible(&oc, &factsOcBudget);
     if (factsOcVisible.size() < 4096) {
         factsOcVisible.emplace(oc.getRef(), visible);
     }
@@ -4353,6 +4369,10 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
     ImageInfoCache::Image image;
     if (const ImageInfoCache::Image *seen = cacheable ? cache->find(ref, xref) : nullptr) {
         image = *seen;
+        // drawn again: a lookup refused on its first read is reported on this page too
+        if (image.limited) {
+            noteImageInfoLimit();
+        }
     } else {
         auto size = [dict](const char *key, const char *abbrev) {
             Object o = dict->lookup(key);
@@ -4369,7 +4389,7 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         image.width = size("Width", "W");
         image.height = size("Height", "H");
         if (image.width >= 1 && image.height >= 1) {
-            image.info = factsImageInfo(dict, false, nullptr);
+            image.info = factsImageInfo(dict, false, nullptr, &image.limited);
         }
         if (cacheable) {
             cache->store(ref, xref, image);
@@ -4385,17 +4405,29 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 }
 
 // readImageDictInfo with the device's ImageInfoCache, reporting (once a page) a colour space
-// that budget left unclassified.
-ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources)
+// that budget left unclassified: limit-hit only when this image's own lookup was refused.
+ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources, bool *limited)
 {
-    ImageInfoCache *cache = out->getImageInfoCache();
-    const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, cache);
-    if (cache && cache->limitHit() && !imageInfoLimitReported) {
+    bool refused = false;
+    const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, out->getImageInfoCache(), &refused);
+    if (refused) {
+        if (limited) {
+            *limited = true;
+        }
+        noteImageInfoLimit();
+    }
+    return info;
+}
+
+// DocSlurp page facts: one limit-hit warning per page, for an image whose colour-space lookup
+// the ImageInfoCache fetch budget refused (on its first read or when it is drawn again).
+void Gfx::noteImageInfoLimit()
+{
+    if (!imageInfoLimitReported) {
         imageInfoLimitReported = true;
         // fixed text (no arguments): page facts classify it as limit-hit from the format string
         error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
     }
-    return info;
 }
 
 // Whether Gfx::doImage would draw an image with this dictionary: each of its early returns that
@@ -4530,7 +4562,7 @@ static bool imageDictDrawable(Dict *dict, bool inlineImg, const ImageDictInfo &i
 
 // Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
 // ICC colour space's stream dictionary is fetched for /N), never the image data.
-ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache)
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache, bool *limited)
 {
     ImageDictInfo info;
     info.inlineImg = inlineImg;
@@ -4600,6 +4632,7 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
     if (!cache) {
         cache = &localCache;
     }
+    const size_t refusals = cache->refusals();
     XRef *xref = dict->getXRef();
     // a Default colour space anywhere in the resource chain (by key: a value that turns out to
     // be null still counts, which only ever makes a copy less likely)
@@ -4620,6 +4653,10 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
         info.deviceSpace = space.device;
     } else if (info.imageMask) {
         info.color = ImageColor::None;
+    }
+    // limited only when this image's own lookup was refused
+    if (limited && cache->refusals() != refusals) {
+        *limited = true;
     }
     Object smask = dict->lookup("SMask");
     Object smaskInData = dict->lookup("SMaskInData");
@@ -4678,7 +4715,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
     // check for optional content key
     if (ref) {
         const Object &objOC = dict->lookupNF("OC");
-        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+        if (!ocIsVisible(&objOC)) {
             return;
         }
     }
@@ -5275,7 +5312,7 @@ void Gfx::doForm(Object *str)
     // check for optional content key
     ocSaved = ocState;
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (!ocIsVisible(&objOC)) {
         if (out->needCharCount()) {
             ocState = false;
         } else {
@@ -5564,38 +5601,55 @@ struct MarkedContentStack
 {
     GfxMarkedContentKind kind;
     bool ocSuppressed; // are we ignoring content based on OptionalContent?
+    bool hidden; // DocSlurp: this entry or one below it is ocSuppressed
     MarkedContentStack *next; // next object on stack
 };
+
+// DocSlurp: marked-content sections nested deeper than this are not tracked (their BMC/BDC and
+// matching EMC are skipped, for the device too), with one warning per page: content inside
+// them takes the visibility of the deepest tracked section.
+constexpr int maxMarkedContentDepth = 4096;
 
 void Gfx::popMarkedContent()
 {
     MarkedContentStack *mc = mcStack;
     mcStack = mc->next;
     delete mc;
+    --mcDepth;
 }
 
 void Gfx::pushMarkedContent()
 {
     auto *mc = new MarkedContentStack();
     mc->ocSuppressed = false;
+    mc->hidden = mcStack && mcStack->hidden;
     mc->kind = gfxMCOther;
     mc->next = mcStack;
     mcStack = mc;
+    ++mcDepth;
 }
 
+// DocSlurp: O(1); each entry carries whether it or an entry below it is suppressed (walking the
+// stack on every BMC/BDC/EMC made deep nesting quadratic)
 bool Gfx::contentIsHidden()
 {
-    MarkedContentStack *mc = mcStack;
-    bool hidden = mc && mc->ocSuppressed;
-    while (!hidden && mc && mc->next) {
-        mc = mc->next;
-        hidden = mc->ocSuppressed;
-    }
-    return hidden;
+    return mcStack && mcStack->hidden;
 }
 
 void Gfx::opBeginMarkedContent(Object args[], int numArgs)
 {
+    if (mcDepth >= maxMarkedContentDepth) {
+        // what is drawn inside is not known to be shown: no scan copy of this page
+        if (scanAudit) [[unlikely]] {
+            scanAudit->deny(ScanCopyAudit::Reason::Unevaluated);
+        }
+        if (mcOverflow++ == 0 && !mcDepthWarned) {
+            mcDepthWarned = true;
+            // fixed text (no arguments): page facts classify it as limit-hit from the format string
+            error(errSyntaxWarning, getPos(), "Marked content nested too deeply; deeper sections ignored");
+        }
+        return;
+    }
     // push a new stack entry
     pushMarkedContent();
 
@@ -5610,8 +5664,9 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
                 ++ocLayerDepth;
                 Object markedContent = res->lookupMarkedContentNF(name1);
                 if (!markedContent.isNull()) {
-                    bool visible = contentConfig->optContentIsVisible(&markedContent);
+                    bool visible = ocIsVisible(&markedContent);
                     mc->ocSuppressed = !visible;
+                    mc->hidden = mc->hidden || mc->ocSuppressed;
                 } else {
                     error(errSyntaxError, getPos(), "DID NOT find {0:r}", &name1);
                 }
@@ -5669,6 +5724,11 @@ void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
 {
     if (!mcStack) {
         error(errSyntaxWarning, getPos(), "Mismatched EMC operator");
+        return;
+    }
+    if (mcOverflow > 0) {
+        // closes a section past maxMarkedContentDepth, which was never pushed
+        --mcOverflow;
         return;
     }
 

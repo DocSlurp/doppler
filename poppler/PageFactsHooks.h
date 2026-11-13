@@ -106,8 +106,10 @@ POPPLER_PRIVATE_EXPORT ImageCopy classifyImageCopy(const ImageDictInfo &info);
 // classifies colour spaces (and ICC profiles' /N) reached by reference once each. A colour space
 // a document draws many images with may be a large indirect object (an /Indexed lookup string);
 // it is parsed once. Each map holds at most maxEntries; at most maxFetches objects are fetched
-// for colour spaces over the document, after which a colour space not yet seen counts as Other
-// and limitHit() turns on. Everything is dropped when the cross-reference table changes.
+// for colour spaces over the document, after which a colour space not yet seen counts as Other;
+// refusals() counts the lookups refused so (a caller compares it before and after a lookup to
+// learn whether that lookup was limited), and a result a refusal shaped is never kept.
+// Everything is dropped when the cross-reference table changes.
 class POPPLER_PRIVATE_EXPORT ImageInfoCache
 {
 public:
@@ -126,6 +128,7 @@ public:
         // conservative); defaultSpaces and copy are not meaningful here: Gfx sets them from the
         // resources at each draw. Never consulted by the scan-copy audit.
         ImageDictInfo info;
+        bool limited = false; // a colour-space lookup for this image was refused (fetch budget)
     };
     static constexpr size_t maxEntries = 1u << 16;
     static constexpr size_t maxFetches = 1u << 16;
@@ -137,8 +140,8 @@ public:
     // resolved here, once per document). A null value is None. Space adds whether it is
     // calibrated (CalGray or CalRGB, which read as Gray and RGB) and a plain device space.
     Space colorSpace(const Object &cs, XRef *xref);
-    // Whether a colour space was reported as Other because the fetch budget ran out.
-    bool limitHit() const { return fetchLimitHit; }
+    // Lookups refused because the fetch budget ran out (their colour space reported as Other).
+    size_t refusals() const { return refused; }
 
 private:
     void sync(XRef *xref);
@@ -154,7 +157,7 @@ private:
     std::unordered_map<Ref, Space> families; // a family name by reference
     std::unordered_map<Ref, ImageColor> profiles; // an ICC profile stream, by its /N
     size_t fetchesLeft = maxFetches;
-    bool fetchLimitHit = false;
+    size_t refused = 0;
 };
 
 // Operators Gfx executed on a page, by their index in Gfx's operator table (Gfx::opName).

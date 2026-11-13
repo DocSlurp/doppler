@@ -160,6 +160,69 @@ def rule_grid(pages=500, n=512):
     return d.pages([content] * pages)
 
 
+FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+
+def oc_marked(kind, sections, operands=9990):
+    """A page that shows "shown" and draws "hidden" in <sections> optional-content sections,
+    each naming one OCMD over an OFF group with <operands> operands:
+      ve      BDC /OC naming an indirect OCMD whose /VE is a flat /Or of <operands> references
+      ocgs    BDC /OC naming an indirect OCMD whose /OCGs array has <operands> entries (/AnyOn)
+      direct  BDC /OC naming a direct OCMD in /Properties (/VE flat /Or): never cached, so the
+              page's operand budget runs out and later sections count as visible, limit-hit
+      xobject Do of a form whose /OC is the indirect /VE OCMD"""
+    d = Doc()
+    off = d.add("<< /Type /OCG /Name (off) >>")
+    font = d.add(FONT)
+    refs = " ".join(["%d 0 R" % off] * operands)
+    res = "/Font << /F1 %d 0 R >>" % font
+    if kind == "ocgs":
+        oc = "%d 0 R" % d.add("<< /Type /OCMD /OCGs [%s] /P /AnyOn >>" % refs)
+    elif kind == "direct":
+        oc = "<< /Type /OCMD /VE [/Or %s] >>" % refs
+    else:
+        oc = "%d 0 R" % d.add("<< /Type /OCMD /VE %d 0 R >>" % d.add("[/Or %s]" % refs))
+    if kind == "xobject":
+        x = d.stream("BT /F1 12 Tf 0 0 Td (hidden) Tj ET", "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << %s >> /OC %s" % (res, oc))
+        res += " /XObject << /X %d 0 R >>" % x
+        body = "/X Do\n" * sections
+    else:
+        res += " /Properties << /P0 %s >>" % oc
+        body = "/OC /P0 BDC BT /F1 12 Tf 72 600 Td (hidden) Tj ET EMC\n" * sections
+    content = d.stream("BT /F1 12 Tf 72 700 Td (shown) Tj ET\n" + body, compress=True)
+    return d.pages([content], resources=res, catalog_extra="/OCProperties << /OCGs [%d 0 R] /D << /OFF [%d 0 R] >> >>" % (off, off))
+
+
+def nested_marked(depth):
+    """<depth> nested BMC sections around one word, between two others (a few KB compressed)."""
+    d = Doc()
+    font = d.add(FONT)
+    ops = "BT /F1 12 Tf 72 700 Td (before) Tj ET\n" + "/A BMC\n" * depth + "BT /F1 12 Tf 72 600 Td (inside) Tj ET\n" + "EMC\n" * depth + "BT /F1 12 Tf 72 500 Td (after) Tj ET\n"
+    return d.pages([d.stream(ops, compress=True)], resources="/Font << /F1 %d 0 R >>" % font)
+
+
+def filter_names(pages=2, draws=20000, names=50000):
+    """An image XObject whose /Filter (and /ColorSpace) is one indirect array of <names>
+    /FlateDecode names, drawn <draws> times a page: the array was fetched and the 50,000-filter
+    chain built again on every Do (past 120 s for 10 pages)."""
+    d = Doc()
+    big = d.add("[%s]" % " ".join(["/FlateDecode"] * names))
+    x = d.stream("\xff", "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace %d 0 R /Filter %d 0 R" % (big, big))
+    content = d.stream("q 1 0 0 1 0 0 cm /X Do Q\n" * draws, compress=True)
+    return d.pages([content] * pages, resources="/XObject << /X %d 0 R >>" % x)
+
+
+def hex_chain(n):
+    """A page whose content stream is ASCIIHex-encoded <n> times, with <n> filters."""
+    d = Doc()
+    font = d.add(FONT)
+    data = b"BT /F1 12 Tf 72 700 Td (chained) Tj ET"
+    for _ in range(n):
+        data = data.hex().encode() + b">"
+    content = d.stream(data, " ".join(["/Filter ["] + ["/ASCIIHexDecode"] * n + ["]"]))
+    return d.pages([content], resources="/Font << /F1 %d 0 R >>" % font)
+
+
 # --- measuring ------------------------------------------------------------------------------
 
 
@@ -255,6 +318,68 @@ with t.TempDir() as d:
     ls = [json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "vectors", d.write("grid-small.pdf", rule_grid(pages=1, n=3))])[1].decode().splitlines()]
     t.check(page(ls, 1)["vectors"]["ruleGridScore"] == 1, "3 x 3 crossing rules score 1", repr(page(ls, 1)["vectors"]))
 
+
+    # 9. optional content: an OCMD named by many BDC /OC (or XObject /OC) entries is evaluated
+    #    once, not once per section (4000 BDCs over a 9,990-operand /VE took 19 s, 20,000 over a
+    #    9,990-entry /OCGs 51 s); a direct OCMD, which is not cached, is charged to a per-page
+    #    operand budget, past which sections count as visible with limit-hit. Plain pdftotext too.
+    for kind, sections in (("ve", 8000), ("ocgs", 5000), ("direct", 60000), ("xobject", 5000)):
+        path = d.write("oc-%s.pdf" % kind, oc_marked(kind, sections))
+        start = time.monotonic()
+        try:
+            text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
+        except subprocess.TimeoutExpired:
+            text = "(timed out)"
+        secs = time.monotonic() - start
+        t.check(secs < 3, "%d sections over one %s OCMD: plain pdftotext within 3 s" % (sections, kind), "%.2f s" % secs)
+        print("  oc %s x %d: pdftotext %.2f s" % (kind, sections, secs))
+        if secs >= 3:
+            continue
+        ls = bounded("%d sections over one %s OCMD" % (sections, kind), path)
+        warn = page(ls, 1)["parseWarnings"]
+        if kind == "direct":
+            t.check("shown" in text and "hidden" in text and "limit-hit" in warn, "direct OCMD past the page budget: visible, limit-hit", repr((text[:80], warn)))
+        else:
+            t.check("shown" in text and "hidden" not in text and "limit-hit" not in warn, "%s OCMD over an OFF group: hidden, no limit-hit" % kind, repr((text[:80], warn)))
+
+    # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
+    #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit
+    path = d.write("nested-mc.pdf", nested_marked(100000))
+    start = time.monotonic()
+    try:
+        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
+    except subprocess.TimeoutExpired:
+        text = "(timed out)"
+    secs = time.monotonic() - start
+    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 s, all text", "%.2f s %r" % (secs, text[:80]))
+    print("  100,000 nested BMC: pdftotext %.2f s" % secs)
+    if secs < 3:
+        ls = bounded("100,000 nested BMC", path)
+        t.check("limit-hit" in page(ls, 1)["parseWarnings"], "nesting past the cap: limit-hit", repr(page(ls, 1)["parseWarnings"]))
+    ls = bounded("4,000 nested BMC", d.write("nested-mc-ok.pdf", nested_marked(4000)))
+    t.check("limit-hit" not in page(ls, 1)["parseWarnings"], "nesting within the cap: no limit-hit", repr(page(ls, 1)["parseWarnings"]))
+
+
+    # 11. stream filters: a /Filter array (or /DecodeParms) given by reference is fetched once
+    #     per document, not per stream, and a chain of more than 16 filters is refused (an
+    #     image whose /Filter names a 50,000-entry array, drawn 20,000 times a page, ran past
+    #     120 s in plain pdftotext -bbox-layout)
+    path = d.write("filter-names.pdf", filter_names())
+    start = time.monotonic()
+    try:
+        rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, os.devnull], timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        rc = None
+    secs = time.monotonic() - start
+    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 s", "%.2f s, rc %r" % (secs, rc))
+    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f s" % secs)
+    if secs < 3:
+        ls = bounded("50,000-name /Filter x 40,000 Do", path)
+        t.check("limit-hit" in page(ls, 1)["parseWarnings"], "a refused filter chain: limit-hit", repr(page(ls, 1)["parseWarnings"]))
+    for n, shown in ((16, True), (17, False)):
+        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", d.write("hex%d.pdf" % n, hex_chain(n)), "-"], capture_output=True, timeout=60).stdout.decode()
+        t.check(("chained" in text) == shown, "%d ASCIIHex filters: %s" % (n, "decoded" if shown else "refused"), repr(text[:60]))
+
     # 8. pdftotext -timeout: exit code 6, whole facts lines, no run line
     slow = d.write("slow.pdf", error_dense(pages=40))
     start = time.monotonic()
@@ -281,10 +406,11 @@ with t.TempDir() as d:
         res = dict(l.split("=", 1) for l in out.splitlines() if "=" in l and not l.startswith("landlock="))
         head = out.splitlines()[0] if out else ""
         if "seccomp=1" in head:
-            allowed = {"kill-self", "write-open-fd", "read"}
-            t.check(all(res.get(k) == "allowed" for k in allowed), "confined: this process, open descriptors and reads still work", out)
-            bad = {k: v for k, v in res.items() if k not in allowed and v != "denied"}
-            t.check(not bad and len(res) > 30, "confined: modes, owners, times, sizes, xattrs, names, signals to others, IPC and memfds denied", repr(bad))
+            allowed = {"kill-self", "write-open-fd", "read", "prlimit-self", "setpriority-self", "ioctl-fionread", "ioctl-fioclex", "thread"}
+            t.check(all(res.get(k) == "allowed" for k in allowed), "confined: this process, open descriptors, reads, threads and allow-listed ioctls still work", out)
+            t.check(res.get("clone3", "errno-38") == "errno-38", "confined: clone3 is unavailable (ENOSYS)", repr(res.get("clone3")))
+            bad = {k: v for k, v in res.items() if k not in allowed and k != "clone3" and v != "denied"}
+            t.check(not bad and len(res) > 50, "confined: modes, owners, times, sizes, xattrs, names, signals and limits/priority/scheduling of others, other ioctls, locks, sessions, namespaces, keyrings, new processes, IPC and memfds denied", repr(bad))
             with open(os.path.join(pd, "f"), "rb") as f:
                 t.check(f.read() == b"xata", "confined: the file kept its size (only the open descriptor wrote)")
             t.check(sorted(os.listdir(pd)) == ["f"], "confined: nothing created or renamed", repr(os.listdir(pd)))

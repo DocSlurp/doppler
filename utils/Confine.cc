@@ -28,6 +28,8 @@
 #    include <linux/filter.h>
 #    include <linux/landlock.h>
 #    include <linux/seccomp.h>
+#    include <sched.h>
+#    include <sys/ioctl.h>
 #    include <sys/prctl.h>
 #    include <sys/syscall.h>
 #endif
@@ -231,6 +233,22 @@ static bool applySeccomp()
         SYS_mq_timedreceive,
         SYS_mq_notify,
         SYS_mq_getsetattr,
+        // sessions, process groups, namespaces, the kernel keyrings and advisory locks (shared
+        // with other processes) are never needed
+        SYS_setsid,
+        SYS_setpgid,
+        SYS_unshare,
+        SYS_setns,
+        SYS_keyctl,
+        SYS_add_key,
+        SYS_request_key,
+        SYS_flock,
+#        ifdef SYS_fork
+        SYS_fork,
+#        endif
+#        ifdef SYS_vfork
+        SYS_vfork,
+#        endif
     };
     std::vector<sock_filter> f;
     auto stmt = [&f](uint16_t code, uint32_t k) { f.push_back(BPF_STMT(code, k)); };
@@ -269,6 +287,60 @@ static bool applySeccomp()
         jump(BPF_JMP | BPF_JEQ | BPF_K, self, 0, 1);
         stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
         stmt(BPF_RET | BPF_K, eperm);
+    }
+    // calls that act on another process named by a pid argument (resource limits, priority,
+    // scheduling, memory placement): only this process, as a pid of 0 or its own pid (an
+    // RLIMIT_CPU set on a sibling of the same user kills it)
+    auto selfOnly = [&](uint32_t nr, int pidArg) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 5);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args) + 8 * pidArg); // low 32 bits
+        jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 2, 0);
+        jump(BPF_JMP | BPF_JEQ | BPF_K, self, 1, 0);
+        stmt(BPF_RET | BPF_K, eperm);
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    };
+    for (uint32_t nr : { uint32_t(SYS_prlimit64), uint32_t(SYS_sched_setaffinity), uint32_t(SYS_sched_setscheduler), uint32_t(SYS_sched_setparam), uint32_t(SYS_sched_setattr), uint32_t(SYS_migrate_pages), uint32_t(SYS_move_pages) }) {
+        selfOnly(nr, 0);
+    }
+    // setpriority(which, who, prio) and ioprio_set(which, who, ioprio): a process (not a group
+    // or a user), and only this one
+    auto selfProcessOnly = [&](uint32_t nr, uint32_t whichProcess) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 7);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args));
+        jump(BPF_JMP | BPF_JEQ | BPF_K, whichProcess, 0, 3);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args) + 8);
+        jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 2, 0);
+        jump(BPF_JMP | BPF_JEQ | BPF_K, self, 1, 0);
+        stmt(BPF_RET | BPF_K, eperm);
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+    };
+    selfProcessOnly(SYS_setpriority, 0); // PRIO_PROCESS
+    selfProcessOnly(SYS_ioprio_set, 1); // IOPRIO_WHO_PROCESS
+    // clone(flags, ...): threads only (CLONE_THREAD); a new process is never needed. clone3,
+    // whose flags a filter cannot read, is unavailable (ENOSYS): the C library falls back to
+    // clone for a thread
+    jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_clone, 0, 4);
+    stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args)); // flags, low 32 bits
+    jump(BPF_JMP | BPF_JSET | BPF_K, CLONE_THREAD, 1, 0);
+    stmt(BPF_RET | BPF_K, eperm);
+    stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+#        ifdef SYS_clone3
+    jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_clone3, 0, 1);
+    stmt(BPF_RET | BPF_K, enosys);
+#        endif
+    // ioctl(fd, cmd, ...): a short allow-list (terminal and descriptor queries, non-blocking and
+    // close-on-exec flags); anything else (file attribute flags, say, even on a read-only
+    // descriptor) is denied
+    {
+        const uint32_t cmds[] = { TCGETS, TIOCGWINSZ, FIONREAD, FIONBIO, FIOCLEX, FIONCLEX };
+        const uint8_t n = sizeof(cmds) / sizeof(cmds[0]);
+        jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_ioctl, 0, n + 3);
+        stmt(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args) + 8); // cmd
+        for (uint8_t i = 0; i < n; ++i) {
+            jump(BPF_JMP | BPF_JEQ | BPF_K, cmds[i], n - i, 0);
+        }
+        stmt(BPF_RET | BPF_K, eperm);
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
     }
     // open(path, flags) / openat(dirfd, path, flags): deny write or create flags
     auto openCheck = [&](uint32_t nr, int flagsArg) {

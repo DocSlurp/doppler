@@ -1310,6 +1310,24 @@ Object XRef::fetch(const Ref ref, int recursion)
     return fetch(ref.num, ref.gen, recursion);
 }
 
+Object XRef::fetchStreamParam(const Ref ref, int recursion)
+{
+    const std::scoped_lock locker(mutex);
+    if (streamParamsGeneration != generation) {
+        streamParams.clear();
+        streamParamsGeneration = generation;
+    }
+    const auto it = streamParams.find(ref);
+    if (it != streamParams.end()) {
+        return it->second.copy();
+    }
+    Object obj = fetch(ref, recursion);
+    if ((obj.isName() || obj.isArray() || obj.isDict()) && streamParamsGeneration == generation && streamParams.size() < 4096) {
+        streamParams.emplace(ref, obj.copy());
+    }
+    return obj;
+}
+
 Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
 {
     XRefEntry *e;

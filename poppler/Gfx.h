@@ -43,6 +43,7 @@
 #include "Object.h"
 #include "PopplerCache.h"
 #include "PageFactsHooks.h"
+#include "OptionalContent.h"
 
 #include <stack>
 #include <unordered_map>
@@ -180,8 +181,10 @@ public:
     // lookups only, never the image data. <resources> resolves an inline image's named colour
     // space, a mask's named colour space and Default colour spaces (may be null). <cache>, the
     // document's ImageInfoCache (may be null), classifies colour spaces by reference; it never
-    // holds image facts (drawable, copy class) for this call.
-    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache = nullptr);
+    // holds image facts (drawable, copy class) for this call. <limited> (may be null) is set when
+    // the cache's fetch budget refused a colour-space lookup for this image (its colour then
+    // reads as Other).
+    static ImageDictInfo readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *resources, ImageInfoCache *cache = nullptr, bool *limited = nullptr);
 
     // Interpret a stream or array of streams.
     enum class DisplayType
@@ -255,6 +258,12 @@ private:
                   //   disabled
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
+    int mcDepth = 0; // DocSlurp: entries on mcStack
+    int mcOverflow = 0; // DocSlurp: open sections past maxMarkedContentDepth (not on mcStack)
+    bool mcDepthWarned = false; // DocSlurp: the nesting warning was given on this page
+    // DocSlurp: optional-content operands this page may evaluate, for drawing and (apart, so that
+    // facts never change what is drawn) for the facts paths
+    OCVisibilityBudget ocBudget, factsOcBudget;
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     ScanCopyAudit *scanAudit = nullptr; // DocSlurp page-scan copies (OutputDev::getScanCopyAudit)
     int ocLayerDepth = 0; // open BDC /OC sections
@@ -262,8 +271,12 @@ private:
     // image geometry) have evaluated on this page, by reference (at most 4096)
     std::unordered_map<Ref, bool> factsOcVisible;
     bool factsOcIsVisible(const Object &oc);
-    bool imageInfoLimitReported = false; // this page reported ImageInfoCache::limitHit
-    ImageDictInfo factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources);
+    bool ocIsVisible(const Object *oc); // drawing: charged to ocBudget; a limit denies the scan copy
+    bool imageInfoLimitReported = false; // this page gave the ImageInfoCache limit-hit warning
+    // readImageDictInfo with the device's ImageInfoCache; <limited> as there, and a refused
+    // lookup gives the page's limit-hit warning (noteImageInfoLimit)
+    ImageDictInfo factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources, bool *limited = nullptr);
+    void noteImageInfoLimit();
 
     Parser *parser; // parser for page content stream(s)
 

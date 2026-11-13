@@ -35,7 +35,11 @@
 // a non-rectangular or stroke clip, any annotation that draws an appearance or border, in
 // view or in print mode (only a link or popup with no appearance and no border is let pass),
 // and /OutputIntents on the catalog or the page (a viewer may show the page through their
-// destination profile, which a copy of the samples does not carry).
+// destination profile, which a copy of the samples does not carry). So does anything a cost
+// limit left undecided, since Gfx then draws what a full evaluation might not: optional content
+// taken as visible because the page's budget was spent or an expression was too large, marked
+// content nested past Gfx's cap (its visibility not tracked), and an image whose colour-space
+// lookup the document's ImageInfoCache refused.
 // Operators the table does not know are ignored by Gfx and paint nothing.
 //
 // Gfx feeds it (OutputDev::getScanCopyAudit, asked once per page Gfx): op() before each
@@ -91,6 +95,7 @@ public:
         SoftMask, // a soft mask
         Annotation, // an annotation drew something
         OutputIntent, // the document (or the page) has /OutputIntents: a viewer may show the page through their profile
+        Unevaluated, // a cost limit left something undecided: optional content taken as visible (its budget spent or its expression too large), marked content nested past Gfx's cap, or a colour-space lookup the ImageInfoCache refused
     };
 
     // A new page: forget the last one. The state's CTM is the page's base matrix.
