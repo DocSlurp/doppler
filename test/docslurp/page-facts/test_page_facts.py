@@ -230,6 +230,9 @@ with t.TempDir() as d:
         a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
         ok = ok and a == b
     t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings equal its single-page run")
+    t.check(all("xref-repaired-earlier" in page(whole, n)["parseWarnings"] for n in range(2, 9)) and "xref-repaired-earlier" not in page(whole, 1)["parseWarnings"], "pages read after a mid-run rebuild: xref-repaired-earlier", repr([page(whole, n)["parseWarnings"] for n in range(1, 9)]))
+    t.check(all("xref-repaired-earlier" not in page(lines(facts(paths["lengths_rebuilt"], "-f", str(n), "-l", str(n))[1]), n)["parseWarnings"] for n in (2, 5)), "a single-page run without a rebuild: no xref-repaired-earlier")
+    t.check(all("xref-repaired-earlier" not in l.get("parseWarnings", []) for n in paths for l in lines(facts(paths[n])[1]) if n != "lengths_rebuilt"), "intact fixtures: no xref-repaired-earlier")
     t.check([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)] == got, "after a mid-run xref rebuild: the same bytes per pixel", repr([page(whole, n)["images"]["items"][0].get("bytesPerPixel") for n in range(2, 9)]))
 
     # the grid list says when it is incomplete

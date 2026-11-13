@@ -32,7 +32,7 @@
       "description": "parseWarnings vocabulary (sorted, unique): poppler error categories and stages seen while the page was processed, never message text.",
       "enum": [
         "bad-content-stream", "broken-image", "internal-error", "io-error", "limit-hit", "missing-font", "non-finite", "out-of-range",
-        "page-failed", "syntax-error", "syntax-warning", "unimplemented", "xref-repaired"
+        "page-failed", "syntax-error", "syntax-warning", "unimplemented", "xref-repaired", "xref-repaired-earlier"
       ]
     },
     "header": {

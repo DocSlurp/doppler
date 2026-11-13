@@ -4352,12 +4352,12 @@ bool Gfx::factsOcIsVisible(const Object &oc)
 // Not the length the parser delimited: that depends on whether the cross-reference table was
 // rebuilt earlier in the run (a rebuilt table ends a stream at the first endstream after its
 // start; an intact one follows /Length and scans forward when it is wrong), so a page's facts
-// would depend on which pages were read before it. Each test here reads only the file:
-//  - a /Length the parser had to correct is stored back as a 64-bit integer (Parser::makeStream,
-//    Object(Goffset)); a /Length as written in the file below 2^31 parses as an int. Corrected,
-//    or 2 GiB and more: -1;
-//  - the declared end must hold "endstream" (a rebuilt table leaves a wrong /Length in place,
-//    and the test fails just as it does when the parser corrected it): -1 when it does not.
+// would depend on which pages were read before it. Here: the dictionary's /Length must be a
+// non-negative int (a value of 2 GiB or more parses as a 64-bit integer: refused) within the
+// file, and "endstream" must follow the data it spans. A wrong /Length fails the test whether
+// or not the table was rebuilt. (An indirect /Length is resolved through the table, so after a
+// rebuild it can name another body of its object, like any other indirect object: page facts
+// flag pages read after a rebuild with xref-repaired-earlier.)
 static long long encodedStreamBytes(Stream *str, XRef *xref)
 {
     BaseStream *base = str ? str->getBaseStream() : nullptr;

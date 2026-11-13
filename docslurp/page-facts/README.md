@@ -357,6 +357,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
+| `xref-repaired-earlier` | an earlier page of the run rebuilt the table: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
 
 Errors raised while loading a shared resource (a font, an image dictionary) are reported on
@@ -403,7 +404,9 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   which other pages were processed: `-f p -l p` gives the same line as a whole run (tested).
   The exceptions are documented above: `parseWarnings` of shared resources (and of a damaged
   file whose cross-reference table an earlier page rebuilt: the stream-length errors an intact
-  table raises are not raised again), and the
+  table raises are not raised again), a page marked `xref-repaired-earlier` (any of its facts
+  read from an object the file holds twice can differ; a router wanting page-local facts of
+  such a document should run the page alone), and the
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set.
 

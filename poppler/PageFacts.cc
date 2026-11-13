@@ -322,7 +322,7 @@ namespace {
 // fixed vocabularies; bit i of a mask is name i, and the names are sorted, so a mask prints
 // as a sorted list
 constexpr const char *warningNames[] = { "bad-content-stream", "broken-image", "internal-error", "io-error",       "limit-hit",     "missing-font", "non-finite",
-                                         "out-of-range",       "page-failed",  "syntax-error",   "syntax-warning", "unimplemented", "xref-repaired" };
+                                         "out-of-range",       "page-failed",  "syntax-error",   "syntax-warning", "unimplemented", "xref-repaired", "xref-repaired-earlier" };
 enum Warning : unsigned
 {
     wBadContent,
@@ -337,7 +337,8 @@ enum Warning : unsigned
     wSyntaxError,
     wSyntaxWarning,
     wUnimplemented,
-    wXrefRepaired
+    wXrefRepaired,
+    wXrefRepairedEarlier
 };
 constexpr const char *featureNames[] = { "acroform-empty",          "acroform-filled", "annotation-freetext", "annotation-highlight", "annotation-other", "annotation-text", "drawing-limit", "embedded-files", "encrypted-empty-password",
                                          "encrypted-user-password", "huge-page",       "javascript-present",  "layered-scan",         "link-internal",    "link-uri",        "no-tounicode",  "ocg-hidden",     "ocg-visible",
@@ -369,7 +370,7 @@ enum Feature : unsigned
     fXfaPresent
 };
 static_assert(sizeof(featureNames) / sizeof(featureNames[0]) == fXfaPresent + 1);
-static_assert(sizeof(warningNames) / sizeof(warningNames[0]) == wXrefRepaired + 1);
+static_assert(sizeof(warningNames) / sizeof(warningNames[0]) == wXrefRepairedEarlier + 1);
 
 constexpr double maxPoint = 1e9; // larger coordinates are clamped (out-of-range)
 constexpr double hugePagePt = 14400; // 200 inches: the PDF 1.x page size limit
@@ -1596,6 +1597,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     j.close();
     j.s += '\n';
     docXref = xref;
+    // rebuilds while the document was opened and its doc line read happen for every page range
+    docReconstructions = xref->getReconstructionCount();
     return j.s;
 }
 
@@ -2592,6 +2595,11 @@ void PageFacts::endPage(const TextPage &text)
 std::string PageFacts::finishPage(int pageNum, double ms)
 {
     State &s = *st;
+    // an earlier page of the run rebuilt the table: an object with two bodies in the file can
+    // now resolve to the other one, so this page's facts may differ from a run of it alone
+    if (s.reconstructionsAtBegin > docReconstructions) {
+        s.warnings |= 1u << wXrefRepairedEarlier;
+    }
     if (docXref && docXref->getReconstructionCount() != s.reconstructionsAtBegin) {
         s.warnings |= 1u << wXrefRepaired;
     }
@@ -2611,7 +2619,7 @@ std::string PageFacts::finishPage(int pageNum, double ms)
         s.features = 0;
         ++failed;
     }
-    j.kmask("parseWarnings", s.warnings, warningNames, wXrefRepaired + 1);
+    j.kmask("parseWarnings", s.warnings, warningNames, wXrefRepairedEarlier + 1);
     j.kmask("unusualFeatures", s.features, featureNames, fXfaPresent + 1);
     if (timing) {
         j.kpt("factsMs", ms);
