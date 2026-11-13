@@ -18,7 +18,9 @@ Then build a PDF in memory, write it to a temp dir, and run a util against it:
 """
 
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,6 +107,76 @@ class Utils:
         if check and proc.returncode != 0:
             raise AssertionError("%s exited %d\nstderr:\n%s" % (" ".join(cmd), proc.returncode, proc.stderr.decode(errors="replace")))
         return proc.stdout if binary else proc.stdout.decode("utf-8", errors="replace")
+
+
+def schema_errors(instance, schema, root=None, path="$"):
+    """Validate <instance> against the subset of JSON Schema (draft 2020-12) that the DocSlurp
+    schemas use: $ref (local), oneOf, type, enum, const, required, properties,
+    additionalProperties, propertyNames, items, minItems, maxItems, uniqueItems, minimum,
+    maximum, exclusiveMinimum, pattern, maxLength. Returns a list of error strings (empty when valid)."""
+    root = schema if root is None else root
+    if "$ref" in schema:
+        node = root
+        for part in schema["$ref"].lstrip("#/").split("/"):
+            node = node[part]
+        return schema_errors(instance, node, root, path)
+    errors = []
+    if "oneOf" in schema:
+        matches = [opt for opt in schema["oneOf"] if not schema_errors(instance, opt, root, path)]
+        if len(matches) != 1:
+            best = min((schema_errors(instance, opt, root, path) for opt in schema["oneOf"]), key=len)
+            return ["%s: matches %d of oneOf; closest: %s" % (path, len(matches), best[:3])]
+    kinds = {"object": dict, "array": list, "string": str, "boolean": bool}
+    t = schema.get("type")
+    if t == "integer":
+        if isinstance(instance, bool) or not isinstance(instance, int):
+            return ["%s: not an integer: %r" % (path, instance)]
+    elif t == "number":
+        if isinstance(instance, bool) or not isinstance(instance, (int, float)):
+            return ["%s: not a number: %r" % (path, instance)]
+    elif t is not None and not isinstance(instance, kinds[t]):
+        return ["%s: not %s: %r" % (path, t, instance)]
+    if "const" in schema and instance != schema["const"]:
+        errors.append("%s: %r != const %r" % (path, instance, schema["const"]))
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append("%s: %r not in enum" % (path, instance))
+    if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        if "minimum" in schema and instance < schema["minimum"]:
+            errors.append("%s: %r < %r" % (path, instance, schema["minimum"]))
+        if "maximum" in schema and instance > schema["maximum"]:
+            errors.append("%s: %r > %r" % (path, instance, schema["maximum"]))
+        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+            errors.append("%s: %r <= %r" % (path, instance, schema["exclusiveMinimum"]))
+    if isinstance(instance, str):
+        if "pattern" in schema and not re.search(schema["pattern"], instance):
+            errors.append("%s: %r does not match %s" % (path, instance, schema["pattern"]))
+        if "maxLength" in schema and len(instance) > schema["maxLength"]:
+            errors.append("%s: longer than %d" % (path, schema["maxLength"]))
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            errors.append("%s: fewer than %d items" % (path, schema["minItems"]))
+        if "maxItems" in schema and len(instance) > schema["maxItems"]:
+            errors.append("%s: more than %d items" % (path, schema["maxItems"]))
+        if schema.get("uniqueItems") and len(set(json.dumps(i, sort_keys=True) for i in instance)) != len(instance):
+            errors.append("%s: items not unique" % path)
+        if "items" in schema:
+            for i, item in enumerate(instance):
+                errors += schema_errors(item, schema["items"], root, "%s[%d]" % (path, i))
+    if isinstance(instance, dict):
+        for key in schema.get("required", []):
+            if key not in instance:
+                errors.append("%s: missing %s" % (path, key))
+        props = schema.get("properties", {})
+        for key, value in instance.items():
+            if "propertyNames" in schema:
+                errors += schema_errors(key, schema["propertyNames"], root, "%s.<name %s>" % (path, key))
+            if key in props:
+                errors += schema_errors(value, props[key], root, "%s.%s" % (path, key))
+            elif schema.get("additionalProperties") is False:
+                errors.append("%s: unexpected %s" % (path, key))
+            elif isinstance(schema.get("additionalProperties"), dict):
+                errors += schema_errors(value, schema["additionalProperties"], root, "%s.%s" % (path, key))
+    return errors
 
 
 _failures = []

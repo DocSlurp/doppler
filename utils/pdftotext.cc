@@ -83,6 +83,16 @@
 #include <unordered_map>
 #include <set>
 #include <vector>
+#include <cerrno>
+#include <chrono>
+#ifndef _WIN32
+#    include <fcntl.h>
+#    include <csignal>
+#    include <pthread.h>
+#    include <unistd.h>
+#endif
+#include "PageFacts.h"
+#include "doppler_commit.h"
 
 static void printInfoString(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2, const UnicodeMap *uMap);
 static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *text1, const char *text2);
@@ -124,49 +134,79 @@ static bool collectImages = false;
 static bool compactLayout = false;
 static bool glyphRecords = false;
 static char hyphenModeStr[16] = "";
+static int pageFactsFd = -1;
+// -timeout S, -timeout-per-page P, -timeout-max M: the run's wall-clock limit is S seconds plus
+// P per page of the range (counted once the document is open), at most M (0: no cap); exit
+// code 6 past it. All 0 (the default): no limit.
+static char timeoutArg[16] = "0";
+static char timeoutPerPageArg[16] = "0";
+static char timeoutMaxArg[16] = "0";
+static char pageFactsLevel[16] = "basic";
+static char pageFactsInclude[128] = "";
+static bool pageFactsTiming = false;
+static int scanMaxWords = static_cast<int>(ScanThresholds::defaultMaxVisibleWords);
+static char scanMinCoverageArg[32] = "0.85";
+static char scanLayerOverlapArg[32] = "0.5";
+static ScanThresholds scanThresholds; // from the three -scan-* options
 
-static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
-                                   { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
-                                   { .arg = "-r", .kind = argFP, .val = &resolution, .size = 0, .usage = "resolution, in DPI (default is 72)" },
-                                   { .arg = "-x", .kind = argInt, .val = &x, .size = 0, .usage = "x-coordinate of the crop area top left corner" },
-                                   { .arg = "-y", .kind = argInt, .val = &y, .size = 0, .usage = "y-coordinate of the crop area top left corner" },
-                                   { .arg = "-W", .kind = argInt, .val = &w, .size = 0, .usage = "width of crop area in pixels (default is 0)" },
-                                   { .arg = "-H", .kind = argInt, .val = &h, .size = 0, .usage = "height of crop area in pixels (default is 0)" },
-                                   { .arg = "-layout", .kind = argFlag, .val = &physLayout, .size = 0, .usage = "maintain original physical layout" },
-                                   { .arg = "-fixed", .kind = argFP, .val = &fixedPitch, .size = 0, .usage = "assume fixed-pitch (or tabular) text" },
-                                   { .arg = "-raw", .kind = argFlag, .val = &rawOrder, .size = 0, .usage = "keep strings in content stream order" },
-                                   { .arg = "-remove-hyphens", .kind = argString, .val = hyphenModeStr, .size = sizeof(hyphenModeStr), .usage = "end-of-line hyphen handling: none, soft, or all (default: all)" },
-                                   { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
-                                   { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
-                                   { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
-                                   { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
-                                   { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
-                                   { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
-                                   { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
-                                   { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
-                                   { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
-                                   { .arg = "-nopgbrk", .kind = argFlag, .val = &noPageBreaks, .size = 0, .usage = "don't insert page breaks between pages" },
-                                   { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
-                                   { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
-                                   { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
-                                   { .arg = "-images", .kind = argFlag, .val = &collectImages, .size = 0, .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
-                                   { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
-                                   { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
-                                   { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
-                                   { .arg = "-colspacing",
-                                     .kind = argFP,
-                                     .val = &colspacing,
-                                     .size = 0,
-                                     .usage = "how much spacing we allow after a word before considering adjacent text to be a new column, as a fraction of the font size (default is 0.7, old releases had a 0.3 default)" },
-                                   { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
-                                   { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
-                                   { .arg = "-q", .kind = argFlag, .val = &quiet, .size = 0, .usage = "don't print any messages or errors" },
-                                   { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
-                                   { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
-                                   {} };
+static const ArgDesc argDesc[] = {
+    { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page to convert" },
+    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page to convert" },
+    { .arg = "-r", .kind = argFP, .val = &resolution, .size = 0, .usage = "resolution, in DPI (default is 72)" },
+    { .arg = "-x", .kind = argInt, .val = &x, .size = 0, .usage = "x-coordinate of the crop area top left corner" },
+    { .arg = "-y", .kind = argInt, .val = &y, .size = 0, .usage = "y-coordinate of the crop area top left corner" },
+    { .arg = "-W", .kind = argInt, .val = &w, .size = 0, .usage = "width of crop area in pixels (default is 0)" },
+    { .arg = "-H", .kind = argInt, .val = &h, .size = 0, .usage = "height of crop area in pixels (default is 0)" },
+    { .arg = "-layout", .kind = argFlag, .val = &physLayout, .size = 0, .usage = "maintain original physical layout" },
+    { .arg = "-fixed", .kind = argFP, .val = &fixedPitch, .size = 0, .usage = "assume fixed-pitch (or tabular) text" },
+    { .arg = "-raw", .kind = argFlag, .val = &rawOrder, .size = 0, .usage = "keep strings in content stream order" },
+    { .arg = "-remove-hyphens", .kind = argString, .val = hyphenModeStr, .size = sizeof(hyphenModeStr), .usage = "end-of-line hyphen handling: none, soft, or all (default: all)" },
+    { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
+    { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
+    { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
+    { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
+    { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
+    { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
+    { .arg = "-enc", .kind = argString, .val = textEncName, .size = sizeof(textEncName), .usage = "output text encoding name" },
+    { .arg = "-listenc", .kind = argFlag, .val = &printEnc, .size = 0, .usage = "list available encodings" },
+    { .arg = "-eol", .kind = argString, .val = textEOLStr, .size = sizeof(textEOLStr), .usage = "output end-of-line convention (unix, dos, or mac)" },
+    { .arg = "-nopgbrk", .kind = argFlag, .val = &noPageBreaks, .size = 0, .usage = "don't insert page breaks between pages" },
+    { .arg = "-urls", .kind = argFlag, .val = &printURLs, .size = 0, .usage = "print the URL of each link next to its link text" },
+    { .arg = "-bbox", .kind = argFlag, .val = &bbox, .size = 0, .usage = "output bounding box for each word and page size to html. Sets -htmlmeta" },
+    { .arg = "-rules", .kind = argFlag, .val = &collectRules, .size = 0, .usage = "with -bbox-layout: also output axis-aligned vector rules and filled boxes (table borders, shading)" },
+    { .arg = "-images",
+      .kind = argFlag,
+      .val = &collectImages,
+      .size = 0,
+      .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
+    { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
+    { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
+    { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
+    { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
+    { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
+    { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
+    { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
+    { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the run in seconds, 0 for none (default 0; exit code 6)" },
+    { .arg = "-timeout-per-page", .kind = argString, .val = timeoutPerPageArg, .size = sizeof(timeoutPerPageArg), .usage = "seconds added to -timeout per page of the range (default 0)" },
+    { .arg = "-timeout-max", .kind = argString, .val = timeoutMaxArg, .size = sizeof(timeoutMaxArg), .usage = "cap on -timeout plus the per-page seconds, 0 for none (default 0)" },
+    { .arg = "-scan-max-words", .kind = argInt, .val = &scanMaxWords, .size = 0, .usage = "a page with more visible words is not a scan (page facts and -images scan=; default 20)" },
+    { .arg = "-scan-min-coverage", .kind = argString, .val = scanMinCoverageArg, .size = sizeof(scanMinCoverageArg), .usage = "share of the page images must cover for a scan (default 0.85)" },
+    { .arg = "-scan-layer-overlap", .kind = argString, .val = scanLayerOverlapArg, .size = sizeof(scanLayerOverlapArg), .usage = "share of the page a layer over a scan must cover (default 0.5)" },
+    { .arg = "-colspacing",
+      .kind = argFP,
+      .val = &colspacing,
+      .size = 0,
+      .usage = "how much spacing we allow after a word before considering adjacent text to be a new column, as a fraction of the font size (default is 0.7, old releases had a 0.3 default)" },
+    { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
+    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
+    { .arg = "-q", .kind = argFlag, .val = &quiet, .size = 0, .usage = "don't print any messages or errors" },
+    { .arg = "-v", .kind = argFlag, .val = &printVersion, .size = 0, .usage = "print copyright and version info" },
+    { .arg = "-h", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "--help", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    { .arg = "-?", .kind = argFlag, .val = &printHelp, .size = 0, .usage = "print usage information" },
+    {}
+};
 
 // Escape text for use in XML element content or attribute values. Besides the
 // five predefined entities, control characters (which are either illegal in
@@ -864,6 +904,118 @@ GlyphContext *glyphContext = nullptr;
 
 } // namespace
 
+// -page-facts-fd: the sink, the descriptor and whether a write failed
+static PageFacts *pageFacts = nullptr;
+static bool pageFactsWriteFailed = false;
+
+// -timeout: SIGALRM ends the run with exit code 6. A facts line being written gets 2 more
+// seconds, so the facts stay whole lines (without a run line, so a reader sees an incomplete run).
+static constexpr int exitTimeout = 6;
+#ifndef _WIN32
+static volatile sig_atomic_t writingFactsLine = 0;
+static volatile sig_atomic_t timeoutPassed = 0;
+
+static void timeoutExit()
+{
+    if (!quiet) {
+        static const char msg[] = "pdftotext: timeout\n";
+        ssize_t ignored = write(2, msg, sizeof(msg) - 1);
+        (void)ignored;
+    }
+    _exit(exitTimeout);
+}
+
+static void onTimeout(int /*sig*/)
+{
+    if (writingFactsLine && !timeoutPassed) {
+        timeoutPassed = 1;
+        alarm(2);
+        return;
+    }
+    timeoutExit();
+}
+#endif
+
+// A whole number of seconds in [0, 86400]: the whole string, digits only.
+static bool parseSeconds(const char *text, size_t size, long long *seconds)
+{
+    const size_t len = strlen(text);
+    if (len == 0 || len + 1 >= size) {
+        return false;
+    }
+    long long v = 0;
+    for (size_t i = 0; i < len; ++i) {
+        if (text[i] < '0' || text[i] > '9' || v > 86400) {
+            return false;
+        }
+        v = v * 10 + (text[i] - '0');
+    }
+    if (v > 86400) {
+        return false;
+    }
+    *seconds = v;
+    return true;
+}
+
+static void writeFactsLine(const std::string &line)
+{
+#ifndef _WIN32
+    // A reader that closed the facts pipe must not kill the text pass with SIGPIPE: the facts
+    // are a sidecar. SIGPIPE is blocked around the write, a pending one taken back, and EPIPE is
+    // a failed facts write like any other (exit code 4 once the XHTML is complete).
+    sigset_t pipeSet, oldSet;
+    sigemptyset(&pipeSet);
+    sigaddset(&pipeSet, SIGPIPE);
+    const bool blocked = !pageFactsWriteFailed && pthread_sigmask(SIG_BLOCK, &pipeSet, &oldSet) == 0;
+    // a timeout waits for the line (see onTimeout)
+    writingFactsLine = 1;
+    struct Done
+    {
+        ~Done()
+        {
+            writingFactsLine = 0;
+            if (timeoutPassed) {
+                timeoutExit();
+            }
+        }
+    } done_;
+    size_t done = 0;
+    bool brokenPipe = false;
+    while (!pageFactsWriteFailed && done < line.size()) {
+        const ssize_t n = write(pageFactsFd, line.data() + done, line.size() - done);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            brokenPipe = n < 0 && errno == EPIPE;
+            pageFactsWriteFailed = true;
+            break;
+        }
+        done += static_cast<size_t>(n);
+    }
+    if (blocked) {
+        if (brokenPipe) {
+            // take back the SIGPIPE this write raised (when SIGPIPE was not blocked already, a
+            // pending one can only be this write's)
+            sigset_t pending;
+            if (sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE) && !sigismember(&oldSet, SIGPIPE)) {
+                const struct timespec zero = { 0, 0 };
+                sigtimedwait(&pipeSet, nullptr, &zero);
+            }
+        }
+        pthread_sigmask(SIG_SETMASK, &oldSet, nullptr);
+    }
+#else
+    (void)line;
+    pageFactsWriteFailed = true;
+#endif
+}
+
+static double millisecondsSince(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
 static constexpr EndOfLineKind defaultEndOfLine()
 {
 #ifdef _WIN32
@@ -918,6 +1070,43 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "'-wordmeta' needs -bbox, -bbox-layout or -tsv");
         return 99;
     }
+    unsigned factsFamilies = 0;
+    if (pageFactsFd >= 0 || strcmp(pageFactsLevel, "basic") != 0 || pageFactsInclude[0] || pageFactsTiming) {
+        if (pageFactsFd < 3 || !bboxLayout) {
+            error(errCommandLine, -1, "'-page-facts-fd' needs -bbox-layout and a descriptor of 3 or more");
+            return 99;
+        }
+        if (!PageFacts::parseLevel(pageFactsLevel, &factsFamilies) || !PageFacts::parseInclude(pageFactsInclude, &factsFamilies)) {
+            error(errCommandLine, -1, "Bad '-page-facts-level' or '-page-facts-include' value");
+            return 99;
+        }
+#ifndef _WIN32
+        const int flags = fcntl(pageFactsFd, F_GETFL);
+        if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY) {
+            error(errCommandLine, -1, "'-page-facts-fd': not a descriptor open for writing");
+            return 99;
+        }
+#endif
+    }
+    long long timeoutBase = 0, timeoutPerPage = 0, timeoutMax = 0;
+    if (!parseSeconds(timeoutArg, sizeof(timeoutArg), &timeoutBase) || !parseSeconds(timeoutPerPageArg, sizeof(timeoutPerPageArg), &timeoutPerPage) || !parseSeconds(timeoutMaxArg, sizeof(timeoutMaxArg), &timeoutMax)) {
+        error(errCommandLine, -1, "Bad '-timeout', '-timeout-per-page' or '-timeout-max' value: whole seconds, at most 86400");
+        return 99;
+    }
+    if (scanMaxWords < 0) {
+        error(errCommandLine, -1, "Bad '-scan-max-words' value");
+        return 99;
+    }
+    scanThresholds.maxVisibleWords = static_cast<size_t>(scanMaxWords);
+    // a value that fills its buffer may have been cut short by parseArgs: refused
+    if (strlen(scanMinCoverageArg) + 1 >= sizeof(scanMinCoverageArg) || !ScanThresholds::parseShare(scanMinCoverageArg, &scanThresholds.minCoverage)) {
+        error(errCommandLine, -1, "Bad '-scan-min-coverage' value: a number in (0,1]");
+        return 99;
+    }
+    if (strlen(scanLayerOverlapArg) + 1 >= sizeof(scanLayerOverlapArg) || !ScanThresholds::parseShare(scanLayerOverlapArg, &scanThresholds.layerOverlap)) {
+        error(errCommandLine, -1, "Bad '-scan-layer-overlap' value: a number in (0,1]");
+        return 99;
+    }
     if (printURLs && (htmlMeta || tsvMode)) {
         error(errCommandLine, -1, "'-urls' is only supported in plain text mode");
         return 99;
@@ -934,6 +1123,28 @@ int main(int argc, char *argv[])
         }
         return 99;
     }
+
+#ifndef _WIN32
+    // the timeout runs from here: S (capped) until the page count is known
+    const auto timeoutStart = std::chrono::steady_clock::now();
+    const bool timeoutOn = timeoutBase > 0 || timeoutPerPage > 0;
+    auto timeoutLimit = [&](long long pages) {
+        long long limit = timeoutBase + std::min(timeoutPerPage * pages, 86400LL);
+        if (timeoutMax > 0) {
+            limit = std::min(limit, timeoutMax);
+        }
+        return std::max(limit, 1LL);
+    };
+    if (timeoutOn) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = onTimeout;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGALRM, &sa, nullptr);
+        // before the document is open: S, or the cap when S is 0
+        alarm(static_cast<unsigned>(timeoutBase > 0 ? timeoutLimit(0) : (timeoutMax > 0 ? timeoutMax : 86400)));
+    }
+#endif
 
     // read config file
     globalParams = std::make_unique<GlobalParams>();
@@ -964,6 +1175,17 @@ int main(int argc, char *argv[])
     }
     if (quiet) {
         globalParams->setErrQuiet(quiet);
+    }
+    std::optional<PageFacts> facts;
+    const auto runStart = std::chrono::steady_clock::now();
+    if (pageFactsFd >= 3) {
+        facts.emplace(factsFamilies);
+        facts->setScanThresholds(scanThresholds);
+        facts->setTiming(pageFactsTiming);
+        pageFacts = &*facts;
+        // poppler's errors are also counted for the page, from their category and format string
+        // (never formatted for it); they are printed as without facts unless -q
+        setErrorFormatCallback(PageFacts::noteError);
     }
 
     EndOfLineHyphenMode hyphenMode = EndOfLineHyphenMode::RemoveAll;
@@ -1002,6 +1224,10 @@ int main(int argc, char *argv[])
     doc = PDFDocFactory().createPDFDoc(fileName, ownerPW, userPW);
 
     if (!doc->isOk()) {
+        if (pageFacts) {
+            writeFactsLine(pageFacts->failedDocLine(doc->getErrorCode()));
+            writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
+        }
         return 1;
     }
     // pages usually share their fonts: parse each once per document (see GfxFontCache)
@@ -1041,6 +1267,20 @@ int main(int argc, char *argv[])
     if (lastPage < firstPage) {
         error(errCommandLine, -1, "Wrong page range given: the first page ({0:d}) can not be after the last page ({1:d}).", firstPage, lastPage);
         return 99;
+    }
+#ifndef _WIN32
+    if (timeoutOn) {
+        // the limit for the range, less the time spent opening the document
+        const auto spent = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - timeoutStart).count();
+        const long long left = timeoutLimit(lastPage - firstPage + 1) - static_cast<long long>(spent);
+        if (left <= 0) {
+            timeoutExit();
+        }
+        alarm(static_cast<unsigned>(left));
+    }
+#endif
+    if (pageFacts) {
+        writeFactsLine(pageFacts->docLine(doc.get(), ownerPW.has_value() || userPW.has_value()));
     }
     // This process consumes the selected range once and never asks for an earlier page. Avoid
     // constructing and retaining every Page before a late -f; the page-tree walk and its error
@@ -1098,6 +1338,7 @@ int main(int argc, char *argv[])
                 textOut.setTextPageBreaks(false);
             }
             if (bboxLayout) {
+                textOut.setPageFacts(pageFacts);
                 textOut.setCollectRules(collectRules);
                 textOut.setCollectImages(collectImages);
                 textOut.setCollectImageMaskRules(glyphRecords);
@@ -1153,6 +1394,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (pageFacts) {
+        writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
+    }
+
     // write end of HTML file
     if (htmlMeta) {
         if (textFileName->toStr() == "-") {
@@ -1173,6 +1418,11 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (pageFactsWriteFailed) {
+        // the text output is complete: its own exit code, so a caller can keep it
+        error(errIO, -1, "Couldn't write the page facts");
+        return 4;
+    }
     return 0;
 }
 
@@ -1323,7 +1573,14 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     glyphContext = glyphs ? &*glyphs : nullptr;
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
+        const auto pageStart = std::chrono::steady_clock::now();
+        if (pageFacts) {
+            pageFacts->beginPage(page);
+        }
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
+        if (pageFacts) {
+            writeFactsLine(pageFacts->finishPage(page, millisecondsSince(pageStart)));
+        }
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
@@ -1348,9 +1605,19 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             snprintf(crop, sizeof(crop), " crop=\"%g %g\"", doc->getPageCropWidth(page), doc->getPageCropHeight(page));
             glyphAttrs += crop;
         }
+        if (collectImages) {
+            // last: a full-page scan (see classifyScan) and the image that covers it
+            const ScanVerdict scan = textOut->getScan(scanThresholds);
+            if (scan.kind != ScanVerdict::None) {
+                glyphAttrs += std::string(" scan=\"") + scanKindName(scan.kind) + "\" scanImage=\"" + std::to_string(scan.image) + "\"";
+            }
+        }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
             for (const TextRule &rule : textOut->getRules()) {
+                if (rule.pastDocumentCap) {
+                    break; // kept for page facts only; they come last
+                }
                 fprintf(f, "    <%s xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" color=\"%s\"%s/>\n", rule.box ? "box" : "rule", rule.xMin, rule.yMin, rule.xMax, rule.yMax, hexColor(rule.r, rule.g, rule.b).c_str(),
                         rule.imageMask ? " src=\"mask\"" : "");
             }
@@ -1359,10 +1626,27 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if (collectImages) {
             for (const TextImage &image : textOut->getImages()) {
+                if (image.pastDocumentCap) {
+                    break; // kept for page facts and scans only; they come last
+                }
                 // ref: the image XObject, so repeats of one object can be found (none for inline images)
                 const std::string ref = image.ref == Ref::INVALID() ? std::string() : " ref=\"" + std::to_string(image.ref.num) + " " + std::to_string(image.ref.gen) + "\"";
-                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
-                        image.stencil ? " kind=\"mask\"" : "", ref.c_str());
+                // the dictionary's facts, last: codec, bits, colour space, masks, and how the pixels
+                // can be taken out (copy class)
+                const ImageDictInfo &info = image.info;
+                std::string dict = std::string(" filter=\"") + imageFilterName(info.filter) + "\" bpc=\"" + std::to_string(info.bpc) + "\" cs=\"" + imageColorName(info.color) + "\"";
+                if (info.softMask || info.mask) {
+                    dict += " smask=\"1\"";
+                }
+                if (info.decode) {
+                    dict += " decode=\"1\"";
+                }
+                if (info.inlineImg) {
+                    dict += " inline=\"1\"";
+                }
+                dict += std::string(" copy=\"") + imageCopyName(info.copy) + "\"";
+                fprintf(f, "    <image xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" width=\"%d\" height=\"%d\"%s%s%s/>\n", image.xMin, image.yMin, image.xMax, image.yMax, image.pixelWidth, image.pixelHeight,
+                        image.stencil ? " kind=\"mask\"" : "", ref.c_str(), dict.c_str());
             }
             for (const TextGraphic &g : graphics) {
                 fprintf(f, "    <graphic xMin=\"%.2f\" yMin=\"%.2f\" xMax=\"%.2f\" yMax=\"%.2f\" paths=\"%zu\" segments=\"%zu\" curves=\"%zu\" directions=\"%d\"/>\n", g.xMin, g.yMin, g.xMax, g.yMax, g.paths, g.segments, g.curves,

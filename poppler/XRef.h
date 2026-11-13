@@ -39,6 +39,7 @@
 #define XREF_H
 
 #include <functional>
+#include <unordered_map>
 
 #include "poppler_private_export.h"
 #include "Object.h"
@@ -163,6 +164,11 @@ public:
 
     // Fetch an indirect reference.
     Object fetch(Ref ref, int recursion = 0);
+    // DocSlurp: fetch(ref) for a stream's /Filter or /DecodeParms value, kept (a name, array or
+    // dictionary, at most 4096 by reference) until the table's generation changes: one large
+    // array shared by many streams (an XObject drawn many times is fetched again per Do) is
+    // parsed once, not once per stream. The kept object is shared; callers must not change it.
+    Object fetchStreamParam(Ref ref, int recursion = 0);
     // If endPos is not null, returns file position after parsing the object. This will
     // be a few bytes after the end of the object due to the parser reading ahead.
     // Returns -1 if object is in compressed stream.
@@ -209,6 +215,15 @@ public:
 
     // Was the XRef modified?
     bool isModified() const { return modified; }
+    // DocSlurp page facts: how many times the table was rebuilt from a scan of the file (at open or
+    // later, when a fetch found a broken entry).
+    unsigned int getReconstructionCount() const { return reconstructions; }
+    // DocSlurp page facts: the number of cross-reference sections chained by /Prev from the
+    // main one (1 for a file never updated), read without changing this table. At most
+    // maxSections sections, maxTokens lexer tokens and twice the file's bytes (plus 64 KiB) are
+    // read; 0 when the chain could not be followed within them, or the table was rebuilt from a
+    // scan.
+    int countSections(int maxSections, long long maxTokens);
     // Changes whenever an object's reference can resolve to something else (reconstruction, edits); caches
     // keyed by Ref compare it before reusing an entry.
     unsigned int getGeneration() const { return generation; }
@@ -276,6 +291,9 @@ private:
     mutable std::recursive_mutex mutex;
     std::function<void()> xrefReconstructedCb;
     unsigned int generation = 0;
+    unsigned int reconstructions = 0;
+    std::unordered_map<Ref, Object> streamParams; // see fetchStreamParam
+    unsigned int streamParamsGeneration = 0;
     std::shared_ptr<GfxFontCache> fontCache;
 
     RefRecursionChecker refsBeingFetched;

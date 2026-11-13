@@ -90,6 +90,7 @@
 #include "ProfileData.h"
 #include "Catalog.h"
 #include "OptionalContent.h"
+#include <algorithm>
 #if ENABLE_LIBOPENJPEG
 #    include "JPEG2000Stream.h"
 #endif
@@ -477,6 +478,7 @@ Gfx::Gfx(PDFDoc *docA, OutputDev *outA, int pageNum, Dict *resDict, double hDPI,
     clip = clipNone;
     ignoreUndef = 0;
     out->startPage(pageNum, state, xref);
+    opTally = out->getOpTally();
     out->setDefaultCTM(state->getCTM());
     out->updateAll(state);
     baseMatrix = state->getCTM();
@@ -781,8 +783,26 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
         }
     }
 
+    if (opTally) [[unlikely]] {
+        const auto index = static_cast<size_t>(op - opTab);
+        uint64_t &n = ocState ? (ocLayerDepth > 0 ? opTally->inLayer[index] : opTally->visible[index]) : opTally->hidden[index];
+        n += n != UINT64_MAX;
+    }
+
     // do it
     (this->*op->func)(argPtr, numArgs);
+}
+
+int Gfx::opCount()
+{
+    constexpr int numOps = sizeof(opTab) / sizeof(Operator);
+    static_assert(numOps <= GfxOpTally::maxOps);
+    return numOps;
+}
+
+const char *Gfx::opName(int index)
+{
+    return index >= 0 && index < opCount() ? opTab[index].name : "";
 }
 
 const Operator *Gfx::findOp(const char *name)
@@ -1937,6 +1957,11 @@ void Gfx::doPatternFill(bool eoFill)
 {
     GfxPattern *pattern;
 
+    if (opTally && (pattern = state->getFillPattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
+
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
@@ -1964,6 +1989,11 @@ void Gfx::doPatternStroke()
 {
     GfxPattern *pattern;
 
+    if (opTally && (pattern = state->getStrokePattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
+
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
     // certainly don't contain any text
@@ -1990,6 +2020,11 @@ void Gfx::doPatternStroke()
 void Gfx::doPatternText()
 {
     GfxPattern *pattern;
+
+    if (opTally && (pattern = state->getFillPattern())) {
+        uint64_t &n = pattern->getType() == 1 ? opTally->tilingPatternPaints : opTally->shadingPatternPaints;
+        n += n != UINT64_MAX;
+    }
 
     // this is a bit of a kludge -- patterns can be really slow, so we
     // skip them if we're only doing text extraction, since they almost
@@ -4158,6 +4193,13 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
 
     Stream *obj1Stream = obj1.getStream();
     Dict *obj1StreamDict = obj1Stream->getDict();
+    if (opTally && ocState && catalog->getOptContentConfig()) {
+        const Object &oc = obj1StreamDict->lookupNF("OC");
+        if (!oc.isNull()) {
+            uint64_t &n = factsOcIsVisible(oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            n += n != UINT64_MAX;
+        }
+    }
     Object opiDict = obj1StreamDict->lookup("OPI");
     if (opiDict.isDict()) {
         out->opiBegin(state, *opiDict.getDict());
@@ -4237,17 +4279,53 @@ static void skipStreamBytes(Stream *str, int64_t n)
     }
 }
 
+// DocSlurp page facts: optContentIsVisible, remembered per reference for this page (OCG states
+// do not change while a page is drawn).
+bool Gfx::factsOcIsVisible(const Object &oc)
+{
+    const OCGs *ocgs = catalog->getOptContentConfig();
+    if (!ocgs) {
+        return true;
+    }
+    if (!oc.isRef()) {
+        return ocgs->optContentIsVisible(&oc, &factsOcBudget);
+    }
+    const auto it = factsOcVisible.find(oc.getRef());
+    if (it != factsOcVisible.end()) {
+        return it->second;
+    }
+    const bool visible = ocgs->optContentIsVisible(&oc, &factsOcBudget);
+    if (factsOcVisible.size() < 4096) {
+        factsOcVisible.emplace(oc.getRef(), visible);
+    }
+    return visible;
+}
+
 // Tell a geometry-only device (OutputDev::needImageGeometry) where an image lands. Only the
-// stream dictionary is read: never the image data, so a hostile image costs a few lookups.
+// stream dictionary is read: never the image data, so a hostile image costs a few lookups, and
+// with the device's ImageInfoCache an image XObject's dictionary is read once per document.
 void Gfx::reportImageGeometry(Dict *dict, Ref ref)
 {
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (!factsOcIsVisible(objOC)) {
         return;
     }
     const std::array<double, 6> &ctm = state->getCTM();
     if (fabs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) < 0.000001) {
         return;
+    }
+    ImageInfoCache *cache = out->getImageInfoCache();
+    const bool cacheable = cache && ref != Ref::INVALID();
+    if (cacheable) {
+        if (const ImageInfoCache::Image *seen = cache->find(ref, xref)) {
+            if (seen->limited) {
+                noteImageInfoLimit();
+            }
+            if (seen->width >= 1 && seen->height >= 1) {
+                out->imageGeometry(state, seen->width, seen->height, seen->info.imageMask, ref, seen->info);
+            }
+            return;
+        }
     }
     auto size = [dict](const char *key, const char *abbrev) {
         Object o = dict->lookup(key);
@@ -4261,15 +4339,139 @@ void Gfx::reportImageGeometry(Dict *dict, Ref ref)
         const double r = o.isReal() ? o.getReal() : 0.0;
         return std::isfinite(r) && r >= 1.0 && r <= static_cast<double>(INT_MAX) ? static_cast<int>(r) : 0;
     };
-    const int width = size("Width", "W"), height = size("Height", "H");
-    if (width < 1 || height < 1) {
+    ImageInfoCache::Image image;
+    image.width = size("Width", "W");
+    image.height = size("Height", "H");
+    if (image.width >= 1 && image.height >= 1) {
+        image.info = readImageDictInfo(dict, false, &image.limited);
+    }
+    if (cacheable) {
+        cache->store(ref, xref, image);
+    }
+    if (image.width < 1 || image.height < 1) {
         return;
     }
-    Object im = dict->lookup("ImageMask");
-    if (im.isNull()) {
-        im = dict->lookup("IM");
+    out->imageGeometry(state, image.width, image.height, image.info.imageMask, ref, image.info);
+}
+
+// Image dictionary facts for page facts and pdftotext -images: dictionary lookups only (an
+// ICC colour space's stream dictionary is fetched for /N), never the image data.
+// DocSlurp page facts: one limit-hit warning per page, for an image whose colour-space lookup
+// the ImageInfoCache fetch budget refused (on its first read or when it is drawn again).
+void Gfx::noteImageInfoLimit()
+{
+    if (!imageInfoLimitReported) {
+        imageInfoLimitReported = true;
+        // fixed text (no arguments): page facts classify it as limit-hit from the format string
+        error(errSyntaxWarning, -1, "Image colour space budget exhausted; colour reported as other");
     }
-    out->imageGeometry(state, width, height, im.isBool() && im.getBool(), ref);
+}
+
+ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, bool *limited)
+{
+    ImageDictInfo info;
+    info.inlineImg = inlineImg;
+    auto lookup = [dict](const char *key, const char *abbrev) {
+        Object o = dict->lookup(key);
+        if (o.isNull() && abbrev) {
+            o = dict->lookup(abbrev);
+        }
+        return o;
+    };
+    auto filterOf = [](const Object &name) {
+        if (!name.isName()) {
+            return ImageFilter::Other;
+        }
+        const std::string &n = name.getNameString();
+        if (n == "DCTDecode" || n == "DCT") {
+            return ImageFilter::DCT;
+        }
+        if (n == "JPXDecode") {
+            return ImageFilter::JPX;
+        }
+        if (n == "JBIG2Decode") {
+            return ImageFilter::JBIG2;
+        }
+        if (n == "CCITTFaxDecode" || n == "CCF") {
+            return ImageFilter::CCITT;
+        }
+        if (n == "FlateDecode" || n == "Fl") {
+            return ImageFilter::Flate;
+        }
+        if (n == "LZWDecode" || n == "LZW") {
+            return ImageFilter::LZW;
+        }
+        if (n == "RunLengthDecode" || n == "RL") {
+            return ImageFilter::RunLength;
+        }
+        if (n == "ASCIIHexDecode" || n == "AHx" || n == "ASCII85Decode" || n == "A85") {
+            return ImageFilter::None;
+        }
+        return ImageFilter::Other;
+    };
+    // /F abbreviates /Filter only in an inline image; in an XObject it names an external file
+    Object filter = lookup("Filter", inlineImg ? "F" : nullptr);
+    info.external = !inlineImg && (!dict->lookupNF("F").isNull() || !dict->lookupNF("FFilter").isNull() || !dict->lookupNF("FDecodeParms").isNull());
+    if (filter.isName()) {
+        info.filters = 1;
+        info.filter = filterOf(filter);
+    } else if (filter.isArray()) {
+        const int n = filter.arrayGetLength();
+        info.filters = static_cast<uint8_t>(std::clamp(n, 0, 255));
+        if (n > 0) {
+            info.filter = filterOf(filter.arrayGet(n - 1));
+        }
+    } else if (!filter.isNull()) {
+        info.filters = 1;
+        info.filter = ImageFilter::Other;
+    }
+    Object bpc = lookup("BitsPerComponent", "BPC");
+    if (bpc.isInt() && bpc.getInt() >= 1 && bpc.getInt() <= 32) {
+        info.bpc = static_cast<uint8_t>(bpc.getInt());
+    }
+    Object im = lookup("ImageMask", "IM");
+    info.imageMask = im.isBool() && im.getBool();
+    // the colour space by reference is classified once per document (ImageInfoCache)
+    ImageInfoCache localCache;
+    ImageInfoCache *cache = out->getImageInfoCache() ? out->getImageInfoCache() : &localCache;
+    const size_t refusals = cache->refusals();
+    const Object *cs = &dict->lookupNF("ColorSpace");
+    if (cs->isNull()) {
+        cs = &dict->lookupNF("CS");
+    }
+    if (!cs->isNull()) {
+        info.color = cache->colorSpace(*cs, xref);
+        // an inline image may name a colour space of the resources (one level)
+        if (inlineImg && cs->isName() && info.color == ImageColor::Other) {
+            Object named = res->lookupColorSpace(cs->getNameString());
+            info.color = named.isNull() ? ImageColor::Other : cache->colorSpace(named, xref);
+        }
+    } else if (info.imageMask) {
+        info.color = ImageColor::None;
+    }
+    // limit-hit only when this image's own lookup was refused
+    if (cache->refusals() != refusals) {
+        if (limited) {
+            *limited = true;
+        }
+        noteImageInfoLimit();
+    }
+    Object smask = dict->lookup("SMask");
+    Object smaskInData = dict->lookup("SMaskInData");
+    info.softMask = smask.isStream() || (smaskInData.isInt() && smaskInData.getInt() > 0);
+    Object mask = dict->lookup("Mask");
+    info.mask = mask.isArray() || mask.isStream();
+    Object decode = lookup("Decode", "D");
+    info.decode = !decode.isNull();
+    // decode parameters that change a DCT stream's colours (/ColorTransform), or any that
+    // cannot be read as a dictionary (or a one-entry array of one)
+    Object parms = lookup("DecodeParms", "DP");
+    if (parms.isArray() && parms.arrayGetLength() == 1) {
+        parms = parms.arrayGet(0);
+    }
+    info.colorTransform = !parms.isNull() && !(parms.isDict() && parms.dictLookupNF("ColorTransform").isNull());
+    info.copy = classifyImageCopy(info);
+    return info;
 }
 
 void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
@@ -4306,7 +4508,7 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
     // check for optional content key
     if (ref) {
         const Object &objOC = dict->lookupNF("OC");
-        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+        if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC, &ocBudget)) {
             return;
         }
     }
@@ -4349,11 +4551,8 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg)
 
     // an inline image is read from the content stream either way; tell a geometry-only device
     if (inlineImg && ocState && !out->needNonText() && out->needImageGeometry() && !singular_matrix) {
-        Object imObj = dict->lookup("ImageMask");
-        if (imObj.isNull()) {
-            imObj = dict->lookup("IM");
-        }
-        out->imageGeometry(state, width, height, imObj.isBool() && imObj.getBool(), Ref::INVALID());
+        const ImageDictInfo info = readImageDictInfo(dict, true);
+        out->imageGeometry(state, width, height, info.imageMask, Ref::INVALID(), info);
     }
 
     // image interpolation
@@ -4882,7 +5081,7 @@ void Gfx::doForm(Object *str)
     // check for optional content key
     ocSaved = ocState;
     const Object &objOC = dict->lookupNF("OC");
-    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC)) {
+    if (catalog->getOptContentConfig() && !catalog->getOptContentConfig()->optContentIsVisible(&objOC, &ocBudget)) {
         if (out->needCharCount()) {
             ocState = false;
         } else {
@@ -5171,38 +5370,51 @@ struct MarkedContentStack
 {
     GfxMarkedContentKind kind;
     bool ocSuppressed; // are we ignoring content based on OptionalContent?
+    bool hidden; // DocSlurp: this entry or one below it is ocSuppressed
     MarkedContentStack *next; // next object on stack
 };
+
+// DocSlurp: marked-content sections nested deeper than this are not tracked (their BMC/BDC and
+// matching EMC are skipped, for the device too), with one warning per page: content inside
+// them takes the visibility of the deepest tracked section.
+constexpr int maxMarkedContentDepth = 4096;
 
 void Gfx::popMarkedContent()
 {
     MarkedContentStack *mc = mcStack;
     mcStack = mc->next;
     delete mc;
+    --mcDepth;
 }
 
 void Gfx::pushMarkedContent()
 {
     auto *mc = new MarkedContentStack();
     mc->ocSuppressed = false;
+    mc->hidden = mcStack && mcStack->hidden;
     mc->kind = gfxMCOther;
     mc->next = mcStack;
     mcStack = mc;
+    ++mcDepth;
 }
 
+// DocSlurp: O(1); each entry carries whether it or an entry below it is suppressed (walking the
+// stack on every BMC/BDC/EMC made deep nesting quadratic)
 bool Gfx::contentIsHidden()
 {
-    MarkedContentStack *mc = mcStack;
-    bool hidden = mc && mc->ocSuppressed;
-    while (!hidden && mc && mc->next) {
-        mc = mc->next;
-        hidden = mc->ocSuppressed;
-    }
-    return hidden;
+    return mcStack && mcStack->hidden;
 }
 
 void Gfx::opBeginMarkedContent(Object args[], int numArgs)
 {
+    if (mcDepth >= maxMarkedContentDepth) {
+        if (mcOverflow++ == 0 && !mcDepthWarned) {
+            mcDepthWarned = true;
+            // fixed text (no arguments): page facts classify it as limit-hit from the format string
+            error(errSyntaxWarning, getPos(), "Marked content nested too deeply; deeper sections ignored");
+        }
+        return;
+    }
     // push a new stack entry
     pushMarkedContent();
 
@@ -5214,10 +5426,12 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
                 const std::string &name1 = args[1].getNameString();
                 MarkedContentStack *mc = mcStack;
                 mc->kind = gfxMCOptionalContent;
+                ++ocLayerDepth;
                 Object markedContent = res->lookupMarkedContentNF(name1);
                 if (!markedContent.isNull()) {
-                    bool visible = contentConfig->optContentIsVisible(&markedContent);
+                    bool visible = contentConfig->optContentIsVisible(&markedContent, &ocBudget);
                     mc->ocSuppressed = !visible;
+                    mc->hidden = mc->hidden || mc->ocSuppressed;
                 } else {
                     error(errSyntaxError, getPos(), "DID NOT find {0:r}", &name1);
                 }
@@ -5277,12 +5491,20 @@ void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
         error(errSyntaxWarning, getPos(), "Mismatched EMC operator");
         return;
     }
+    if (mcOverflow > 0) {
+        // closes a section past maxMarkedContentDepth, which was never pushed
+        --mcOverflow;
+        return;
+    }
 
     MarkedContentStack *mc = mcStack;
     GfxMarkedContentKind mcKind = mc->kind;
 
     // pop the stack
     popMarkedContent();
+    if (mcKind == gfxMCOptionalContent && ocLayerDepth > 0) {
+        --ocLayerDepth;
+    }
 
     if (mcKind == gfxMCActualText) {
         out->endActualText(state);

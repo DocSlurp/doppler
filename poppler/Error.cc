@@ -40,16 +40,27 @@
 static const char *errorCategoryNames[] = { "Syntax Warning", "Syntax Error", "Config Error", "Command Line Error", "I/O Error", "Permission Error", "Unimplemented Feature", "Internal Error" };
 
 static ErrorCallback errorCbk = nullptr;
+static ErrorFormatCallback errorFormatCbk = nullptr;
 
 void setErrorCallback(ErrorCallback cbk)
 {
     errorCbk = cbk;
 }
 
+void setErrorFormatCallback(ErrorFormatCallback cbk)
+{
+    errorFormatCbk = cbk;
+}
+
 void CDECL error(ErrorCategory category, Goffset pos, const char *msg, ...)
 {
     va_list args;
 
+    // DocSlurp: the format callback sees the category and the unformatted format string, before
+    // (and whether or not) the message is formatted
+    if (errorFormatCbk) {
+        (*errorFormatCbk)(category, msg);
+    }
     // NB: this can be called before the globalParams object is created
     if (!errorCbk && globalParams && globalParams->getErrQuiet()) {
         return;

@@ -402,10 +402,45 @@ papers and reports, `--raster-method 2 --lossless-method 1 --lossless-quality 25
 image pass's CPU by about 15% for about 1% more WebP bytes (lossy SSIM about 0.996 against
 the defaults; lossless output decodes to the same pixels).
 
+## Page facts (`--page-facts`)
+
+    pdftomarkdown --stream --page-facts facts.jsonl [--page-facts-level full] paper.pdf > paper.md
+    pdftomarkdown --stream --page-facts-fd 3 paper.pdf 3>facts.jsonl > paper.md
+
+Page facts (schema `doppler-page-facts/1`: a doc line, one line per page, a run line; every
+field in [docslurp/page-facts/README.md](../page-facts/README.md)) are computed by pdftotext
+on the conversion's own pass (`-page-facts-fd`) and written unchanged: pdftomarkdown never
+rewrites a line (it only drops an unterminated last one from FILE), so they are byte-identical to `pdfpagefacts` for the same range and
+level, with or without `--stream`, `--markers` or `--math`. The Markdown is the same with or
+without them. Facts never go to stdout.
+
+| option | |
+|---|---|
+| `--page-facts FILE` | FILE must not exist and its folder is reached without following symbolic links; it is written mode 0600 under a temporary name and appears as soon as pdftotext has finished, before image extraction (also when the conversion failed: its lines say what was read; a FILE without a run line is incomplete). It holds whole lines only: an unterminated last line (pdftotext stopped mid-write at its time limit) is dropped with a warning, and a FILE with no whole line is not created |
+| `--page-facts-fd N` | write them to descriptor N (3 or more), open for writing and inherited from the caller; pdfregions closes it (and every descriptor above 2) at start. Written unchanged: the reader must drop an unterminated last line (pdftotext stopped mid-write at its time limit) |
+| `--page-facts-level basic\|full` | `basic` (default) or every family |
+| `--page-facts-include LIST` | families added to basic: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure` |
+| `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
+| `--scan-max-words N` | a page with more visible words is not a scan (20); also changes `scan=` in the XHTML |
+
+With page facts, pdftotext runs under a time limit of 60 s plus 1 s per page of the range, at
+most an hour (`-timeout 60 -timeout-per-page 1 -timeout-max 3600`); past it the conversion
+fails (pdftotext exit status 6, named in the message). Without page facts there is no limit,
+as before.
+
+With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
+Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor
+of `--page-facts` is inheritable only while pdftotext starts; the renderer never gets it.
+A facts write that fails (a reader that closed its end, a full disk) does not stop the
+conversion: pdftotext finishes the XHTML (its exit status 4), and pdftomarkdown writes the
+Markdown and exits 5.
+Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
+
 ## Exit status and report
 
-- 5 (`pdftomarkdown --images-dir` or `--images-plan-out`): the Markdown was written but image
-  extraction failed, or the images plan could not be written.
+- 5 (`pdftomarkdown --images-dir`, `--images-plan-out` or `--page-facts`): the Markdown was
+  written but image extraction failed, or the images plan or page facts could not be
+  written.
 - 0: converted. 2: bad arguments, or the input has no `<page>` (it is not doppler XHTML); the
   message goes to stderr. 1: an I/O error.
 - `pdftomarkdown`: the same, with 2 when pdftotext's output has no `<page>` (the message names

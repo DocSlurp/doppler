@@ -1,0 +1,152 @@
+.\" Copyright 2026 DocSlurp
+.TH pdfpagefacts 1 "12 November 2026"
+.SH NAME
+pdfpagefacts \- page facts of a PDF as JSON lines, for routing pages
+.SH SYNOPSIS
+.B pdfpagefacts
+[options]
+.RI [ PDF-file | \- ]
+.SH DESCRIPTION
+.B pdfpagefacts
+reads a PDF (a path, or standard input for
+.BR \- )
+and writes its page facts to standard output, one JSON object per line (schema
+.IR doppler-page-facts/1 ):
+one doc line, one line per page in ascending order, and a run line. It runs the text
+extraction pass without laying out lines, writes no text, reads no image data and renders
+nothing.
+.PP
+Facts describe each page's geometry, its text layer (characters and words, visible and
+invisible, coverage), images (count, coverage, scan detection, and per image the codec,
+bits, colour space, masks and copy class), fonts, odd characters, vector drawing (paths,
+rules, a grid score, shadings, patterns, clips, figure clusters), form fields, annotations
+and optional content, plus document-level facts (version, encryption, xref state,
+structure, forms, layers) and a stable vocabulary of
+.I unusualFeatures
+and
+.IR parseWarnings .
+Every field and value is listed in docslurp/page-facts/README.md; the JSON Schema is
+docslurp/page-facts/doppler-page-facts-1.schema.json.
+.PP
+.B "pdftotext \-page\-facts\-fd"
+and
+.B "pdftomarkdown \-\-page\-facts"
+compute the same facts on their own pass: for the same input, range, level and include list
+the three write byte-identical lines. Without
+.B \-timing
+the output is the same on every run, and a page's line does not depend on which other pages
+were processed.
+.PP
+The output is ASCII; a field that was not computed is absent, never 0; lists and strings are
+capped; numbers are finite and ratios are within 0 and 1. No document text, path, URI, field
+name or value is written, except the capped and sanitised
+.I producer
+and
+.I creator
+strings, which are untrusted. Diagnostics go to standard error as fixed strings; Poppler's
+own messages are dropped, and standard error points at /dev/null while the document is
+processed. Nothing is written but standard output, and descriptors above 2 are closed at
+start. Once the file is open, and before it is parsed, the process confines itself (see
+.BR \-confine ).
+Run it under a memory limit and a timeout, inside the sandbox customer files require: it
+parses hostile input.
+.SH OPTIONS
+.TP
+.BI \-f " number"
+First page (default 1).
+.TP
+.BI \-l " number"
+Last page (default the last page).
+.TP
+.BI \-level " basic|full"
+basic (the default): geometry, text counts, layer and coverage, image totals and scan
+detection, parse warnings and features; full: every family.
+.TP
+.BI \-include " list"
+Families added to basic, comma-separated: fonts, oddtext, images-detail, vectors, forms,
+annots, ocg, structure.
+.TP
+.BI \-opw " password"
+Owner password.
+.TP
+.BI \-upw " password"
+User password.
+.TP
+.BI \-max\-pages " number"
+Stop after this many pages, writing the run line with
+.I stop
+and exiting with 3 (default 100000).
+.TP
+.BI \-max\-memory " MiB"
+Address-space limit, 0 for none (default 4096). Running out of memory exits with 3.
+.TP
+.BI \-scan\-max\-words " number"
+A page with more visible words is not a scan (default 20).
+.TP
+.BI \-scan\-min\-coverage " share"
+The share of the page one image, or the images together, must cover for a scan, in (0,1]
+(default 0.85).
+.TP
+.BI \-scan\-layer\-overlap " share"
+The share of the page a second image overlapping the scan must cover to make it layered, in
+(0,1] (default 0.5).
+.IP
+A share is a plain decimal number (0.8, .8, 1); anything else is a usage error. When any of
+the three \-scan options is not its default, the page facts doc line records all three
+.RI ( scanThresholds );
+with the defaults the output does not change.
+.TP
+.BI \-confine " require|auto|off"
+After opening the file and before parsing it, drop the ability to write, create or remove
+files, use the network or run programs (Landlock and seccomp on Linux). require (the
+default) exits with 5 when it cannot confine; auto applies what the kernel supports and
+writes a warning when that is not everything; off does nothing.
+.TP
+.BI \-timeout " seconds"
+Wall-clock limit for the whole run, 0 for none (default 600). Exceeding it exits with 3; the
+lines already written are whole.
+.TP
+.B \-timing
+Add factsMs to page lines and totalMs and peakRssKiB to the run line. These differ between
+runs.
+.TP
+.B \-v
+Print copyright and version information.
+.TP
+.B \-h
+Print usage information.
+.RB ( \-help
+and
+.B \-\-help
+are equivalent.)
+.SH EXIT CODES
+.TP
+0
+Facts written.
+.TP
+1
+The document cannot be opened (a doc line with
+.I error
+is written), has no pages, or standard output cannot be written.
+.TP
+2
+The document is encrypted and needs a password (a doc line with
+.I locked
+is written).
+.TP
+3
+A limit was reached (\-max\-pages, after the lines; memory; or \-timeout).
+.TP
+5
+.B \-confine require
+could not confine.
+.TP
+99
+Usage error, including a first page past the last.
+.PP
+Treat any other status (a signal, say) as failure. A missing run line means the run was cut
+short.
+.SH SEE ALSO
+.BR pdftotext (1),
+.BR pdfpagecount (1),
+.BR pdfregions (1)

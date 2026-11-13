@@ -155,6 +155,12 @@ impl NewFile {
         Ok(NewFile { parent, name, shown })
     }
 
+    /// The parent's descriptor, the file's name in it and its path as shown in messages, for a
+    /// file written as it goes (`pdftomarkdown --page-facts`, see `src/facts_file.rs`).
+    pub fn into_parts(self) -> (OwnedFd, std::ffi::OsString, String) {
+        (self.parent, self.name, self.shown)
+    }
+
     /// Writes `data` as the file; nothing is left behind when this fails.
     pub fn write(self, data: &[u8]) -> Result<(), String> {
         let mut tmp = std::ffi::OsString::from(".");
