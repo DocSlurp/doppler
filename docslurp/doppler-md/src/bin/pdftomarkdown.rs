@@ -4,9 +4,9 @@
 //! it arrives and writes the pages joined with form feeds on stdout. By default every page
 //! waits for the whole document; `--stream` (or `--window N`) writes each page once the next N
 //! are complete and the body sample (`--body-pages`, 32 pages with text) is taken, holding the
-//! larger of the two. `--context N` reads N pages around a `-f`/`-l` range for repetition
-//! without writing them; with `--body-size`/`--body-color` the range's pages are the same bytes
-//! as in a whole run with the same window. `--strict` drops
+//! larger of the two. `--context N` (default: the window) reads N pages around a `-f`/`-l`
+//! range for repetition without writing them; with `--body-size`/`--body-color` the range's
+//! pages are the same bytes as in a whole run with the same window. `--strict` drops
 //! `-compact-layout` (full-precision coordinates): the same bytes as piping
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
@@ -51,13 +51,16 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
                  body_color used, and with -f/-l a range object: see --context)
   --params JSON  override layout tuning parameters
   -f N, -l N     first and last page to convert
-  --context N    with -f/-l: also read the N pages before -f and after -l (within the document)
-                 for repetition and the body estimate; they are not written or reported. With
-                 N at least the window and --body-size/--body-color from the whole document,
-                 the pages are the same bytes as in a whole-document run with the same window;
-                 the report's range.identity lists what can still differ
+  --context N    with -f/-l: also read the N pages before -f and after -l (within the document),
+                 0 to 64 (default: the --window, 0 without one), for repetition and the body
+                 estimate; they are not written or reported (with --markers the pages before
+                 are laid out, charged to the document's work budget). With N at least the
+                 window and --body-size/--body-color from the whole document, the pages are
+                 the same bytes as in a whole-document run with the same window; the report's
+                 range.identity lists what can still differ
   --estimate-body  print the body estimate (JSON: body_size, body_color, ...) on stdout
-                 and stop once it is fixed (reads only the sample pages); no Markdown
+                 and stop once it is fixed (reads only the sample pages, or every page read
+                 when the sample is longer); no Markdown. Give the values back exactly
   --opw, --upw   owner and user password (also -opw, -upw); as with pdftotext they are
                  visible in the process list
 
@@ -111,7 +114,7 @@ fn main() -> ExitCode {
     let mut want_report = false;
     let mut strict = false;
     let mut win = cli::WindowArgs::default();
-    let mut context: usize = 0;
+    let mut context: Option<usize> = None;
     let mut estimate = false;
     let mut page_sizes = false;
     // pdftotext options, in order
@@ -152,8 +155,8 @@ fn main() -> ExitCode {
             "--strict" => strict = true,
             "--estimate-body" => estimate = true,
             "--context" => match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<usize>().ok()) {
-                Some(n) => context = n,
-                None => return usage_error("--context needs a number of pages"),
+                Some(n) if n <= cli::MAX_CONTEXT => context = Some(n),
+                _ => return usage_error(&format!("--context needs a number of pages from 0 to {}", cli::MAX_CONTEXT)),
             },
             "--params" => {
                 let Some(json) = args.next().and_then(|j| j.into_string().ok()) else {
@@ -224,7 +227,9 @@ fn main() -> ExitCode {
     // the page range pdftotext reads: the range and its context, within the document (pdftotext
     // clamps -l to the last page)
     let mut window = win.window();
-    let context = context.min(i32::MAX as usize) as i32;
+    // by default a range reads the furniture window either side, so its pages are judged as in
+    // a whole run
+    let context = context.unwrap_or(win.furniture().unwrap_or(0)).min(cli::MAX_CONTEXT) as i32;
     if let Some(f) = first {
         let read = f.saturating_sub(context).max(1);
         window.skip = (f - read) as usize;
@@ -421,8 +426,11 @@ fn convert(
     }
     let (mut report, written) = run.finish_report();
     if estimate {
-        if !report.page_found() {
-            return cli::conclude("pdftomarkdown", &report, written, false, &no_page);
+        // every page read is context here (none is written): the estimate stands when any was
+        // read. The sample ended with the input (a short document or range, or no window)
+        if report.pages_read == 0 {
+            eprintln!("pdftomarkdown: {no_page}");
+            return ExitCode::from(2);
         }
         println!("{}", report.body_to_json());
         return ExitCode::SUCCESS;
@@ -549,6 +557,6 @@ fn pdftotext() -> PathBuf {
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprint!("pdftomarkdown: {msg}\n{USAGE}");
+    eprint!("pdftomarkdown: {msg}\n{}", USAGE.replace("%WINDOW%", cli::WINDOW_HELP));
     ExitCode::from(2)
 }

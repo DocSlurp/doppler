@@ -459,3 +459,124 @@ fn the_body_sample_holds_pages_until_it_is_complete() {
     let json = report.to_json();
     assert!(json.contains("\"body_size\":") && json.contains("\"body_sample_pages\":8"), "{json}");
 }
+
+/// One page of `<page>` XHTML: `words` lines of body text in `size` point print and `colour`,
+/// plus `rules` rules.
+fn plain_page(i: usize, words: usize, size: &str, colour: &str, rules: usize) -> String {
+    let mut s = String::from("<page width=\"612\" height=\"792\">\n<flow>\n<block>\n");
+    for k in 0..words {
+        let y = 100 + 14 * (k % 40);
+        s += &format!(
+            "<line><word xMin=\"72\" yMin=\"{}\" xMax=\"300\" yMax=\"{y}\" fontName=\"F\" fontSize=\"{size}\" color=\"{colour}\" baseline=\"{}\">Topic n{i} line {k} reads on as prose.</word></line>\n",
+            y - 10,
+            y - 2
+        );
+    }
+    s += "</block>\n</flow>\n";
+    for k in 0..rules {
+        let y = 10 + k % 700;
+        s += &format!("<rule xMin=\"10\" yMin=\"{y}\" xMax=\"20\" yMax=\"{}\"/>\n", y + 1);
+    }
+    s += "</page>\n";
+    s
+}
+
+#[test]
+fn a_window_covering_a_long_document_needs_a_body_sample_that_does_too() {
+    // 40 pages at 12 points, then 60 at 10: the whole document's body is 10, the first 32 pages
+    // with text say 12
+    let doc: Vec<String> = (0..100).map(|i| plain_page(i, 4, if i < 40 { "12" } else { "10" }, "#000000", 0)).collect();
+    let p = Params::default();
+    let (want, whole) = to_markdown_report_with(&format!("<doc>\n{}</doc>\n", doc.concat()), &p, &Options::default());
+    assert_eq!(whole.body.size, 10.0);
+    let covering = Window { furniture: Some(1000), body: Some(BodySample::Document), ..Window::default() };
+    let (got, r) = converted(&doc, covering, Options::default(), &p);
+    assert_eq!(got, want);
+    assert_eq!(r.body.size, 10.0);
+    // the default sample sees only the start: another body
+    let (_, r) = converted(&doc, Window::furniture(Some(1000)), Options::default(), &p);
+    assert_eq!((r.body.size, r.body.sample_pages), (12.0, 32));
+}
+
+#[test]
+fn the_body_sample_is_bounded_in_size_not_only_in_pages() {
+    // pages with text and 30,000 rules each: the sample (32 pages with text) ends once the
+    // pages held reach BODY_SAMPLE_MAX_ITEMS, after 9 pages, and writing starts then
+    let doc: Vec<String> = (0..14).map(|i| plain_page(i, 2, "10", "#000000", 30_000)).collect();
+    let p = Params::default();
+    let mut conv = Converter::with(&p, Options::default(), Window::furniture(Some(1)));
+    let mut parser = Parser::new();
+    let (mut parsed, mut written) = (0usize, 0usize);
+    for pg in &doc {
+        parser.push(pg, &mut |page| {
+            parsed += 1;
+            conv.push(page, &mut |_, _| written += 1);
+            if parsed < 9 {
+                assert_eq!(written, 0, "{parsed} parsed");
+            } else {
+                assert_eq!(parsed - written, 1, "{parsed} parsed");
+            }
+        });
+    }
+    let parse = parser.finish(&mut |page| conv.push(page, &mut |_, _| written += 1));
+    let report = conv.finish(parse, &mut |_, _| written += 1);
+    assert_eq!(written, doc.len());
+    assert_eq!((report.body.sample_pages, report.body.sample_text_pages), (9, 9));
+    const { assert!(9 * 30_000 >= doppler_md::BODY_SAMPLE_MAX_ITEMS && 8 * 30_002 < doppler_md::BODY_SAMPLE_MAX_ITEMS) };
+}
+
+#[test]
+fn every_body_estimate_can_be_given_back() {
+    // font sizes and colours a hostile document can set: the estimate stays within what
+    // --body-size and --body-color accept, so a sharding host can always pass it back
+    let long = "c".repeat(100);
+    for (size, colour) in [
+        ("0.2", "#000000"),
+        ("0.0001", "#000000"),
+        ("20000", "#000000"),
+        ("-12", "#000000"),
+        ("1e308", "#000000"),
+        ("NaN", "#000000"),
+        ("inf", "#000000"),
+        ("10", long.as_str()),
+        ("10", "a\tb"),
+    ] {
+        let doc: Vec<String> = (0..3).map(|i| plain_page(i, 5, size, colour, 0)).collect();
+        for win in [Window::default(), Window::furniture(Some(4))] {
+            let (_, r) = converted(&doc, win, Options::default(), &Params::default());
+            assert!(doppler_md::body_size_ok(r.body.size), "{size}: {}", r.body.size);
+            assert_eq!(r.body.size * 2.0, (r.body.size * 2.0).round(), "{size}");
+            assert!(doppler_md::body_color_ok(&r.body.color), "{colour:?}: {:?}", r.body.color);
+            // and it prints as a number
+            assert!(r.body_to_json().contains(&format!("\"body_size\":{}", r.body.size)), "{}", r.body_to_json());
+        }
+    }
+}
+
+#[test]
+fn leading_context_layout_is_charged_to_the_document_budget() {
+    // with --markers the pages before a range are laid out for continuation markers: their
+    // work counts towards max_doc_work like a whole run's (without markers they are not laid out)
+    let mut rng = Rng(5);
+    let doc = book(&mut rng);
+    let p = Params::default();
+    let run = |read: usize, o: Options| {
+        let win = Window {
+            furniture: Some(4),
+            body_size: Some(10.0),
+            body_color: Some(String::new()),
+            skip: 10 - read,
+            emit: Some(5),
+            after: 4,
+            first_page: read as u32,
+            ..Window::default()
+        };
+        converted(&doc[read - 1..18], win, o, &p).1
+    };
+    let markers = Options { markers: true, ..Options::default() };
+    // these pages have no pictures: with or without markers a written page costs the same, so
+    // the difference is the context pages' layout
+    let plain = Options::default();
+    assert_eq!(run(10, markers).doc_work, run(10, plain).doc_work);
+    assert!(run(5, markers).doc_work > run(5, plain).doc_work);
+}

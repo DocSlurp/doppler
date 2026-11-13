@@ -172,7 +172,15 @@ fn write_page(
     }
 }
 
-use doppler_md::STREAM_WINDOW;
+use doppler_md::{BODY_SIZE_MAX, BODY_SIZE_MIN, STREAM_WINDOW, body_color_ok, body_size_ok};
+
+/// The largest `--window` (pages either side): the converter holds the window + 1 pages.
+pub const MAX_WINDOW: usize = 64;
+/// The largest `--body-pages` (pages with text; at most twice as many are held).
+pub const MAX_BODY_PAGES: usize = 256;
+/// The largest `--context` (pages either side of a range; more than the window buys nothing).
+#[allow(dead_code)] // pdftomarkdown only
+pub const MAX_CONTEXT: usize = 64;
 
 /// The window and body options shared by both binaries.
 #[derive(Default)]
@@ -186,27 +194,30 @@ pub struct WindowArgs {
 
 /// Help text for [`WindowArgs`].
 pub const WINDOW_HELP: &str = concat!(
-    "  --stream       write pages as they are converted: --window 4, body from 32 pages with text\n",
-    "  --window N     furniture window: running headers/footers, repeated watermark words and\n",
-    "                 pictures are judged over the N pages either side of each page (not the\n",
-    "                 whole document); each page is written once the next N are complete and\n",
-    "                 the body sample is taken. 4 measured best; 2 removes some content; 0\n",
-    "                 removes no repeated content at all\n",
+    "  --stream       write pages as they are converted: --window 16, body from 32 pages with text\n",
+    "  --window N     furniture window, 0 to 64: running headers/footers, repeated watermark\n",
+    "                 words and pictures are judged over the N pages either side of each page\n",
+    "                 (not the whole document); each page is written once the next N are\n",
+    "                 complete and the body sample is taken. 16 differs least from the whole\n",
+    "                 document; 4 removes more chapter running heads; 2 removes some content;\n",
+    "                 0 removes no repeated content at all\n",
     "  --body-pages N estimate the body font size and colour from the pages up to the N-th with\n",
-    "                 text (at most 2N pages); none is written before then (default with a\n",
-    "                 window: 32; without one, the whole document)\n",
-    "  --body-size PT use this body font size, not an estimate (the report's body_size)\n",
-    "  --body-color C use this body colour, not an estimate (the report's body_color)\n",
+    "                 text, 1 to 256 (at most 2N pages, and fewer when they hold over 262144\n",
+    "                 words and rules); none is written before then (default with a window: 32;\n",
+    "                 without one, the whole document)\n",
+    "  --body-size PT use this body font size, 0.5 to 1000, not an estimate (the report's\n",
+    "                 body_size, exactly as printed)\n",
+    "  --body-color C use this body colour, not an estimate (the report's body_color, exactly)\n",
 );
 
 impl WindowArgs {
     /// Takes `flag` (and its value from `next`) when it is one of these options.
     pub fn take(&mut self, flag: &str, next: &mut dyn FnMut() -> Option<String>) -> Option<Result<(), String>> {
-        let count = |v: Option<String>, what: &str, min: usize| -> Result<usize, String> {
+        let count = |v: Option<String>, what: &str, min: usize, max: usize| -> Result<usize, String> {
             let v = v.ok_or(format!("{what} needs a number of pages"))?;
             match v.parse::<usize>() {
-                Ok(n) if n >= min => Ok(n),
-                _ => Err(format!("{what}: not a number of pages from {min}: {v:?}")),
+                Ok(n) if (min..=max).contains(&n) => Ok(n),
+                _ => Err(format!("{what}: not a number of pages from {min} to {max}: {v:?}")),
             }
         };
         let r = match flag {
@@ -214,18 +225,21 @@ impl WindowArgs {
                 self.stream = true;
                 Ok(())
             }
-            "--window" => count(next(), "--window", 0).map(|n| self.window = Some(n)),
-            "--body-pages" => count(next(), "--body-pages", 1).map(|n| self.body_pages = Some(n)),
+            "--window" => count(next(), "--window", 0, MAX_WINDOW).map(|n| self.window = Some(n)),
+            "--body-pages" => count(next(), "--body-pages", 1, MAX_BODY_PAGES).map(|n| self.body_pages = Some(n)),
+            // the range every estimate is in (lib::body_size clamps to it)
             "--body-size" => match next().map(|v| (v.parse::<f64>(), v)) {
-                Some((Ok(pt), _)) if pt.is_finite() && pt > 0.0 && pt <= 10_000.0 => {
+                Some((Ok(pt), _)) if body_size_ok(pt) => {
                     self.body_size = Some(pt);
                     Ok(())
                 }
-                Some((_, v)) => Err(format!("--body-size: not a font size in points (0 to 10000): {v:?}")),
+                Some((_, v)) => {
+                    Err(format!("--body-size: not a font size in points ({BODY_SIZE_MIN} to {BODY_SIZE_MAX}): {v:?}"))
+                }
                 None => Err("--body-size needs a font size in points".into()),
             },
             "--body-color" => match next() {
-                Some(c) if c.chars().count() <= 64 && !c.chars().any(char::is_control) => {
+                Some(c) if body_color_ok(&c) => {
                     self.body_color = Some(c);
                     Ok(())
                 }
@@ -237,10 +251,16 @@ impl WindowArgs {
         Some(r)
     }
 
+    /// The furniture window these options ask for (`None`: the whole document).
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn furniture(&self) -> Option<usize> {
+        self.window.or(self.stream.then_some(STREAM_WINDOW))
+    }
+
     /// The converter window these options ask for.
     pub fn window(&self) -> Window {
         Window {
-            furniture: self.window.or(self.stream.then_some(STREAM_WINDOW)),
+            furniture: self.furniture(),
             // None: the library's default (DEFAULT_BODY_PAGES with a window, else the whole
             // document)
             body: self.body_pages.map(BodySample::TextPages),

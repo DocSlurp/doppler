@@ -229,7 +229,29 @@ fn furniture(page: &Page, m: &Margins, counts: &MarginCounts, pages: usize, p: &
     drop
 }
 
+/// The smallest body font size an estimate gives and a caller may give (points).
+pub const BODY_SIZE_MIN: f64 = 0.5;
+/// The largest body font size an estimate gives and a caller may give (points).
+pub const BODY_SIZE_MAX: f64 = 1000.0;
+/// The longest body colour an estimate gives and a caller may give (characters).
+pub const BODY_COLOR_MAX_CHARS: usize = 64;
+
+/// Whether `pt` is a body font size a caller may give: finite, within
+/// [`BODY_SIZE_MIN`]..=[`BODY_SIZE_MAX`]. Every estimate is one.
+pub fn body_size_ok(pt: f64) -> bool {
+    (BODY_SIZE_MIN..=BODY_SIZE_MAX).contains(&pt)
+}
+
+/// Whether `c` is a body colour a caller may give: at most [`BODY_COLOR_MAX_CHARS`]
+/// characters, no control characters. Every estimate is one.
+pub fn body_color_ok(c: &str) -> bool {
+    c.chars().count() <= BODY_COLOR_MAX_CHARS && !c.chars().any(char::is_control)
+}
+
 /// (body font size, body colour): the most common rounded size and colour by character count.
+/// The size is a multiple of 0.5 within [`body_size_ok`] (a document's sizes outside it are
+/// clamped) and the colour passes [`body_color_ok`] (other colours are not counted), so a
+/// caller can always give an estimate back as `--body-size` / `--body-color`.
 fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, String) {
     let mut c = FloatCounter::new();
     let mut colors: Counter<Rc<str>> = Counter::new();
@@ -237,9 +259,11 @@ fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, String) {
         for line in &page.lines {
             for w in &line.words {
                 let n = char_len(&w.text) as i64;
-                colors.add(w.color.clone(), n);
-                if w.size != 0.0 {
-                    c.add(round0(w.size * 2.0) / 2.0, n);
+                if body_color_ok(&w.color) {
+                    colors.add(w.color.clone(), n);
+                }
+                if w.size != 0.0 && w.size.is_finite() {
+                    c.add((round0(w.size * 2.0) / 2.0).clamp(BODY_SIZE_MIN, BODY_SIZE_MAX), n);
                 }
             }
         }
@@ -311,6 +335,9 @@ pub struct Report {
     pub body: BodyInfo,
     /// a page range converted with context (see [`Window::skip`])
     pub range: Option<RangeInfo>,
+    /// pages read, context pages included (`parse.pages` of a range counts its own pages only);
+    /// not in the JSON
+    pub pages_read: usize,
 }
 
 /// The most image entries a report keeps for a document (the producer's own document cap).
@@ -586,6 +613,7 @@ pub fn to_markdown_report_with(xhtml: &str, p: &Params, o: &Options) -> (Vec<Str
 }
 
 /// How the body font size and colour are estimated (see [`Window`]).
+/// `Pages` and `TextPages` also end once the pages held reach [`BODY_SAMPLE_MAX_ITEMS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodySample {
     /// over every page of the document (every page waits for the last one)
@@ -601,12 +629,21 @@ pub enum BodySample {
 
 /// The body sample of a furniture window by default: pages up to the 32nd with text. Measured
 /// on long PDFs (FURNITURE.md), 32 pages give the whole document's body size on 14 of 15 where
-/// the first window + 1 pages gave it on 4 to 13, and 64 pages do no better.
+/// the first window + 1 pages gave it on 4 to 13, and 64 pages do no better there (one
+/// document outside that sweep is better with 16 or 64: FURNITURE.md).
 pub const DEFAULT_BODY_PAGES: usize = 32;
 
-/// The furniture window of `pdftomarkdown --stream` (pages either side): the measured best
-/// balance of running headers removed and content kept (FURNITURE.md).
-pub const STREAM_WINDOW: usize = 4;
+/// A page-count body sample ([`BodySample::Pages`], [`BodySample::TextPages`]) is also complete
+/// once the pages it holds have this many words, rules and glyph records in all: the
+/// pages held before the first is written are bounded in size, not only in number. Ordinary
+/// text pages hold a few thousand; 32 of them stay well under it.
+pub const BODY_SAMPLE_MAX_ITEMS: usize = 256 * 1024;
+
+/// The furniture window of `pdftomarkdown --stream` (pages either side). 16, as before the
+/// body sample was separated: it differs least from the whole-document run (FURNITURE.md).
+/// Smaller windows remove more chapter running heads, but the measure that shows it favours
+/// small windows, and the line, word and golden comparisons favour 16.
+pub const STREAM_WINDOW: usize = 16;
 
 /// What a [`Converter`] looks at beyond the page it writes, and which pages it writes.
 #[derive(Clone, Debug, PartialEq)]
@@ -704,11 +741,14 @@ pub struct RangeInfo {
 /// is written, see [`BodySample`], or given), and running headers and footers (a margin line
 /// repeated on `furniture_min_share` of the pages within the furniture window either side).
 /// The converter holds the pages read but not yet written: at most the furniture window + 1,
-/// or the body sample when it is longer, plus the margin keys of `window` written pages.
+/// or the body sample when it is longer (a page-count sample also ends at
+/// [`BODY_SAMPLE_MAX_ITEMS`]), plus the margin keys of `window` written pages.
 ///
-/// With no furniture window and the document body estimate (`Window::default()`), or a window
-/// at least as long as the document, both decisions see the whole document and the output is
-/// [`to_markdown_report_with`]'s.
+/// With no furniture window and the document body estimate (`Window::default()`), both
+/// decisions see the whole document and the output is [`to_markdown_report_with`]'s. A window
+/// at least as long as the document does too only when the body sample also covers the
+/// document ([`BodySample::Document`], or a given body equal to the whole document's): the
+/// default sample, 32 pages with text, sees only the start of a longer document.
 ///
 /// Every detection of content by its repetition across pages (running headers and footers,
 /// repeated watermark words and backdrop pictures) sees only the furniture window.
@@ -728,6 +768,10 @@ pub struct Converter<'p> {
     added: usize,
     received: usize,
     text_pages: usize,
+    /// words, rules and glyph records of the pages received (for the body sample)
+    items: usize,
+    /// the body estimate was fixed by the end of the input, not by a complete sample
+    body_at_end: bool,
     next: usize,
     body: Option<(f64, String)>,
     body_info: BodyInfo,
@@ -774,6 +818,8 @@ impl<'p> Converter<'p> {
             added: 0,
             received: 0,
             text_pages: 0,
+            items: 0,
+            body_at_end: false,
             next: 0,
             body: None,
             body_info,
@@ -807,16 +853,19 @@ impl<'p> Converter<'p> {
             return;
         }
         let given = (self.win.body_size, self.win.body_color.clone());
-        let ready = end
-            || matches!(given, (Some(_), Some(_)))
+        let both_given = matches!(given, (Some(_), Some(_)));
+        let complete = both_given
             || match self.sample {
                 BodySample::Document => false,
-                BodySample::Pages(n) => self.received >= n,
-                BodySample::TextPages(n) => self.text_pages >= n || self.received >= n.saturating_mul(2),
+                BodySample::Pages(n) => self.received >= n || self.items >= BODY_SAMPLE_MAX_ITEMS,
+                BodySample::TextPages(n) => {
+                    self.text_pages >= n || self.received >= n.saturating_mul(2) || self.items >= BODY_SAMPLE_MAX_ITEMS
+                }
             };
-        if !ready {
+        if !(end || complete) {
             return;
         }
+        self.body_at_end = !complete;
         let (size, color) = match given {
             (Some(s), Some(c)) => (s, c),
             (s, c) => {
@@ -866,6 +915,10 @@ impl<'p> Converter<'p> {
         if page.lines.iter().any(|l| !l.words.is_empty()) {
             self.text_pages += 1;
         }
+        let words: usize = page.lines.iter().map(|l| l.words.len()).sum();
+        // images and graphics are capped per page by the parser, and counting them would make
+        // the sample depend on --markers
+        self.items = self.items.saturating_add(words + page.rules.len() + page.glyphs.len() + page.extra_glyphs.len());
         let m = Margins::of(&page, self.p);
         self.received += 1;
         self.ahead.push_back((page, m));
@@ -901,6 +954,7 @@ impl<'p> Converter<'p> {
             self.report.range = Some(self.range_info());
         }
         self.report.parse = parse;
+        self.report.pages_read = self.received;
         self.report.doc_work = self.spent;
         self.report.body = self.body_info.clone();
         self.report
@@ -920,14 +974,8 @@ impl<'p> Converter<'p> {
         let mut identity: Vec<&'static str> = Vec::new();
         // the body estimate saw other pages than a whole run's
         let given = self.body_info.size_given && self.body_info.color_given;
-        let sample_cut = match self.sample {
-            // the range ended before the sample did
-            BodySample::Pages(n) => self.body_info.sample_pages < n,
-            BodySample::TextPages(n) => {
-                self.body_info.sample_text_pages < n && self.body_info.sample_pages < n.saturating_mul(2)
-            }
-            BodySample::Document => true,
-        };
+        // the range ended before the sample did
+        let sample_cut = self.body_at_end;
         if !given && (w.first_page > 1 || (w.emit.is_some() && sample_cut)) {
             identity.push("body");
         }
@@ -994,15 +1042,15 @@ impl<'p> Converter<'p> {
             self.write_page(local - self.win.skip, page, &m, out);
         } else if before && self.o.markers {
             // a leading context page is laid out (not written, not reported) only for what it
-            // leaves open for the next page (continuation markers)
+            // leaves open for the next page (continuation markers). Its work is charged to
+            // max_doc_work (a whole run charges it too, and more before it), so the range
+            // stays within the document budget
             let report = std::mem::take(&mut self.report);
-            let spent = self.spent;
             let unsure = self.carry_unsure;
             self.write_page(local, page, &m, &mut |_, _| {});
             // what this page leaves open depends on what it was handed only through a table
             // that runs on from the previous page to its end
             self.carry_unsure = unsure && self.carry.depends_on_prev();
-            self.spent = spent;
             self.report = report;
         }
         if self.win.furniture.is_some() {

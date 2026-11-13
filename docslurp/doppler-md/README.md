@@ -262,18 +262,27 @@ XHTML is never held whole. Two decisions look past one page, and they are set se
   give them instead (the values `--report` prints as `body_size` and `body_color`).
 
 Without `--window` both see the whole document, so every page waits for the last one. With a
-window the body sample defaults to 32 pages with text. `--stream` is `--window 4` with that
+window the body sample defaults to 32 pages with text. `--stream` is `--window 16` with that
 sample. The converter holds the larger of the window + 1 and the body sample (plus the page
 being parsed, and the margin keys of N written pages); a document no longer than both converts
-exactly as without a window. The report always has `body_size`, `body_color`,
+exactly as without a window (a longer one with a window covering it does not: the body comes
+from the sample). The sample is bounded in size too: it also ends once its pages hold 262,144
+words, rules and glyph records (`BODY_SAMPLE_MAX_ITEMS`), so the worst case held before the
+first page is written is about that many items (tens of MB), not 64 maximal pages. `--window`
+is at most 64 and `--body-pages` at most 256. The report always has `body_size`, `body_color`,
 `body_sample_pages` (pages read when the estimate was fixed), `body_sample_text_pages` and
 `body_given`.
 
-**Choosing a window.** Measured on 15 long PDFs (FURNITURE.md): 4 pages either side removes the
-most running headers and footers without removing content; 2 pages also drops lines that
-appear on two of five nearby pages (it changed 10 judged golden cases); 8 and 16 pages keep
-chapter-specific running heads that do not reach the share within the larger window, and the
-whole document keeps more still. Most of what used to differ between small windows and the
+**Choosing a window.** Measured on 15 long PDFs (FURNITURE.md), with no difference in the
+judged golden cases for windows of 4 or more. 16 pages either side (the `--stream` default)
+differs least from the whole-document run (1.45% of lines against 2.00% at 4) and changes one
+golden input against three. 4 pages leaves about 15% fewer running heads and footers by our
+detector (8 and 16 keep chapter-specific running heads that do not reach the share within the
+larger window), but that detector is itself a local rule and favours small windows, so the
+gain is not established: `--window 4` is the choice when removing chapter heads matters more
+than agreeing with the whole document. 2 pages also drops lines that appear on two of five
+nearby pages (it changed 10 judged golden cases), and the whole document keeps more running
+heads still. Most of what used to differ between small windows and the
 whole document was the body size taken from front matter (the old sample was the first
 window + 1 pages), not furniture. `--window 0` sees one page at a time and removes no repeated
 content at all (only page numbers and pale or diagonal watermarks, which a page shows by
@@ -283,10 +292,10 @@ The library API is `model::Parser`, `model::decode_lossy` and `Converter` (`Conv
 takes a `Window`: furniture window, `BodySample`, a given body, and context pages;
 `to_markdown_report_with` is a `Converter` without a window).
 
-On the 258-input golden set `--stream` changes three documents: the 477-page Ghostscript manual
-(running chapter headers on under 40% of the document's pages drop within their chapter), a
-10-K (a company name over the statements drops) and a US Code title (where "Page N" and section
-running heads sit). On the Ghostscript manual the first Markdown arrives about 0.05 s after the
+On the 258-input golden set `--stream` (window 16) changes one document: the 477-page
+Ghostscript manual (running chapter headers on under 40% of the document's pages drop within
+their chapter); `--window 4` also changes a 10-K (a company name over the statements drops)
+and a US Code title (where "Page N" and section running heads sit). On the Ghostscript manual the first Markdown arrives about 0.05 s after the
 start instead of when pdftotext finishes, and peak memory is that of pdftotext (about 25 MB)
 instead of 69 MB; the converter alone stays at 16 MiB with a 32-page body sample.
 
@@ -300,13 +309,24 @@ over the whole document with the same window:
 
 1. Estimate the body once: `pdftomarkdown --stream --estimate-body FILE.pdf` prints
    `{"body_size":10,"body_color":"#000000","body_sample_pages":33,...}` and stops after the
-   sample (it reads only the sample pages: about 0.1 s). `--report` of any run that starts at
-   page 1 prints the same values.
-2. Convert each range with the same window options, the body given, and context at least the
-   window: `pdftomarkdown --stream --body-size 10 --body-color '#000000' -f 65 -l 128
-   --context 4 FILE.pdf`. pdftotext reads pages 61 to 132 (clamped to the document); the
-   context pages count towards repetition, but are not laid out, written or reported (no
-   Markdown, image notes, math or degraded entries; the parse counts cover only the range).
+   sample (it reads only the sample pages: about 0.1 s; a document shorter than the sample, or
+   a run without a window, is read to the end and the estimate is over every page read).
+   `--report` of any run that starts at page 1 prints the same values. Give them back exactly
+   as printed (not rounded or within a tolerance); every estimate is a value `--body-size` and
+   `--body-color` accept.
+2. Convert each range with the same options (window, `--math`, `--markers`, `--html`), the body
+   given, and context at least the window (the default `--context` is the window, at most
+   64): `pdftomarkdown --stream --body-size 10 --body-color '#000000' -f 65 -l 128 FILE.pdf`.
+   pdftotext reads pages 49 to 144 (clamped to the document); the context pages count towards
+   repetition but are not written or reported (no Markdown, image notes, math or degraded
+   entries). They are not laid out, except with `--markers`, where the pages before the range
+   are laid out for continuation markers and their work is charged to `max_doc_work` (and
+   `doc_work`), as in a whole run. The report's `pages`, `page_closes`, `lines`, `words`,
+   `rules_truncated_pages`, `glyphs_truncated_pages` and `page_info` cover only the range; the
+   parser's skip counters (`words_missing_coord`, `words_bad_number`, `words_outside_line`,
+   `words_unclosed_line`, `rules_skipped`, `images_skipped`, `graphics_skipped`,
+   `glyphs_skipped`, `fonts_skipped`, `unclosed_line_at_eof`) cover every page read, context
+   included, so summed over ranges they can count a context page twice.
 3. Join the ranges' pages with form feeds.
 
 The report of a range has `"range":{"first_page":65,"context_before":4,"context_after":4,
@@ -329,7 +349,8 @@ from the whole run:
 
 Measured locally on eight long PDFs (3,306 pages, 64-page ranges, `--context 4`, window 4 and
 the estimated body), every page was byte-identical to the whole run. Context costs pdftotext
-time for the extra pages (layout is skipped): with 64-page ranges, `--context 4` adds 6 to 12%
+time for the extra pages (layout is skipped without `--markers`; these figures are without
+it): with 64-page ranges, `--context 4` adds 6 to 12%
 CPU over the same ranges without context and `--context 16` 31 to 39%; with 16-page ranges
 29 to 38% and 92 to 121%; with 256-page ranges at most a few percent (FURNITURE.md).
 

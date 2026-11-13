@@ -74,9 +74,30 @@ Ghostscript manual, a 10-K, a US Code title), window 6: 2, window 8 and 16: 1 (t
   (median of 5, interleaved) took the same CPU and peak RSS as before on three documents; the
   first page arrives a few hundredths of a second later (the larger body sample).
 
-**Chosen.** `--stream` is `--window 4` with the body from the pages up to the 32nd with text
-(at most 64 pages read), and `--window N` without `--body-pages` uses the same sample.
-Whole-document conversion (no window) is unchanged.
+**Chosen.** `--stream` is `--window 16` with the body from the pages up to the 32nd with text
+(at most 64 pages read, and fewer once they hold 262,144 words, rules and glyph records), and
+`--window N` without `--body-pages` uses the same sample. Whole-document conversion (no window)
+is unchanged.
+
+Window 16 rather than 4 (revised after council review): against the whole-document run every
+measure but one favours 16 (lines differing 1.45% against 2.00%, documents over 5% 1 against
+3, whole-run words missing 0.096% against 0.116%, golden inputs changed 1 against 3; the judge
+shows no difference). The one measure that favours 4, running heads left (-15%), comes from a
+detector that is itself a local rule and favours small windows; a council re-run on three
+documents outside the sweep found only -2% (523 against 533 heads) for +0.6 points of lines
+differing. Until a measure that is not biased towards local windows (judged heading and
+furniture labels on long documents) shows otherwise, `--stream` keeps the old window, and
+`--window 4` stays available.
+
+**Out of sample (council re-run, 3 documents, 1,632 pages: a tax guide, a security-controls
+catalogue and a physics textbook).** On the catalogue the 32-text-page sample gives body size
+9 where the whole document, 16 pages and 64 pages give 10; window 4 with 32 pages then differs
+from the whole run on 5.41% of lines (worst document 8.9%, 2 documents over 5%), against
+3.52% with 16 or 64 pages. On the 15 sweep documents 64 pages did no better than 32, so with
+18 documents 64 is at least as good on every one and 32 is worse on one. The default stays 32
+for now: a choice made on the document that exposed it would be fitted to it. Before changing
+it, evaluate a larger sample (64), skipping front matter, or a stratified sample (still at most
+2N pages read) on a wider held-out set of long PDFs.
 
 **Page ranges.** With `--context N` (N at least the window) and the body from
 `--estimate-body`, 64-page ranges of eight long PDFs (3,306 pages; the Ghostscript manual and
@@ -96,9 +117,11 @@ interleaved), against the same ranges without context:
 | | | 64 | +11% | +39% |
 | | | 256 | 0% | +7% |
 
-The extra cost is pdftotext reading the context pages (they are not laid out): about 2N / L of
-the range's pdftotext time, plus a pdftotext start per range. Context 4 matches the default
-window; more than the window buys nothing.
+The extra cost is pdftotext reading the context pages (they are not laid out without
+`--markers`; with it the pages before the range are, and their work is charged to the document
+budget): about 2N / L of the range's pdftotext time, plus a pdftotext start per range.
+`--context` now defaults to the window (16 with `--stream`, so the `--context 16` column
+applies to default ranges); more than the window buys nothing.
 
 Scripts: `docslurp-review/window-body-20261112/`.
 

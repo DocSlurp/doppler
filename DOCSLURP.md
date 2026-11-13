@@ -47,13 +47,15 @@ treat it as an internal backend and do not depend on its flags or output format.
 | `... \| doppler-md --html` | `pdftomarkdown --html FILE.pdf` |
 
 
-Streaming: use `pdftomarkdown --stream` (a 4-page furniture window, body size and colour from
+Streaming: use `pdftomarkdown --stream` (a 16-page furniture window, body size and colour from
 the first 32 pages with text) or no window. The two are separate options: `--window N` is how
-far either side running headers, footers and repeated watermarks are looked for (4 measured
-best; 2 starts removing content; 0 removes none of it), and `--body-pages N`, `--body-size PT`
-and `--body-color C` set the body estimate. Sharding a long PDF into `-f`/`-l` ranges: take
-the body once (`pdftomarkdown --stream --estimate-body FILE.pdf`), then convert each range with
-`--stream --body-size .. --body-color .. --context 4`; the pages are byte-identical to a whole
+far either side running headers, footers and repeated watermarks are looked for (16 differs
+least from the whole document; 4 removes more chapter running heads; 2 starts removing
+content; 0 removes none of it), and `--body-pages N`, `--body-size PT` and `--body-color C` set
+the body estimate. Sharding a long PDF into `-f`/`-l` ranges: take the body once
+(`pdftomarkdown --stream --estimate-body FILE.pdf`), then convert each range with
+`--stream --body-size .. --body-color ..` (the values exactly as printed; `--context` defaults
+to the window); the pages are byte-identical to a whole
 `--stream` run, and the report's `range.identity` lists what could still differ (sum the
 ranges' `doc_work` against `doc_work_limit`). See
 [doppler-md](docslurp/doppler-md/README.md#streaming).
