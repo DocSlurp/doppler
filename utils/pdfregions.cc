@@ -1330,9 +1330,10 @@ static bool xobjectReachable(XRef *xref, Dict *resources, Ref target, std::set<R
 // Checks a JPEG for a copy and rewrites it without metadata: SOI, a baseline, extended or
 // progressive Huffman frame (SOF0..2) of 8-bit samples with <comps> components and the image's
 // size, a scan, and EOI at the end (at most 64 bytes of padding after it are cut). The output
-// keeps the tables (DQT, DHT, DRI), the frame, the scans and their entropy-coded data, and only
-// a canonical JFIF APP0 (version 1.01, 1:1, no thumbnail) and a canonical Adobe APP14 (its
-// colour transform) when the stream had them: those decide how the samples decode. Every other
+// keeps the tables (DQT, DHT, DRI), the frame, the scans and their entropy-coded data, and one
+// canonical segment that decides how the samples decode as poppler decodes them: an Adobe APP14
+// (its colour transform) when the stream had one, else a JFIF APP0 (version 1.01, 1:1, no
+// thumbnail) when it had one libjpeg recognises, else neither (the component ids). Every other
 // APPn (Exif with its orientation and thumbnail, ICC, XMP, Photoshop) and every COM is dropped,
 // before the frame and between scans, so no document-supplied string or second image reaches
 // the file and viewers show the pixels as the PDF draws them.
@@ -1401,9 +1402,11 @@ static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height
         }
         const unsigned char *seg = d.data() + i;
         if (marker == 0xE0) {
-            jfif = jfif || (len >= 7 && !memcmp(seg + 4, "JFIF\0", 5));
+            // libjpeg takes an APP0 for JFIF only with at least 14 bytes of data (APP0_DATA_LEN)
+            jfif = jfif || (len >= 2 + 14 && !memcmp(seg + 4, "JFIF\0", 5));
         } else if (marker == 0xEE) {
-            if (len >= 14 && !memcmp(seg + 4, "Adobe", 5)) {
+            // and an APP14 for Adobe with at least 12 (APP14_DATA_LEN); the last one wins
+            if (len >= 2 + 12 && !memcmp(seg + 4, "Adobe", 5)) {
                 adobe = true;
                 transform = seg[15];
             }
@@ -1536,12 +1539,15 @@ static bool cleanJpeg(const std::vector<unsigned char> &d, int width, int height
         return false;
     }
     out->insert(out->end(), { 0xFF, 0xD9 });
+    // The colour transform must be the one poppler's DCTStream decodes with: an Adobe marker
+    // decides it there (any transform but 0 is YCbCr), but a viewer's libjpeg lets JFIF win
+    // over Adobe. So with Adobe, no JFIF: only the APP14 (its transform as 0 or 1); without it,
+    // JFIF exactly when libjpeg saw one (else the component ids decide, the same way in both).
     std::vector<unsigned char> app;
-    if (jfif) {
-        app.insert(app.end(), { 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00 });
-    }
     if (adobe) {
-        app.insert(app.end(), { 0xFF, 0xEE, 0x00, 0x0E, 'A', 'd', 'o', 'b', 'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, transform });
+        app.insert(app.end(), { 0xFF, 0xEE, 0x00, 0x0E, 'A', 'd', 'o', 'b', 'e', 0x00, 0x64, 0x00, 0x00, 0x00, 0x00, static_cast<unsigned char>(transform ? 1 : 0) });
+    } else if (jfif) {
+        app.insert(app.end(), { 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00 });
     }
     out->insert(out->begin() + static_cast<std::ptrdiff_t>(headerEnd), app.begin(), app.end());
     return true;

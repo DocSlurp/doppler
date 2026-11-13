@@ -362,6 +362,122 @@ def test_jpeg_metadata(d):
     t.check(r["p1.1"][0] == "err:jpeg", "a JPEG with another JPEG inside is refused", r["p1.1"][:4])
 
 
+def decode_dc_jpeg(data):
+    """The colour of the first 8x8 block of a DC-only baseline JPEG (t.jpeg's kind: every block
+    flat) as a libjpeg viewer shows it: the colour transform chosen as libjpeg chooses it
+    (jdapimin.c: a JFIF APP0 with 14 data bytes means YCbCr; else an Adobe APP14 with 12, by its
+    transform; else component ids 'R','G','B' mean RGB; else YCbCr)."""
+    i, jfif, adobe, quant, dc_tables, comps, scan_at = 2, False, None, {}, {}, [], None
+    while i + 4 <= len(data):
+        m, n = data[i + 1], (data[i + 2] << 8) | data[i + 3]
+        body = data[i + 4 : i + 2 + n]
+        if m == 0xE0 and n - 2 >= 14 and body[:5] == b"JFIF\0":
+            jfif = True
+        elif m == 0xEE and n - 2 >= 12 and body[:5] == b"Adobe":
+            adobe = body[11]
+        elif m == 0xDB:
+            quant[body[0] & 15] = body[1]  # the DC entry
+        elif m == 0xC4 and body[0] >> 4 == 0:
+            counts, vals, codes, code, k = body[1:17], body[17:], {}, 0, 0
+            for length in range(1, 17):
+                for _ in range(counts[length - 1]):
+                    codes[(length, code)] = vals[k]
+                    code, k = code + 1, k + 1
+                code <<= 1
+            dc_tables[body[0] & 15] = codes
+        elif m == 0xC0:
+            comps = [(body[6 + 3 * c], body[8 + 3 * c]) for c in range(body[5])]
+        elif m == 0xDA:
+            scan_at = i + 2 + n
+            break
+        i += 2 + n
+    bits = []
+    for b in data[scan_at : scan_at + 64]:
+        bits.extend((b >> (7 - k)) & 1 for k in range(8))
+    pos, samples = 0, []
+    for cid, tq in comps:
+        code, length = 0, 0
+        while (length, code) not in dc_tables[0]:
+            code, length, pos = (code << 1) | bits[pos], length + 1, pos + 1
+        size = dc_tables[0][(length, code)]
+        diff = 0
+        for _ in range(size):
+            diff, pos = (diff << 1) | bits[pos], pos + 1
+        if size and diff < 1 << (size - 1):
+            diff -= (1 << size) - 1
+        pos += 1  # end of block (the AC code "0")
+        samples.append(max(0, min(255, round(128 + diff * quant[tq] / 8))))
+    ids = [cid for cid, _ in comps]
+    rgb = len(comps) == 3 and (not jfif and ((adobe is not None and adobe == 0) or (adobe is None and ids == [82, 71, 66])))
+    if len(comps) == 1 or rgb:
+        return samples
+    y, cb, cr = samples
+    return [max(0, min(255, round(v))) for v in (y + 1.402 * (cr - 128), y - 0.344136 * (cb - 128) - 0.714136 * (cr - 128), y + 1.772 * (cb - 128))]
+
+
+def ppm_mean(data):
+    """The mean RGB of a binary PPM (P6, maxval 255)."""
+    fields, i = [], 0
+    while len(fields) < 4:
+        while data[i : i + 1].isspace():
+            i += 1
+        j = i
+        while not data[j : j + 1].isspace():
+            j += 1
+        fields.append(data[i:j])
+        i = j
+    w, h = int(fields[1]), int(fields[2])
+    px = data[i + 1 : i + 1 + 3 * w * h]
+    return [sum(px[c::3]) / (w * h) for c in range(3)]
+
+
+def test_jpeg_colours(d):
+    # The copy must decode in a viewer (libjpeg) to the colours poppler renders. poppler's
+    # DCTStream lets an Adobe APP14 decide the colour transform even beside JFIF, and sees JFIF
+    # only in an APP0 with 14 data bytes; a viewer lets JFIF win. So: an RGB JPEG (ids 'R','G',
+    # 'B') with a short "JFIF" APP0 must not gain a JFIF segment, and an Adobe transform-0 JPEG
+    # with a JFIF APP0 must lose it.
+    def seg(marker, body):
+        return bytes([0xFF, marker]) + (len(body) + 2).to_bytes(2, "big") + body
+
+    base = t.jpeg(64, 64, 3, lambda bx, by, c: [200, 60, 90][c])
+    sof, sos = base.index(b"\xff\xc0"), base.index(b"\xff\xda")
+    rgb_ids = bytearray(base)
+    for c, cid in enumerate(b"RGB"):
+        rgb_ids[sof + 10 + 3 * c] = cid
+        rgb_ids[sos + 5 + 2 * c] = cid
+    rgb_ids = bytes(rgb_ids)
+    jfif = base[2:20]
+    cases = {
+        "rgb-ids-short-jfif": rgb_ids[:2] + seg(0xE0, b"JFIF\0") + rgb_ids[20:],
+        "adobe-0-with-jfif": base[:2] + jfif + seg(0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x00") + base[20:],
+        "adobe-1-with-jfif": base[:2] + jfif + seg(0xEE, b"Adobe\x00\x64\x00\x00\x00\x00\x01") + base[20:],
+        "jfif": base,
+        "rgb-ids": rgb_ids[:2] + rgb_ids[20:],
+    }
+    try:
+        from PIL import Image  # optional: a second, real libjpeg decode
+        import io
+    except ImportError:
+        Image = None
+    for name, data in cases.items():
+        pdf = t.simple_page_pdf(b"q 64 0 0 64 0 0 cm /A Do Q", resources="<< /XObject << /A 6 0 R >> >>", mediabox=(0, 0, 64, 64), extra_objects=[image("/Width 64 /Height 64 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", data)])
+        path = d.write(name + ".pdf", pdf)
+        rc, r, _ = copy(path, [("p1.1", 1, "6.0")])
+        t.check(r["p1.1"][:2] == ("ok", "jpeg"), "%s: copied" % name, r["p1.1"][:4])
+        rc, ppm, _ = run("pdftoppm", "-r", "72", path)
+        rendered = ppm_mean(ppm)
+        copied = decode_dc_jpeg(r["p1.1"][4])
+        diff = sum(abs(a - b) for a, b in zip(rendered, copied)) / 3
+        t.check(diff < 2, "%s: the copy decodes to the rendered colour (mean abs diff %.2f)" % (name, diff), (rendered, copied))
+        if Image is not None:
+            im = Image.open(io.BytesIO(r["p1.1"][4])).convert("RGB")
+            px = list(im.getdata())
+            pil = [sum(p[c] for p in px) / len(px) for c in range(3)]
+            diff = sum(abs(a - b) for a, b in zip(rendered, pil)) / 3
+            t.check(diff < 2, "%s: libjpeg (PIL) decodes the copy to the rendered colour (mean abs diff %.2f)" % (name, diff), (rendered, pil))
+
+
 def icc_gray(trc):
     """A minimal ICC v2 grey display profile whose kTRC is the curve <trc> (16-bit entries)."""
     import struct
@@ -548,6 +664,7 @@ with t.TempDir() as d:
     test_attributes(d)
     test_overlaid(d)
     test_jpeg_metadata(d)
+    test_jpeg_colours(d)
     test_codec_sizes(d)
     test_color_spaces(d)
     test_jpeg_structure(d)
