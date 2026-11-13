@@ -215,6 +215,10 @@ private:
     // past it a page's clusters stay as merged so far, with drawing-limit
     static constexpr size_t maxGraphicsComparisons = size_t(1) << 27;
     size_t graphicsBudget = maxGraphicsComparisons;
+    // bar-chart detection across the run: each page has its own budget (PageFacts.cc kBarBudget), and the run as a whole
+    // at most this many comparisons (council r2 L1), so a long hostile document cannot make every page pay the page cap
+    static constexpr size_t maxBarComparisons = size_t(1) << 28;
+    size_t barBudget = maxBarComparisons;
 
     // the current page
     struct State;

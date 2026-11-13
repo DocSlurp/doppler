@@ -217,8 +217,11 @@ def vectors_pdf():
 def bars_pdf():
     """Bar charts drawn only with filled boxes (doppler#38), and box-heavy pages that are not charts."""
     axis = "0 g 0.5 w 100 300 m 400 300 l S 100 300 m 100 520 l S 96 400 m 100 400 l S\n"
+    # tick labels: a scale left of the plot (bar charts have one; redactions and blank forms do not)
+    axis += "".join("BT /F1 8 Tf 84 %d Td (%s) Tj ET\n" % (y, v) for y, v in ((297, "0"), (397, "50"), (497, "100")))
     vertical = "0.16 0.62 0.56 rg 110 300 30 80 re f 160 300 30 130 re f 210 300 30 50 re f 260 300 30 170 re f\n" + axis
     haxis = "0 g 0.5 w 100 380 m 100 540 l S 100 380 m 420 380 l S\n"
+    haxis += "".join("BT /F1 8 Tf %d 370 Td (%s) Tj ET\n" % (x, v) for x, v in ((98, "0"), (198, "100"), (298, "200")))
     horizontal = "0.48 0.38 1 rg 100 400 200 20 re f 100 440 120 20 re f 100 480 280 20 re f\n" + haxis
     # a shaded table: cells of different widths on one row, each holding words, on a rule
     table = "0 g 0.5 w 72 300 m 540 300 l S\n0.85 0.85 0.85 rg 72 300 128 20 re f 200 300 200 20 re f 400 300 140 20 re f\n"
@@ -236,6 +239,8 @@ def bars_pdf():
         for run in range(20):
             x = 40 + 27 * run
             many += "%d %d 2 3 re f %d %d 2 5 re f %d %d 2 4 re f\n" % (x, y, x + 3, y, x + 6, y)
+            # a scale left of each run: every number on the page at its own height, its value increasing with height
+            many += "".join("BT /F1 3 Tf %.2f %.2f Td (%d) Tj ET\n" % (x - 9, y + 1 + 2.5 * k + 0.05 * run, round((y + 2.5 + 2.5 * k + 0.05 * run) * 100)) for k in range(3))
     many += "0 g 0.4 w " + "".join("%d %d m %d %d l S\n" % (40 + 27 * run - 1, 90 + 9 * row, 40 + 27 * run + 9, 90 + 9 * row) for row in range(66) for run in range(20))
     many += "".join("%d 60 m %d 62 l S\n" % (30 + k % 500, 30 + k % 500) for k in range(4000))
     # council M1/M2 negatives: a redacted table column (black boxes, ragged, by the column border), a redacted paragraph
@@ -256,10 +261,21 @@ def bars_pdf():
     marks += "".join("BT /F1 8 Tf %d 303 Td (%d.5) Tj ET\n" % (102 + 110 * k, 10 + k) for k in range(4))
     # bars with a drawn trend line: one cluster (joined into the drawing's), as doppler-md makes one figure
     curve = "0 0 1 RG 1 w 110 380 m 150 420 190 360 230 430 c 270 400 300 460 330 410 c S\n"
+    # council r2: redactions in CMYK black, grey and navy, each a cell 1 pt inside the column rule (which spans the run)
+    def redactions(fill):
+        page = "0 g 0.5 w 72 300 m 540 300 l S 72 300 m 72 500 l S 200 300 m 200 500 l S\n" + fill + " " + "".join("201 %d %d 10 re f " % (310 + 30 * k, 60 + 23 * k) for k in range(6)) + "\n0 g "
+        return page + "".join("BT /F1 10 Tf 80 %d Td (Witness) Tj ET\n" % (310 + 30 * k) for k in range(6))
+    # a blank flattened form: tinted fields of different widths, 0.5 pt right of a divider that runs down the whole form
+    divider = "0 g 0.5 w 150 200 m 150 560 l S\n0.86 0.91 1 rg " + "".join("150.5 %d %d 18 re f " % (520 - 40 * k, w) for k, w in enumerate((330, 70, 200, 140, 260))) + "\n0 g "
+    divider += "".join("BT /F1 10 Tf 80 %d Td (Field) Tj ET\n" % (524 - 40 * k) for k in range(5))
+    # a black bar chart (common in print): bars filled 0 g, with its axes and scale
+    black = "0 g 110 300 30 80 re f 160 300 30 130 re f 210 300 30 50 re f 260 300 30 170 re f\n" + axis
     combo = vertical + curve
     return doc([{"content": vertical}, {"content": horizontal}, {"content": table}, {"content": zebra}, {"content": highlight}, {"content": many},
                 {"content": redacted}, {"content": paragraph}, {"content": form}, {"content": header}, {"content": note}, {"content": marks},
-                {"content": combo}, {"content": curve}])
+                {"content": combo}, {"content": curve},
+                {"content": redactions("0 0 0 1 k")}, {"content": redactions("0.15 g")}, {"content": redactions("0.05 0.05 0.2 rg")}, {"content": divider},
+                {"content": black}])
 
 
 def curve_pdf():

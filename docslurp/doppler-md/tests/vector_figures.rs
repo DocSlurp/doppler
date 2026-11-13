@@ -295,6 +295,12 @@ fn axes() -> String {
         + &rule(130.0, 330.0, 130.5, 334.0)
         + &rule(96.0, 250.0, 100.0, 250.5)
         + &line_at(80.0, 245.0, "50")
+        // a scale on each axis: left of the plot (0, 50, 100 upwards) and below it (0, 100, 200 rightwards)
+        + &line_at(85.0, 320.0, "0")
+        + &line_at(75.0, 160.0, "100")
+        + &line_at(98.0, 350.0, "0")
+        + &line_at(240.0, 350.0, "100")
+        + &line_at(372.0, 350.0, "200")
         + &line_at(120.0, 336.0, "London")
 }
 
@@ -367,6 +373,24 @@ fn redactions_form_fields_and_label_bars_follow_the_shared_rule() {
     let labelled = axes() + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff") + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff") + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff")
         + &line_at(104.0, 164.0, "London") + &line_at(104.0, 204.0, "Paris") + &line_at(104.0, 244.0, "Tokyo");
     assert!(markers(&labelled).is_empty(), "labels inside bars");
+    // council r2: redactions in CMYK black (#231f20), grey and navy, 1 pt inside a column rule that spans them
+    for fill in ["#231f20", "#262626", "#0d0d33"] {
+        let page = rule(72.0, 200.0, 540.0, 200.5) + &rule(200.0, 200.0, 200.5, 400.0)
+            + &(0..6).map(|i| bx(201.0, 210.0 + 30.0 * i as f64, 261.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, fill)).collect::<String>()
+            + &(0..6).map(|i| line_at(80.0, 210.0 + 30.0 * i as f64, "Witness")).collect::<String>();
+        assert!(markers(&page).is_empty(), "redactions {fill}");
+    }
+    // a blank flattened form: tinted fields 0.5 pt right of a divider that runs down the whole form
+    let divider = rule(150.0, 200.0, 150.5, 560.0)
+        + &[330.0, 70.0, 200.0, 140.0, 260.0].iter().enumerate().map(|(i, w)| bx(150.5, 220.0 + 40.0 * i as f64, 150.5 + w, 238.0 + 40.0 * i as f64, "#dbe8ff")).collect::<String>()
+        + &(0..5).map(|i| line_at(80.0, 224.0 + 40.0 * i as f64, "Field")).collect::<String>();
+    assert!(markers(&divider).is_empty(), "blank form beside a divider");
+    // a black bar chart with its scale is a chart: colour does not decide
+    let black = axes() + &bx(110.0, 250.0, 140.0, 330.0, "#000000") + &bx(160.0, 200.0, 190.0, 330.0, "#000000") + &bx(210.0, 280.0, 240.0, 330.0, "#000000");
+    assert_eq!(markers(&black).len(), 1, "black bars");
+    // the same bars with no numbers beside them (a progress strip on an axis) are not a chart
+    let unscaled = bx(0.0, 0.0, 612.0, 792.0, "#ffffff") + &rule(100.0, 330.0, 400.0, 330.5) + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    assert!(markers(&unscaled).is_empty(), "no scale");
 }
 
 #[test]
@@ -379,6 +403,11 @@ fn bar_runs_are_capped_charged_and_leave_drawings_their_ids() {
         for run in 0..20 {
             let x = 40.0 + 27.0 * run as f64;
             body += &(bx(x, y - 3.0, x + 2.0, y, "#2a9d8f") + &bx(x + 3.0, y - 5.0, x + 5.0, y, "#2a9d8f") + &bx(x + 6.0, y - 4.0, x + 8.0, y, "#2a9d8f"));
+            // a scale left of each run: every number on the page at its own height, its value increasing upwards
+            for k in 0..3 {
+                let top = y - 14.0 - 2.5 * k as f64 - 0.05 * run as f64;
+                body += &format!("<block><line>{}</line></block>", word(x - 10.0, x - 8.0, top, &format!("{}", (100_000.0 - (top + 5.0) * 100.0).round())));
+            }
             body += &rule(x - 1.0, y, x + 9.0, y + 0.4);
         }
     }
@@ -388,7 +417,8 @@ fn bar_runs_are_capped_charged_and_leave_drawings_their_ids() {
     let started = std::time::Instant::now();
     let (_, report) = convert(&page(2, &body), true);
     let fates = vector_fates(&report);
-    assert!(fates.len() <= 64, "at most 64 bar runs a page: {}", fates.len());
+    // council r2 N5: the cap is reached, so the runs really were checked
+    assert_eq!(fates.len(), 64, "the 64-run cap: {}", fates.len());
     assert!(started.elapsed().as_secs() < 20);
     // a drawing keeps its id (p2.g1) and its place when bars are on the same page
     let combo = axes() + &chart_body() + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");

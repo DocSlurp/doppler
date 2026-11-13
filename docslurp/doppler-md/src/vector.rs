@@ -296,13 +296,107 @@ fn rgb(color: &str) -> Option<(u8, u8, u8)> {
     Some((c(0)?, c(2)?, c(4)?))
 }
 
-/// A fill that is never a bar: white (a background), or near black (redaction boxes; council M1/M2).
-/// Shared with PageFacts.cc `barFillExcluded` (8-bit channels: all 255, or all at most 20).
+/// A fill that is never a bar: white (a background). Shared with PageFacts.cc `barFillExcluded`
+/// (8-bit channels all 255). Redactions and form fields are told apart by the scale (bar_scale), not
+/// by colour: they come in every colour, black bar charts are common (council r2).
 fn bar_fill_excluded(color: &str) -> bool {
     match rgb(color) {
-        Some((r, g, b)) => (r == 255 && g == 255 && b == 255) || (r <= 20 && g <= 20 && b <= 20),
+        Some((r, g, b)) => r == 255 && g == 255 && b == 255,
         None => true,
     }
+}
+
+/// Most numeric words of one page read for scales.
+const MAX_SCALE_WORDS: usize = 20000;
+/// A scale: at least this many numbers beside the run, increasing along its value axis.
+const BAR_SCALE_MIN: usize = 3;
+/// How far a scale may sit from the run: across (left of vertical bars, below or above horizontal
+/// ones) and along (past the run's ends: the axis runs on past the longest bar).
+const BAR_SCALE_ACROSS: f64 = 120.0;
+const BAR_SCALE_ALONG: f64 = 40.0;
+
+/// A tick label's number: an optional sign (`-`, U+2212 or `+`), digits with optional thousands
+/// commas and one decimal point, an optional `%`; at most 16 characters. Shared with PageFacts.cc
+/// `scaleNumber`.
+fn scale_number(text: &str) -> Option<f64> {
+    if text.chars().count() > 16 {
+        return None;
+    }
+    let t = text.strip_suffix('%').unwrap_or(text);
+    let (neg, t) = if let Some(r) = t.strip_prefix('-').or_else(|| t.strip_prefix('\u{2212}')) {
+        (true, r)
+    } else {
+        (false, t.strip_prefix('+').unwrap_or(t))
+    };
+    let mut digits = String::new();
+    let (mut seen_dot, mut prev_digit, mut any) = (false, false, false);
+    for c in t.chars() {
+        match c {
+            '0'..='9' => {
+                digits.push(c);
+                prev_digit = true;
+                any = true;
+            }
+            ',' if prev_digit && !seen_dot => prev_digit = false,
+            '.' if !seen_dot => {
+                seen_dot = true;
+                prev_digit = false;
+                digits.push('.');
+            }
+            _ => return None,
+        }
+    }
+    if !any || !prev_digit {
+        return None;
+    }
+    let v: f64 = digits.parse().ok()?;
+    Some(if neg { -v } else { v })
+}
+
+/// A numeric word: its box and value.
+#[derive(Clone, Copy)]
+struct Num {
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    v: f64,
+}
+
+/// Whether the run has a scale (council r2 M1/M2: redactions and blank form fields have none): at
+/// least BAR_SCALE_MIN numbers beside it whose values increase along the value axis, which for
+/// vertical bars is up (tick labels left or right of the plot), for horizontal bars right (below or
+/// above it). Every number looked at is charged.
+fn bar_scale(r: Bbox, vertical: bool, nums: &[Num], budget: &mut Budget) -> bool {
+    // the scale's bands: (keep, position along the value axis, sign so that "increasing" is the value direction)
+    for side in 0..2 {
+        let mut seq: Vec<(f64, f64)> = Vec::new();
+        for n in nums {
+            if !budget.spend(1) {
+                return false;
+            }
+            let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+            let keep = if vertical {
+                let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
+                along && if side == 0 { n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS } else { n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS }
+            } else {
+                let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
+                along && if side == 0 { n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS } else { n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS }
+            };
+            if keep {
+                // up is a smaller y on the page
+                seq.push((if vertical { -cy } else { cx }, n.v));
+            }
+        }
+        if seq.len() < BAR_SCALE_MIN {
+            continue;
+        }
+        seq.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if seq.windows(2).all(|w| w[1].1 > w[0].1) {
+            return true;
+        }
+    }
+    false
 }
 
 /// A stroked line along one axis: its position across (sorted on it) and its extent along.
@@ -329,8 +423,10 @@ fn lines_near(lines: &[Line], at: f64, reach: f64) -> &[Line] {
 /// - few hold a word's centre (`bar_max_text_share`: shaded cells and highlights hold them);
 /// - a stroked axis lies along the baseline and spans most of the run (`BAR_AXIS_SPAN`): a box's
 ///   own outline or a cell border beside one box is not an axis (form fields, council M2);
-/// - white and near-black fills (backgrounds, redactions), boxes covering a quarter of the page and
-///   the furniture bands are never bars.
+/// - a scale: at least 3 numbers beside the run increasing along its value axis (bar_scale), which
+///   redactions and blank form fields lack;
+/// - white fills (backgrounds), boxes covering a quarter of the page and the furniture bands are never
+///   bars.
 /// A run then takes in the boxes stacked on it, and runs that overlap are one chart. At most
 /// MAX_BAR_BOXES boxes and MAX_BAR_RUNS runs a page; every comparison is charged to `budget`, and
 /// none is made once it runs out.
@@ -379,7 +475,18 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         return Vec::new();
     }
     words.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let ctx = BarContext { p, across: &across, down: &down, words: &words };
+    let nums: Vec<Num> = page
+        .lines
+        .iter()
+        .flat_map(|l| l.words.iter())
+        .filter_map(|w| {
+            let v = scale_number(&w.text)?;
+            (w.x0.is_finite() && w.x1.is_finite() && w.y0.is_finite() && w.y1.is_finite() && v.is_finite())
+                .then_some(Num { x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1, v })
+        })
+        .take(MAX_SCALE_WORDS)
+        .collect();
+    let ctx = BarContext { p, across: &across, down: &down, words: &words, nums: &nums };
     let mut found: Vec<(Bbox, bool)> = Vec::new();
     'orient: for vertical in [true, false] {
         let base = |b: &Bbox| if vertical { b.3 } else { b.0 };
@@ -467,6 +574,7 @@ struct BarContext<'a> {
     across: &'a [Line],
     down: &'a [Line],
     words: &'a [(f64, f64)],
+    nums: &'a [Num],
 }
 
 /// A run of boxes on one baseline as a bar chart's region, or None (see bar_regions). Every
@@ -514,7 +622,7 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
             return None;
         }
         if pmin(l.hi, hi) - pmax(l.lo, lo) >= need {
-            return Some(r);
+            return bar_scale(r, vertical, c.nums, budget).then_some(r);
         }
     }
     None

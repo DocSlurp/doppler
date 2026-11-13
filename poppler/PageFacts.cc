@@ -1257,8 +1257,9 @@ struct FormCache
 // - few hold a word's centre (kMaxBarTextShare: shaded cells and highlights hold them);
 // - a stroked axis lies along the baseline (within kBarAxisReach points) and spans kBarAxisSpan of the run: a box's own
 //   outline or a cell border beside one box is not an axis (form fields);
-// - white and near-black fills (backgrounds, redactions), boxes over a quarter of the page and the header and footer bands
-//   are never bars.
+// - a scale: at least kBarScaleMin numbers beside the run, increasing along its value axis (redactions and blank form
+//   fields have none; they come in every colour, and black bar charts are common, so colour does not decide);
+// - white fills (backgrounds), boxes over a quarter of the page and the header and footer bands are never bars.
 // A run takes in the boxes stacked on it (along its orientation, until nothing changes); runs that overlap are one cluster.
 // At most kMaxBarBoxes boxes and kMaxBarRuns runs a page. Bar detection has its own per-page budget (kBarBudget): it never
 // spends the document's drawing budget, so no page can blind later pages' getGraphics. Over a cap or the budget, the
@@ -1266,6 +1267,10 @@ struct FormCache
 constexpr size_t kMaxBarBoxes = 4000;
 constexpr size_t kMaxBarRuns = 64;
 constexpr size_t kMaxBarWords = 100000;
+constexpr size_t kMaxScaleNumbers = 20000;
+constexpr size_t kBarScaleMin = 3;
+constexpr double kBarScaleAcross = 120;
+constexpr double kBarScaleAlong = 40;
 constexpr size_t kBarBudget = 8000000;
 constexpr size_t kMinBars = 3;
 constexpr double kMaxBarGap = 3.0;
@@ -1293,6 +1298,59 @@ struct WordCentre
     double x, y;
 };
 
+struct ScaleNumber
+{
+    double x0, y0, x1, y1, v;
+};
+
+// A tick label's number, as doppler-md `scale_number`: an optional sign (-, U+2212 or +), digits with optional thousands
+// commas and one decimal point, an optional %; at most 16 characters.
+bool scaleNumber(const Unicode *text, int length, double *value)
+{
+    if (length <= 0 || length > 16) {
+        return false;
+    }
+    int end = length, i = 0;
+    if (text[end - 1] == '%') {
+        --end;
+    }
+    bool neg = false;
+    if (i < end && (text[i] == '-' || text[i] == 0x2212)) {
+        neg = true;
+        ++i;
+    } else if (i < end && text[i] == '+') {
+        ++i;
+    }
+    char digits[20];
+    int n = 0;
+    bool dot = false, prevDigit = false, any = false;
+    for (; i < end; ++i) {
+        const Unicode c = text[i];
+        if (c >= '0' && c <= '9') {
+            digits[n++] = char(c);
+            prevDigit = any = true;
+        } else if (c == ',' && prevDigit && !dot) {
+            prevDigit = false;
+        } else if (c == '.' && !dot) {
+            dot = true;
+            prevDigit = false;
+            digits[n++] = '.';
+        } else {
+            return false;
+        }
+    }
+    if (!any || !prevDigit) {
+        return false;
+    }
+    digits[n] = 0;
+    const double v = std::strtod(digits, nullptr);
+    if (!std::isfinite(v)) {
+        return false;
+    }
+    *value = neg ? -v : v;
+    return true;
+}
+
 bool spend(size_t *budget, size_t n, bool *hit)
 {
     if (*budget < n) {
@@ -1304,12 +1362,51 @@ bool spend(size_t *budget, size_t n, bool *hit)
     return true;
 }
 
-// White (a background) or near black (redaction boxes), on 8-bit channels as doppler-md reads the producer's #rrggbb.
+// White (a background), on 8-bit channels as doppler-md reads the producer's #rrggbb.
 bool barFillExcluded(double r, double g, double b)
 {
     auto c = [](double v) { return std::isfinite(v) ? std::lround(std::clamp(v, 0.0, 1.0) * 255) : 0L; };
-    const long R = c(r), G = c(g), B = c(b);
-    return (R == 255 && G == 255 && B == 255) || (R <= 20 && G <= 20 && B <= 20);
+    return c(r) == 255 && c(g) == 255 && c(b) == 255;
+}
+
+// Whether a run (its union `u`) has a scale: kBarScaleMin numbers beside it increasing along its value axis (up for vertical
+// bars, from labels left or right of the plot; right for horizontal bars, from labels below or above it). As doppler-md
+// `bar_scale`; every number looked at is charged.
+bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, size_t *budget, bool *hit)
+{
+    std::vector<std::pair<double, double>> seq;
+    for (int side = 0; side < 2; ++side) {
+        seq.clear();
+        for (const ScaleNumber &n : nums) {
+            if (!spend(budget, 1, hit)) {
+                return false;
+            }
+            const double cx = (n.x0 + n.x1) / 2, cy = (n.y0 + n.y1) / 2;
+            bool keep;
+            if (vertical) {
+                keep = cy >= u.y0 - kBarScaleAlong && cy <= u.y1 + 12
+                        && (side == 0 ? (n.x1 <= u.x0 + 4 && n.x1 >= u.x0 - kBarScaleAcross) : (n.x0 >= u.x1 - 4 && n.x0 <= u.x1 + kBarScaleAcross));
+            } else {
+                keep = cx >= u.x0 - 12 && cx <= u.x1 + kBarScaleAlong
+                        && (side == 0 ? (n.y0 >= u.y1 - 4 && n.y0 <= u.y1 + kBarScaleAcross) : (n.y1 <= u.y0 + 4 && n.y1 >= u.y0 - kBarScaleAcross));
+            }
+            if (keep) {
+                seq.push_back({ vertical ? -cy : cx, n.v });
+            }
+        }
+        if (seq.size() < kBarScaleMin) {
+            continue;
+        }
+        std::stable_sort(seq.begin(), seq.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        bool increasing = true;
+        for (size_t k = 1; k < seq.size() && increasing; ++k) {
+            increasing = seq[k].second > seq[k - 1].second;
+        }
+        if (increasing) {
+            return true;
+        }
+    }
+    return false;
 }
 
 BarBox barUnion(const BarBox &a, const BarBox &b)
@@ -1318,14 +1415,26 @@ BarBox barUnion(const BarBox &a, const BarBox &b)
 }
 
 // `words` sorted by x. Returns clusters to add; joins into `drawings` (getGraphics' clusters) any it overlaps.
-std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, double pageW, double pageH, std::vector<TextGraphic> &drawings, bool *limitHit)
+std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, const std::vector<ScaleNumber> &nums, double pageW, double pageH,
+                                     std::vector<TextGraphic> &drawings, size_t *runBudget, bool *limitHit)
 {
     std::vector<TextGraphic> out;
     if (!(pageW > 0) || !(pageH > 0) || !std::isfinite(pageW * pageH)) {
         return out;
     }
-    size_t budgetLeft = kBarBudget;
+    // this page's budget: kBarBudget, or what the run has left if less; what it spends comes off the run's
+    size_t budgetLeft = std::min(kBarBudget, *runBudget);
     size_t *budget = &budgetLeft;
+    struct Charge
+    {
+        size_t start;
+        size_t *left, *run;
+        ~Charge() { *run -= std::min(*run, start - *left); }
+    } charge { budgetLeft, budget, runBudget };
+    if (budgetLeft == 0) {
+        *limitHit = true;
+        return out;
+    }
     const double area = pageW * pageH, band = kBarFurnitureBand * pageH;
     std::vector<BarBox> filled;
     std::vector<BarBox> strokes;
@@ -1408,6 +1517,9 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
                 return;
             }
             if (std::min(it->hi, to) - std::max(it->lo, from) >= kBarAxisSpan * (to - from)) {
+                if (!barScale(u, vertical, nums, budget, limitHit)) {
+                    return;
+                }
                 found.push_back({ u, vertical });
                 if (found.size() >= kMaxBarRuns) {
                     full = true;
@@ -1510,20 +1622,48 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
                 r = barUnion(r, st);
             }
         }
-        // a bar chart with a drawn trend line or curve is one figure, as in doppler-md: joined into the drawing cluster
-        bool joined = false;
-        for (TextGraphic &d : drawings) {
-            if (std::min(d.xMax, r.x1) > std::max(d.xMin, r.x0) && std::min(d.yMax, r.y1) > std::max(d.yMin, r.y0)) {
-                d.xMin = std::min(d.xMin, r.x0);
-                d.yMin = std::min(d.yMin, r.y0);
-                d.xMax = std::max(d.xMax, r.x1);
-                d.yMax = std::max(d.yMax, r.y1);
-                d.paths += g.paths;
-                joined = true;
+        // a bar chart with a drawn trend line or curve is one figure, as in doppler-md: joined with every drawing cluster
+        // it overlaps, repeated until no other overlaps the grown box (council r2 N3/L3), so clusters never overlap
+        size_t into = drawings.size();
+        bool grew = true;
+        while (grew) {
+            grew = false;
+            for (size_t k = 0; k < drawings.size(); ++k) {
+                if (!spend(budget, 1, limitHit)) {
+                    break;
+                }
+                TextGraphic &d = drawings[k];
+                if (k == into || !(std::min(d.xMax, r.x1) > std::max(d.xMin, r.x0) && std::min(d.yMax, r.y1) > std::max(d.yMin, r.y0))) {
+                    continue;
+                }
+                r = barUnion(r, { d.xMin, d.yMin, d.xMax, d.yMax });
+                if (into == drawings.size()) {
+                    into = k;
+                    d.paths += g.paths;
+                } else {
+                    TextGraphic &t = drawings[into];
+                    t.paths += d.paths;
+                    t.segments += d.segments;
+                    t.curves += d.curves;
+                    t.directions |= d.directions;
+                    drawings.erase(drawings.begin() + std::ptrdiff_t(k));
+                    if (k < into) {
+                        --into;
+                    }
+                    --k;
+                }
+                grew = true;
+            }
+            if (*budget == 0) {
                 break;
             }
         }
-        if (joined) {
+        if (into < drawings.size()) {
+            TextGraphic &t = drawings[into];
+            t.xMin = r.x0;
+            t.yMin = r.y0;
+            t.xMax = r.x1;
+            t.yMax = r.y1;
             continue;
         }
         g.xMin = r.x0;
@@ -1571,8 +1711,10 @@ struct PageFacts::State
         bool visible;
     };
     std::vector<WordBox> wordBoxes;
-    // word centres (vectors: bar charts hold few words; at most kMaxBarWords a page)
+    // word centres (vectors: bar charts hold few words; at most kMaxBarWords a page) and the page's numbers (bar scales)
     std::vector<WordCentre> wordCentres;
+    std::vector<ScaleNumber> scaleNumbers;
+    bool barWordsTruncated = false;
     // characters by word size in half points (vectors: the body size the grid search scales
     // with), the sizes in first-seen order, and whether a size fell outside the bins
     std::vector<uint64_t> sizeChars; // maxSizeBins, allocated once
@@ -2129,8 +2271,23 @@ void PageFacts::onWord(const TextWord *word)
         // visible as TextPage counts it (getInvisibleWordCount)
         s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible() });
     }
-    if (wants(Vectors) && s.wordCentres.size() < kMaxBarWords && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
-        s.wordCentres.push_back({ (x0 + x1) / 2, (y0 + y1) / 2 });
+    if (wants(Vectors) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
+        if (s.wordCentres.size() < kMaxBarWords) {
+            s.wordCentres.push_back({ (x0 + x1) / 2, (y0 + y1) / 2 });
+        } else {
+            s.barWordsTruncated = true;
+        }
+        double v;
+        const int n = word->getLength();
+        if (s.scaleNumbers.size() < kMaxScaleNumbers && n > 0 && n <= 16) {
+            Unicode text[16];
+            for (int i = 0; i < n; ++i) {
+                text[i] = *word->getChar(i);
+            }
+            if (scaleNumber(text, n, &v)) {
+                s.scaleNumbers.push_back({ x0, y0, x1, y1, v });
+            }
+        }
     }
     if (wants(Vectors)) {
         // pdftomarkdown's body size: the most common size rounded to half a point, by characters
@@ -2646,7 +2803,10 @@ void PageFacts::endPage(const TextPage &text)
         // Bar charts drawn only with filled boxes (doppler#38), after the drawing clusters (their list order is unchanged);
         // a bar cluster overlapping a drawing cluster is joined into it. Its own per-page budget (never graphicsBudget).
         std::sort(s.wordCentres.begin(), s.wordCentres.end(), [](const WordCentre &a, const WordCentre &b) { return a.x < b.x; });
-        for (const TextGraphic &g : barClusters(text.getRules(), s.wordCentres, pageW, pageH, clusters, &graphicsLimit)) {
+        if (s.barWordsTruncated) {
+            graphicsLimit = true; // a page over kMaxBarWords: the text test saw only the first words
+        }
+        for (const TextGraphic &g : barClusters(text.getRules(), s.wordCentres, s.scaleNumbers, pageW, pageH, clusters, &barBudget, &graphicsLimit)) {
             clusters.push_back(g);
         }
         const int vectorCells = s.vectorGrid.count();
