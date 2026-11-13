@@ -7,7 +7,8 @@
 //! 1. `{"type":"header","schema":"doppler-images/3",...}`: the PDF, the settings digest and the
 //!    run's settings, and `resumes`;
 //! 2. one `{"type":"image",...}` per image, sorted by page, pictures before figures, by index;
-//! 3. one `{"type":"batch",...}` per batch of this run;
+//! 3. one `{"type":"batch",...}` per batch, by page, each with the `run` that wrote it: this
+//!    run's, and on a resume the earlier lines that still describe a page no newer line covers;
 //! 4. `{"type":"end","complete":...,"resumable":...,"totals":{...},"images":N,"batches":M,
 //!    "sha256":HEX}`, where `images` and `batches` count the lines above and `sha256` is the
 //!    SHA-256 of every byte before the end line.

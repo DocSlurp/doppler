@@ -301,6 +301,7 @@ fn hostile_scan_attributes_are_ignored() {
 // --- the real tools ---------------------------------------------------------------------------
 
 mod manifest_file;
+mod toolchain;
 use manifest_file::manifest;
 
 const PDFTOMARKDOWN: &str = env!("CARGO_BIN_EXE_pdftomarkdown");
@@ -329,7 +330,8 @@ impl Drop for Scratch {
 
 fn fixtures(tag: &str) -> Option<(PathBuf, PathBuf, Scratch)> {
     let Some((t, r)) = tools() else {
-        eprintln!("skipped: needs this tree's pdftotext and pdfregions (copy jobs) and python3");
+        // a missing toolchain fails under DOPPLER_REQUIRE_INTEGRATION (tests/toolchain)
+        toolchain::skip(tag, "this tree's pdftotext and pdfregions (copy jobs; $PDFTOTEXT, $PDFREGIONS) and python3");
         return None;
     };
     let d = std::env::temp_dir().join(format!("page-scans-{tag}-{}", std::process::id()));

@@ -576,7 +576,7 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`); an encode that ends past it (or past `--images-deadline`) is dropped and its image is `timeout` (`deadline`), so one encode overruns by at most its own time |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
-| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; exit 5 while any image is left |
+| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; earlier batch lines outside the range are kept; a range outside `--images-pages` is refused (exit 2); exit 5 while any image is left |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 | `--scan-pages copy\|image\|skip\|render` | `copy` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
 | `--scan-dpi N` | `200` | rendered scans with `--scan-pages image` (tiled, layered, turned, not copyable) or `render`, 36..300 |
@@ -671,10 +671,20 @@ that validates the header and the `reason` values strictly needs a matching cont
 before it accepts a `copy` manifest, and should pass `--scan-pages` explicitly), `scan_dpi`, `scan_max_dpi`,
 `batch_pages`, `deadline_ms` (the effective `--images-deadline`) and `resumes` (how many
 `--images-resume` runs rewrote it). Then one **image** line per image (below), then one
-**batch** line per batch of this run (a resume lists its own): `pages` `[A,B]`, `status` `ok`,
-`budget`, `doc_budget`, `timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the
-first page with an image the batch did not get to (null for `ok`). The **end** line, last:
-`complete` (every batch finished and no image was left by a stopped batch), `resumable` (some
+**batch** line per batch, in page order: `pages` `[A,B]` (the batch's pages; on an
+`--images-resume-pages` resume, clipped to that range), `status` `ok`, `budget`, `doc_budget`,
+`timeout`, `deadline`, `renderer` or `aborted`, and `cut_page`, the first page with an image
+the batch did not get to (null for `ok`); no other key. A resume lists its own lines and keeps
+each earlier line that still says something no other line does: its own lines claim their
+pages, then each earlier line (stopped ones first, narrower first) is kept when its range holds
+a page with an image no kept line has claimed (for a stopped line, one with an image still
+stopped there), and claims its pages. So a narrowed resume keeps the earlier record of the pages
+it left, a whole resume replaces every earlier line, and a stopped line whose images were all
+retried, or that left none (a `renderer` stop after every image was answered), goes, so
+`complete` can become true. Lines of one run never overlap; lines of different runs may (which
+run wrote a line is not recorded), and no two lines share a range.
+The **end** line, last:
+`complete` (every batch line `ok` and no image was left by a stopped batch), `resumable` (some
 image may still be extracted by a resume), `totals`, then `images` and `batches` (the number of
 image and batch lines) and `sha256`, the SHA-256 (lowercase hex) of every byte of the file
 before the end line. A reader refuses a manifest whose first line is not a `doppler-images/3`
@@ -746,7 +756,13 @@ DIR.
 the same conversion options or `--images-plan PLAN`, and the same image options (the budgets,
 `--images-batch-pages`, the time limits and `--images-confine` may change). DIR's
 `manifest.jsonl` is read one line at a time and must be whole (a `doppler-images/3` header, its
-end line, matching counts and hash: a truncated or altered one is refused), name the same PDF
+end line, matching counts and hash: a truncated or altered one is refused), hold only lines
+this program would write (known statuses and reasons; batch lines with exactly `type`,
+`pages`, `status` and `cut_page`, an `ok` with no `cut_page` or a `cut_page` within their own
+`pages`, a range with a page that has an image, no two with the same range, and no more batch
+lines than pages with images, which bounds what a forged manifest can make a resume hold; the
+manifest's hash is not keyed, so these refuse damage and mistakes, not a deliberate forgery),
+name the same PDF
 (`source_sha256`) and settings (`settings_sha256`) and list exactly this conversion's images at
 the same paths; otherwise nothing is touched and the exit status is **2** (also for a DIR
 without a manifest, and for a version 2 `manifest.json` or any other schema: extract again). Only the
@@ -755,10 +771,11 @@ document ceilings less the bytes DIR holds; every other entry stays as it was. F
 paths the Markdown already links, so the Markdown (written to stdout again when converting)
 never changes; they are created new, never replacing a file (one in the way is a hard
 failure). The manifest is then written whole to a temporary name, synced, and renamed over the
-old one in one step, with each entry's new status, the resume's own batches and `resumes` one
-more. Exit status **0** when nothing is left (`complete`), **5** when the resume
-stopped too; a resume with nothing to do changes nothing and exits 0 (5 if the manifest still
-lists images a stopped batch left that are not resumable, such as `renderer`). A hard failure
+old one in one step, with each entry's new status, the resume's own batches beside the
+earlier batch lines it keeps (above), and `resumes` one more. Exit status **0** when nothing is left (`complete`), **5** when the resume
+stopped too; a resume with nothing to do changes nothing and exits as the manifest's `complete`
+says: 0, or 5 if it lists images a stopped batch left that are not resumable (such as
+`renderer`) or a batch line that is not `ok`. A hard failure
 (exit **6**) keeps the old manifest and every file that was there, and removes only the files
 and page folders the resume made. Content repeats are compared within one run only: a resumed
 figure whose pixels repeat one extracted earlier gets its own file rather than
@@ -768,7 +785,13 @@ figure whose pixels repeat one extracted earlier gets its own file rather than
 the files of entries it keeps (a host that keeps them in object storage hands back only
 the manifest), the document ceilings count the bytes the manifest records for them, and the
 folder ends up with only the files this resume wrote, beside the replaced manifest.
-`--images-resume-pages A-B` limits one resume to the resumable images of those pages.
+`--images-resume-pages A-B` limits one resume to the resumable images of those pages; its own
+batch lines are clipped to the range and the manifest keeps the earlier lines that still
+describe the pages it left (above), so a host driving a series of range resumes keeps the whole
+record, and the end line's `batches`, `totals.batches`, `totals.batches_cut` and `complete`
+count those lines. A range that does not meet `--images-pages` (when given) is a usage error
+(exit 2) before anything is read; one past the converted pages is refused with exit 2 once they are
+known (when converting, the Markdown is still written; DIR is unchanged).
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and
@@ -991,6 +1014,11 @@ for the measured baseline and scoring coverage.
   `tests/pdftomarkdown.rs` runs `pdftomarkdown --strict` against the pipe when `$PDFTOTEXT` (or
   `../../build/utils/pdftotext`) is the DocSlurp pdftotext with `-compact-layout`, and is
   skipped otherwise.
+- The suites that need the DocSlurp utils (`tests/images_batches.rs`, `images_dir.rs`,
+  `page_facts.rs`, `page_info.rs`, `page_scans.rs`) print `skipped:` and pass without them, unless
+  `DOPPLER_REQUIRE_INTEGRATION` is `1`, `true` or `on`: then a missing toolchain fails the test
+  (`tests/toolchain`). No CI job sets it yet; run them so after building the utils:
+  `PDFTOTEXT=../../build/utils/pdftotext DOPPLER_REQUIRE_INTEGRATION=1 cargo test --release`.
 - `python3 -I scripts/check_pipeline.py --pdftotext /path/to/pdftotext --converter target/release/doppler-md`:
   check producer rule completeness through the real XHTML-to-Markdown pipeline.
 - `scripts/parity.sh [GOLDEN_DIR [SET]]`: byte-identical output against `doppler_md.py` on the

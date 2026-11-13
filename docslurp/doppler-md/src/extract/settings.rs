@@ -347,7 +347,26 @@ impl Settings {
         if self.resume_pages.is_some() && !self.resume {
             return Err("--images-resume-pages needs --images-resume".into());
         }
+        if let (Some((a, b)), Some((c, d))) = (self.resume_pages, self.pages)
+            && (b < c || d < a)
+        {
+            return Err(format!(
+                "--images-resume-pages {a}-{b} is outside --images-pages {c}-{d}: no image there can be resumed"
+            ));
+        }
         Ok(())
+    }
+
+    /// Refuses an `--images-resume-pages` range that misses the converted pages `first..=last`
+    /// (known once the PDF is read): such a resume could retry nothing.
+    pub fn check_resume_range(&self, first: u32, last: u32) -> Result<(), String> {
+        match self.resume_pages {
+            Some((a, b)) if b < first || last < a => Err(format!(
+                "--images-resume-pages {a}-{b} is outside the converted pages {first}-{last}: no image there can be \
+                 resumed"
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Whether a resume retries the resumable images of `page` (`--images-resume-pages`; all
@@ -583,6 +602,20 @@ mod tests {
         assert!(with(&[("--images-resume", Some("out"))]).unwrap().resumes_page(1_000_000));
         // not with --images-dir, and not part of the settings a manifest is bound to
         assert!(with(&[("--images-dir", Some("out")), ("--images-resume-pages", Some("3-4"))]).is_err());
+        // a range that misses --images-pages could never resume anything: refused
+        let both = |r: &str, p: &str| {
+            with(&[("--images-resume", Some("out")), ("--images-pages", Some(p)), ("--images-resume-pages", Some(r))])
+        };
+        let e = both("1-2", "3-6").err().unwrap();
+        assert!(e.contains("outside --images-pages 3-6"), "{e}");
+        assert!(both("7-9", "3-6").is_err());
+        assert!(both("2-3", "3-6").is_ok() && both("6-9", "3-6").is_ok() && both("4", "3-6").is_ok());
+        // and one past the converted pages (known after the conversion), with or without it
+        let r = with(&[("--images-resume", Some("out")), ("--images-resume-pages", Some("7-9"))]).unwrap();
+        assert!(r.check_resume_range(1, 6).err().unwrap().contains("outside the converted pages 1-6"));
+        assert!(r.check_resume_range(1, 7).is_ok() && r.check_resume_range(9, 12).is_ok());
+        assert!(r.check_resume_range(10, 12).is_err());
+        assert!(with(&[("--images-resume", Some("out"))]).unwrap().check_resume_range(1, 1).is_ok());
         let a = with(&[("--images-resume", Some("out"))]).unwrap();
         let b = with(&[("--images-resume", Some("out")), ("--images-resume-pages", Some("3-4"))]).unwrap();
         assert_eq!(a.output_canonical(), b.output_canonical());
