@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use doppler_md::model::{Parser, decode_lossy};
-use doppler_md::{Converter, Options, Params, to_markdown_report_with};
+use doppler_md::{BodySample, Converter, Options, Params, Window, to_markdown_report_with};
 
 /// Converts `bytes` fed in pieces of `chunk` bytes (split anywhere, even inside a UTF-8
 /// sequence) with a `window`: (pages, report JSON).
@@ -132,7 +132,7 @@ fn pages(n: usize, header: impl Fn(usize) -> String) -> Vec<u8> {
 
 #[test]
 fn a_window_covering_the_document_is_exact() {
-    for n in [1, 2, 5, 17] {
+    for n in [1, 2, 5, 16] {
         let bytes = pages(n, |i| if i % 3 == 0 { "Annual Report".into() } else { format!("Chapter {i}") });
         let want = whole(&bytes);
         // n - 1 pages either side is the smallest window that covers every page
@@ -146,7 +146,9 @@ fn a_window_covering_the_document_is_exact() {
 fn window_holds_exactly_window_pages_after_each_push() {
     let p = Params::default();
     let w = 3;
-    let mut conv = Converter::new(&p, Options::default(), Some(w));
+    // a body sample no longer than the window: the window alone decides when pages go out
+    let win = Window { furniture: Some(w), body: Some(BodySample::Pages(1)), ..Window::default() };
+    let mut conv = Converter::with(&p, Options::default(), win);
     let mut parser = Parser::new();
     let text = String::from_utf8(pages(20, |_| "Header".into())).unwrap();
     let (mut parsed, mut written) = (0usize, Vec::new());
@@ -210,15 +212,417 @@ fn an_unclosed_word_does_not_hold_back_later_pages() {
     // no `</word>` ever follows (the later pages hold only rules), but the newline after the
     // tag already decides it
     let mut s = String::from("<page><line><word xMin=\"1\" yMin=\"2\" xMax=\"3\" yMax=\"4\">a\n");
-    for _ in 0..30 {
+    for _ in 0..90 {
         s.push_str("<page width=\"612\" height=\"792\"><rule xMin=\"1\" yMin=\"2\" xMax=\"300\" yMax=\"3\"/></page>\n");
     }
     let p = Params::default();
+    // pages without text: the body sample (16 pages with text) stops at 32 pages read, so a
+    // scan without a text layer is held only that long
     let mut conv = Converter::new(&p, Options::default(), Some(2));
     let mut parser = Parser::new();
     let mut written = 0;
     for piece in s.as_bytes().chunks(64) {
         parser.push(std::str::from_utf8(piece).unwrap(), &mut |pg| conv.push(pg, &mut |_, _| written += 1));
     }
-    assert!(written >= 25, "only {written} pages written before the end of the input");
+    assert!(written >= 85, "only {written} pages written before the end of the input");
+}
+
+/// Converts whole pages (each a `<page>` element) with `win`: (pages, report).
+fn converted(pages: &[String], win: Window, o: Options, p: &Params) -> (Vec<String>, doppler_md::Report) {
+    let mut conv = Converter::with(p, o, win);
+    let mut parser = Parser::new();
+    let mut out = Vec::new();
+    let text = format!("<doc>\n{}</doc>\n", pages.concat());
+    parser.push(&text, &mut |pg| conv.push(pg, &mut |i, md| out.push((i, md))));
+    let parse = parser.finish(&mut |pg| conv.push(pg, &mut |i, md| out.push((i, md))));
+    let report = conv.finish(parse, &mut |i, md| out.push((i, md)));
+    // pages arrive in order and are numbered from 0
+    assert!(out.iter().enumerate().all(|(k, (i, _))| k == *i), "page indices out of order");
+    (out.into_iter().map(|(_, md)| md).collect(), report)
+}
+
+/// A small deterministic generator (xorshift).
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// A generated document of `<page>` elements: a few cover pages in large print, then chapters
+/// with their own running header, a document-wide footer, page numbers, headings in larger
+/// print and some blank pages.
+fn book(rng: &mut Rng) -> Vec<String> {
+    let n = 20 + rng.below(40) as usize;
+    let covers = rng.below(4) as usize;
+    let chapter_len = 3 + rng.below(9) as usize;
+    let body = [9.0, 10.0, 11.0][rng.below(3) as usize];
+    let line = |y: f64, size: f64, t: &str| {
+        format!(
+            "<line><word xMin=\"72\" yMin=\"{}\" xMax=\"{}\" yMax=\"{y}\" fontName=\"F\" fontSize=\"{size}\" baseline=\"{}\">{t}</word></line>\n",
+            y - size,
+            72.0 + 0.5 * size * t.chars().count() as f64,
+            y - 2.0
+        )
+    };
+    (0..n)
+        .map(|i| {
+            let mut s = String::from("<page width=\"612\" height=\"792\">\n<flow>\n<block>\n");
+            if i < covers {
+                s += &line(300.0, 24.0, &format!("Cover title page {i} in large print"));
+                s += &line(340.0, 18.0, "A generated volume of several chapters");
+            } else if rng.below(15) != 0 {
+                let ch = (i - covers) / chapter_len;
+                s += &line(40.0, body, &format!("Chapter {ch} running head"));
+                if (i - covers).is_multiple_of(chapter_len) {
+                    s += &line(120.0, body * 1.6, &format!("Heading of chapter {ch}"));
+                }
+                for k in 0..(4 + rng.below(8)) {
+                    s += &line(
+                        160.0 + 24.0 * k as f64,
+                        body,
+                        &format!("Body line {k} of page {i}, words enough to be prose."),
+                    );
+                }
+                s += &line(760.0, body * 0.8, "Generated Press Confidential");
+                s += &line(775.0, body * 0.8, &format!("{}", i + 1));
+            }
+            s += "</block>\n</flow>\n</page>\n";
+            s
+        })
+        .collect()
+}
+
+#[test]
+fn a_range_with_context_and_the_body_given_matches_a_whole_run() {
+    let p = Params::default();
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut checked = 0;
+    for _ in 0..12 {
+        let doc = book(&mut rng);
+        let n = doc.len();
+        for w in [2usize, 4, 8] {
+            for body in [None, Some(BodySample::TextPages(6)), Some(BodySample::TextPages(32))] {
+                let whole_win = Window { furniture: Some(w), body, ..Window::default() };
+                let (want, report) = converted(&doc, whole_win.clone(), Options::default(), &p);
+                assert_eq!(want.len(), n);
+                for _ in 0..4 {
+                    let f = 1 + rng.below(n as u64) as usize;
+                    let l = f + rng.below((n - f + 1) as u64) as usize;
+                    let ctx = w + rng.below(3) as usize;
+                    let read = f.saturating_sub(ctx).max(1);
+                    let end = (l + ctx).min(n);
+                    let win = Window {
+                        body_size: Some(report.body.size),
+                        body_color: Some(report.body.color.clone()),
+                        skip: f - read,
+                        emit: Some(l - f + 1),
+                        after: ctx,
+                        first_page: read as u32,
+                        ..whole_win.clone()
+                    };
+                    let (got, r) = converted(&doc[read - 1..end], win, Options::default(), &p);
+                    assert_eq!(
+                        got,
+                        want[f - 1..l],
+                        "{n} pages, window {w}, body {body:?}, pages {f}-{l}, context {ctx}"
+                    );
+                    let range = r.range.expect("a range report");
+                    let expect: Vec<&str> = if f > 1 { vec!["doc_work"] } else { vec![] };
+                    assert_eq!(range.identity, expect, "pages {f}-{l} of {n}");
+                    assert_eq!(r.parse.pages, l - f + 1);
+                    assert!(r.body.size_given && r.body.color_given);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 12 * 3 * 3 * 4);
+}
+
+#[test]
+fn the_range_report_names_what_can_differ() {
+    let p = Params::default();
+    let mut rng = Rng(7);
+    let doc = book(&mut rng);
+    let n = doc.len();
+    let w = 4;
+    let range = |read: usize, f: usize, l: usize, ctx: usize, given: bool, o: Options, p: &Params| {
+        let win = Window {
+            furniture: Some(w),
+            body_size: given.then_some(10.0),
+            body_color: given.then(String::new),
+            skip: f - read,
+            emit: Some(l - f + 1),
+            after: ctx,
+            first_page: read as u32,
+            ..Window::default()
+        };
+        converted(&doc[read - 1..(l + ctx).min(n)], win, o, p).1.range.unwrap().identity
+    };
+    // enough context, the body given: only the document's work budget is unseen
+    assert_eq!(range(5, 10, 14, 5, true, Options::default(), &p), ["doc_work"]);
+    // the body estimated from the range's own pages
+    assert_eq!(range(5, 10, 14, 5, false, Options::default(), &p), ["body", "doc_work"]);
+    // context shorter than the window on either side
+    assert_eq!(range(8, 10, 14, 2, true, Options::default(), &p), ["context", "doc_work"]);
+    // at the start of the document no context is missing and nothing comes before
+    assert_eq!(range(1, 1, 5, 4, true, Options::default(), &p), Vec::<&str>::new());
+    // context pages are not laid out, so their work is not charged either
+    assert_eq!(range(1, 2, 5, 4, true, Options::default(), &p), ["doc_work"]);
+    // no furniture window: repetition is judged over the whole document
+    let win = Window { skip: 2, emit: Some(3), first_page: 4, ..Window::default() };
+    let r = converted(&doc[3..10], win, Options::default(), &p).1.range.unwrap();
+    assert_eq!(r.identity, ["body", "furniture", "doc_work"]);
+    // continuation markers: a range that starts mid-document without context cannot know
+    // what the previous page left open
+    let markers = Options { markers: true, ..Options::default() };
+    assert_eq!(range(10, 10, 14, 0, true, markers, &p), ["context", "markers", "doc_work"]);
+    // with context the leading pages are laid out for it (these pages end in no table)
+    assert_eq!(range(5, 10, 14, 5, true, markers, &p), ["doc_work"]);
+}
+
+#[test]
+fn the_document_work_budget_is_where_a_range_can_still_differ() {
+    // a budget that runs out mid-document degrades later pages in a whole run, but a range
+    // starting there has spent nothing: the report says so (doc_work), and the range's own
+    // doc_work tells a host whether the sum over its ranges stays within the limit
+    let mut rng = Rng(11);
+    let doc = book(&mut rng);
+    let n = doc.len();
+    let w = 4;
+    let whole_win = Window { furniture: Some(w), ..Window::default() };
+    let full = converted(&doc, whole_win.clone(), Options::default(), &Params::default()).1;
+    let p = Params { max_doc_work: full.doc_work as f64 / 2.0, doc_work_per_page: 0.0, ..Params::default() };
+    let (want, whole) = converted(&doc, whole_win.clone(), Options::default(), &p);
+    assert!(whole.degraded.iter().any(|(_, d)| *d == doppler_md::Degraded::DocWork));
+    let (f, l) = (n - 6, n - 1);
+    let win = Window {
+        body_size: Some(whole.body.size),
+        body_color: Some(whole.body.color.clone()),
+        skip: w,
+        emit: Some(l - f + 1),
+        after: w,
+        first_page: (f - w) as u32,
+        ..whole_win
+    };
+    let (got, r) = converted(&doc[f - w - 1..(l + w).min(n)], win, Options::default(), &p);
+    assert_ne!(got, want[f - 1..l]);
+    assert!(r.degraded.is_empty());
+    let range = r.range.unwrap();
+    assert_eq!(range.identity, ["doc_work"]);
+    assert_eq!(range.doc_work_limit, p.max_doc_work);
+}
+
+#[test]
+fn the_document_budget_grows_with_the_page_number_in_a_range_too() {
+    // the budget at a page is max_doc_work plus doc_work_per_page for every page of the
+    // document up to it: a range after page 1 is credited the pages before it (first_page), so
+    // ranges with context are identical to a whole run that degrades nothing, even when the
+    // budget would run out without the credit
+    let mut rng = Rng(23);
+    let doc = book(&mut rng);
+    let n = doc.len();
+    let w = 4;
+    let whole_win = Window { furniture: Some(w), ..Window::default() };
+    let full = converted(&doc, whole_win.clone(), Options::default(), &Params::default()).1;
+    let total = full.doc_work as f64;
+    let p = Params { max_doc_work: total * 0.6, doc_work_per_page: total / n as f64, ..Params::default() };
+    let (want, whole) = converted(&doc, whole_win.clone(), Options::default(), &p);
+    assert!(whole.degraded.is_empty(), "{:?}", whole.degraded);
+    assert_eq!(whole.doc_work, full.doc_work);
+    assert_eq!(whole.doc_work_limit, p.doc_work_limit(n));
+    let fixed = Params { doc_work_per_page: 0.0, ..p.clone() };
+    assert!(!converted(&doc, whole_win.clone(), Options::default(), &fixed).1.degraded.is_empty());
+    let cuts = [1, n / 3 + 1, 2 * n / 3 + 1, n + 1];
+    let mut sum = 0;
+    for k in 0..3 {
+        let (f, l) = (cuts[k], cuts[k + 1] - 1);
+        let read = f.saturating_sub(w).max(1);
+        let win = Window {
+            body_size: Some(whole.body.size),
+            body_color: Some(whole.body.color.clone()),
+            skip: f - read,
+            emit: Some(l - f + 1),
+            after: w,
+            first_page: read as u32,
+            ..whole_win.clone()
+        };
+        let (got, r) = converted(&doc[read - 1..(l + w).min(n)], win, Options::default(), &p);
+        assert_eq!(got, want[f - 1..l], "pages {f}-{l}");
+        let range = r.range.expect("a range report");
+        assert_eq!(range.doc_work_limit, p.doc_work_limit(f));
+        // what a host checks: the work of this range and those before it is within the budget
+        // at its first page
+        sum += r.doc_work;
+        assert!(sum as f64 <= range.doc_work_limit, "pages {f}-{l}: {sum} > {}", range.doc_work_limit);
+    }
+    assert_eq!(sum, whole.doc_work);
+}
+
+#[test]
+fn the_body_sample_holds_pages_until_it_is_complete() {
+    // --body-pages N: nothing is written before the N-th page with text; blank pages do not
+    // count, and the furniture window bounds what is held after that
+    let mut doc: Vec<String> = Vec::new();
+    let mut rng = Rng(3);
+    let text = book(&mut rng).into_iter().filter(|pg| pg.contains("Body line")).take(12).collect::<Vec<_>>();
+    for (i, pg) in text.into_iter().enumerate() {
+        if i % 2 == 0 {
+            doc.push("<page width=\"612\" height=\"792\"></page>\n".to_string());
+        }
+        doc.push(pg);
+    }
+    let p = Params::default();
+    let win = Window { furniture: Some(1), body: Some(BodySample::TextPages(5)), ..Window::default() };
+    let mut conv = Converter::with(&p, Options::default(), win);
+    let mut parser = Parser::new();
+    let (mut parsed, mut written) = (0usize, 0usize);
+    for pg in &doc {
+        parser.push(pg, &mut |page| {
+            parsed += 1;
+            conv.push(page, &mut |_, _| written += 1);
+            // held until the sample is complete, then down to the window
+            if parsed < 8 {
+                assert_eq!(written, 0, "{parsed} parsed");
+            } else {
+                assert_eq!(parsed - written, 1, "{parsed} parsed");
+            }
+        });
+    }
+    let parse = parser.finish(&mut |page| conv.push(page, &mut |_, _| written += 1));
+    let report = conv.finish(parse, &mut |_, _| written += 1);
+    assert_eq!(written, doc.len());
+    // the 5th page with text is the 8th page read (a blank page before every other one)
+    assert_eq!(report.body.sample_pages, 8);
+    assert_eq!(report.body.sample_text_pages, 5);
+    let json = report.to_json();
+    assert!(json.contains("\"body_size\":") && json.contains("\"body_sample_pages\":8"), "{json}");
+}
+
+/// One page of `<page>` XHTML: `words` lines of body text in `size` point print and `colour`,
+/// plus `rules` rules.
+fn plain_page(i: usize, words: usize, size: &str, colour: &str, rules: usize) -> String {
+    let mut s = String::from("<page width=\"612\" height=\"792\">\n<flow>\n<block>\n");
+    for k in 0..words {
+        let y = 100 + 14 * (k % 40);
+        s += &format!(
+            "<line><word xMin=\"72\" yMin=\"{}\" xMax=\"300\" yMax=\"{y}\" fontName=\"F\" fontSize=\"{size}\" color=\"{colour}\" baseline=\"{}\">Topic n{i} line {k} reads on as prose.</word></line>\n",
+            y - 10,
+            y - 2
+        );
+    }
+    s += "</block>\n</flow>\n";
+    for k in 0..rules {
+        let y = 10 + k % 700;
+        s += &format!("<rule xMin=\"10\" yMin=\"{y}\" xMax=\"20\" yMax=\"{}\"/>\n", y + 1);
+    }
+    s += "</page>\n";
+    s
+}
+
+#[test]
+fn a_window_covering_a_long_document_needs_a_body_sample_that_does_too() {
+    // 40 pages at 12 points, then 60 at 10: the whole document's body is 10, the first 16 pages
+    // with text say 12
+    let doc: Vec<String> = (0..100).map(|i| plain_page(i, 4, if i < 40 { "12" } else { "10" }, "#000000", 0)).collect();
+    let p = Params::default();
+    let (want, whole) = to_markdown_report_with(&format!("<doc>\n{}</doc>\n", doc.concat()), &p, &Options::default());
+    assert_eq!(whole.body.size, 10.0);
+    let covering = Window { furniture: Some(1000), body: Some(BodySample::Document), ..Window::default() };
+    let (got, r) = converted(&doc, covering, Options::default(), &p);
+    assert_eq!(got, want);
+    assert_eq!(r.body.size, 10.0);
+    // the default sample sees only the start: another body
+    let (_, r) = converted(&doc, Window::furniture(Some(1000)), Options::default(), &p);
+    assert_eq!((r.body.size, r.body.sample_pages), (12.0, 16));
+}
+
+#[test]
+fn the_body_sample_is_bounded_in_size_not_only_in_pages() {
+    // pages with text and 30,000 rules each: the sample (16 pages with text) ends once the
+    // pages held reach BODY_SAMPLE_MAX_ITEMS, after 9 pages, and writing starts then
+    let doc: Vec<String> = (0..14).map(|i| plain_page(i, 2, "10", "#000000", 30_000)).collect();
+    let p = Params::default();
+    let mut conv = Converter::with(&p, Options::default(), Window::furniture(Some(1)));
+    let mut parser = Parser::new();
+    let (mut parsed, mut written) = (0usize, 0usize);
+    for pg in &doc {
+        parser.push(pg, &mut |page| {
+            parsed += 1;
+            conv.push(page, &mut |_, _| written += 1);
+            if parsed < 9 {
+                assert_eq!(written, 0, "{parsed} parsed");
+            } else {
+                assert_eq!(parsed - written, 1, "{parsed} parsed");
+            }
+        });
+    }
+    let parse = parser.finish(&mut |page| conv.push(page, &mut |_, _| written += 1));
+    let report = conv.finish(parse, &mut |_, _| written += 1);
+    assert_eq!(written, doc.len());
+    assert_eq!((report.body.sample_pages, report.body.sample_text_pages), (9, 9));
+    const { assert!(9 * 30_000 >= doppler_md::BODY_SAMPLE_MAX_ITEMS && 8 * 30_002 < doppler_md::BODY_SAMPLE_MAX_ITEMS) };
+}
+
+#[test]
+fn every_body_estimate_can_be_given_back() {
+    // font sizes and colours a hostile document can set: the estimate stays within what
+    // --body-size and --body-color accept, so a sharding host can always pass it back
+    let long = "c".repeat(100);
+    for (size, colour) in [
+        ("0.2", "#000000"),
+        ("0.0001", "#000000"),
+        ("20000", "#000000"),
+        ("-12", "#000000"),
+        ("1e308", "#000000"),
+        ("NaN", "#000000"),
+        ("inf", "#000000"),
+        ("10", long.as_str()),
+        ("10", "a\tb"),
+    ] {
+        let doc: Vec<String> = (0..3).map(|i| plain_page(i, 5, size, colour, 0)).collect();
+        for win in [Window::default(), Window::furniture(Some(4))] {
+            let (_, r) = converted(&doc, win, Options::default(), &Params::default());
+            assert!(doppler_md::body_size_ok(r.body.size), "{size}: {}", r.body.size);
+            assert_eq!(r.body.size * 2.0, (r.body.size * 2.0).round(), "{size}");
+            assert!(doppler_md::body_color_ok(&r.body.color), "{colour:?}: {:?}", r.body.color);
+            // and it prints as a number
+            assert!(r.body_to_json().contains(&format!("\"body_size\":{}", r.body.size)), "{}", r.body_to_json());
+        }
+    }
+}
+
+#[test]
+fn leading_context_layout_is_charged_to_the_document_budget() {
+    // with --markers the pages before a range are laid out for continuation markers: their
+    // work counts towards the document budget like a whole run's (without markers they are not laid out)
+    let mut rng = Rng(5);
+    let doc = book(&mut rng);
+    let p = Params::default();
+    let run = |read: usize, o: Options| {
+        let win = Window {
+            furniture: Some(4),
+            body_size: Some(10.0),
+            body_color: Some(String::new()),
+            skip: 10 - read,
+            emit: Some(5),
+            after: 4,
+            first_page: read as u32,
+            ..Window::default()
+        };
+        converted(&doc[read - 1..18], win, o, &p).1
+    };
+    let markers = Options { markers: true, ..Options::default() };
+    // these pages have no pictures: with or without markers a written page costs the same, so
+    // the difference is the context pages' layout
+    let plain = Options::default();
+    assert_eq!(run(10, markers).doc_work, run(10, plain).doc_work);
+    assert!(run(5, markers).doc_work > run(5, plain).doc_work);
 }

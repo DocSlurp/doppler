@@ -7,8 +7,9 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::TableFormat;
+use crate::heading_levels::HeadingTable;
 use crate::images::Figure;
-use crate::layout::{Budget, Elem, regions_within};
+use crate::layout::{Budget, Elem, LINE_UNITS, SCAN_PER_UNIT, WORD_UNITS, regions_within};
 use crate::model::{Line, Page, Word};
 use crate::params::{Params, UseBlocks};
 use crate::patterns::data_cell;
@@ -36,7 +37,9 @@ pub(crate) enum FlowItem {
 }
 
 pub(crate) enum Block {
-    /// `small`: set in print smaller than the body's (by `aside_size`); `lines`: how many
+    /// `small`: set in print smaller than the body's (by `aside_size`); `lines`: how many;
+    /// `size`: a heading's size in points when it is at least `heading_ratio` times the body
+    /// (ranked by `--heading-levels rank`), else 0
     Text {
         text: String,
         heading: u8,
@@ -44,6 +47,7 @@ pub(crate) enum Block {
         caption: bool,
         small: bool,
         lines: usize,
+        size: f64,
     },
     Table(PlacedTable),
     Rendered(Rc<Vec<String>>),
@@ -91,6 +95,12 @@ impl PageLayout {
         // lines of a rotation read in their own frame are laid out there (sharing the budget)
         // and come back as one rendered element at their upright extent
         let (ids, groups) = crate::rotation::split(page, &ids, p);
+        // the linear work of each line and word laid out here (a rotation's lines are charged
+        // by its own layout)
+        let words: usize = ids.iter().map(|&i| page.lines[i].words.len()).sum();
+        if !budget.spend(ids.len().saturating_mul(LINE_UNITS).saturating_add(words.saturating_mul(WORD_UNITS))) {
+            return None;
+        }
         let mut rendered = Vec::with_capacity(groups.len());
         for g in groups {
             let no_drop = vec![false; g.page.lines.len()];
@@ -189,6 +199,28 @@ impl PageLayout {
     /// leaves open.
     pub(crate) fn stitch(&mut self, prev: &Carry, page_height: f64, p: &Params, seal: &str) -> Carry {
         stitch(&mut self.blocks, prev, page_height, p, seal)
+    }
+
+    /// Sets the level of every heading of at least `heading_ratio` times the body by its size's
+    /// rank in the document (see [`crate::heading_levels`]), in reading order.
+    ///
+    /// Charges `budget` for each lookup (a binary search of the table) and for each size added (a
+    /// move of the smaller sizes). The page is laid out by then, so running out does not degrade
+    /// it; the units count towards the document budget.
+    pub(crate) fn relevel(&mut self, table: &mut HeadingTable, p: &Params, budget: &mut Budget) {
+        for b in &mut self.blocks {
+            if let Block::Text { heading, size, .. } = b
+                && *heading != 0
+                && *size > 0.0
+            {
+                let known = table.len();
+                *heading = table.level(*size, p);
+                let search = (usize::BITS - known.leading_zeros()) as usize;
+                // a memory move of the smaller sizes, a few times cheaper per size than a scan
+                let moved = if table.len() > known { known / (4 * SCAN_PER_UNIT) } else { 0 };
+                budget.spend(1 + search + moved);
+            }
+        }
     }
 
     pub(crate) fn markdown(self, tables: TableFormat, math: bool) -> String {
@@ -626,14 +658,25 @@ pub(crate) fn finish_region(items: Vec<FlowItem>, p: &Params) -> Vec<Block> {
                         && section_number(&it.text);
                     let caption = minor && p.captions && near_table && !section_after_table;
                     let mut heading = it.level;
-                    if minor && !caption {
-                        if !body_follows {
-                            heading = 0;
-                        }
+                    if minor && !caption && !body_follows {
+                        heading = 0;
                     }
                     let small = it.ratio <= p.aside_size;
                     let lines = it.lines.len();
-                    out.push(Block::Text { text: it.text, heading, list: it.kind.is_some(), caption, small, lines });
+                    let size = if heading != 0 && it.ratio >= p.heading_ratio {
+                        median(it.lines.iter().map(|l| l.size()).collect())
+                    } else {
+                        0.0
+                    };
+                    out.push(Block::Text {
+                        text: it.text,
+                        heading,
+                        list: it.kind.is_some(),
+                        caption,
+                        small,
+                        lines,
+                        size,
+                    });
                 }
                 previous_table = false;
             }

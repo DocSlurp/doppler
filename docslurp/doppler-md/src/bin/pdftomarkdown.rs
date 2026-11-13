@@ -3,7 +3,10 @@
 //! `pdftotext -q -bbox-layout -wordmeta -rules -compact-layout FILE -`, converts its XHTML as
 //! it arrives and writes the pages joined with form feeds on stdout. By default every page
 //! waits for the whole document; `--stream` (or `--window N`) writes each page once the next N
-//! are complete, holding at most N + 2 pages (the window and the page being parsed). `--strict` drops
+//! are complete and the body sample (`--body-pages`, 16 pages with text) is taken, holding the
+//! larger of the two. `--context N` (default: the window) reads N pages around a `-f`/`-l`
+//! range for repetition without writing them; with `--body-size`/`--body-color` the range's
+//! pages are the same bytes as in a whole run with the same window. `--strict` drops
 //! `-compact-layout` (full-precision coordinates): the same bytes as piping
 //! `pdftotext -bbox-layout -wordmeta -rules` into `doppler-md`.
 //!
@@ -39,12 +42,11 @@ mod scan_thresholds;
 use facts_file::FactsFile;
 use scan_thresholds::ScanThresholds;
 
-/// `--stream`'s lookahead, in pages.
-const STREAM_WINDOW: usize = 16;
-
 const USAGE: &str = "\
-usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--report] [--params JSON]
-                     [-f N] [-l N] [--opw PW] [--upw PW] [--images-dir DIR [image options]] [--] FILE.pdf
+usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --window N] [--body-pages N]
+                     [--body-size PT] [--body-color C] [--report] [--params JSON] [-f N] [-l N] [--context N]
+                     [--heading-levels size|rank] [--estimate-body] [--opw PW] [--upw PW]
+                     [--images-dir DIR [image options]] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
@@ -55,19 +57,24 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
                  The link is the image's path under --images-dir, the same with or without it
   --page-markers start each page with <!-- doppler:page N --> (its PDF page number); report:
                  page_numbers. Pages are also joined by form feeds: chunk k is page first+k
-  --page-info    report: page_info, per page its crop box size as pdfinfo prints it, its word and
+%WINDOW%  --page-info    report: page_info, per page its crop box size as pdfinfo prints it, its word and
                  invisible-word counts, and its text layer (none, invisible, visible or mixed)
   --strict       full-precision layout coordinates (pdftotext without -compact-layout):
                  the same output as `pdftotext -bbox-layout -wordmeta -rules | doppler-md`
-  --stream       write pages as they are converted (--window 16)
-  --window N     body size and running headers/footers from N pages either side of each
-                 page, not the whole document; each page is written once the next N are complete.
-                 A document of at most N + 1 pages converts exactly as without it.
-                 Repeated content (running headers/footers, repeated watermarks) is found only
-                 within the window: do not use --window 0, which removes none of it
-  --report       print a one-line JSON report to stderr
+  --report       print a one-line JSON report to stderr (it always has the body_size and
+                 body_color used, and with -f/-l a range object: see --context)
   --params JSON  override layout tuning parameters
   -f N, -l N     first and last page to convert
+  --context N    with -f/-l: also read the N pages before -f and after -l (within the document),
+                 0 to 64 (default: the --window, 0 without one), for repetition and the body
+                 estimate; they are not written or reported (with --markers the pages before
+                 are laid out, charged to the document's work budget). With N at least the
+                 window and --body-size/--body-color from the whole document, the pages are
+                 the same bytes as in a whole-document run with the same window; the report's
+                 range.identity lists what can still differ
+  --estimate-body  print the body estimate (JSON: body_size, body_color, ...) on stdout
+                 and stop once it is fixed (reads only the sample pages, or every page read
+                 when the sample is longer); no Markdown. Give the values back exactly
   --opw, --upw   owner and user password (also -opw, -upw); as with pdftotext they are
                  visible in the process list
 
@@ -259,7 +266,9 @@ fn main() -> ExitCode {
     let mut opts = Options::default();
     let mut want_report = false;
     let mut strict = false;
-    let mut window: Option<usize> = None;
+    let mut win = cli::WindowArgs::default();
+    let mut context: Option<usize> = None;
+    let mut estimate = false;
     let mut page_sizes = false;
     // pdftotext options, in order
     let mut pass: Vec<OsString> = Vec::new();
@@ -284,9 +293,15 @@ fn main() -> ExitCode {
             input = Some(a);
             continue;
         };
+        let mut next = || args.next().and_then(|v| v.into_string().ok());
+        match win.take(s, &mut next) {
+            Some(Ok(())) => continue,
+            Some(Err(e)) => return usage_error(&e),
+            None => {}
+        }
         match s {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                print!("{}", USAGE.replace("%WINDOW%", cli::WINDOW_HELP));
                 return ExitCode::SUCCESS;
             }
             "--" => options_done = true,
@@ -297,10 +312,10 @@ fn main() -> ExitCode {
             "--page-info" => page_sizes = true,
             "--page-markers" => opts.page_markers = true,
             "--strict" => strict = true,
-            "--stream" => window = Some(STREAM_WINDOW),
-            "--window" => match cli::parse_window(args.next().as_deref().and_then(|w| w.to_str())) {
-                Ok(w) => window = Some(w),
-                Err(e) => return usage_error(&e),
+            "--estimate-body" => estimate = true,
+            "--context" => match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<usize>().ok()) {
+                Some(n) if n <= cli::MAX_CONTEXT => context = Some(n),
+                _ => return usage_error(&format!("--context needs a number of pages from 0 to {}", cli::MAX_CONTEXT)),
             },
             "--params" => {
                 let Some(json) = args.next().and_then(|j| j.into_string().ok()) else {
@@ -313,11 +328,7 @@ fn main() -> ExitCode {
             }
             // poppler reads page numbers into an int with atoi: keep them in 1..=i32::MAX
             "-f" | "-l" => match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<i32>().ok()) {
-                Some(n) if n >= 1 => {
-                    *(if s == "-f" { &mut first } else { &mut last }) = Some(n);
-                    pass.push(a);
-                    pass.push(n.to_string().into());
-                }
+                Some(n) if n >= 1 => *(if s == "-f" { &mut first } else { &mut last }) = Some(n),
                 _ => return usage_error(&format!("{s} needs a page number from 1 to {}", i32::MAX)),
             },
             "--opw" | "--upw" | "-opw" | "-upw" => {
@@ -410,6 +421,28 @@ fn main() -> ExitCode {
         // pictures and figures are found through the markers
         opts.markers = true;
     }
+    if estimate && (images.dir.is_some() || plan_in.is_some() || plan_out.is_some()) {
+        return usage_error("--estimate-body takes no image options");
+    }
+    // the page range pdftotext reads: the range and its context, within the document (pdftotext
+    // clamps -l to the last page)
+    let mut window = win.window();
+    // by default a range reads the furniture window either side, so its pages are judged as in
+    // a whole run
+    let context = context.unwrap_or(win.furniture().unwrap_or(0)).min(cli::MAX_CONTEXT) as i32;
+    if let Some(f) = first {
+        let read = f.saturating_sub(context).max(1);
+        window.skip = (f - read) as usize;
+        window.first_page = read as u32;
+        pass.push("-f".into());
+        pass.push(read.to_string().into());
+    }
+    if let Some(l) = last {
+        window.emit = Some((l - first.unwrap_or(1) + 1) as usize);
+        window.after = context as usize;
+        pass.push("-l".into());
+        pass.push(l.saturating_add(context).to_string().into());
+    }
     if images.link_flags() && !opts.markers {
         return usage_error(
             "--images-link-prefix, --images-repeats, --raster-format, --vector-format and --scan-pages need --markers \
@@ -443,7 +476,7 @@ fn main() -> ExitCode {
     }
     // what an images plan is bound to, besides the PDF's bytes and the page range
     let settings = plan::settings_digest(&format!(
-        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}{}",
+        "params {params:?}\nstrict {strict}\nwindow {window:?}\ncontext {context}\nmath {}\ntables {:?}\nmarkers {}\n{}{}",
         opts.math,
         opts.tables,
         opts.markers,
@@ -486,6 +519,14 @@ fn main() -> ExitCode {
     let facts_target = facts_file.as_ref().map(|f| f.raw_fd() as u32).or(facts_fd);
     if let Some(fd) = facts_target {
         let mut args: Vec<OsString> = vec!["-page-facts-fd".into(), fd.to_string().into()];
+        // the context pages read around a range are not the caller's: facts for the range only
+        if context > 0 {
+            for (flag, page) in [("-page-facts-f", first), ("-page-facts-l", last)] {
+                if let Some(n) = page {
+                    args.extend([flag.into(), n.to_string().into()]);
+                }
+            }
+        }
         args.append(&mut facts_opts);
         facts_opts = args;
     }
@@ -544,6 +585,7 @@ fn main() -> ExitCode {
             &params,
             &opts,
             window,
+            estimate,
             strict,
             page_sizes,
             &pass,
@@ -565,13 +607,17 @@ fn main() -> ExitCode {
     code
 }
 
+/// `--images-plan-out`: the file, the page range and the image settings.
+type PlanOut = (NewFile, (Option<u32>, Option<u32>), String);
+
 /// Runs pdftotext, converts, and extracts the images when asked (`out_dir` is taken once
 /// extraction succeeds).
 #[allow(clippy::too_many_arguments)]
 fn convert(
     params: &Params,
     opts: &Options,
-    window: Option<usize>,
+    window: doppler_md::Window,
+    estimate: bool,
     strict: bool,
     page_sizes: bool,
     pass: &[OsString],
@@ -580,7 +626,7 @@ fn convert(
     images: &Settings,
     passwords: &[OsString],
     out_dir: &mut Option<OutDir>,
-    plan_out: Option<(NewFile, (Option<u32>, Option<u32>), String)>,
+    plan_out: Option<PlanOut>,
     facts_opts: &[OsString],
     mut facts_file: Option<FactsFile>,
     (files_settings, previous): (&str, Option<&resume::Previous>),
@@ -638,12 +684,24 @@ fn convert(
          -bbox-layout -wordmeta -rules)",
         exe.display()
     );
+    let window = if estimate { doppler_md::Window { emit: Some(0), ..window } } else { window };
     let mut run = cli::Run::new(params, opts, window);
+    if estimate {
+        run.stop_at_body();
+    }
     run.set_link_style(images.link_style());
     let read = match child.stdout.take() {
         Some(mut out) => run.read_from(&mut out),
         None => Ok(()),
     };
+    if estimate && read.is_ok() && run.body_known() {
+        // the sample is complete: the rest of the document is not needed
+        let _ = child.kill();
+        let _ = child.wait();
+        let (report, _) = run.finish_report();
+        println!("{}", report.body_to_json());
+        return ExitCode::SUCCESS;
+    }
     // the pipe is closed here: after a write error on our stdout pdftotext stops on EPIPE
     // instead of blocking, and its status no longer matters
     if run.write_failed() {
@@ -705,6 +763,16 @@ fn convert(
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
+    if estimate {
+        // every page read is context here (none is written): the estimate stands when any was
+        // read. The sample ended with the input (a short document or range, or no window)
+        if report.pages_read == 0 {
+            eprintln!("pdftomarkdown: {no_page}");
+            return ExitCode::from(2);
+        }
+        println!("{}", report.body_to_json());
+        return ExitCode::SUCCESS;
+    }
     // a page facts file that could not be written: the Markdown stands, exit status 6
     let mut code = if facts_failed { Some(6) } else { None };
     if let Some((f, b)) = plan_out
@@ -939,6 +1007,6 @@ fn pdftotext() -> PathBuf {
 }
 
 fn usage_error(msg: &str) -> ExitCode {
-    eprint!("pdftomarkdown: {msg}\n{USAGE}");
+    eprint!("pdftomarkdown: {msg}\n{}", USAGE.replace("%WINDOW%", cli::WINDOW_HELP));
     ExitCode::from(2)
 }
