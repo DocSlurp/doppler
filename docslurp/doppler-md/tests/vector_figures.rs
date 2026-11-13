@@ -342,6 +342,61 @@ fn shaded_tables_zebra_rows_highlights_and_borders_are_not_bar_charts() {
 }
 
 #[test]
+fn redactions_form_fields_and_label_bars_follow_the_shared_rule() {
+    // council M1/M2: redaction boxes (near black) in a bordered table column, ragged widths on one left edge, no words
+    // under them, and the table's own column border along that edge
+    let redacted_table = rule(72.0, 200.0, 540.0, 200.5) + &rule(72.0, 200.0, 72.5, 400.0) + &rule(200.0, 200.0, 200.5, 400.0)
+        + &(0..6).map(|i| bx(202.0, 210.0 + 30.0 * i as f64, 262.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, "#000000")).collect::<String>()
+        + &(0..6).map(|i| line_at(80.0, 210.0 + 30.0 * i as f64, "Witness")).collect::<String>();
+    assert!(markers(&redacted_table).is_empty(), "redacted table column");
+    // a redacted paragraph: blacked-out lines from the left margin, a rule under the last one
+    let redacted_paragraph = (0..6).map(|i| bx(72.0, 200.0 + 14.0 * i as f64, 540.0 - 31.0 * i as f64, 211.0 + 14.0 * i as f64, "#0a0a0a")).collect::<String>()
+        + &rule(72.0, 290.0, 540.0, 290.5);
+    assert!(markers(&redacted_paragraph).is_empty(), "redacted paragraph");
+    // tinted form fields stacked on one left edge, each with its own outline (its left edge is no axis: it spans one field)
+    let form = (0..4)
+        .map(|i| {
+            let (y, w) = (220.0 + 30.0 * i as f64, [300.0, 120.0, 200.0, 80.0][i]);
+            bx(200.0, y, 200.0 + w, y + 18.0, "#e0eeff") + &rule(200.0, y, 200.5, y + 18.0) + &rule(200.0, y + 18.0, 200.0 + w, y + 18.5)
+                + &line_at(100.0, y + 3.0, "Name")
+        })
+        .collect::<String>();
+    assert!(markers(&form).is_empty(), "form fields");
+    // a common chart style: horizontal bars with their category label inside, at the left end; a third of the bars
+    // holding words is the limit, so three labelled bars are not a chart in either tool (PageFacts.cc agrees)
+    let labelled = axes() + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff") + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff") + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff")
+        + &line_at(104.0, 164.0, "London") + &line_at(104.0, 204.0, "Paris") + &line_at(104.0, 244.0, "Tokyo");
+    assert!(markers(&labelled).is_empty(), "labels inside bars");
+}
+
+#[test]
+fn bar_runs_are_capped_charged_and_leave_drawings_their_ids() {
+    // council M4: boxes thicker than a rule (the producer writes <= 1.5 pt fills as rules), in many rows of runs that pass
+    // the spread test, each row with its own axis, among thousands of words and strokes
+    let mut body = String::new();
+    for row in 0..60 {
+        let y = 150.0 + 9.0 * row as f64;
+        for run in 0..20 {
+            let x = 40.0 + 27.0 * run as f64;
+            body += &(bx(x, y - 3.0, x + 2.0, y, "#2a9d8f") + &bx(x + 3.0, y - 5.0, x + 5.0, y, "#2a9d8f") + &bx(x + 6.0, y - 4.0, x + 8.0, y, "#2a9d8f"));
+            body += &rule(x - 1.0, y, x + 9.0, y + 0.4);
+        }
+    }
+    for i in 0..4000 {
+        body += &rule(30.0 + (i % 500) as f64, 700.0, 30.5 + (i % 500) as f64, 702.0);
+    }
+    let started = std::time::Instant::now();
+    let (_, report) = convert(&page(2, &body), true);
+    let fates = vector_fates(&report);
+    assert!(fates.len() <= 64, "at most 64 bar runs a page: {}", fates.len());
+    assert!(started.elapsed().as_secs() < 20);
+    // a drawing keeps its id (p2.g1) and its place when bars are on the same page
+    let combo = axes() + &chart_body() + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    let found = markers(&combo);
+    assert_eq!(found.first().map(|f| f.0.as_str()), Some("p2.g1"), "{found:?}");
+}
+
+#[test]
 fn many_boxes_stay_bounded() {
     // 20000 boxes on a few baselines: the converter finishes and finds at most a few runs
     let mut body = axes();

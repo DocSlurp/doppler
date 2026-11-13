@@ -1249,20 +1249,33 @@ struct FormCache
 };
 
 
-// Bar charts drawn only with filled boxes (DocSlurp/doppler#38). The producer records them as box rules, never as drawing
-// cells, so getGraphics() never sees them. The same rule as doppler-md's vector::bar_regions: at least kMinBars filled boxes on
-// one baseline (a shared bottom edge, or left edge for horizontal bars, to half a point), each within kMaxBarGap bar widths of
-// the next, lengths that differ (kMinBarSpread: shaded rows and zebra stripes are one length), few holding words
-// (kMaxBarTextShare, a bar's centre on the text coverage grid: shaded cells and highlights hold them), and a stroked rule
-// touching the baseline (an axis or a tick). White fills, boxes over a quarter of the page and the header and footer bands are
-// never bars. A run takes in the boxes stacked on it; runs that overlap are one cluster. At most kMaxBarBoxes boxes a page;
-// every comparison is charged to `budget` (the drawing budget getGraphics uses), and none is made once it is spent.
+// Bar charts drawn only with filled boxes (doppler#38), which the producer writes as box rules and never as graphics. The
+// same rule as doppler-md `vector::bar_regions` (the figures pdftomarkdown makes), constant for constant:
+// - a run is at least kMinBars boxes whose bases (the bottom edge of vertical bars, the left edge of horizontal ones) are
+//   within kBarBaseTolerance points, with gaps of at most kMaxBarGap times the widest bar so far;
+// - its lengths differ (kMinBarSpread: shaded rows and zebra stripes are one length);
+// - few hold a word's centre (kMaxBarTextShare: shaded cells and highlights hold them);
+// - a stroked axis lies along the baseline (within kBarAxisReach points) and spans kBarAxisSpan of the run: a box's own
+//   outline or a cell border beside one box is not an axis (form fields);
+// - white and near-black fills (backgrounds, redactions), boxes over a quarter of the page and the header and footer bands
+//   are never bars.
+// A run takes in the boxes stacked on it (along its orientation, until nothing changes); runs that overlap are one cluster.
+// At most kMaxBarBoxes boxes and kMaxBarRuns runs a page. Bar detection has its own per-page budget (kBarBudget): it never
+// spends the document's drawing budget, so no page can blind later pages' getGraphics. Over a cap or the budget, the
+// page's limitHit is set and no more comparisons are made.
 constexpr size_t kMaxBarBoxes = 4000;
+constexpr size_t kMaxBarRuns = 64;
+constexpr size_t kMaxBarWords = 100000;
+constexpr size_t kBarBudget = 8000000;
 constexpr size_t kMinBars = 3;
 constexpr double kMaxBarGap = 3.0;
 constexpr double kMinBarSpread = 1.15;
 constexpr double kMaxBarTextShare = 0.34;
 constexpr double kBarFurnitureBand = 0.09;
+constexpr double kBarBaseTolerance = 0.5;
+constexpr double kBarAxisReach = 2.0;
+constexpr double kBarAxisSpan = 0.8;
+constexpr int kBarStackRounds = 4;
 constexpr double kBarRuleReach = 12; // points: an axis or tick a little way off the bars is still the chart's
 
 struct BarBox
@@ -1270,101 +1283,157 @@ struct BarBox
     double x0, y0, x1, y1;
 };
 
+struct BarLine
+{
+    double at, lo, hi;
+};
+
+struct WordCentre
+{
+    double x, y;
+};
+
 bool spend(size_t *budget, size_t n, bool *hit)
 {
-    if (!budget) {
-        return true;
-    }
     if (*budget < n) {
         *budget = 0;
-        if (hit) {
-            *hit = true;
-        }
+        *hit = true;
         return false;
     }
     *budget -= n;
     return true;
 }
 
-std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const CoverageGrid &textGrid, double pageW, double pageH, size_t *budget, bool *budgetHit)
+// White (a background) or near black (redaction boxes), on 8-bit channels as doppler-md reads the producer's #rrggbb.
+bool barFillExcluded(double r, double g, double b)
+{
+    auto c = [](double v) { return std::isfinite(v) ? std::lround(std::clamp(v, 0.0, 1.0) * 255) : 0L; };
+    const long R = c(r), G = c(g), B = c(b);
+    return (R == 255 && G == 255 && B == 255) || (R <= 20 && G <= 20 && B <= 20);
+}
+
+BarBox barUnion(const BarBox &a, const BarBox &b)
+{
+    return { std::min(a.x0, b.x0), std::min(a.y0, b.y0), std::max(a.x1, b.x1), std::max(a.y1, b.y1) };
+}
+
+// `words` sorted by x. Returns clusters to add; joins into `drawings` (getGraphics' clusters) any it overlaps.
+std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, double pageW, double pageH, std::vector<TextGraphic> &drawings, bool *limitHit)
 {
     std::vector<TextGraphic> out;
     if (!(pageW > 0) || !(pageH > 0) || !std::isfinite(pageW * pageH)) {
         return out;
     }
+    size_t budgetLeft = kBarBudget;
+    size_t *budget = &budgetLeft;
     const double area = pageW * pageH, band = kBarFurnitureBand * pageH;
     std::vector<BarBox> filled;
     std::vector<BarBox> strokes;
+    std::vector<BarLine> across, down;
     for (const TextRule &r : rules) {
         if (r.imageMask) {
             continue;
         }
         const BarBox b { r.xMin, r.yMin, r.xMax, r.yMax };
-        if (!r.box) {
-            strokes.push_back(b);
+        const double w = b.x1 - b.x0, h = b.y1 - b.y0;
+        if (!std::isfinite(w) || !std::isfinite(h)) {
             continue;
         }
-        const double w = b.x1 - b.x0, h = b.y1 - b.y0;
-        const bool white = r.r >= 0.999 && r.g >= 0.999 && r.b >= 0.999;
-        if (white || !std::isfinite(w) || !std::isfinite(h) || !(w > 0) || !(h > 0) || w * h >= 0.25 * area || b.y1 <= band || b.y0 >= pageH - band) {
+        if (!r.box) {
+            strokes.push_back(b);
+            if (h <= kBarAxisReach && w > h) {
+                across.push_back({ (b.y0 + b.y1) / 2, b.x0, b.x1 });
+            } else if (w <= kBarAxisReach && h > w) {
+                down.push_back({ (b.x0 + b.x1) / 2, b.y0, b.y1 });
+            }
+            continue;
+        }
+        if (barFillExcluded(r.r, r.g, r.b) || !(w > 0) || !(h > 0) || w * h >= 0.25 * area || b.y1 <= band || b.y0 >= pageH - band) {
             continue;
         }
         if (filled.size() < kMaxBarBoxes) {
             filled.push_back(b);
         }
     }
-    if (filled.size() < kMinBars || !spend(budget, 2 * filled.size(), budgetHit)) {
+    if (filled.size() < kMinBars || !spend(budget, 4 * filled.size() + 2 * (strokes.size() + words.size()) + 1, limitHit)) {
         return out;
     }
-    std::vector<BarBox> found;
+    auto byAt = [](const BarLine &a, const BarLine &b) { return a.at < b.at; };
+    std::sort(across.begin(), across.end(), byAt);
+    std::sort(down.begin(), down.end(), byAt);
+    std::vector<std::pair<BarBox, bool>> found;
+    bool full = false;
+    // the spread first (cheapest), then words, then the axis; every comparison charged
     auto consider = [&](const std::vector<BarBox> &run, bool vertical) {
-        if (run.size() < kMinBars || !spend(budget, run.size() + strokes.size(), budgetHit)) {
+        if (full || run.size() < kMinBars || !spend(budget, run.size(), limitHit)) {
             return;
         }
         double lo = INFINITY, hi = 0;
-        size_t withText = 0;
         BarBox u { INFINITY, INFINITY, -INFINITY, -INFINITY };
         for (const BarBox &b : run) {
             const double len = vertical ? b.y1 - b.y0 : b.x1 - b.x0;
             lo = std::min(lo, len);
             hi = std::max(hi, len);
-            if (textGrid.test((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, pageW, pageH)) {
-                ++withText;
-            }
-            u = { std::min(u.x0, b.x0), std::min(u.y0, b.y0), std::max(u.x1, b.x1), std::max(u.y1, b.y1) };
+            u = barUnion(u, b);
         }
-        if (!(lo > 0) || hi < kMinBarSpread * lo || double(withText) > kMaxBarTextShare * double(run.size())) {
+        if (!(lo > 0) || hi < kMinBarSpread * lo) {
             return;
         }
-        const double base = vertical ? u.y1 : u.x0;
-        for (const BarBox &st : strokes) {
-            const bool touches = vertical ? (st.y0 <= base + 2 && st.y1 >= base - 2 && st.x1 >= u.x0 - 2 && st.x0 <= u.x1 + 2)
-                                          : (st.x0 <= base + 2 && st.x1 >= base - 2 && st.y1 >= u.y0 - 2 && st.y0 <= u.y1 + 2);
-            if (touches) {
-                found.push_back(u);
+        const size_t limit = size_t(std::floor(kMaxBarTextShare * double(run.size())));
+        size_t withText = 0;
+        for (const BarBox &b : run) {
+            auto it = std::lower_bound(words.begin(), words.end(), b.x0, [](const WordCentre &w, double x) { return w.x < x; });
+            bool held = false;
+            for (; it != words.end(); ++it) {
+                if (!spend(budget, 1, limitHit)) {
+                    return;
+                }
+                if (it->x > b.x1) {
+                    break;
+                }
+                if (b.y0 <= it->y && it->y <= b.y1) {
+                    held = true;
+                    break;
+                }
+            }
+            if (held && ++withText > limit) {
+                return;
+            }
+        }
+        const std::vector<BarLine> &lines = vertical ? across : down;
+        const double at = vertical ? u.y1 : u.x0, from = vertical ? u.x0 : u.y0, to = vertical ? u.x1 : u.y1;
+        auto first = std::lower_bound(lines.begin(), lines.end(), at - kBarAxisReach, [](const BarLine &l, double v) { return l.at < v; });
+        for (auto it = first; it != lines.end() && it->at <= at + kBarAxisReach; ++it) {
+            if (!spend(budget, 1, limitHit)) {
+                return;
+            }
+            if (std::min(it->hi, to) - std::max(it->lo, from) >= kBarAxisSpan * (to - from)) {
+                found.push_back({ u, vertical });
+                if (found.size() >= kMaxBarRuns) {
+                    full = true;
+                    *limitHit = true;
+                }
                 return;
             }
         }
     };
     for (const bool vertical : { true, false }) {
-        auto key = [&](const BarBox &b) { return std::round((vertical ? b.y1 : b.x0) * 2); };
+        auto base = [&](const BarBox &b) { return vertical ? b.y1 : b.x0; };
+        auto along = [&](const BarBox &b) { return vertical ? b.x0 : b.y0; };
         std::vector<size_t> order(filled.size());
         for (size_t i = 0; i < order.size(); ++i) {
             order[i] = i;
         }
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-            const double ka = key(filled[a]), kb = key(filled[b]);
-            if (ka != kb) {
-                return ka < kb;
-            }
-            return vertical ? filled[a].x0 < filled[b].x0 : filled[a].y0 < filled[b].y0;
-        });
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return base(filled[a]) < base(filled[b]); });
         size_t start = 0;
-        while (start < order.size()) {
+        while (start < order.size() && !full && *budget > 0) {
+            // a baseline: bases within kBarBaseTolerance of its first
+            const double first = base(filled[order[start]]);
             size_t end = start + 1;
-            while (end < order.size() && key(filled[order[end]]) == key(filled[order[start]])) {
+            while (end < order.size() && base(filled[order[end]]) - first <= kBarBaseTolerance) {
                 ++end;
             }
+            std::sort(order.begin() + start, order.begin() + end, [&](size_t a, size_t b) { return along(filled[a]) < along(filled[b]); });
             std::vector<BarBox> run;
             double thick = 0;
             for (size_t k = start; k < end; ++k) {
@@ -1387,19 +1456,30 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const C
     }
     // a run takes in the boxes stacked on it, and runs that now overlap are one cluster
     std::vector<BarBox> merged;
-    for (BarBox r : found) {
-        if (!spend(budget, filled.size() + merged.size(), budgetHit)) {
-            break;
-        }
-        for (const BarBox &b : filled) {
-            if (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 <= r.y1 + 1 && b.y1 >= r.y0 - 1) {
-                r = { std::min(r.x0, b.x0), std::min(r.y0, b.y0), std::max(r.x1, b.x1), std::max(r.y1, b.y1) };
+    for (auto [r, vertical] : found) {
+        for (int round = 0; round < kBarStackRounds; ++round) {
+            if (!spend(budget, filled.size() + 1, limitHit)) {
+                break;
             }
+            const BarBox before = r;
+            for (const BarBox &b : filled) {
+                const bool stacked = vertical ? (b.x0 >= r.x0 - 1 && b.x1 <= r.x1 + 1 && b.y0 <= r.y1 + 1 && b.y1 >= r.y0 - 1)
+                                              : (b.y0 >= r.y0 - 1 && b.y1 <= r.y1 + 1 && b.x0 <= r.x1 + 1 && b.x1 >= r.x0 - 1);
+                if (stacked) {
+                    r = barUnion(r, b);
+                }
+            }
+            if (r.x0 == before.x0 && r.y0 == before.y0 && r.x1 == before.x1 && r.y1 == before.y1) {
+                break;
+            }
+        }
+        if (!spend(budget, merged.size() + 1, limitHit)) {
+            break;
         }
         bool joined = false;
         for (BarBox &o : merged) {
             if (std::min(o.x1, r.x1) > std::max(o.x0, r.x0) && std::min(o.y1, r.y1) > std::max(o.y0, r.y0)) {
-                o = { std::min(o.x0, r.x0), std::min(o.y0, r.y0), std::max(o.x1, r.x1), std::max(o.y1, r.y1) };
+                o = barUnion(o, r);
                 joined = true;
                 break;
             }
@@ -1409,7 +1489,7 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const C
         }
     }
     for (BarBox r : merged) {
-        if (!spend(budget, filled.size() + strokes.size(), budgetHit)) {
+        if (!spend(budget, filled.size() + strokes.size() + drawings.size() + 1, limitHit)) {
             break;
         }
         TextGraphic g {};
@@ -1427,8 +1507,24 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const C
             const bool near = st.x1 >= core.x0 - kBarRuleReach && st.x0 <= core.x1 + kBarRuleReach && st.y1 >= core.y0 - kBarRuleReach && st.y0 <= core.y1 + kBarRuleReach;
             if (near && std::max(st.x1 - st.x0, st.y1 - st.y0) <= 2 * reach) {
                 ++g.paths;
-                r = { std::min(r.x0, st.x0), std::min(r.y0, st.y0), std::max(r.x1, st.x1), std::max(r.y1, st.y1) };
+                r = barUnion(r, st);
             }
+        }
+        // a bar chart with a drawn trend line or curve is one figure, as in doppler-md: joined into the drawing cluster
+        bool joined = false;
+        for (TextGraphic &d : drawings) {
+            if (std::min(d.xMax, r.x1) > std::max(d.xMin, r.x0) && std::min(d.yMax, r.y1) > std::max(d.yMin, r.y0)) {
+                d.xMin = std::min(d.xMin, r.x0);
+                d.yMin = std::min(d.yMin, r.y0);
+                d.xMax = std::max(d.xMax, r.x1);
+                d.yMax = std::max(d.yMax, r.y1);
+                d.paths += g.paths;
+                joined = true;
+                break;
+            }
+        }
+        if (joined) {
+            continue;
         }
         g.xMin = r.x0;
         g.yMin = r.y0;
@@ -1475,6 +1571,8 @@ struct PageFacts::State
         bool visible;
     };
     std::vector<WordBox> wordBoxes;
+    // word centres (vectors: bar charts hold few words; at most kMaxBarWords a page)
+    std::vector<WordCentre> wordCentres;
     // characters by word size in half points (vectors: the body size the grid search scales
     // with), the sizes in first-seen order, and whether a size fell outside the bins
     std::vector<uint64_t> sizeChars; // maxSizeBins, allocated once
@@ -2031,6 +2129,9 @@ void PageFacts::onWord(const TextWord *word)
         // visible as TextPage counts it (getInvisibleWordCount)
         s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible() });
     }
+    if (wants(Vectors) && s.wordCentres.size() < kMaxBarWords && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
+        s.wordCentres.push_back({ (x0 + x1) / 2, (y0 + y1) / 2 });
+    }
     if (wants(Vectors)) {
         // pdftomarkdown's body size: the most common size rounded to half a point, by characters
         // (a size outside the bins makes the body size uncertain: gridsTruncated)
@@ -2542,8 +2643,10 @@ void PageFacts::endPage(const TextPage &text)
         }
         bool graphicsLimit = false;
         std::vector<TextGraphic> clusters = text.getGraphics(3.0, &graphicsBudget, &graphicsLimit);
-        // Bar charts drawn only with filled boxes (doppler#38), after the drawing clusters (their list order is unchanged)
-        for (const TextGraphic &g : barClusters(text.getRules(), s.textGrid, pageW, pageH, &graphicsBudget, &graphicsLimit)) {
+        // Bar charts drawn only with filled boxes (doppler#38), after the drawing clusters (their list order is unchanged);
+        // a bar cluster overlapping a drawing cluster is joined into it. Its own per-page budget (never graphicsBudget).
+        std::sort(s.wordCentres.begin(), s.wordCentres.end(), [](const WordCentre &a, const WordCentre &b) { return a.x < b.x; });
+        for (const TextGraphic &g : barClusters(text.getRules(), s.wordCentres, pageW, pageH, clusters, &graphicsLimit)) {
             clusters.push_back(g);
         }
         const int vectorCells = s.vectorGrid.count();

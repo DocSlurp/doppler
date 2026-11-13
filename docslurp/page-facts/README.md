@@ -259,11 +259,18 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `shadings` | `sh` operators and shading-pattern paints |
 | `patterns` | tiling-pattern paints |
 | `clips` | clipping operators (`W`, `W*`) |
-| `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
-| `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
+| `figureClusters` | clusters of curved or diagonal drawing, and bar charts drawn only with filled boxes (the raw material of pdftomarkdown's vector figures, before its size and density tests). Bar charts follow doppler-md `vector::bar_regions` (below the table); one overlapping a drawing cluster is joined into it, otherwise it is listed after the drawing clusters, at most 64 a page |
+| `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`). A bar cluster has `curves` and `segments` 0 (unless joined into a drawing), and its `paths` count its boxes plus the stroked rules near it |
 | `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`) |
 | `gridsTruncated` | more than 64 grids, or the grid search hit its rule or work cap: the list is incomplete |
-| `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far (`drawing-limit`) |
+| `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far, or the page's bar-chart search hit its 64-run cap or its own per-page budget (8M comparisons, never the run's figure budget) (`drawing-limit`) |
+
+**Bar charts** (doppler#38): a run is at least 3 filled boxes whose bases (bottom edge, or left edge for horizontal
+bars) are within 0.5 pt, with gaps of at most 3 times the widest bar; its lengths differ (longest at least 1.15 times
+the shortest); at most a third of the bars hold a word's centre; and a stroked axis lies within 2 pt of the baseline and
+spans at least 80% of the run. White and near-black fills (8-bit channels all 255, or all at most 20: backgrounds,
+redactions), boxes over a quarter of the page and the 9% header and footer bands are never bars. At most 4,000 boxes a
+page are read. The same rule and constants as doppler-md `vector::bar_regions`.
 
 **Ruled grids** are the grids pdftomarkdown's ruled-table search (`doppler-md`
 `tables::ruled_tables`) starts from, found from the rules alone with its default parameters,

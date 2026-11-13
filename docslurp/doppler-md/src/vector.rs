@@ -8,7 +8,8 @@
 //! touch it (axes, ticks, the boxes of a diagram) and by the short text lines around it (tick
 //! labels, axis titles, legends). The figure gets the marker `![image](doppler-image:pN.gK)`,
 //! a paragraph of its own in reading order, with the text inside its region after it; `K` is
-//! the position of its first `<graphic>` in the producer's list for the page (one-based).
+//! the position of its first `<graphic>` in the producer's list for the page (one-based); a bar chart drawn only
+//! with boxes (no `<graphic>`) takes the next K past the page's last graphic, one per bar region, in order.
 
 use std::rc::Rc;
 
@@ -59,31 +60,6 @@ pub fn place(
     let mut notes: Vec<Note> = Vec::with_capacity(groups.len() + bars.len());
     // accepted drawings: (note index, first graphic, region, labels)
     let mut regions: Vec<(usize, usize, Bbox, Vec<usize>)> = Vec::new();
-    // Bar charts: runs of filled boxes on one baseline (bar_regions). They have no `<graphic>`, so
-    // their ids follow the page's graphics: `pN.gK` with K past the last graphic, one per run.
-    for (j, b) in bars.iter().enumerate() {
-        let rep = gs.len() + j;
-        regions.push((notes.len(), rep, *b, Vec::new()));
-        notes.push(Note {
-            id: format!("p{number}.g{}", rep + 1),
-            page: number,
-            bbox: *b,
-            px: (0, 0),
-            mask: false,
-            vector: true,
-            fate: Fate::Block,
-            members: 1,
-            group: None,
-            obj: None,
-            plain: false,
-            text: true,
-            file: None,
-            degraded: false,
-            link: None,
-            repeat_of: None,
-            scan: None,
-        });
-    }
     for unit in &groups {
         let b = union(unit.iter().map(|&i| boxes[i]));
         let (w, h) = (b.2 - b.0, b.3 - b.1);
@@ -121,6 +97,33 @@ pub fn place(
             vector: true,
             fate: fate.unwrap_or(Fate::Block),
             members: unit.len(),
+            group: None,
+            obj: None,
+            plain: false,
+            text: true,
+            file: None,
+            degraded: false,
+            link: None,
+            repeat_of: None,
+            scan: None,
+        });
+    }
+    // Bar charts: runs of filled boxes on one baseline (bar_regions), after the page's drawings so
+    // those keep their ids and their place as the first of any merge (council L6), and only while
+    // the page has room under MAX_FIGURES (council L1). They have no `<graphic>`, so their ids
+    // follow the graphics: `pN.gK` with K past the last graphic, one per run.
+    for (j, b) in bars.iter().enumerate().take(MAX_FIGURES.saturating_sub(regions.len())) {
+        let rep = gs.len() + j;
+        regions.push((notes.len(), rep, *b, Vec::new()));
+        notes.push(Note {
+            id: format!("p{number}.g{}", rep + 1),
+            page: number,
+            bbox: *b,
+            px: (0, 0),
+            mask: false,
+            vector: true,
+            fate: Fate::Block,
+            members: 1,
             group: None,
             obj: None,
             plain: false,
@@ -273,22 +276,71 @@ pub fn place(
 
 /// Most filled boxes of one page considered for bar charts (the producer keeps up to 20000 rules).
 const MAX_BAR_BOXES: usize = 4000;
+/// Most bar runs one page yields (a chart page has a few; far below MAX_FIGURES).
+const MAX_BAR_RUNS: usize = 64;
+/// Bars whose bases differ by at most this share a baseline (points).
+const BAR_BASE_TOLERANCE: f64 = 0.5;
+/// An axis lies within this of the baseline (points) and spans this share of the run along it.
+const BAR_AXIS_REACH: f64 = 2.0;
+const BAR_AXIS_SPAN: f64 = 0.8;
+/// Rounds of taking in stacked boxes.
+const BAR_STACK_ROUNDS: usize = 4;
+
+/// `#rrggbb` as its channels.
+fn rgb(color: &str) -> Option<(u8, u8, u8)> {
+    let h = color.strip_prefix('#')?;
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some((c(0)?, c(2)?, c(4)?))
+}
+
+/// A fill that is never a bar: white (a background), or near black (redaction boxes; council M1/M2).
+/// Shared with PageFacts.cc `barFillExcluded` (8-bit channels: all 255, or all at most 20).
+fn bar_fill_excluded(color: &str) -> bool {
+    match rgb(color) {
+        Some((r, g, b)) => (r == 255 && g == 255 && b == 255) || (r <= 20 && g <= 20 && b <= 20),
+        None => true,
+    }
+}
+
+/// A stroked line along one axis: its position across (sorted on it) and its extent along.
+#[derive(Clone, Copy)]
+struct Line {
+    at: f64,
+    lo: f64,
+    hi: f64,
+}
+
+/// Lines sorted by `at`, and those within `reach` of `at` (binary search, then a scan).
+fn lines_near(lines: &[Line], at: f64, reach: f64) -> &[Line] {
+    let lo = lines.partition_point(|l| l.at < at - reach);
+    let hi = lines.partition_point(|l| l.at <= at + reach);
+    &lines[lo..hi.max(lo)]
+}
 
 /// Bar charts drawn with filled axis-aligned boxes, which the producer writes as `<box>` rules and
-/// never as `<graphic>` drawing. A run is at least `bar_min_count` boxes sharing a baseline (the
-/// bottom edge for vertical bars, the left edge for horizontal ones) with gaps of at most
-/// `bar_max_gap` bar widths, lengths that differ (`bar_min_spread`: shaded table rows and zebra
-/// stripes are one length), few holding words (`bar_max_text_share`: shaded cells and highlights
-/// hold them), and a stroked rule touching the baseline (an axis or a tick). The run's region then
-/// takes in the boxes stacked on it. White fills (backgrounds) and boxes covering a quarter of the
-/// page (panels, page borders) are not bars. Charged to `budget`; once it runs out, no more runs.
+/// never as `<graphic>` drawing. The same rule as PageFacts.cc `barClusters` (the router's facts):
+/// - a run is at least `bar_min_count` boxes whose bases (the bottom edge of vertical bars, the
+///   left edge of horizontal ones) are within half a point, with gaps of at most `bar_max_gap`
+///   times the widest bar so far;
+/// - its lengths differ (`bar_min_spread`: shaded table rows and zebra stripes are one length);
+/// - few hold a word's centre (`bar_max_text_share`: shaded cells and highlights hold them);
+/// - a stroked axis lies along the baseline and spans most of the run (`BAR_AXIS_SPAN`): a box's
+///   own outline or a cell border beside one box is not an axis (form fields, council M2);
+/// - white and near-black fills (backgrounds, redactions), boxes covering a quarter of the page and
+///   the furniture bands are never bars.
+/// A run then takes in the boxes stacked on it, and runs that overlap are one chart. At most
+/// MAX_BAR_BOXES boxes and MAX_BAR_RUNS runs a page; every comparison is charged to `budget`, and
+/// none is made once it runs out.
 fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
     let page_area = pmax(page.width * page.height, 1.0);
     let band = p.furniture_band * page.height;
     let filled: Vec<Bbox> = page
         .rules
         .iter()
-        .filter(|r| r.boxed && !r.color.eq_ignore_ascii_case("#ffffff"))
+        .filter(|r| r.boxed && !bar_fill_excluded(&r.color))
         .map(|r| (r.x0, r.y0, r.x1, r.y1))
         .filter(|b| {
             let (w, h) = (b.2 - b.0, b.3 - b.1);
@@ -296,58 +348,110 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         })
         .take(MAX_BAR_BOXES)
         .collect();
-    if (filled.len() as f64) < p.bar_min_count || !budget.spend(2 * filled.len()) {
+    if (filled.len() as f64) < p.bar_min_count || !budget.spend(4 * filled.len() + page.rules.len()) {
         return Vec::new();
     }
-    let strokes: Vec<Bbox> = page.rules.iter().filter(|r| !r.boxed).map(|r| (r.x0, r.y0, r.x1, r.y1)).collect();
-    let words: Vec<(f64, f64)> =
-        page.lines.iter().flat_map(|l| l.words.iter()).map(|w| ((w.x0 + w.x1) / 2.0, (w.y0 + w.y1) / 2.0)).collect();
-    let mut found: Vec<Bbox> = Vec::new();
-    // vertical bars share a bottom edge; horizontal bars a left edge
-    for vertical in [true, false] {
+    // stroked lines: horizontal ones (by y) and vertical ones (by x), each sorted once
+    let mut across: Vec<Line> = Vec::new();
+    let mut down: Vec<Line> = Vec::new();
+    for r in page.rules.iter().filter(|r| !r.boxed) {
+        let (w, h) = (r.x1 - r.x0, r.y1 - r.y0);
+        if !(w.is_finite() && h.is_finite()) {
+            continue;
+        }
+        if h <= BAR_AXIS_REACH && w > h {
+            across.push(Line { at: (r.y0 + r.y1) / 2.0, lo: r.x0, hi: r.x1 });
+        } else if w <= BAR_AXIS_REACH && h > w {
+            down.push(Line { at: (r.x0 + r.x1) / 2.0, lo: r.y0, hi: r.y1 });
+        }
+    }
+    across.sort_by(|a, b| a.at.total_cmp(&b.at));
+    down.sort_by(|a, b| a.at.total_cmp(&b.at));
+    // word centres, sorted by x
+    let mut words: Vec<(f64, f64)> = page
+        .lines
+        .iter()
+        .flat_map(|l| l.words.iter())
+        .map(|w| ((w.x0 + w.x1) / 2.0, (w.y0 + w.y1) / 2.0))
+        .filter(|c| c.0.is_finite() && c.1.is_finite())
+        .collect();
+    if !budget.spend(2 * (words.len() + across.len() + down.len()) + 1) {
+        return Vec::new();
+    }
+    words.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let ctx = BarContext { p, across: &across, down: &down, words: &words };
+    let mut found: Vec<(Bbox, bool)> = Vec::new();
+    'orient: for vertical in [true, false] {
         let base = |b: &Bbox| if vertical { b.3 } else { b.0 };
+        let along = |b: &Bbox| if vertical { b.0 } else { b.1 };
         let mut order: Vec<usize> = (0..filled.len()).collect();
-        // by baseline (half a point), then along it
-        order.sort_by(|&a, &b| {
-            let (ka, kb) = ((base(&filled[a]) * 2.0).round(), (base(&filled[b]) * 2.0).round());
-            ka.total_cmp(&kb).then(if vertical { filled[a].0.total_cmp(&filled[b].0) } else { filled[a].1.total_cmp(&filled[b].1) })
-        });
+        order.sort_by(|&a, &b| base(&filled[a]).total_cmp(&base(&filled[b])));
         let mut start = 0;
         while start < order.len() {
-            let key = (base(&filled[order[start]]) * 2.0).round();
+            // a baseline: bases within BAR_BASE_TOLERANCE of its first (council L4: no rounding edge)
+            let first = base(&filled[order[start]]);
             let mut end = start + 1;
-            while end < order.len() && (base(&filled[order[end]]) * 2.0).round() == key {
+            while end < order.len() && base(&filled[order[end]]) - first <= BAR_BASE_TOLERANCE {
                 end += 1;
             }
-            // split the baseline into runs of neighbouring bars
+            let group = &mut order[start..end];
+            group.sort_by(|&a, &b| along(&filled[a]).total_cmp(&along(&filled[b])));
+            // split the baseline into runs of neighbouring bars (a running widest bar, council L2)
             let mut run: Vec<Bbox> = Vec::new();
-            for &k in &order[start..end] {
+            let mut thick = 0.0f64;
+            for &k in group.iter() {
                 let b = filled[k];
+                let t = if vertical { b.2 - b.0 } else { b.3 - b.1 };
                 if let Some(last) = run.last() {
-                    let thick = run.iter().map(|r| if vertical { r.2 - r.0 } else { r.3 - r.1 }).fold(0.0, pmax);
                     let gap = if vertical { b.0 - last.2 } else { b.1 - last.3 };
-                    if gap < -0.5 || gap > p.bar_max_gap * pmax(thick, if vertical { b.2 - b.0 } else { b.3 - b.1 }) {
-                        if let Some(r) = bar_run(&run, vertical, p, &strokes, &words, budget) {
-                            found.push(r);
+                    if gap < -0.5 || gap > p.bar_max_gap * pmax(thick, t) {
+                        if let Some(r) = bar_run(&run, vertical, &ctx, budget) {
+                            found.push((r, vertical));
+                            if found.len() >= MAX_BAR_RUNS {
+                                break 'orient;
+                            }
                         }
                         run.clear();
+                        thick = 0.0;
                     }
                 }
                 run.push(b);
+                thick = pmax(thick, t);
             }
-            if let Some(r) = bar_run(&run, vertical, p, &strokes, &words, budget) {
-                found.push(r);
+            if let Some(r) = bar_run(&run, vertical, &ctx, budget) {
+                found.push((r, vertical));
+                if found.len() >= MAX_BAR_RUNS {
+                    break 'orient;
+                }
             }
             start = end;
         }
     }
-    // a run takes in the boxes stacked on it (stacked bars), and runs that now overlap are one chart
+    // a run takes in the boxes stacked on it (along its own orientation, until nothing changes;
+    // council L3), and runs that now overlap are one chart
     let mut out: Vec<Bbox> = Vec::new();
-    for mut r in found {
-        for b in &filled {
-            if b.0 >= r.0 - 1.0 && b.2 <= r.2 + 1.0 && b.1 <= r.3 + 1.0 && b.3 >= r.1 - 1.0 {
-                r = union([r, *b]);
+    for (mut r, vertical) in found {
+        for _ in 0..BAR_STACK_ROUNDS {
+            if !budget.spend(filled.len() + 1) {
+                return out;
             }
+            let before = r;
+            for b in &filled {
+                let stacked = if vertical {
+                    b.0 >= r.0 - 1.0 && b.2 <= r.2 + 1.0 && b.1 <= r.3 + 1.0 && b.3 >= r.1 - 1.0
+                } else {
+                    b.1 >= r.1 - 1.0 && b.3 <= r.3 + 1.0 && b.0 <= r.2 + 1.0 && b.2 >= r.0 - 1.0
+                };
+                if stacked {
+                    r = union([r, *b]);
+                }
+            }
+            if r == before {
+                break;
+            }
+        }
+        if !budget.spend(out.len() + 1) {
+            return out;
         }
         if let Some(o) = out.iter_mut().find(|o| overlap(**o, r) > 0.0) {
             *o = union([*o, r]);
@@ -358,31 +462,62 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
     out
 }
 
-/// A run of boxes on one baseline as a bar chart's region, or None (see bar_regions).
-fn bar_run(run: &[Bbox], vertical: bool, p: &Params, strokes: &[Bbox], words: &[(f64, f64)], budget: &mut Budget) -> Option<Bbox> {
-    if (run.len() as f64) < p.bar_min_count || !budget.spend(run.len() * (words.len() + strokes.len()) / 32 + 1) {
+struct BarContext<'a> {
+    p: &'a Params,
+    across: &'a [Line],
+    down: &'a [Line],
+    words: &'a [(f64, f64)],
+}
+
+/// A run of boxes on one baseline as a bar chart's region, or None (see bar_regions). Every
+/// comparison is charged: the spread first (cheapest), then words, then the axis.
+fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) -> Option<Bbox> {
+    if (run.len() as f64) < c.p.bar_min_count || !budget.spend(run.len()) {
         return None;
     }
     let lengths = run.iter().map(|b| if vertical { b.3 - b.1 } else { b.2 - b.0 });
     let (lo, hi) = lengths.fold((f64::INFINITY, 0.0f64), |(lo, hi), l| (pmin(lo, l), pmax(hi, l)));
-    if !(lo > 0.0 && hi >= p.bar_min_spread * lo) {
+    if !(lo > 0.0 && hi >= c.p.bar_min_spread * lo) {
         return None;
     }
-    let with_text = run.iter().filter(|b| words.iter().any(|&(x, y)| b.0 <= x && x <= b.2 && b.1 <= y && y <= b.3)).count();
-    if with_text as f64 > p.bar_max_text_share * run.len() as f64 {
-        return None;
+    // bars holding a word's centre: the words in the bar's x-range (binary search), then y
+    let limit = (c.p.bar_max_text_share * run.len() as f64).floor() as usize;
+    let mut with_text = 0usize;
+    for b in run {
+        let from = c.words.partition_point(|w| w.0 < b.0);
+        let mut held = false;
+        for w in &c.words[from..] {
+            if !budget.spend(1) {
+                return None;
+            }
+            if w.0 > b.2 {
+                break;
+            }
+            if b.1 <= w.1 && w.1 <= b.3 {
+                held = true;
+                break;
+            }
+        }
+        if held {
+            with_text += 1;
+            if with_text > limit {
+                return None;
+            }
+        }
     }
     let r = union(run.iter().copied());
-    // an axis or a tick: a stroked rule touching the baseline within the run's extent
-    let base = if vertical { r.3 } else { r.0 };
-    let axis = strokes.iter().any(|s| {
-        if vertical {
-            s.1 <= base + 2.0 && s.3 >= base - 2.0 && s.2 >= r.0 - 2.0 && s.0 <= r.2 + 2.0
-        } else {
-            s.0 <= base + 2.0 && s.2 >= base - 2.0 && s.3 >= r.1 - 2.0 && s.1 <= r.3 + 2.0
+    // the axis: a stroked line along the baseline, within BAR_AXIS_REACH of it, spanning most of the run
+    let (lines, at, lo, hi) = if vertical { (c.across, r.3, r.0, r.2) } else { (c.down, r.0, r.1, r.3) };
+    let need = BAR_AXIS_SPAN * (hi - lo);
+    for l in lines_near(lines, at, BAR_AXIS_REACH) {
+        if !budget.spend(1) {
+            return None;
         }
-    });
-    axis.then_some(r)
+        if pmin(l.hi, hi) - pmax(l.lo, lo) >= need {
+            return Some(r);
+        }
+    }
+    None
 }
 
 /// The rules that touch `b` (1 point of slack), then those touching the box grown by them, at
