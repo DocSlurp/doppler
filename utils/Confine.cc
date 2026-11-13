@@ -119,6 +119,14 @@ static bool applySeccomp()
     jump(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat2, 0, 1);
     stmt(BPF_RET | BPF_K, enosys);
 #        endif
+    // io_uring performs socket, connect and open operations without their syscalls (and so
+    // without the checks above): unavailable, as on a kernel built without it
+#        ifdef SYS_io_uring_setup
+    for (uint32_t nr : { uint32_t(SYS_io_uring_setup), uint32_t(SYS_io_uring_enter), uint32_t(SYS_io_uring_register) }) {
+        jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1);
+        stmt(BPF_RET | BPF_K, enosys);
+    }
+#        endif
     // open(path, flags) / openat(dirfd, path, flags): deny write or create flags
     auto openCheck = [&](uint32_t nr, int flagsArg) {
         jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 5);

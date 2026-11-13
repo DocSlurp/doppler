@@ -229,11 +229,11 @@
         },
         "forms": {
           "type": "object",
-          "required": ["fields", "text", "checkbox", "radio", "choice", "signature", "pushButton", "filled", "empty", "valueAppearanceMismatch", "signed", "unsigned"],
+          "required": ["fields", "text", "checkbox", "radio", "choice", "signature", "pushButton", "filled", "empty", "valueAppearanceMismatch", "signed", "unsigned", "truncated"],
           "properties": {
             "fields": { "$ref": "#/$defs/count" }, "text": { "$ref": "#/$defs/count" }, "checkbox": { "$ref": "#/$defs/count" }, "radio": { "$ref": "#/$defs/count" },
             "choice": { "$ref": "#/$defs/count" }, "signature": { "$ref": "#/$defs/count" }, "pushButton": { "$ref": "#/$defs/count" }, "filled": { "$ref": "#/$defs/count" },
-            "empty": { "$ref": "#/$defs/count" }, "valueAppearanceMismatch": { "$ref": "#/$defs/count" }, "signed": { "$ref": "#/$defs/count" }, "unsigned": { "$ref": "#/$defs/count" }
+            "empty": { "$ref": "#/$defs/count" }, "valueAppearanceMismatch": { "$ref": "#/$defs/count" }, "signed": { "$ref": "#/$defs/count" }, "unsigned": { "$ref": "#/$defs/count" }, "truncated": { "type": "boolean" }
           }
         },
         "annots": {
