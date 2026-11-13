@@ -1015,7 +1015,7 @@ for the measured baseline and scoring coverage.
   `../../build/utils/pdftotext`) is the DocSlurp pdftotext with `-compact-layout`, and is
   skipped otherwise.
 - The suites that need the DocSlurp utils (`tests/images_batches.rs`, `images_dir.rs`,
-  `page_facts.rs`, `page_info.rs`) print `skipped:` and pass without them, unless
+  `page_facts.rs`, `page_info.rs`, `page_scans.rs`) print `skipped:` and pass without them, unless
   `DOPPLER_REQUIRE_INTEGRATION` is `1`, `true` or `on`: then a missing toolchain fails the test
   (`tests/toolchain`). No CI job sets it yet; run them so after building the utils:
   `PDFTOTEXT=../../build/utils/pdftotext DOPPLER_REQUIRE_INTEGRATION=1 cargo test --release`.
