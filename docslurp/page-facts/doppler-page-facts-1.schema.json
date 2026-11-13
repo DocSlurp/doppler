@@ -193,6 +193,8 @@
                   "copy": { "enum": ["jpeg", "bilevel", "decode", "render"] },
                   "visibleWordsInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box lies inside this image's box (within 1 point). Added within /1: absent from earlier builds." },
                   "invisibleWordsInside": { "$ref": "#/$defs/count", "description": "Invisible words (render mode 3, or clipped) inside this image's box: an OCR layer over a scan. Added within /1: absent from earlier builds." },
+                  "visibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box centre lies inside this image's box (within 1 point): a caption line straddling the image's edge counts when its centre is inside. Added within /1 (issue 43): absent from earlier builds." },
+                  "invisibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Invisible words whose box centre lies inside this image's box (within 1 point), as visibleWordsCentredInside. Added within /1 (issue 43): absent from earlier builds." },
                   "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's declared /Length over px width x height, only when that /Length is the file's own non-negative integer and ends at endstream; never decoded. Absent otherwise, for inline images, external (/F) data and earlier builds." }
                 }
               }
@@ -238,11 +240,14 @@
                   "bbox": { "$ref": "#/$defs/box" },
                   "rows": { "type": "integer", "minimum": 1 },
                   "columns": { "type": "integer", "minimum": 1 },
-                  "coverage": { "$ref": "#/$defs/ratio" }
+                  "coverage": { "$ref": "#/$defs/ratio" },
+                  "hRules": { "type": "integer", "minimum": 0, "maximum": 4096, "description": "Distinct horizontal thin-rule lines of the grid (centres more than 2.5 points apart). A thin rule is a <rule> of pdftotext -rules (a stroked line or a fill at most 1.5 points thin, any colour; never a shaded <box>), at most 3 points thick and at least 8 points long. The grid's rules are the thin rules whose centre line lies in its box grown by 2.5 points and whose span overlaps it, and of those the largest set connected by horizontal and vertical rules that touch within 2.5 points (all of them when the box holds one direction only). A fully ruled table has rows + 1. Added within /1 (issue 43): absent from earlier builds, and from every grid of a page whose rule list is partial or whose thin-rule search hit its cap (gridsTruncated is then set)." },
+                  "vRules": { "type": "integer", "minimum": 0, "maximum": 4096, "description": "Distinct vertical thin-rule lines of the grid, as hRules. A fully ruled table has columns + 1. Added within /1 (issue 43); absent as hRules is." },
+                  "outerSides": { "type": "integer", "minimum": 0, "maximum": 4, "description": "How many of the box's four sides the grid's thin rules (centre within 2.5 points of the side) cover for at least 80% of their length. Added within /1 (issue 43); absent as hRules is." }
                 }
               }
             },
-            "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, or a word size outside the body-size bins." },
+            "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, a word size outside the body-size bins, or (with hRules, vRules and outerSides then absent) more than 4,096 thin rules a direction or 2^20 thin-rule visits." },
             "limitHit": { "type": "boolean" }
           }
         },

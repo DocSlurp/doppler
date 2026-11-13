@@ -19,6 +19,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <string_view>
 #ifndef _WIN32
@@ -380,7 +381,11 @@ constexpr size_t maxItems = 32; // images and figure clusters listed per page
 constexpr size_t maxGrids = 64; // ruled grids listed per page
 constexpr size_t maxGridRules = 4096; // horizontal (and vertical) rules a page's grid search takes
 constexpr size_t maxGridWork = size_t(1) << 20; // group and column-rule visits of a page's grid search
-constexpr double wordInsideSlack = 1.0; // points a word box may pass an image's box and still lie inside
+constexpr double wordInsideSlack = 1.0; // points a word box (or its centre) may pass an image's box and still lie inside
+constexpr double thinRuleMaxPt = 3.0; // a grid's thin rule: at most this thick (issue 43, the layout walker's measure)
+constexpr double thinRuleMinPt = 8.0; // and at least this long
+constexpr double thinRuleTouchPt = 2.5; // rules this close are one line, and lie on (or inside) a grid's box
+constexpr double outerSideShare = 0.8; // a box side carries a rule when thin rules cover this share of it
 constexpr int maxSizeBins = 8192; // half-point word sizes 0 to 4095.5 counted for a page's body size
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
@@ -903,6 +908,154 @@ size_t countRuleCrossings(const std::vector<const TextRule *> &hs, const std::ve
         }
     }
     return crossings;
+}
+
+// Issue 43: the thin rules of each ruled grid, as a reader that finds ruled grids from
+// connected thin rules (the layout walker's ruled_grids) counts them. A thin rule is a rule
+// pdftotext -rules writes as <rule> (a stroked line, or a fill at most 1.5 pt thin; never a
+// <box>, whatever its colour), at the 0.01 pt the XHTML writes, at most thinRuleMaxPt thick and
+// at least thinRuleMinPt long. A grid's rules are the thin rules whose centre line lies in its box
+// grown by thinRuleTouchPt and whose span overlaps that box; of those, the largest set connected
+// by rules of the two directions that meet (within thinRuleTouchPt, as the walker joins them)
+// when the box holds rules of both directions, and all of them when it holds one direction only. hRules and vRules count their distinct lines
+// (centres more than thinRuleTouchPt apart, clustered from the lowest as the walker's _distinct
+// does), and outerSides the box sides that the grid's rules (centre within thinRuleTouchPt of the
+// side) cover for outerSideShare of their length.
+struct ThinRule
+{
+    double x0, y0, x1, y1, c; // c: the centre across (y of a horizontal rule, x of a vertical one)
+};
+
+struct GridRules
+{
+    uint64_t hRules = 0, vRules = 0, outerSides = 0;
+};
+
+// <th> sorted by centre y, <tv> by centre x (both at most maxGridRules long). <work> counts the
+// rules visited (a grid's candidates and its touch tests); false when it runs out.
+bool gridRules(double gx0, double gy0, double gx1, double gy1, const std::vector<ThinRule> &th, const std::vector<ThinRule> &tv, size_t *work, GridRules *out)
+{
+    constexpr double t = thinRuleTouchPt;
+    const double bx0 = gx0 - t, by0 = gy0 - t, bx1 = gx1 + t, by1 = gy1 + t;
+    auto spend = [work](size_t n) {
+        if (n > *work) {
+            *work = 0;
+            return false;
+        }
+        *work -= n;
+        return true;
+    };
+    // the rules (sorted by c) whose centre is in [lo, hi]
+    auto run = [](const std::vector<ThinRule> &rules, double lo, double hi) {
+        const auto first = std::ranges::partition_point(rules, [&](const ThinRule &r) { return r.c < lo; });
+        const auto last = std::partition_point(first, rules.end(), [&](const ThinRule &r) { return r.c <= hi; });
+        return std::ranges::subrange(first, last);
+    };
+    std::vector<const ThinRule *> hs, vs; // members, still sorted by c
+    const auto hRun = run(th, by0, by1), vRun = run(tv, bx0, bx1);
+    if (!spend(hRun.size() + vRun.size())) {
+        return false;
+    }
+    for (const ThinRule &r : hRun) {
+        if (r.x1 >= bx0 && r.x0 <= bx1) {
+            hs.push_back(&r);
+        }
+    }
+    for (const ThinRule &r : vRun) {
+        if (r.y1 >= by0 && r.y0 <= by1) {
+            vs.push_back(&r);
+        }
+    }
+    // the walker's meet: the two boxes within t of each other
+    auto meet = [](const ThinRule &a, const ThinRule &b) { return a.x0 - t <= b.x1 && b.x0 - t <= a.x1 && a.y0 - t <= b.y1 && b.y0 - t <= a.y1; };
+    if (!hs.empty() && !vs.empty()) {
+        // connected sets of horizontal and vertical rules that meet (union-find over the pairs
+        // that meet; members 0..h-1 are hs, h.. are vs); the grid's rules are the largest set
+        // (most rules; on a tie, the one holding the earliest member)
+        const size_t nh = hs.size();
+        std::vector<size_t> parent(nh + vs.size());
+        std::iota(parent.begin(), parent.end(), size_t(0));
+        auto find = [&parent](size_t i) {
+            while (parent[i] != i) {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            return i;
+        };
+        // a vertical rule that can meet <r> has its centre within t + thinRuleMaxPt / 2 of r's span
+        constexpr double reach = t + 0.5 * thinRuleMaxPt;
+        for (size_t i = 0; i < nh; ++i) {
+            const ThinRule &r = *hs[i];
+            auto it = std::ranges::partition_point(vs, [&](const ThinRule *o) { return o->c < r.x0 - reach; });
+            for (; it != vs.end() && (*it)->c <= r.x1 + reach; ++it) {
+                if (!spend(1)) {
+                    return false;
+                }
+                if (meet(r, **it)) {
+                    const size_t a = find(i), b = find(nh + static_cast<size_t>(it - vs.begin()));
+                    if (a != b) {
+                        parent[std::max(a, b)] = std::min(a, b);
+                    }
+                }
+            }
+        }
+        std::vector<size_t> size(parent.size(), 0);
+        size_t best = 0;
+        for (size_t i = 0; i < parent.size(); ++i) {
+            const size_t root = find(i);
+            ++size[root];
+            if (size[root] > size[best] || (size[root] == size[best] && root < best)) {
+                best = root;
+            }
+        }
+        std::vector<const ThinRule *> h2, v2;
+        for (size_t i = 0; i < parent.size(); ++i) {
+            if (find(i) == best) {
+                (i < nh ? h2 : v2).push_back(i < nh ? hs[i] : vs[i - nh]);
+            }
+        }
+        hs.swap(h2);
+        vs.swap(v2);
+    }
+    // the share of [a, b] the union of <spans> covers
+    auto covers = [](std::vector<std::pair<double, double>> &spans, double a, double b) {
+        if (!(b > a)) {
+            return false;
+        }
+        std::ranges::sort(spans);
+        double covered = 0, end = a;
+        for (const auto &[s0, s1] : spans) {
+            const double lo = std::max(s0, end), hi = std::min(s1, b);
+            if (hi > lo) {
+                covered += hi - lo;
+                end = hi;
+            }
+        }
+        return covered >= outerSideShare * (b - a);
+    };
+    auto count = [&](const std::vector<const ThinRule *> &rules, double side0, double side1, bool horizontal, uint64_t *lines) {
+        std::vector<std::pair<double, double>> first, second;
+        double last = 0;
+        for (const ThinRule *r : rules) {
+            if (*lines == 0 || r->c - last > t) {
+                ++*lines;
+                last = r->c;
+            }
+            const std::pair<double, double> span = horizontal ? std::pair { r->x0, r->x1 } : std::pair { r->y0, r->y1 };
+            if (std::fabs(r->c - side0) <= t) {
+                first.push_back(span);
+            }
+            if (std::fabs(r->c - side1) <= t) {
+                second.push_back(span);
+            }
+        }
+        const double a = horizontal ? gx0 : gy0, b = horizontal ? gx1 : gy1;
+        out->outerSides += covers(first, a, b) + covers(second, a, b);
+    };
+    *out = {};
+    count(hs, gy0, gy1, true, &out->hRules);
+    count(vs, gx0, gx1, false, &out->vRules);
+    return true;
 }
 
 bool startsWith(const char *s, const char *prefix)
@@ -2233,14 +2386,19 @@ void PageFacts::endPage(const TextPage &text)
             inlines += im.info.inlineImg;
         }
         // words whose box lies inside each listed image's box (within wordInsideSlack points),
-        // [visible, invisible]
+        // and words whose box centre does (issue 43), [visible, invisible]
         const size_t listed = std::min(images.size(), maxItems);
-        std::array<std::array<uint64_t, 2>, maxItems> wordsInside {};
+        std::array<std::array<uint64_t, 2>, maxItems> wordsInside {}, centredInside {};
         for (const State::WordBox &w : s.wordBoxes) {
+            const double cx = 0.5 * (w.x0 + w.x1), cy = 0.5 * (w.y0 + w.y1); // NaN fails every test
             for (size_t i = 0; i < listed; ++i) {
                 const TextImage &im = images[i];
-                if (w.x0 >= im.xMin - wordInsideSlack && w.y0 >= im.yMin - wordInsideSlack && w.x1 <= im.xMax + wordInsideSlack && w.y1 <= im.yMax + wordInsideSlack) {
+                const double ix0 = im.xMin - wordInsideSlack, iy0 = im.yMin - wordInsideSlack, ix1 = im.xMax + wordInsideSlack, iy1 = im.yMax + wordInsideSlack;
+                if (w.x0 >= ix0 && w.y0 >= iy0 && w.x1 <= ix1 && w.y1 <= iy1) {
                     ++wordsInside[i][w.visible ? 0 : 1];
+                }
+                if (cx >= ix0 && cy >= iy0 && cx <= ix1 && cy <= iy1) {
+                    ++centredInside[i][w.visible ? 0 : 1];
                 }
             }
         }
@@ -2277,6 +2435,8 @@ void PageFacts::endPage(const TextPage &text)
             j.kenum("copy", imageCopyName(im.info.copy));
             j.kint("visibleWordsInside", wordsInside[i][0]);
             j.kint("invisibleWordsInside", wordsInside[i][1]);
+            j.kint("visibleWordsCentredInside", centredInside[i][0]);
+            j.kint("invisibleWordsCentredInside", centredInside[i][1]);
             // encoded bytes over samples, from the stream's length (never decoded)
             const double samples = double(std::max(im.pixelWidth, 0)) * double(std::max(im.pixelHeight, 0));
             if (!im.info.inlineImg && im.info.encodedBytes >= 0 && samples > 0) {
@@ -2395,13 +2555,60 @@ void PageFacts::endPage(const TextPage &text)
         // the grids came from a partial rule list (the page's rule cap), or from a body size
         // that ignored words of a size outside the bins: incomplete, said so
         gridsTruncated = gridsTruncated || text.getRulesPageTruncated() || s.sizeOutOfRange;
+        // each grid's thin rules (gridRules), from the rules at the 0.01 pt the XHTML writes;
+        // absent from every grid (and gridsTruncated set) when the page's rule list is partial,
+        // more than maxGridRules thin rules run either way, or the maxGridWork visits run out:
+        // counts from part of the rules could be too low
+        std::vector<ThinRule> th, tv;
+        bool thinComplete = !text.getRulesPageTruncated();
+        if (!grids.empty() && thinComplete) {
+            auto at01 = [](double v) { return std::nearbyint(v * 100.0) / 100.0; };
+            for (const TextRule &r : text.getRules()) {
+                if (r.box) {
+                    continue;
+                }
+                const ThinRule q { at01(r.xMin), at01(r.yMin), at01(r.xMax), at01(r.yMax), 0 };
+                const double w = q.x1 - q.x0, hh = q.y1 - q.y0; // NaN fails both tests
+                std::vector<ThinRule> *into = nullptr;
+                ThinRule k = q;
+                if (hh <= thinRuleMaxPt && w >= thinRuleMinPt) {
+                    k.c = 0.5 * (q.y0 + q.y1);
+                    into = &th;
+                } else if (w <= thinRuleMaxPt && hh >= thinRuleMinPt) {
+                    k.c = 0.5 * (q.x0 + q.x1);
+                    into = &tv;
+                }
+                if (!into || !std::isfinite(k.c)) {
+                    continue;
+                }
+                if (into->size() >= maxGridRules) {
+                    thinComplete = false;
+                    break;
+                }
+                into->push_back(k);
+            }
+            std::ranges::stable_sort(th, {}, &ThinRule::c);
+            std::ranges::stable_sort(tv, {}, &ThinRule::c);
+        }
+        std::vector<GridRules> perGrid(thinComplete ? grids.size() : 0);
+        size_t thinWork = maxGridWork;
+        for (size_t i = 0; i < perGrid.size() && thinComplete; ++i) {
+            thinComplete = gridRules(grids[i].x0, grids[i].y0, grids[i].x1, grids[i].y1, th, tv, &thinWork, &perGrid[i]);
+        }
+        gridsTruncated = gridsTruncated || !thinComplete;
         j.kopen("grids", '[');
-        for (const RuleGrid &g : grids) {
+        for (size_t i = 0; i < grids.size(); ++i) {
+            const RuleGrid &g = grids[i];
             j.open();
             j.kbox("bbox", g.x0, g.y0, g.x1, g.y1);
             j.kint("rows", g.rows);
             j.kint("columns", g.columns);
             j.kratio("coverage", area > 0 ? (g.x1 - g.x0) * (g.y1 - g.y0) / area : 0.0);
+            if (thinComplete) {
+                j.kint("hRules", perGrid[i].hRules);
+                j.kint("vRules", perGrid[i].vRules);
+                j.kint("outerSides", perGrid[i].outerSides);
+            }
             j.close();
         }
         j.close(']');

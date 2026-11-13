@@ -185,7 +185,7 @@ with t.TempDir() as d:
     t.check(v4["limitHit"] and v4["paths"] == 100000 and "drawing-limit" in page(ls, 4)["unusualFeatures"] and "limit-hit" in page(ls, 4)["parseWarnings"], "drawing-limit at 100000 paths", repr(v4))
 
     # --- D ruled grids (issue 40) --------------------------------------------------------------------------
-    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
+    t.check(v1["grids"] == [{"bbox": [72, 192, 472, 392], "rows": 5, "columns": 5, "coverage": 0.165, "hRules": 6, "vRules": 6, "outerSides": 4}] and not v1["gridsTruncated"], "ruled table: one 5 x 5 grid", repr(v1["grids"]))
     t.check(v2["grids"] == [] and v3["grids"] == [] and not v2["gridsTruncated"], "chart and shading pages: no grid", repr((v2["grids"], v3["grids"])))
     ls = lines(facts(paths["grids"], "-level", "full")[1])
     g = [page(ls, n)["vectors"] for n in range(1, 7)]
@@ -199,6 +199,27 @@ with t.TempDir() as d:
     t.check(shape[5] == [(7, 3)], "shaded row boxes with column rules: their edges are row lines", repr(g[5]["grids"]))
     basic = page(lines(facts(paths["grids"])[1]), 1)
     t.check("vectors" not in basic, "basic: no grids")
+
+    # --- D thin rules per grid (issue 43) ------------------------------------------------------------------
+    rules = [(x["rows"], x["columns"], x["hRules"], x["vRules"], x["outerSides"]) for v in g for x in v["grids"]]
+    t.check(rules[:2] == [(4, 4, 5, 5, 4), (4, 3, 5, 4, 4)], "two ruled tables: hRules rows + 1, vRules columns + 1, four outer sides", repr(rules[:2]))
+    t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[5]["grids"]] == [(0, 2, 0)], "shaded rows with column rules: the shading is not rules, vRules 2, no outer side", repr(g[5]["grids"]))
+    t.check([(x["hRules"], x["vRules"], x["outerSides"]) for x in g[3]["grids"]] == [(3, 0, 2)], "booktabs-style rules: 3 horizontal lines, top and bottom sides", repr(g[3]["grids"]))
+    t.check(all("hRules" in x for x in g[2]["grids"]), "72 grids (list truncated at 64): the listed grids keep their rule counts", repr(g[2]["grids"][:2]))
+    ls = lines(facts(paths["grid_rules"], "-level", "full")[1])
+    gr = [page(ls, n)["vectors"]["grids"] for n in range(1, 6)]
+    shape = [[(x["rows"], x["columns"], x["hRules"], x["vRules"], x["outerSides"]) for x in v] for v in gr]
+    t.check(shape[0] == [(3, 1, 4, 5, 4)], "a 3 x 4 table ruled cell by cell: the grid search sees 1 column, the thin rules 4 + 1 and 5 lines, 4 sides", repr(gr[0]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[1]] == [(0, 0, 0)], "a zebra table of shaded rows, no rules: hRules and vRules 0", repr(gr[1]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[2]] == [(0, 2, 0)], "zebra with column lines only: outerSides 0, vRules 2", repr(gr[2]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[3]] == [(3, 3, 0)], "a 4-point frame: too thick to be a thin rule; the inner rules count, no outer side", repr(gr[3]))
+    t.check([(h, v, o) for _, _, h, v, o in shape[4]] == [(5, 5, 4)], "a stray underline in a cell is not connected (not counted); a white rule joined to the grid is", repr(gr[4]))
+    t.check(not any(page(ls, n)["vectors"]["gridsTruncated"] for n in range(1, 6)), "grid_rules pages 1-5: no truncation")
+    capped = page(ls, 6)["vectors"]
+    t.check(capped["gridsTruncated"] and capped["limitHit"] and [(x["rows"], x["columns"]) for x in capped["grids"]] == [(3, 4)] and not any("hRules" in x for x in capped["grids"]), "the page's rule cap: the grid listed without rule counts, gridsTruncated", repr(capped["grids"]))
+    ls = lines(facts(paths["grid_caps"], "-level", "full")[1])
+    caps = [page(ls, n)["vectors"] for n in range(1, 5)]
+    t.check(all("hRules" in x for x in caps[0]["grids"] + caps[1]["grids"]), "a body size outside the bins: the counts stand (they do not use the body size)", repr(caps[0]["grids"]))
 
     # --- C words inside images and bytes per pixel (issue 40) ------------------------------------------------
     ls = lines(facts(paths["image_words"], "-level", "full")[1])
@@ -216,6 +237,11 @@ with t.TempDir() as d:
     t.check(rc == 0 and out == facts(paths["image_words"], "-level", "full")[1], "stdin: the same bytes per pixel and words inside")
     basic = page(lines(facts(paths["image_words"])[1]), 1)
     t.check("items" not in basic["images"], "basic: no image items")
+    t.check(it1["invisibleWordsCentredInside"] == 300 and it1["visibleWordsCentredInside"] == 0 and it2["visibleWordsCentredInside"] == 6 and it2["invisibleWordsCentredInside"] == 0, "words centred inside: the OCR layer's 300 and the caption's 6, as the whole-box counts here", repr((it1, it2)))
+    t.check(jpeg["visibleWordsCentredInside"] == 0 and chart["invisibleWordsCentredInside"] == 0, "no words: zero centred inside")
+    straddle = page(lines(facts(paths["caption_straddle"], "-level", "full")[1]), 1)
+    it = straddle["images"]["items"][0]
+    t.check(straddle["text"]["wordCount"] == 18 and (it["visibleWordsInside"], it["visibleWordsCentredInside"], it["invisibleWordsCentredInside"]) == (0, 4, 0), "a caption straddling the photo's bottom edge: 4 words centred inside, 0 wholly inside; the line with centres below and the 10 words under it not counted", repr(it))
     # bytesPerPixel only from a declared /Length that is the file's own and ends at endstream
     ls = lines(facts(paths["lengths"], "-level", "full")[1])
     got = [page(ls, n)["images"]["items"][0].get("bytesPerPixel") for n in range(1, 8)]
@@ -244,7 +270,7 @@ with t.TempDir() as d:
     t.check(c[3]["gridsTruncated"] and c[3]["limitHit"], "the page's rule cap: gridsTruncated and limitHit", repr((c[3]["gridsTruncated"], c[3]["limitHit"])))
 
     # page locality of the new fields (pdftotext agreement and unchanged XHTML: the loop below)
-    for name, count in (("grids", 6), ("image_words", 5)):
+    for name, count in (("grids", 6), ("image_words", 5), ("grid_rules", 6), ("caption_straddle", 1)):
         whole = lines(facts(paths[name], "-level", "full")[1])
         ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
         t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)

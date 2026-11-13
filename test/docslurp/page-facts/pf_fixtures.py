@@ -773,6 +773,40 @@ def grid_caps_pdf():
     return doc([{"content": big + words(20, y=300) + table}, {"content": decoys + words(200, y=500) + table}, {"content": many}, {"content": tiny + table}])
 
 
+# --- issue 43: thin rules per grid, words centred inside images -----------------------------
+
+
+def grid_rules_pdf():
+    """Page 1: a 3 x 4 table ruled cell by cell (each cell a stroked rectangle). Page 2: a zebra
+    table of shaded row boxes and no rules. Page 3: shaded rows with two column lines (no outer
+    sides). Page 4: a table in a 4-point frame with thin inner rules (the frame is too thick to
+    count). Page 5: a fully ruled table with a stray underline in one cell and a white rule.
+    Page 6: a ruled table, then 20,005 tiny fills (the page's rule cap): no rule counts."""
+    xs, ys = [72, 172, 272, 372, 472], [700, 670, 640, 610]
+    p1 = "".join("%g %g %g %g re S\n" % (xs[c], ys[r + 1], xs[c + 1] - xs[c], ys[r] - ys[r + 1]) for r in range(3) for c in range(4)) + _cells(xs, ys, "c")
+    zebra = "0.85 g\n" + "".join("72 %d 400 18 re f\n" % (700 - 30 * k) for k in range(5)) + "0 g\n"
+    p2 = zebra + words(4, y=300)
+    p3 = zebra + "0.5 w\n" + _vlines([205, 338], 580, 718) + words(4, y=300)
+    frame = "4 w\n72 580 400 120 re S\n0.5 w\n" + _hlines(72, 472, [670, 640, 610]) + _vlines([172, 272, 372], 580, 700)
+    p4 = frame + _cells(xs, [700, 670, 640, 610, 580], "f")
+    p5 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + _cells(xs, ys, "u") + "0.6 w\n80 676 m 140 676 l S\n1 1 1 RG\n72 655 m 472 655 l S\n"
+    p6 = "0.5 w\n" + _hlines(72, 472, ys) + _vlines(xs, 610, 700) + "".join("%d %d 1 0.2 re f\n" % (k % 600, 5 + (k // 600) % 30) for k in range(20005))
+    return doc([{"content": "0.5 w\n" + p1}, {"content": p2}, {"content": p3}, {"content": p4}, {"content": p5}, {"content": p6}])
+
+
+def caption_straddle_pdf():
+    """A photo (PDF y 400..600) with a caption line whose words straddle its bottom edge with
+    their centres inside, a line straddling it with centres outside, and a line well below."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Photo {0} 0 R >> >>"
+    photo = stream("/Type /XObject /Subtype /Image /Width 600 /Height 400 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode", _noise(600 * 400 // 4))
+    # 4 words on a baseline at the photo's edge: boxes cross it, centres inside
+    text = "BT /F1 10 Tf 80 400 Td (Harbour at golden hour) Tj ET\n"
+    # 4 words 5 points lower: boxes cross the edge, centres below it
+    text += "BT /F1 10 Tf 200 395 Td (Photo by the crew) Tj ET\n"
+    text += words(10, y=300)
+    return doc([{"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + text, "resources": res}], extras=[photo])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -800,4 +834,6 @@ ALL = {
     "lengths": lengths_pdf,
     "lengths_rebuilt": lambda: lengths_pdf(break_xref=True),
     "grid_caps": grid_caps_pdf,
+    "grid_rules": grid_rules_pdf,
+    "caption_straddle": caption_straddle_pdf,
 }

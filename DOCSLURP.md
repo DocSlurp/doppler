@@ -121,12 +121,16 @@ Tests: `test/docslurp/pagecount/`.
 ## Page facts
 
 Per-page facts for routing pages (text layer, scans, images and their encodings, the words
-inside each image and its bytes per pixel, fonts, odd characters, vector drawing and rules,
-the ruled grids pdftomarkdown's table search starts from, forms, annotations, optional
+inside each image (whole box and by centre) and its bytes per pixel, fonts, odd characters,
+vector drawing and rules, the ruled grids pdftomarkdown's table search starts from with each
+grid's thin-rule lines and outer sides, forms, annotations, optional
 content) and one document
 line, as JSON lines (schema `doppler-page-facts/1`). Every field and value:
 [docslurp/page-facts/README.md](docslurp/page-facts/README.md); JSON Schema beside it;
-benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md).
+benchmarks in [docslurp/page-facts/PERF.md](docslurp/page-facts/PERF.md). The thin-rule and
+centre counts are checked against DocSlurp's layout walker by
+`test/docslurp/page-facts/test_walker_parity.py` (configure with `-DDOCSLURP_OSS_DIR=` a
+docslurp-oss checkout; skipped without one).
 
 - **With a conversion:** `pdftomarkdown --stream --page-facts FILE FILE.pdf` (or
   `--page-facts-fd N`; `--page-facts-level full`, `--page-facts-include LIST`). pdftotext

@@ -207,6 +207,14 @@ Each item also has (added within `/1`; absent from earlier builds):
   The box is axis-aligned: words in the corners of a rotated or skewed image, or outside a
   clip within its box, count as inside; and, as for `visibleWordCount`, paint over text is
   not tracked, so text drawn before an image that covers it still counts as visible.
+- `visibleWordsCentredInside`, `invisibleWordsCentredInside` (issue 43): the page's words whose
+  box *centre* lies inside the image's `bbox` (within the same 1 point), split the same way, for
+  the same 32 listed images. A caption line straddling the image's edge counts when its centre is
+  inside, which the whole-box counts above never do; a reader that tests word centres (the
+  layout walker's `wordsInside`) should read these. Against that walker: the walker's box is the
+  image's unclipped placement rounded to 0.01 point and it has no slack, while `bbox` here is the
+  part inside the clip and the page; a word centre within 1 point outside the box, or an image
+  clipped by its page or clip path, can count differently.
 - `bytesPerPixel`: the image stream's encoded bytes over `px` width x height, 6 decimals. The
   bytes are the stream's declared `/Length` (direct or by reference), and only when it is
   consistent: a non-negative integer below 2^31 as written in the file, within the file, with
@@ -261,8 +269,8 @@ else, or a value outside (0, 1], is a usage error (exit 99).
 | `clips` | clipping operators (`W`, `W*`) |
 | `figureClusters` | clusters of curved or diagonal drawing (the raw material of pdftomarkdown's vector figures, before its size and density tests) |
 | `clusters` | the first 32: `bbox`, `paths`, `curves`, `segments` (`clustersTruncated`) |
-| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`) |
-| `gridsTruncated` | more than 64 grids, or the grid search hit its rule or work cap: the list is incomplete |
+| `grids` | ruled grids (below), at most 64: `bbox`, `rows`, `columns`, `coverage` (added within `/1`), and `hRules`, `vRules`, `outerSides` (issue 43, below) |
+| `gridsTruncated` | more than 64 grids, or the grid search (or the thin-rule search) hit its rule or work cap: the list is incomplete |
 | `limitHit` | the 100,000-path cap or the per-page rule cap (20,000) was hit: counts are lower bounds; or the run's figure-merge budget (2^27 box comparisons) ran out and `figureClusters` is merged only so far (`drawing-limit`) |
 
 **Ruled grids** are the grids pdftomarkdown's ruled-table search (`doppler-md`
@@ -308,6 +316,41 @@ so a router can see where a table is and how big it is without a layout pass:
   set it. `gridsTruncated` means the list may be incomplete; a decoy that fills a cap before a
   real table is drawn hides the table but not the flag. It adds nothing to `limitHit` or
   `limit-hit`.
+
+**Thin rules per grid** (issue 43, added within `/1`; absent from earlier builds). The grid
+search above also builds grids from shaded boxes, and finds column lines without outer sides;
+`hRules`, `vRules` and `outerSides` on each grid say which of its lines are thin ruled lines, the
+way a reader that finds ruled grids from connected thin rules (DocSlurp's layout walker,
+`pdf_layout_facts.ruled_grids`) counts them:
+
+- A thin rule is a `<rule>` of `pdftotext -rules` (a stroked line, or a fill at most 1.5 points
+  thin; never a shaded `<box>`), of any colour (white rules included, as the walker reads them)
+  and image-mask rules included, taken at the 0.01 point the XHTML writes, at most 3 points thick
+  and at least 8 points long (horizontal: height ≤ 3, width ≥ 8; vertical the other way round).
+  Shaded fills thicker than 1.5 points and lines stroked thicker than 3 are not thin rules.
+- A grid's rules are the thin rules whose centre line lies in its `bbox` grown by 2.5 points and
+  whose span overlaps that box. When the box holds rules of both directions, only the largest
+  set of them connected by a horizontal and a vertical rule that touch (boxes within 2.5 points,
+  the walker's test) counts: most rules, then the set with the topmost horizontal rule. A stray
+  underline in a cell, or a separate checkbox, is then not counted. When it holds one direction
+  only, all of them count.
+- `hRules` and `vRules` are the distinct lines among them: centres more than 2.5 points apart,
+  clustered from the lowest value as the walker does. A table drawn cell by cell has one line
+  per row border. A fully ruled table has `hRules` = rows + 1 and `vRules` = columns + 1 (its
+  walker grid's rows and columns); a zebra table of shaded rows and no rules has 0 and 0.
+- `outerSides` (0-4): the sides of `bbox` whose thin rules (centre within 2.5 points of the side)
+  cover at least 80% of its length. A fully ruled table has 4; column lines only, 0.
+- Reading them as the walker's grids: a grid with `hRules` ≥ 2 and `vRules` ≥ 3 is a walker grid
+  of `hRules` - 1 rows and `vRules` - 1 columns. On the walker's public fixtures and the grid
+  fixtures here (`test_walker_parity.py`), that matches the walker's grids page for page, except:
+  rules lighter than luminance 0.97 make no grid here (no grid to carry counts, where the walker
+  reads white rules); rules whose rows are more than 8 body sizes apart make no grid here (the
+  walker joins any rules that touch); and when one grid's box holds two separate ruled tables
+  only the larger is counted. Grids listed here are a subset of the tables the walker could find.
+- Absent from every grid of the page, with `gridsTruncated` set, when the page's rule list is
+  partial (the page's rule cap), more than 4,096 thin rules run either way, or the search makes
+  more than 2^20 rule visits a page (the candidate scan and the touch tests): counts from part of
+  the rules could be too low. Each grid's search is O(log n + its rules + its touch tests).
 
 ### `forms` (`forms`)
 
