@@ -5353,38 +5353,51 @@ struct MarkedContentStack
 {
     GfxMarkedContentKind kind;
     bool ocSuppressed; // are we ignoring content based on OptionalContent?
+    bool hidden; // DocSlurp: this entry or one below it is ocSuppressed
     MarkedContentStack *next; // next object on stack
 };
+
+// DocSlurp: marked-content sections nested deeper than this are not tracked (their BMC/BDC and
+// matching EMC are skipped, for the device too), with one warning per page: content inside
+// them takes the visibility of the deepest tracked section.
+constexpr int maxMarkedContentDepth = 4096;
 
 void Gfx::popMarkedContent()
 {
     MarkedContentStack *mc = mcStack;
     mcStack = mc->next;
     delete mc;
+    --mcDepth;
 }
 
 void Gfx::pushMarkedContent()
 {
     auto *mc = new MarkedContentStack();
     mc->ocSuppressed = false;
+    mc->hidden = mcStack && mcStack->hidden;
     mc->kind = gfxMCOther;
     mc->next = mcStack;
     mcStack = mc;
+    ++mcDepth;
 }
 
+// DocSlurp: O(1); each entry carries whether it or an entry below it is suppressed (walking the
+// stack on every BMC/BDC/EMC made deep nesting quadratic)
 bool Gfx::contentIsHidden()
 {
-    MarkedContentStack *mc = mcStack;
-    bool hidden = mc && mc->ocSuppressed;
-    while (!hidden && mc && mc->next) {
-        mc = mc->next;
-        hidden = mc->ocSuppressed;
-    }
-    return hidden;
+    return mcStack && mcStack->hidden;
 }
 
 void Gfx::opBeginMarkedContent(Object args[], int numArgs)
 {
+    if (mcDepth >= maxMarkedContentDepth) {
+        if (mcOverflow++ == 0 && !mcDepthWarned) {
+            mcDepthWarned = true;
+            // fixed text (no arguments): page facts classify it as limit-hit from the format string
+            error(errSyntaxWarning, getPos(), "Marked content nested too deeply; deeper sections ignored");
+        }
+        return;
+    }
     // push a new stack entry
     pushMarkedContent();
 
@@ -5401,6 +5414,7 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
                 if (!markedContent.isNull()) {
                     bool visible = contentConfig->optContentIsVisible(&markedContent);
                     mc->ocSuppressed = !visible;
+                    mc->hidden = mc->hidden || mc->ocSuppressed;
                 } else {
                     error(errSyntaxError, getPos(), "DID NOT find {0:r}", &name1);
                 }
@@ -5458,6 +5472,11 @@ void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
 {
     if (!mcStack) {
         error(errSyntaxWarning, getPos(), "Mismatched EMC operator");
+        return;
+    }
+    if (mcOverflow > 0) {
+        // closes a section past maxMarkedContentDepth, which was never pushed
+        --mcOverflow;
         return;
     }
 

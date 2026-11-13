@@ -160,6 +160,16 @@ def rule_grid(pages=500, n=512):
     return d.pages([content] * pages)
 
 
+FONT = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+def nested_marked(depth):
+    """<depth> nested BMC sections around one word, between two others (a few KB compressed)."""
+    d = Doc()
+    font = d.add(FONT)
+    ops = "BT /F1 12 Tf 72 700 Td (before) Tj ET\n" + "/A BMC\n" * depth + "BT /F1 12 Tf 72 600 Td (inside) Tj ET\n" + "EMC\n" * depth + "BT /F1 12 Tf 72 500 Td (after) Tj ET\n"
+    return d.pages([d.stream(ops, compress=True)], resources="/Font << /F1 %d 0 R >>" % font)
+
+
 # --- measuring ------------------------------------------------------------------------------
 
 
@@ -254,6 +264,24 @@ with t.TempDir() as d:
     t.check(v["ruleGridScore"] == 1 and v["hRules"] == 512 and v["vRules"] == 512, "a full rule grid scores 1", repr((v["ruleGridScore"], v["hRules"], v["vRules"])))
     ls = [json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "vectors", d.write("grid-small.pdf", rule_grid(pages=1, n=3))])[1].decode().splitlines()]
     t.check(page(ls, 1)["vectors"]["ruleGridScore"] == 1, "3 x 3 crossing rules score 1", repr(page(ls, 1)["vectors"]))
+
+
+    # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
+    #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit
+    path = d.write("nested-mc.pdf", nested_marked(100000))
+    start = time.monotonic()
+    try:
+        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode()
+    except subprocess.TimeoutExpired:
+        text = "(timed out)"
+    secs = time.monotonic() - start
+    t.check(secs < 3 and text.split() == ["before", "inside", "after"], "100,000 nested BMC: plain pdftotext within 3 s, all text", "%.2f s %r" % (secs, text[:80]))
+    print("  100,000 nested BMC: pdftotext %.2f s" % secs)
+    if secs < 3:
+        ls = bounded("100,000 nested BMC", path)
+        t.check("limit-hit" in page(ls, 1)["parseWarnings"], "nesting past the cap: limit-hit", repr(page(ls, 1)["parseWarnings"]))
+    ls = bounded("4,000 nested BMC", d.write("nested-mc-ok.pdf", nested_marked(4000)))
+    t.check("limit-hit" not in page(ls, 1)["parseWarnings"], "nesting within the cap: no limit-hit", repr(page(ls, 1)["parseWarnings"]))
 
     # 8. pdftotext -timeout: exit code 6, whole facts lines, no run line
     slow = d.write("slow.pdf", error_dense(pages=40))

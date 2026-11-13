@@ -246,6 +246,9 @@ private:
                   //   disabled
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
+    int mcDepth = 0; // DocSlurp: entries on mcStack
+    int mcOverflow = 0; // DocSlurp: open sections past maxMarkedContentDepth (not on mcStack)
+    bool mcDepthWarned = false; // DocSlurp: the nesting warning was given on this page
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     int ocLayerDepth = 0; // open BDC /OC sections
     // DocSlurp page facts: the visibility of the /OC entries the facts paths (operator tally,
