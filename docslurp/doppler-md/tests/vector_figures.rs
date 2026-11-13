@@ -279,3 +279,78 @@ fn placing_drawings_is_charged_and_bounded() {
         assert!(on_time <= 6.0 * off_time + 0.3, "{on_time} vs {off_time}");
     }
 }
+
+// ---- Bar charts: filled boxes (`<box>`), never `<graphic>` drawing (DocSlurp/doppler#38) ----
+
+fn bx(x0: f64, y0: f64, x1: f64, y1: f64, color: &str) -> String {
+    format!("<box xMin=\"{x0}\" yMin=\"{y0}\" xMax=\"{x1}\" yMax=\"{y1}\" color=\"{color}\"/>")
+}
+
+/// Axes, ticks and tick labels around a plot area 100..400 x 150..330 (the white plot background too).
+fn axes() -> String {
+    bx(0.0, 0.0, 612.0, 792.0, "#ffffff")
+        + &bx(100.0, 150.0, 400.0, 330.0, "#ffffff")
+        + &rule(100.0, 330.0, 400.0, 330.5)
+        + &rule(100.0, 150.0, 100.5, 330.0)
+        + &rule(130.0, 330.0, 130.5, 334.0)
+        + &rule(96.0, 250.0, 100.0, 250.5)
+        + &line_at(80.0, 245.0, "50")
+        + &line_at(120.0, 336.0, "London")
+}
+
+fn markers(body: &str) -> Vec<(String, &'static str)> {
+    let (_, report) = convert(&page(2, &(line(100.0, "Bookings rose in every region this year.") + body)), true);
+    vector_fates(&report).into_iter().filter(|(_, fate)| *fate == "block").collect()
+}
+
+#[test]
+fn vertical_horizontal_stacked_and_grouped_bars_are_figures() {
+    let vertical = axes() + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    assert_eq!(markers(&vertical).len(), 1, "vertical bars");
+    // horizontal bars share the left axis
+    let horizontal = axes() + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff") + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff") + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff");
+    assert_eq!(markers(&horizontal).len(), 1, "horizontal bars");
+    // stacked: a second segment on each bar; one figure covering both
+    let stacked = vertical.clone() + &bx(110.0, 220.0, 140.0, 250.0, "#e76f51") + &bx(160.0, 170.0, 190.0, 200.0, "#e76f51") + &bx(210.0, 260.0, 240.0, 280.0, "#e76f51");
+    let found = markers(&stacked);
+    assert_eq!(found.len(), 1, "stacked bars");
+    // grouped: pairs of bars, small gaps inside a group and larger between groups
+    let grouped = axes() + &bx(110.0, 250.0, 125.0, 330.0, "#2a9d8f") + &bx(126.0, 230.0, 141.0, 330.0, "#e76f51")
+        + &bx(170.0, 200.0, 185.0, 330.0, "#2a9d8f") + &bx(186.0, 260.0, 201.0, 330.0, "#e76f51");
+    assert_eq!(markers(&grouped).len(), 1, "grouped bars");
+}
+
+#[test]
+fn shaded_tables_zebra_rows_highlights_and_borders_are_not_bar_charts() {
+    // a shaded table: cells of different widths on one baseline, each holding words, on ruled lines
+    let table = rule(72.0, 300.0, 540.0, 300.5) + &bx(72.0, 280.0, 200.0, 300.0, "#dddddd") + &bx(200.0, 280.0, 400.0, 300.0, "#dddddd") + &bx(400.0, 280.0, 540.0, 300.0, "#dddddd")
+        + &line_at(80.0, 284.0, "Region") + &line_at(210.0, 284.0, "Revenue") + &line_at(410.0, 284.0, "Growth");
+    assert!(markers(&table).is_empty(), "shaded table");
+    // zebra stripes: rows of one length on a shared left edge, beside a rule
+    let zebra = rule(72.0, 200.0, 72.5, 400.0) + &(0..6).map(|i| bx(72.0, 200.0 + 30.0 * i as f64, 540.0, 215.0 + 30.0 * i as f64, "#f2f2f2")).collect::<String>();
+    assert!(markers(&zebra).is_empty(), "zebra rows");
+    // highlighted text: boxes behind words
+    let highlight = rule(72.0, 400.0, 540.0, 400.5) + &bx(72.0, 380.0, 150.0, 400.0, "#ffff00") + &bx(160.0, 370.0, 260.0, 400.0, "#ffff00") + &bx(270.0, 390.0, 300.0, 400.0, "#ffff00")
+        + &line_at(75.0, 385.0, "launch") + &line_at(165.0, 380.0, "expansion") + &line_at(272.0, 391.0, "go");
+    assert!(markers(&highlight).is_empty(), "highlighted text");
+    // a page border and a white background
+    let border = bx(20.0, 20.0, 592.0, 772.0, "#000000") + &bx(0.0, 0.0, 612.0, 792.0, "#ffffff");
+    assert!(markers(&border).is_empty(), "page border");
+    // bars without any axis or tick are decoration (a progress strip), not a chart
+    let no_axis = bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    assert!(markers(&no_axis).is_empty(), "no axis");
+}
+
+#[test]
+fn many_boxes_stay_bounded() {
+    // 20000 boxes on a few baselines: the converter finishes and finds at most a few runs
+    let mut body = axes();
+    for i in 0..20000 {
+        let x = 100.0 + (i % 290) as f64;
+        body += &bx(x, 330.0 - (i % 170) as f64 - 1.0, x + 0.8, 330.0, "#2a9d8f");
+    }
+    let started = std::time::Instant::now();
+    let found = markers(&body);
+    assert!(found.len() <= 4);
+    assert!(started.elapsed().as_secs() < 20);
+}
