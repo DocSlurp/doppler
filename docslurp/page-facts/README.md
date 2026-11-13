@@ -17,7 +17,10 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   inherited descriptor; `pdftomarkdown --page-facts` passes it one and never reads, parses
   or rewrites a line; `pdfpagefacts` drives the same code without laying out text. For the
   same input, page range, level and include list, all three write **byte-identical** lines
-  (tested), whatever else pdftomarkdown is asked for (`--markers`, `--math`, `--stream`).
+  (tested), whatever else pdftomarkdown is asked for (`--markers`, `--math`, `--stream`). One
+  exception: pdftotext's XHTML header reads the document information (`/Title`, `/Author` and
+  so on), which `pdfpagefacts` never does; when such a read rebuilds the cross-reference table,
+  pdftotext's page lines say `xref-repaired-earlier` and withhold the thin-rule counts.
 - **Never on stdout** for pdftomarkdown: Markdown stays on stdout, unchanged by facts.
 - The JSON Schema is [`doppler-page-facts-1.schema.json`](doppler-page-facts-1.schema.json).
   The man page is `utils/pdfpagefacts.1`. Benchmarks: [PERF.md](PERF.md).
@@ -374,12 +377,16 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   page range (the run's rule budget depends on where it starts), and a reader should treat a
   page with `xref-repaired` among its `parseWarnings` as unknown too: a rebuild after the
   page's vector facts were taken is not seen by them.
-- **One run or two.** Facts from the same `pdftotext -rules -page-facts-fd` run as the XHTML
-  see every rebuild that run makes. Facts from a separate run (`pdfpagefacts`) cannot see a
-  rebuild only the XHTML run makes (its header reads the document information `/Title`,
-  `/Author` and so on, which the facts never fetch). `pdftotext` therefore marks such pages
-  `xrefRebuilt="1"` whenever `-rules` (or `-images`) is on, and a reader pairing two runs must
-  treat a page so marked as unknown. Pages the grid search cannot see
+- **One run, not two.** The contract covers facts from the same `pdftotext -rules
+  -page-facts-fd` run as the XHTML (as `pdftomarkdown --page-facts` runs it): that run's facts
+  see every object the XHTML was drawn from. Facts from a separate run (`pdfpagefacts`) are not
+  covered. Two processes fetch different objects (pdftotext's header reads the document
+  information's `/Title`, `/Author` and so on; the facts read outlines, names and page labels),
+  and poppler resolves some objects by what was fetched before: a fetch that rebuilds the
+  cross-reference table, or one that reads an older `/Prev` section of it (read only when a
+  missing entry is asked for), can make the same page draw differently in the two runs. A
+  rebuild is visible: `pdftotext` marks pages drawn after one `xrefRebuilt="1"` whenever
+  `-rules` (or `-images`) is on. A lazily read older section is not. Pages the grid search cannot see
   (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are unknown
   through `unlistedRuledGrids`, never known.
 - Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
@@ -497,7 +504,7 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
   grids also lose their thin-rule counts (`gridsTruncated`), as do a page's grids once the
-  cross-reference table was rebuilt. One more, older than issue 43: at levels that read the
+  cross-reference table was rebuilt after open. One more, older than issue 43: at levels that read the
   catalog's outlines, names or page labels (`full`), a reference there to a missing or broken
   object rebuilds the table before the first page is drawn, so `pdftotext -page-facts-fd` can
   write different XHTML than the same run without facts on such a file.

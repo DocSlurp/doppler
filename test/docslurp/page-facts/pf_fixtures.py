@@ -894,6 +894,23 @@ def grid_rebuilt_pdf():
     return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
 
 
+def grid_reopened_pdf():
+    """A ruled table on 2 pages of a file whose startxref is wrong: poppler rebuilds the
+    cross-reference table at open, as every run of it does."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    pdf = doc([{"content": table}, {"content": table}])
+    at = pdf.rindex(b"startxref\n") + len(b"startxref\n")
+    end = pdf.index(b"\n", at)
+    return pdf[:at] + b"%d" % (int(pdf[at:end]) + 7) + pdf[end:]
+
+
+def grid_titled_pdf():
+    """A ruled table in a file whose document information /Title names a missing object: only
+    pdftotext's XHTML header reads it (and rebuilds the table), never the page facts."""
+    table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
+    return doc([{"content": table}], extras=["<< /Title 99 0 R >>"], trailer_extra="/Info {0} 0 R")
+
+
 def grid_far_pdf():
     """A ruled table at the foot of a 2 x 10^9-point page (displayed y near 2 x 10^9): past 10^9
     points, no counts."""
@@ -949,4 +966,6 @@ ALL = {
     "grid_split": grid_split_pdf,
     "grid_rebuilt": grid_rebuilt_pdf,
     "grid_far": grid_far_pdf,
+    "grid_reopened": grid_reopened_pdf,
+    "grid_titled": grid_titled_pdf,
 }

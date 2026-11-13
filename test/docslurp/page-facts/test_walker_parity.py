@@ -2,7 +2,8 @@
 against the layout walker they are meant to replace (DocSlurp/docslurp-oss
 worker/scripts/pdf_layout_facts.py, run with python3).
 
-For each page of each input PDF (the walker's own public fixtures, worker/testdata/pdf-fixtures,
+Facts and XHTML come from one `pdftotext -bbox-layout -rules -page-facts-fd` run, the pairing
+the contract covers. For each page of each input PDF (the walker's own public fixtures, worker/testdata/pdf-fixtures,
 and this directory's grid and image fixtures):
 
 * grids: the walker's ruled_grids over this build's `pdftotext -bbox-layout -rules` XHTML gives
@@ -59,38 +60,43 @@ def run(cmd):
     return subprocess.run(cmd, capture_output=True, timeout=300)
 
 
-def walker_side(path, pages):
+def same_run(path, pages):
+    """(XHTML, facts lines) of one `pdftotext -bbox-layout -rules -page-facts-fd` run: the pairing
+    the known-grids contract covers (README, "One run or two")."""
     with tempfile.TemporaryDirectory() as d:
-        out = os.path.join(d, "layout.xhtml")
-        p = run([os.path.join(BIN, "pdftotext"), "-bbox-layout", "-rules", "-f", "1", "-l", str(pages), path, out])
+        out, facts_path = os.path.join(d, "layout.xhtml"), os.path.join(d, "facts.jsonl")
+        fd = os.open(facts_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            p = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", "-page-facts-fd", str(fd), "-page-facts-level", "full", "-f", "1", "-l", str(pages), path, out], capture_output=True, timeout=300, pass_fds=(fd,))
+        finally:
+            os.close(fd)
         if p.returncode != 0:
-            return None
-        xhtml = open(out, encoding="utf-8", errors="replace").read()
+            return None, None
+        return open(out, encoding="utf-8", errors="replace").read(), open(facts_path, "rb").read()
+
+
+def walker_side(path, pages, xhtml):
     listing = run([os.path.join(BIN, "pdfimages"), "-list", "-f", "1", "-l", str(pages), path]).stdout.decode("utf-8", "replace")
     rules = walker.page_rules(xhtml, range(pages))
-    # a page this separate XHTML run drew after rebuilding the table: unknown to a reader that
-    # pairs it with pdfpagefacts (README, "One run or two")
-    marked = [b'xrefRebuilt="1"' in head.encode() for head in (m.group(0) for m in walker._PAGE.finditer(xhtml))]
     layout = walker.layout_facts(path, listing, xhtml, None, 1, pages)["pages"]
     out = {}
     for n in range(1, pages + 1):
         grids = sorted((g["rows"], g["columns"]) for g in walker.ruled_grids(rules.get(n - 1, [])))
         entry = layout[n - 1]
         images = [(im["bbox"], im["wordsInside"]) for im in (entry.get("images") or []) if im.get("bbox") and im.get("wordsInside") is not None]
-        out[n] = {"grids": grids, "images": images, "rebuilt": n - 1 < len(marked) and marked[n - 1]}
+        out[n] = {"grids": grids, "images": images}
     return out
 
 
-def facts_side(path, pages):
-    p = run([os.path.join(BIN, "pdfpagefacts"), "-level", "full", "-f", "1", "-l", str(pages), path])
+def facts_side(raw):
     out = {}
-    for line in p.stdout.decode("ascii").splitlines():
+    for line in raw.decode("ascii").splitlines():
         d = json.loads(line)
         if d.get("type") != "page":
             continue
         v = d.get("vectors") or {}
         grids = v.get("grids") or []
-        complete = not v.get("gridsTruncated") and v.get("unlistedRuledGrids") == 0 and all("hRules" in g for g in grids)
+        complete = not v.get("gridsTruncated") and v.get("unlistedRuledGrids") == 0 and all("hRules" in g for g in grids) and "xref-repaired" not in d.get("parseWarnings", [])
         walkerlike = sorted((g["hRules"] - 1, g["vRules"] - 1) for g in grids if g.get("connected") and g["hRules"] >= 2 and g["vRules"] >= 3)
         items = (d.get("images") or {}).get("items") or []
         out[d["page"]] = {
@@ -117,7 +123,7 @@ for name in sorted(os.listdir(fixtures_dir)) if os.path.isdir(fixtures_dir) else
     if name.endswith(".pdf"):
         inputs.append((name[:-4], os.path.join(fixtures_dir, name)))
 tmp = tempfile.TemporaryDirectory()
-for name in ("grids", "grid_rules", "grid_split", "image_words", "caption_straddle", "vectors", "scans", "images"):
+for name in ("grids", "grid_rules", "grid_split", "grid_rebuilt", "grid_reopened", "grid_titled", "image_words", "caption_straddle", "vectors", "scans", "images"):
     path = os.path.join(tmp.name, name + ".pdf")
     with open(path, "wb") as f:
         f.write(fx.ALL[name]())
@@ -130,11 +136,12 @@ for name, path in inputs:
     pages = min(page_count(path), args.max_pages)
     if pages == 0:
         continue
-    w = walker_side(path, pages)
-    f = facts_side(path, pages)
-    if w is None:
+    xhtml, raw = same_run(path, pages)
+    if xhtml is None:
         t.check(False, "%s: pdftotext ran" % name)
         continue
+    w = walker_side(path, pages, xhtml)
+    f = facts_side(raw)
     for n in range(1, pages + 1):
         wp, fp = w[n], f.get(n)
         if fp is None:
@@ -146,8 +153,6 @@ for name, path in inputs:
             totals["gridPages"] += 1
         totals["walkerGrids"] += len(wp["grids"])
         same = wp["grids"] == fp["grids"]
-        if wp["rebuilt"]:
-            fp["complete"] = False
         if not fp["complete"]:
             totals["gridPagesUnknown"] += 1
             totals["gridPagesUnknownWalkerGrids"] += bool(wp["grids"])
@@ -172,7 +177,7 @@ for name, path in inputs:
 
 print("totals: %s" % json.dumps(totals))
 # a regression that made every page unknown would pass the per-page checks: keep a floor
-t.check(totals["gridPagesKnownEqual"] >= 21 and totals["imagesEqual"] >= 36, "parity: at least 21 grid pages known and equal, 36 images equal (this test's count)", json.dumps(totals))
+t.check(totals["gridPagesKnownEqual"] >= 23 and totals["imagesEqual"] >= 36, "parity: at least 23 grid pages known and equal, 36 images equal (this test's count)", json.dumps(totals))
 if args.json:
     with open(args.json, "w") as out:
         json.dump({"totals": totals, "pages": report}, out, indent=1)
