@@ -32,8 +32,11 @@ use doppler_md::{Options, Params, TableFormat};
 mod cli;
 #[path = "../facts_file.rs"]
 mod facts_file;
+#[path = "../scan_thresholds.rs"]
+mod scan_thresholds;
 
 use facts_file::FactsFile;
+use scan_thresholds::ScanThresholds;
 
 /// `--stream`'s lookahead, in pages.
 const STREAM_WINDOW: usize = 16;
@@ -77,8 +80,8 @@ image links (with --markers or --images-dir; they shape the Markdown):
   --images-repeats MODE       skip or link (a repeat of an earlier picture links to its file and
                               gets none; the manifest names it: repeat_of), or keep (its own
                               file) (default skip)
-  --scan-pages MODE           a full-page scan (images cover 85% of the page, at most
-                              --scan-max-words visible words): image (default) starts the page
+  --scan-pages MODE           a full-page scan (images cover --scan-min-coverage of the page,
+                              at most --scan-max-words visible words): image (default) starts the page
                               with ![page N scan](images/page-0012/image-001.jpg), then its OCR
                               text; the file is the scan's own JPEG (.jpg), a bilevel scan as
                               1-bit .png, else decoded or rendered (--raster-format). render:
@@ -129,7 +132,7 @@ closed once the Markdown is complete, before extraction):
                               --report); the same files and manifest as extracting after a
                               conversion. The plan is bound to that run: give the same FILE.pdf
                               (same bytes), -f/-l, --params, --strict, --stream/--window, --math,
-                              --html, image link options and --scan-max-words, and the same
+                              --html, image link options and the --scan-... thresholds, and the same
                               pdftomarkdown version,
                               or it is refused (exit status 2)
   Exit status 5: Markdown written, images in part (DIR and manifest.json kept; manifest:
@@ -150,7 +153,14 @@ docslurp/page-facts/README.md):
   --page-facts-include LIST   families added to basic: fonts,oddtext,images-detail,vectors,
                               forms,annots,ocg,structure
   --page-facts-timing         add factsMs, totalMs and peakRssKiB (not deterministic)
+
+scan test (pdftotext's: changes which pages are scans in the Markdown, the images and the facts;
+a changed threshold is recorded on the facts doc line, scanThresholds):
+  --scan-min-coverage F       share of the page one image, or the images together, must cover,
+                              in (0,1] (0.85)
   --scan-max-words N          a page with more visible words is not a scan (20)
+  --scan-layer-overlap F      share of the page a second image on the scan must cover to make it
+                              layered, in (0,1] (0.5)
 
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
 It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pdfregions
@@ -173,7 +183,7 @@ fn main() -> ExitCode {
     let (mut plan_out, mut plan_in): (Option<OsString>, Option<OsString>) = (None, None);
     let (mut facts_path, mut facts_fd): (Option<OsString>, Option<u32>) = (None, None);
     let mut facts_opts: Vec<OsString> = Vec::new();
-    let mut scan_opts: Vec<OsString> = Vec::new();
+    let mut scan = ScanThresholds::default();
     let mut args = std::env::args_os().skip(1);
     let mut options_done = false;
     while let Some(a) = args.next() {
@@ -257,10 +267,10 @@ fn main() -> ExitCode {
                 }
             }
             "--page-facts-timing" => facts_opts.push("-page-facts-timing".into()),
-            "--scan-max-words" => {
-                match args.next().and_then(|n| n.into_string().ok()).and_then(|n| n.parse::<u32>().ok()) {
-                    Some(n) if n <= i32::MAX as u32 => scan_opts = vec!["-scan-max-words".into(), n.to_string().into()],
-                    _ => return usage_error("--scan-max-words needs a number"),
+            "--scan-min-coverage" | "--scan-max-words" | "--scan-layer-overlap" => {
+                let value = args.next().and_then(|v| v.into_string().ok());
+                if let Err(e) = scan.apply(s, value.as_deref()) {
+                    return usage_error(&e);
                 }
             }
             "--images-plan-out" | "--images-plan" => {
@@ -334,12 +344,12 @@ fn main() -> ExitCode {
     }
     // what an images plan is bound to, besides the PDF's bytes and the page range
     let settings = plan::settings_digest(&format!(
-        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}scan-max-words {:?}\n",
+        "params {params:?}\nstrict {strict}\nwindow {window:?}\nmath {}\ntables {:?}\nmarkers {}\n{}{}",
         opts.math,
         opts.tables,
         opts.markers,
         images.link_style().canonical(),
-        scan_opts
+        scan.canonical()
     ));
     let pages = (first.map(|n| n as u32), last.map(|n| n as u32));
     // name a file starting with '-' relative to the current directory, so pdftotext cannot read
@@ -377,7 +387,7 @@ fn main() -> ExitCode {
         args.append(&mut facts_opts);
         facts_opts = args;
     }
-    facts_opts.extend(scan_opts);
+    facts_opts.extend(scan.pdftotext_args());
     // the folder is created before anything runs: it must be new
     let mut out_dir = match images.dir.as_deref().map(OutDir::create) {
         Some(Ok(d)) => Some(d),

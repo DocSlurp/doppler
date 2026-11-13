@@ -178,6 +178,66 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// The scan thresholds reach pdftotext: the facts (and their doc line) are pdfpagefacts' with
+/// the same options, and the Markdown places the page that became a scan as one.
+#[test]
+fn scan_thresholds_reach_the_facts_and_the_markdown() {
+    let Some((pdftotext, facts_exe)) = tools() else { return };
+    let s = Scratch::new("thresholds");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    // page 4's picture covers 200 x 150 of 612 x 792 (0.062) under 40 visible words
+    let scan = ["--scan-min-coverage", "0.06", "--scan-max-words", "40", "--scan-layer-overlap", "0.05"];
+    let f = s.0.join("thresholds.jsonl");
+    let mut args = vec!["--markers", "--page-facts", f.to_str().unwrap(), "--page-facts-level", "full"];
+    args.extend(scan);
+    let out = md(&pdftotext, &args, &pdf);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    let reference = pdfpagefacts(
+        &facts_exe,
+        &["-level", "full", "-scan-min-coverage", "0.06", "-scan-max-words", "40", "-scan-layer-overlap", "0.05"],
+        &pdf,
+    );
+    let got = std::fs::read(&f).unwrap();
+    assert_eq!(got, reference, "--page-facts with thresholds != pdfpagefacts with them");
+    let lines: Vec<serde_json::Value> =
+        String::from_utf8(got).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(
+        lines[0]["scanThresholds"],
+        serde_json::json!({"minCoverage": 0.06, "maxVisibleWords": 40, "layerOverlap": 0.05})
+    );
+    let scans: Vec<&str> = lines[1..5].iter().map(|l| l["images"]["scan"].as_str().unwrap()).collect();
+    assert_eq!(scans, ["none", "single", "none", "single"]);
+    let md_pages: Vec<String> = String::from_utf8(out.stdout).unwrap().split('\u{c}').map(String::from).collect();
+    assert!(md_pages[3].starts_with("![page 4 scan]("), "{}", md_pages[3]);
+    // by default page 4 is not a scan, and the doc line has no thresholds
+    let d = s.0.join("default.jsonl");
+    let out = md(&pdftotext, &["--markers", "--page-facts", d.to_str().unwrap()], &pdf);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("![page 4 scan]"));
+    let text = std::fs::read_to_string(&d).unwrap();
+    assert!(!text.contains("scanThresholds"), "{text}");
+    // the defaults spelled out: the same bytes as none given
+    let e = s.0.join("explicit.jsonl");
+    let out = md(
+        &pdftotext,
+        &[
+            "--markers",
+            "--page-facts",
+            e.to_str().unwrap(),
+            "--scan-min-coverage",
+            "0.85",
+            "--scan-max-words",
+            "20",
+            "--scan-layer-overlap",
+            ".5",
+        ],
+        &pdf,
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(std::fs::read_to_string(&e).unwrap(), text);
+}
+
 #[test]
 fn facts_fd_passes_a_callers_descriptor() {
     let Some((pdftotext, facts_exe)) = tools() else { return };
@@ -222,6 +282,15 @@ fn facts_options_are_checked_before_anything_runs() {
         vec!["--page-facts", "y.jsonl", "--page-facts-level", "max"],
         vec!["--page-facts", "y.jsonl", "--page-facts-include", "fonts,nope"],
         vec!["--scan-max-words", "-1"],
+        vec!["--scan-max-words"],
+        vec!["--scan-min-coverage", "0"],
+        vec!["--scan-min-coverage", "1.5"],
+        vec!["--scan-min-coverage", "nan"],
+        vec!["--scan-min-coverage", "1e-1"],
+        vec!["--scan-layer-overlap", "-0.5"],
+        vec!["--scan-layer-overlap", "inf"],
+        vec!["--scan-layer-overlap", ""],
+        vec!["--scan-layer-overlap"],
     ] {
         let out = md(&pdftotext, &args, &pdf);
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));

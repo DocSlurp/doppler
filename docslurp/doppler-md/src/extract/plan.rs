@@ -62,7 +62,7 @@ impl Binding {
             Some(
                 "written with other conversion settings (--params, --strict, --stream/--window, --math, --html, \
                  --images-link-prefix, --images-repeats, --raster-format, --vector-format, --scan-pages, \
-                 --scan-max-words)"
+                 --scan-min-coverage, --scan-max-words, --scan-layer-overlap)"
                     .into(),
             )
         } else if self.version != plan.version {

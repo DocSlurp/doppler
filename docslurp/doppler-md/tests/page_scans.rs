@@ -467,3 +467,62 @@ fn an_encode_that_ends_past_the_deadline_is_dropped() {
     assert_eq!((e["status"].as_str(), e["reason"].as_str()), (Some("not-extracted"), Some("deadline")), "{e}");
     assert!(!out.join("page-0001/image-001.webp").exists());
 }
+
+/// The scan thresholds pass to pdftotext and join the images plan's settings digest: a plan
+/// made with other thresholds is refused (exit 2, nothing written); the same values spelled
+/// otherwise are not other thresholds.
+#[test]
+fn scan_thresholds_change_the_scans_and_bind_the_plan() {
+    let Some((t, r, s)) = fixtures("thresholds") else { return };
+    let pdf = s.0.join("scans.pdf");
+    let pdf = pdf.to_str().unwrap();
+    // page 7: 54 visible words over a picture of 0.103 of the page, a scan only when both
+    // thresholds allow it
+    let md = |extra: &[&str]| {
+        let mut a = vec!["--markers"];
+        a.extend(extra);
+        a.push(pdf);
+        let out = run(&t, &r, &a);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().split('\u{c}').map(String::from).collect::<Vec<_>>()
+    };
+    assert!(!md(&[])[6].starts_with("![page 7 scan]"));
+    assert!(!md(&["--scan-min-coverage", "0.1"])[6].starts_with("![page 7 scan]"), "too many words");
+    assert!(!md(&["--scan-max-words", "100"])[6].starts_with("![page 7 scan]"), "too small");
+    let both = md(&["--scan-min-coverage", "0.1", "--scan-max-words", "100"]);
+    assert!(both[6].starts_with("![page 7 scan](images/page-0007/image-001."), "{}", both[6]);
+
+    let plan = s.0.join("t.plan");
+    let plan_s = plan.to_str().unwrap();
+    let thresholds = ["--scan-min-coverage", "0.1", "--scan-max-words", "100", "--scan-layer-overlap", "0.4"];
+    let mut a = vec!["--markers", "--images-plan-out", plan_s];
+    a.extend(thresholds);
+    a.push(pdf);
+    let one = run(&t, &r, &a);
+    assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
+    let extract = |k: usize, extra: &[&str]| {
+        let d = s.0.join(format!("x-{k}"));
+        let mut a = vec!["--images-plan", plan_s, "--images-dir", d.to_str().unwrap()];
+        a.extend(extra);
+        a.push(pdf);
+        (run(&t, &r, &a), d)
+    };
+    let refusals: [&[&str]; 4] = [
+        &[],
+        &["--scan-min-coverage", "0.1", "--scan-max-words", "100"],
+        &["--scan-min-coverage", "0.11", "--scan-max-words", "100", "--scan-layer-overlap", "0.4"],
+        &["--scan-min-coverage", "0.1", "--scan-max-words", "101", "--scan-layer-overlap", "0.4"],
+    ];
+    for (k, extra) in refusals.iter().enumerate() {
+        let (out, d) = extract(k, extra);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{k}: {err}");
+        assert!(err.contains("settings") && err.contains("--scan-layer-overlap"), "{k}: {err}");
+        assert!(!d.exists(), "{k}");
+    }
+    // the same values, spelled otherwise and in another order
+    let (out, d) =
+        extract(9, &["--scan-layer-overlap", ".40", "--scan-max-words", "100", "--scan-min-coverage", "0.10"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(entry(&manifest(&d), "p7.1")["fate"], "page-scan");
+}

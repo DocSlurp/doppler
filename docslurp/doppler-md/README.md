@@ -201,17 +201,17 @@ manifest lists.
 
 A page is a scan when pdftotext says so (`scan="single|tiled|layered" scanImage="K"` on
 `<page>`, from the classifier it shares with page facts: images cover at least 85% of the page
-on a 64 x 64 grid and at most `--scan-max-words` (20) words are visible; render mode 3 OCR text
-is invisible). Its scan image `pN.K` is placed `page-scan` before anything else (no
+(`--scan-min-coverage`) on a 64 x 64 grid and at most `--scan-max-words` (20) words are
+visible; render mode 3 OCR text is invisible). Its scan image `pN.K` is placed `page-scan` before anything else (no
 `background`, `watermark` or `block` for it), and the page's Markdown starts with
 
     ![page 12 scan](images/page-0012/image-001.jpg)
 
 followed by a blank line and the page's text as usual (an invisible OCR layer included, so the
 page stays searchable). A tiled scan (strips, tiles) or a layered one (a masked image, or a
-page-sized layer on it: mixed raster content) groups the page's other images of at least 1% of
-the page with the scan image (`grouped`), and its box is their union. Other pictures on a
-scanned page keep their own placement.
+layer on it covering at least half the page, `--scan-layer-overlap`: mixed raster content)
+groups the page's other images of at least 1% of the page with the scan image (`grouped`), and
+its box is their union. Other pictures on a scanned page keep their own placement.
 
 The link's extension is decided at conversion from the image's dictionary and placement
 (pdftotext's `copy=`, `orient=`, `overlaid=`; the data is never read). A scan is copied only
@@ -249,7 +249,20 @@ a scanned book never starves the figures nor the reverse. The batch's renderer s
 when both pools are spent. The document ceiling
 (`--images-doc-max-bytes`) counts both. The renderer's per-batch output cap is
 8 x `--images-max-bytes` + 4 x `--scan-max-bytes` (64 MiB..64 GiB): decoded scans arrive as raw
-samples. `--scan-pages` and `--scan-max-words` join the images plan's settings digest.
+samples. `--scan-pages` and the three thresholds join the images plan's settings digest.
+
+The scan test's thresholds are pdftotext's, passed on unchanged; they change which pages are
+scans everywhere (the Markdown, the images, the plan and `--page-facts`, whose doc line records
+them as `scanThresholds` when any is not its default):
+
+| option | default | |
+|---|---|---|
+| `--scan-min-coverage F` | 0.85 | the share of the page one image, or the images together, must cover |
+| `--scan-max-words N` | 20 | a page with more visible words is not a scan |
+| `--scan-layer-overlap F` | 0.5 | the share of the page a second image overlapping the scan must cover to make it layered |
+
+A share is a plain decimal in (0, 1] (`0.8`, `.8`, `1`; no sign, exponent, `inf` or `nan`, at
+most 30 characters); anything else is a usage error (exit 2) before anything runs.
 
 **Performance** (synthetic 500-page books, 2550 x 3300 at 300 dpi, one image object per page,
 whole-document `--images-dir`, this 8-core machine under other load; wall, CPU of the process
@@ -465,7 +478,8 @@ is reached without following symbolic links), and a later `--images-dir` run ext
 (`--images-plan FILE`) without running pdftotext or converting again: the same files and
 manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
 and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
-`--stream`/`--window`, `--math`, `--html`, `--scan-max-words`) and the version; the extracting
+`--stream`/`--window`, `--math`, `--html`, `--scan-min-coverage`, `--scan-max-words`,
+`--scan-layer-overlap`, compared by value) and the version; the extracting
 run must be given the same PDF and options (and the link options above: `--images-link-prefix`,
 `--images-repeats`, `--raster-format`, `--vector-format`, `--scan-pages`; the plan format is
 version 4, which adds each image's scan source), and refuses any difference, or a malformed plan (non-finite coordinates,
@@ -605,7 +619,7 @@ without them. Facts never go to stdout.
 | `--page-facts-level basic\|full` | `basic` (default) or every family |
 | `--page-facts-include LIST` | families added to basic: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure` |
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
-| `--scan-max-words N` | a page with more visible words is not a scan (20); also changes `scan=` in the XHTML |
+| `--scan-min-coverage F`, `--scan-max-words N`, `--scan-layer-overlap F` | the scan test's thresholds ([Page scans](#page-scans)); a changed one is recorded on the doc line (`scanThresholds`), so the lines stay byte-identical to `pdfpagefacts` given the same `-scan-...` options |
 
 With `--stream`, a page's facts line is written when pdftotext finishes the page, before its
 Markdown: join them by `page`. Not with `--images-plan` (no pdftotext runs). The descriptor

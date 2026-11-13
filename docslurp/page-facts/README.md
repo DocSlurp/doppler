@@ -203,7 +203,8 @@ union reaches 0.85 (strips, tiles), `layered` again if two half-page images of t
 overlap.
 
 Three thresholds can be changed, in `pdfpagefacts` and `pdftotext` (both the facts and
-`scan=`; `pdftomarkdown --scan-max-words N` passes the word threshold on). A changed threshold
+`scan=`) and in `pdftomarkdown` (`--scan-min-coverage`, `--scan-max-words`,
+`--scan-layer-overlap`, passed on to pdftotext). A changed threshold
 is recorded on the doc line (`scanThresholds`, all three values); with the defaults the
 output is unchanged, byte for byte.
 
