@@ -518,6 +518,7 @@ public:
     PredictorRowLimit &operator=(const PredictorRowLimit &) = delete;
     static int current();
     static unsigned long refusals(); // predictors refused on this thread so far
+    static unsigned long long allocated(); // predictor row bytes allocated on this thread so far
 
 private:
     int previous;

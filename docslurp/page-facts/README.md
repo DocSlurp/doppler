@@ -525,11 +525,13 @@ first, as the lazy read did (an entry is taken from the newest section that list
   - at most 30,000,000 entries listed across them;
   - table growth: older sections may add at most max(65,536, the main trailer's `/Size`) slots;
   - parsing: twice the file's bytes plus 64 KiB, shared by the main section, the chain and every
-    nested `/XRefStm`. A section's bytes are charged before it follows its `/XRefStm`, and a parse
-    that runs off the end of its budget is charged all of it;
-  - an xref stream's predictor row (its `/DecodeParms` `/Columns`, `/Colors`, `/BitsPerComponent`)
-    of at most 4,096 bytes. A larger one is refused before it is allocated, and the section counts
-    as past a bound.
+    nested `/XRefStm`. A section's bytes are charged before it follows its `/XRefStm`. A parse that
+    runs off the end of its substream is charged up to the budget or the end of the file,
+    whichever comes first; only the budget counts as hitting it;
+  - decoding: older xref streams' decoded entries (one row of `/W` widths each) and predictor rows
+    cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
+    refused before it is allocated, and the section counts as past a bound. The main section reads
+    as upstream (no decode budget).
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are
@@ -567,8 +569,15 @@ first, as the lazy read did (an entry is taken from the newest section that list
   A refused repair is a syntax error (`syntax-error` on the page). The doc line says
   `xref: repaired`, the header leaves the field out (`<title></title>`), and the audit leaves the
   image unevaluated (no `scan`/`copy` claim). Drawing alone may rebuild the table.
-- **Writers** (`pdfseparate`, saving) keep upstream's behaviour once they have drained the chain:
-  a missing entry is free, and a rebuild that would lose edits is refused.
+- **Writers** (`pdfseparate`, `pdfunite`, saving) keep upstream's behaviour:
+  - once they have drained the chain, a missing entry is free;
+  - once the document has edits, a missing entry continues the chain where the walk stopped, as
+    the lazy read did;
+  - a rebuild that would lose edits is otherwise refused.
+- **Caches shared with drawing**, filled under a guard:
+  - object streams parsed under one go to a separate cache that only guarded reads use, since a
+    parse can depend on where it was reached from;
+  - stream parameters are not stored at all.
 
 ## Hostile input
 

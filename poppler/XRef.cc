@@ -553,10 +553,13 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
         ok = false;
         return false;
     }
-    // an xref stream's predictor row is a few bytes (its /W widths); a larger one is refused
-    // before it is allocated (StreamPredictor)
-    const PredictorRowLimit rowLimit(budgeted ? 4096 : 0);
+    // In the chain (not the main section, which reads as upstream), an older xref stream's
+    // predictor row is allocated only within what is left of the decode budget, and what its
+    // rows cost is taken off it (StreamPredictor)
+    const bool inChain = chainDecodeLeft >= 0;
+    const PredictorRowLimit rowLimit(inChain ? static_cast<int>(std::clamp<long long>(chainDecodeLeft, 1, INT_MAX)) : 0);
     const unsigned long rowRefusalsBefore = PredictorRowLimit::refusals();
+    const unsigned long long rowBytesBefore = PredictorRowLimit::allocated();
     parser = new Parser(nullptr, str->makeSubStream(parsePos, budgeted, budgeted ? chainBytesLeft : 0, Object::null()), true);
     Goffset chargedFrom = parsePos;
     auto chargeBytes = [&] {
@@ -596,11 +599,15 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
 
     chargeBytes();
     delete parser;
-    if (budgeted && PredictorRowLimit::refusals() != rowRefusalsBefore) {
-        // a predictor row past the limit was dropped: the section was not read as written
-        noteChainBudget("predictor");
-        ok = false;
-        return false;
+    if (inChain) {
+        const unsigned long long rows = PredictorRowLimit::allocated() - rowBytesBefore;
+        chainDecodeLeft = rows >= static_cast<unsigned long long>(chainDecodeLeft) ? 0 : chainDecodeLeft - static_cast<long long>(rows);
+        if (PredictorRowLimit::refusals() != rowRefusalsBefore || chainDecodeLeft == 0) {
+            // a predictor row past the budget was dropped: the section was not read as written
+            noteChainBudget("decode");
+            ok = false;
+            return false;
+        }
     }
     return more;
 
@@ -626,10 +633,14 @@ void XRef::chargeChainBytes(Goffset after, Goffset *chargedFrom)
     if (chainBytesLeft < 0 || !chargedFrom) {
         return;
     }
-    // the lexer reports -1 once it ran off the end of its substream: all of it was read
-    const Goffset used = after < 0 ? chainBytesLeft : after > *chargedFrom ? after - *chargedFrom : 0;
-    if (after > *chargedFrom) {
-        *chargedFrom = after;
+    // The lexer reports -1 once it ran off the end of its substream, which ends at the budget or
+    // at the end of the file, whichever comes first: all of it up to there was read.
+    const Goffset fileEnd = str->getStart() + str->getLength();
+    const Goffset subEnd = std::min<Goffset>(fileEnd, *chargedFrom + chainBytesLeft);
+    const Goffset end = after < 0 ? subEnd : after;
+    const Goffset used = end > *chargedFrom ? end - *chargedFrom : 0;
+    if (end > *chargedFrom) {
+        *chargedFrom = end;
     }
     if (used >= chainBytesLeft) {
         chainBytesLeft = 0;
@@ -704,15 +715,15 @@ bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *fol
                 entries[i].obj.setToNull();
                 if (chainFilled) {
                     chainFilled->push_back(i);
-                    if (i == 1) {
-                        chainFilled->push_back(0); // the IBM workaround below may move it to 0
-                    }
                 }
 
                 // PDF files of patents from the IBM Intellectual Property
                 // Network have a bug: the xref table claims to start at 1
                 // instead of 0.
                 if (i == 1 && first == 1 && entries[1].offset == 0 && entries[1].gen == 65535 && entries[1].type == xrefEntryFree) {
+                    if (chainFilled) {
+                        chainFilled->push_back(0); // moved to entry 0 just below
+                    }
                     i = first = 0;
                     entries[0].offset = 0;
                     entries[0].gen = 65535;
@@ -920,6 +931,16 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
     if (!chargeChainEntries(first, n)) {
         return false;
     }
+    if (chainDecodeLeft >= 0) {
+        // the entries' decoded bytes (a row of /W widths each, at least one)
+        const long long cost = static_cast<long long>(n) * std::max(1, w[0] + w[1] + w[2]);
+        if (cost >= chainDecodeLeft) {
+            chainDecodeLeft = 0;
+            noteChainBudget("decode");
+            return false;
+        }
+        chainDecodeLeft -= cost;
+    }
     if (first + n > size) {
         if (resize(first + n) != size) {
             error(errSyntaxError, -1, "Invalid 'size' inside xref table");
@@ -1026,7 +1047,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     // DocSlurp (issue 45): a rebuilt table is not extended later by a lazy read of the old chain,
     // and object streams parsed before it (under the old table's offsets) are not reused
     prevXRefOffset = 0;
+    chainResumeOffset = 0;
     objStrs.clear();
+    objStrsGuarded.clear();
     {
         const Goffset fileLength = str->getLength();
         trailerBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
@@ -1154,8 +1177,9 @@ void XRef::constructTrailerDict(Goffset pos, bool needCatalogDict)
     Parser parser { nullptr, str->makeSubStream(pos, true, trailerBytesLeft, Object {}), false };
     Object newTrailerDict = parser.getObj();
     const Goffset after = parser.getPos();
-    // -1: the lexer ran off the end of its substream, which the budget cut
-    const Goffset used = after < 0 ? trailerBytesLeft : after > pos ? after - pos : 0;
+    // -1: the lexer ran off the end of its substream (the budget or the end of the file)
+    const Goffset fileEnd = str->getStart() + str->getLength();
+    const Goffset used = after < 0 ? std::min<Goffset>(trailerBytesLeft, fileEnd > pos ? fileEnd - pos : 0) : after > pos ? after - pos : 0;
     trailerBytesLeft = used >= trailerBytesLeft ? 0 : trailerBytesLeft - used;
     if (newTrailerDict.isDict()) {
         saveTrailerDict(newTrailerDict.getDict(), false, needCatalogDict);
@@ -1451,7 +1475,7 @@ Object XRef::fetchStreamParam(const Ref ref, int recursion)
     }
     const unsigned int suppressedBefore = suppressedRepairs;
     Object obj = fetch(ref, recursion);
-    if ((obj.isName() || obj.isArray() || obj.isDict()) && streamParamsGeneration == generation && suppressedRepairs == suppressedBefore && streamParams.size() < 4096) {
+    if ((obj.isName() || obj.isArray() || obj.isDict()) && streamParamsGeneration == generation && suppressedRepairs == suppressedBefore && !repairSuppressed && streamParams.size() < 4096) {
         streamParams.emplace(ref, obj.copy());
     }
     return obj;
@@ -1539,6 +1563,11 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
         ObjectStream *objStr = nullptr;
         if (const auto it = objStrs.find(e->offset); it != objStrs.end()) {
             objStr = it->second.get();
+        } else if (const auto g = objStrsGuarded.find(e->offset); repairSuppressed && g != objStrsGuarded.end()) {
+            if (endPos) {
+                *endPos = -1;
+            }
+            return g->second->getObject(e->gen, num);
         } else if (repairSuppressed) {
             // RepairGuard: an object stream whose parse a refused repair shaped (a /Length that
             // would have needed a rebuild, say) is used once and not kept
@@ -1552,9 +1581,8 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             }
             Object result = once->getObject(e->gen, num);
             if (suppressedRepairs == before) {
-                // read as an unguarded fetch would have read it; constructXRef drops it with the
-                // table it was parsed under
-                objStrs.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
+                // kept for guarded reads only (objStrsGuarded); constructXRef drops it
+                objStrsGuarded.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
             }
             return result;
         } else {
@@ -2144,6 +2172,11 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
     }
     chainListedLeft = maxListed;
     chainGrowthLeft = std::max<long long>(65536, mainSize);
+    {
+        // decoded xref-stream bytes and predictor rows: four times the file plus 16 MiB
+        const Goffset fileLength = str->getLength();
+        chainDecodeLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 4 * fileLength : 0) + (16 << 20);
+    }
     std::unordered_set<Goffset> seen;
     seen.insert(mainXRefOffset);
     int sections = 0;
@@ -2164,15 +2197,18 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
     while (prevXRefOffset) {
         if (!seen.insert(prevXRefOffset).second) {
             error(errSyntaxError, -1, "Circular XRef");
+            chainResumeOffset = prevXRefOffset;
             break;
         }
         if (++sections > maxSections) {
             error(errSyntaxError, -1, "More than {0:d} older xref sections: the rest are not read", maxSections);
+            chainResumeOffset = prevXRefOffset;
             capped = true;
             break;
         }
         std::vector<Goffset> followedXRefStm;
         filled.clear();
+        const Goffset sectionAt = prevXRefOffset;
         if (!readXRef(&prevXRefOffset, &followedXRefStm, nullptr)) {
             prevXRefOffset = 0;
         }
@@ -2180,6 +2216,7 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
             error(errSyntaxError, -1, "XRef sections past the {0:s} budget: the rest are not read", chainBudgetName ? chainBudgetName : "read");
             ok = true;
             dropSection();
+            chainResumeOffset = sectionAt;
             capped = true;
             break;
         }
@@ -2188,6 +2225,7 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
             error(errSyntaxError, -1, "Broken older xref section: the chain ends there");
             if (!xRefStream) {
                 dropSection();
+                chainResumeOffset = sectionAt;
             }
             break;
         }
@@ -2196,6 +2234,7 @@ void XRef::readPrevChain(bool * /*wasReconstructed*/)
     chainBytesLeft = -1;
     chainListedLeft = -1;
     chainGrowthLeft = -1;
+    chainDecodeLeft = -1;
     chainBudgetHit = false;
     chainBudgetName = nullptr;
     prevXRefOffset = 0;
@@ -2307,7 +2346,13 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                 for (int k = 0; k < size && !hasChanges; ++k) {
                     hasChanges = entries[k].getFlag(XRefEntry::Updated);
                 }
-                if (hasChanges) {
+                if (hasChanges && chainResumeOffset) {
+                    // a writer that edited the document: go on with the chain where the walk
+                    // stopped, as the lazy read did (which rebuilds only as upstream did)
+                    prevXRefOffset = chainResumeOffset;
+                    chainResumeOffset = 0;
+                    readXRefUntil(i);
+                } else if (hasChanges) {
                     // as fetch: a rebuild would lose the edits
                     error(errInternal, -1, "XRef entry {0:d} is in no section, document has changes, reconstruct aborted", i);
                 } else {
@@ -2398,6 +2443,7 @@ void XRef::scanSpecialFlags()
     }
     // upstream: once the chain is drained, a missing entry is free (writers must not rebuild)
     rebuildOnMissing = false;
+    chainResumeOffset = 0;
 
     // Mark object streams as DontRewrite, because we write each object
     // individually in full rewrite mode.

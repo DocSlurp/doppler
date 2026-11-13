@@ -750,6 +750,12 @@ void ImageStream::skipLine()
 namespace {
 thread_local int predictorRowLimit = 0; // 0: none
 thread_local unsigned long predictorRowRefusals = 0;
+thread_local unsigned long long predictorRowBytes = 0;
+}
+
+unsigned long long PredictorRowLimit::allocated()
+{
+    return predictorRowBytes;
 }
 
 unsigned long PredictorRowLimit::refusals()
@@ -796,6 +802,7 @@ StreamPredictor::StreamPredictor(Stream *strA, int predictorA, int widthA, int n
         ++predictorRowRefusals;
         return;
     }
+    predictorRowBytes += static_cast<unsigned long long>(rowBytes);
     predLine = static_cast<unsigned char *>(gmalloc(rowBytes));
     memset(predLine, 0, rowBytes);
     predIdx = rowBytes;

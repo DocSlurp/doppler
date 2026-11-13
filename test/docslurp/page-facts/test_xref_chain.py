@@ -86,13 +86,26 @@ with t.TempDir() as d:
         "stale_objstm_hybrid": ("stale_objstm_hybrid.py", []),
         "stale_ocmd_rebuild": ("stale_ocmd_rebuild.py", []),
         "selfprev": ("selfprev.py", ["eof"]),
+        "manysec999": ("manysec.py", ["999"]),
+        "manysec1000": ("manysec.py", ["1000"]),
+        "tail_eof": ("tailprev.py", ["eof"]),
+        "widepred_old": ("widepred_old.py", ["4800"]),
+        "objstm_depth": ("objstm_es.py", ["496"]),
+        "streamparam_depth": ("sp_depth_inv.py", ["497"]),
+        "xrefstm_reuse": ("stmreuse.py", ["999", "65536", "3"]),
+        "paeth_chain": ("wide30m_paeth.py", ["999", "30000", "3"]),
     }
+    # argument order of each generator: "out" first or last
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py"}
+    OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
         path = os.path.join(base, name + ".pdf")
         if gen:
             script, extra = gen
-            if script == "selfprev.py":
+            if script in OUT_SECOND:
+                cmd = [sys.executable, "-I", os.path.join(GEN, script)] + extra + [path]
+            elif script in OUT_FIRST:
                 cmd = [sys.executable, "-I", os.path.join(GEN, script), path] + extra
             else:
                 cmd = [sys.executable, "-I", os.path.join(GEN, script)] + extra + [path]
@@ -120,9 +133,19 @@ with t.TempDir() as d:
             t.check(xhtml == plain, "%s %s: XHTML with facts == without" % (name, " ".join(flags[:-2])))
             if rc == 0:
                 t.check(facts == pf, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, " ".join(flags[:-2])), "%r\n%r" % (facts[:300], pf[:300]))
-        if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest") and rc == 0:
+        # files upstream read without a rebuild, and that stay within the bounds or have nothing
+        # missing: not repaired, no page flagged, the text drawn
+        if name in ("fullchain", "selfprev", "h-bomb", "prevstr", "xrefstm_nest", "wide_pred", "widepred_old", "tail_eof", "manysec999") and rc == 0:
             dl = doc_line(pf)
-            t.check(dl.get("xref") == "ok", "%s: within the bounds (or nothing missing): not repaired" % name, repr(dl.get("xref")))
-        if name == "fullchain" and rc == 0:
-            t.check(doc_line(pf).get("incrementalUpdates") == 10, "fullchain: 11 full-table saves, 12.1M listed entries: all read", repr(doc_line(pf)))
+            t.check(dl.get("xref") == "ok" and b"xref-repaired" not in pf and b'xrefRebuilt="1"' not in outs[0], "%s: not repaired, no page flagged" % name, repr((dl.get("xref"), pf[-400:])))
+        if name in ("manysec999", "manysec1000", "tail_eof"):
+            t.check(b">Record<" in outs[0] or b"Record" in outs[0], "%s: the page content (listed only by the oldest section) is drawn" % name)
+        if name == "manysec1000":
+            t.check(b'xrefRebuilt="1"' in run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-rules", path, "-"])[0], "manysec1000: past the 999-section cap the content is found by a rebuild, flagged")
+        unite = os.path.join(BIN, "pdfunite")
+        if name in ("manysec1000", "tail_eof", "manysec999") and os.path.exists(unite):
+            merged = os.path.join(base, name + "-united.pdf")
+            subprocess.run([unite, path, path, merged], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+            text = run([os.path.join(BIN, "pdftotext"), "-q", merged, "-"])[0]
+            t.check(text.count(b"Record") == 2, "%s: pdfunite keeps both pages' content (a writer resumes the chain)" % name, repr(text[:200]))
 t.finish()

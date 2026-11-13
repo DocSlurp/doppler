@@ -296,6 +296,11 @@ private:
                          //   damaged files
     int streamEndsLen; // number of valid entries in streamEnds
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrs; // object streams map
+    // DocSlurp (issue 45): object streams parsed under a RepairGuard. Guarded reads use objStrs
+    // too, but drawing never uses these: a parse can depend on where it was reached from (the
+    // parser's recursion depth), so a read only some runs make must not decide what drawing
+    // gets. Both maps are dropped with the table (constructXRef).
+    std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     bool encrypted; // true if file is encrypted
     int encRevision;
     int encVersion; // encryption algorithm
@@ -313,6 +318,8 @@ private:
     // these hold what is left of its budgets (-1 otherwise).
     Goffset chainBytesLeft = -1;
     long long chainListedLeft = -1; // entries the older sections may list
+    long long chainDecodeLeft = -1; // decoded xref-stream bytes and predictor rows they may cost
+    Goffset chainResumeOffset = 0; // where the walk stopped early (writers resume there)
     long long chainGrowthLeft = -1; // slots they may add to the table
     bool chainBudgetHit = false;
     Goffset trailerBytesLeft = 0; // constructTrailerDict's budget, per rebuild
