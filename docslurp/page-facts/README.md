@@ -278,7 +278,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `bad-content-stream` | content-stream errors (unknown operators, wrong operands, unbalanced state) |
 | `missing-font` | text shown without a usable font |
 | `broken-image` | bad image parameters or codec errors |
-| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels) |
+| `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
@@ -387,7 +387,10 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   operands per page, after which uncached `/OC` counts as visible, with `limit-hit`. Whether
   content is hidden is O(1) per `BMC`/`BDC`/`EMC`, and marked content nested past 4,096
   levels is not tracked (`limit-hit`; content inside takes the visibility of the deepest
-  tracked level). These hold for plain pdftotext too. Poppler's errors are
+  tracked level). A stream's `/Filter` or `/DecodeParms` given by reference is fetched once
+  per document (an XObject is fetched again on every `Do`, so a large shared filter array
+  was parsed per draw), and a chain of more than 16 filters is refused (an empty stream,
+  `limit-hit`). These hold for plain pdftotext too. Poppler's errors are
   classified from their unformatted format strings; figure clusters merge by union-find over
   a sweep, within a run budget; the rule-grid score is a sweep over x with a Fenwick tree.
 - pdftotext has no time limit by default; `-timeout S`, `-timeout-per-page P` and

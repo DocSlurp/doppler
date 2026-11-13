@@ -201,6 +201,28 @@ def nested_marked(depth):
     return d.pages([d.stream(ops, compress=True)], resources="/Font << /F1 %d 0 R >>" % font)
 
 
+def filter_names(pages=2, draws=20000, names=50000):
+    """An image XObject whose /Filter (and /ColorSpace) is one indirect array of <names>
+    /FlateDecode names, drawn <draws> times a page: the array was fetched and the 50,000-filter
+    chain built again on every Do (past 120 s for 10 pages)."""
+    d = Doc()
+    big = d.add("[%s]" % " ".join(["/FlateDecode"] * names))
+    x = d.stream("\xff", "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace %d 0 R /Filter %d 0 R" % (big, big))
+    content = d.stream("q 1 0 0 1 0 0 cm /X Do Q\n" * draws, compress=True)
+    return d.pages([content] * pages, resources="/XObject << /X %d 0 R >>" % x)
+
+
+def hex_chain(n):
+    """A page whose content stream is ASCIIHex-encoded <n> times, with <n> filters."""
+    d = Doc()
+    font = d.add(FONT)
+    data = b"BT /F1 12 Tf 72 700 Td (chained) Tj ET"
+    for _ in range(n):
+        data = data.hex().encode() + b">"
+    content = d.stream(data, " ".join(["/Filter ["] + ["/ASCIIHexDecode"] * n + ["]"]))
+    return d.pages([content], resources="/Font << /F1 %d 0 R >>" % font)
+
+
 # --- measuring ------------------------------------------------------------------------------
 
 
@@ -336,6 +358,27 @@ with t.TempDir() as d:
         t.check("limit-hit" in page(ls, 1)["parseWarnings"], "nesting past the cap: limit-hit", repr(page(ls, 1)["parseWarnings"]))
     ls = bounded("4,000 nested BMC", d.write("nested-mc-ok.pdf", nested_marked(4000)))
     t.check("limit-hit" not in page(ls, 1)["parseWarnings"], "nesting within the cap: no limit-hit", repr(page(ls, 1)["parseWarnings"]))
+
+
+    # 11. stream filters: a /Filter array (or /DecodeParms) given by reference is fetched once
+    #     per document, not per stream, and a chain of more than 16 filters is refused (an
+    #     image whose /Filter names a 50,000-entry array, drawn 20,000 times a page, ran past
+    #     120 s in plain pdftotext -bbox-layout)
+    path = d.write("filter-names.pdf", filter_names())
+    start = time.monotonic()
+    try:
+        rc = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, os.devnull], timeout=60).returncode
+    except subprocess.TimeoutExpired:
+        rc = None
+    secs = time.monotonic() - start
+    t.check(rc == 0 and secs < 3, "40,000 Do of an image with a 50,000-name /Filter by reference: plain pdftotext within 3 s", "%.2f s, rc %r" % (secs, rc))
+    print("  50,000-name /Filter x 40,000 Do: pdftotext %.2f s" % secs)
+    if secs < 3:
+        ls = bounded("50,000-name /Filter x 40,000 Do", path)
+        t.check("limit-hit" in page(ls, 1)["parseWarnings"], "a refused filter chain: limit-hit", repr(page(ls, 1)["parseWarnings"]))
+    for n, shown in ((16, True), (17, False)):
+        text = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", d.write("hex%d.pdf" % n, hex_chain(n)), "-"], capture_output=True, timeout=60).stdout.decode()
+        t.check(("chained" in text) == shown, "%d ASCIIHex filters: %s" % (n, "decoded" if shown else "refused"), repr(text[:60]))
 
     # 8. pdftotext -timeout: exit code 6, whole facts lines, no run line
     slow = d.write("slow.pdf", error_dense(pages=40))
