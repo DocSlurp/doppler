@@ -281,7 +281,8 @@ pub fn extract(
             if path.as_ref() != linked {
                 return Err(format!("--images-resume: image {} is at another path in {}", n.id, manifest::NAME));
             }
-            if !old.resumable() {
+            // outside --images-resume-pages, a resumable entry stays as it was (still resumable)
+            if !old.resumable() || !s.resumes_page(n.page) {
                 entries[i] = old.clone();
                 continue;
             }

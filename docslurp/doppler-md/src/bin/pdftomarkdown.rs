@@ -164,6 +164,9 @@ closed once the Markdown is complete, before extraction):
                               refused (exit status 2, nothing touched); a hard failure keeps
                               the old manifest and files and removes only the new ones (6); 0
                               complete, 5 still partial
+  --images-resume-pages A-B   with --images-resume: retry only the resumable images on pages A
+                              to B (N for one); the others stay resumable for a later resume.
+                              Not bound into the manifest's settings; exit 5 while any remain
   Exit status 5: Markdown written, images in part (DIR and manifest.jsonl kept; its end line:
   complete false; why per image and per batch). 6: Markdown written, extraction failed (DIR
   removed), or the images plan could not be written.

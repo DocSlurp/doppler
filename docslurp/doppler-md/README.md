@@ -527,6 +527,7 @@ images can be tenant data in a shared VM. Copy or `chmod` them to share.
 | `--images-max-file-bytes N` | `8MiB` | one file larger is not written (`error: file_bytes`; an SVG first falls back to a raster); the rest go on |
 | `--images-timeout S` | `120` | time per batch (rendering, compaction, encoding, fallbacks); at its deadline pdfregions' process group is killed and the batch stops (`timeout`); an encode that ends past it (or past `--images-deadline`) is dropped and its image is `timeout` (`deadline`), so one encode overruns by at most its own time |
 | `--images-pages A-B` | all | only figures on pages A..B (1-based, inclusive; `N` for one page) are rendered; others get `skipped: pages`. The Markdown and markers still cover every converted page (context pages around a range) |
+| `--images-resume-pages A-B` | all | with `--images-resume` only: retry only the resumable images on pages A..B (`N` for one page); the others keep their entries and stay resumable. Not bound into the manifest's `settings_sha256` (unlike `--images-pages`, which a resume must repeat), so one manifest can be resumed a range at a time; exit 5 while any image is left |
 | `--images-confine require\|auto\|off` | `auto` | passed as pdfregions `-confine`; the report's `images_confined` says whether it was confined |
 | `--scan-pages image\|skip\|render` | `image` | full-page scans (see [Page scans](#page-scans)); also with `--markers` alone |
 | `--scan-dpi N` | `200` | rendered scans (tiled, layered, turned, not copyable, `--scan-pages render`), 36..300 |
@@ -708,6 +709,12 @@ lists images a stopped batch left that are not resumable, such as `renderer`). A
 and page folders the resume made. Content repeats are compared within one run only: a resumed
 figure whose pixels repeat one extracted earlier gets its own file rather than
 `reason: repeat`.
+
+**Manifest-only resume.** DIR may hold `manifest.jsonl` alone: a resume never reads or needs
+the files of entries it keeps (a host that keeps them in object storage hands back only
+the manifest), the document ceilings count the bytes the manifest records for them, and the
+folder ends up with only the files this resume wrote, beside the replaced manifest.
+`--images-resume-pages A-B` limits one resume to the resumable images of those pages.
 
 **Performance** (one core, this machine): SVG compaction of 21 arXiv vector figures (cairo
 SVG, 2.33 MB; 4 more hold JPEG data URIs and fall back to WebP) took 4.4 ms per figure and

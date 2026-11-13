@@ -536,3 +536,131 @@ fn a_failed_resume_keeps_the_old_manifest_and_removes_only_its_own_files() {
     assert_eq!(std::fs::read(part.join("page-0004/image-001.webp")).unwrap(), b"theirs");
     assert!(!part.join("page-0002").exists(), "a page folder the resume made is removed");
 }
+
+/// Keeps only `manifest.jsonl` in `dir`: what a host that keeps the extracted files elsewhere
+/// (object storage) hands back for a resume.
+fn manifest_only(dir: &Path) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            std::fs::remove_dir_all(&p).unwrap();
+        } else if p.file_name().unwrap() != "manifest.jsonl" {
+            std::fs::remove_file(&p).unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_resume_needs_only_the_manifest() {
+    let Some((p, s, pdf)) = setup("resume-manifest-only", 6) else { return };
+    let full = s.0.join("full");
+    assert_eq!(run(&p, &["--images-dir", full.to_str().unwrap(), &pdf], &[]).status.code(), Some(0));
+    let part = s.0.join("part");
+    let r =
+        run(&p, &["--images-dir", part.to_str().unwrap(), "--images-batch-pages", "2", "--images-max", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    let kept = files(&part);
+    assert_eq!(kept.len(), 3);
+    manifest_only(&part);
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-batch-pages", "2", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    // only the new files: the three the first run wrote are not written again
+    let new = files(&part);
+    assert_eq!(new.len(), 3);
+    assert!(new.keys().all(|k| !kept.contains_key(k)), "{:?} vs {:?}", new.keys(), kept.keys());
+    let whole = files(&full);
+    for (k, v) in &new {
+        assert_eq!(v.0, whole[k].0, "{k}");
+    }
+    let m = manifest(&part);
+    assert_eq!((&m["complete"], &m["resumes"]), (&true.into(), &1.into()));
+    assert_eq!(m["totals"]["extracted"], 6);
+}
+
+#[test]
+fn a_manifest_only_resume_counts_the_manifests_bytes_against_the_document_ceiling() {
+    let Some((p, s, pdf)) = setup("resume-manifest-bytes", 6) else { return };
+    let part = s.0.join("part");
+    let r =
+        run(&p, &["--images-dir", part.to_str().unwrap(), "--images-batch-pages", "2", "--images-max", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    let m = manifest(&part);
+    let held: u64 = m["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["status"] == "extracted")
+        .map(|e| e["bytes"].as_u64().unwrap())
+        .sum();
+    assert!(held > 0);
+    manifest_only(&part);
+    // the ceiling is exactly what the manifest says is held: nothing more fits
+    let ceiling = held.to_string();
+    let r = run(
+        &p,
+        &[
+            "--images-resume",
+            part.to_str().unwrap(),
+            "--images-batch-pages",
+            "2",
+            "--images-doc-max-bytes",
+            &ceiling,
+            &pdf,
+        ],
+        &[],
+    );
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(files(&part).is_empty(), "nothing fits under the ceiling the held bytes fill");
+    let m = manifest(&part);
+    assert_eq!(m["totals"]["extracted"], 3);
+}
+
+#[test]
+fn a_resume_page_range_retries_only_its_pages() {
+    let Some((p, s, pdf)) = setup("resume-pages", 6) else { return };
+    let full = s.0.join("full");
+    assert_eq!(run(&p, &["--images-dir", full.to_str().unwrap(), &pdf], &[]).status.code(), Some(0));
+    let part = s.0.join("part");
+    let r =
+        run(&p, &["--images-dir", part.to_str().unwrap(), "--images-batch-pages", "2", "--images-max", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    let markdown = r.stdout;
+    let m = manifest(&part);
+    let resumable: Vec<u32> = (1..=6).filter(|&pg| entry(&m, pg)["resumable"] == true).collect();
+    assert_eq!(resumable, [2, 4, 6], "{m}");
+    manifest_only(&part);
+    // --images-pages is bound into the manifest's settings: a different range is refused
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-pages", "3-4", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(2));
+    // --images-resume-pages narrows the resume only: page 4 is extracted, 2 and 6 stay resumable
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-resume-pages", "3-4", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5), "{}", String::from_utf8_lossy(&r.stderr));
+    assert_eq!(r.stdout, markdown, "the Markdown never changes");
+    let got = files(&part);
+    let whole = files(&full);
+    assert_eq!(got.len(), 1, "{:?}", got.keys());
+    let (k, v) = got.iter().next().unwrap();
+    assert!(k.starts_with("page-0004/"), "{k}");
+    assert_eq!(v.0, whole[k].0);
+    let m = manifest(&part);
+    assert_eq!((&m["complete"], &m["resumable"], &m["resumes"]), (&false.into(), &true.into(), &1.into()));
+    assert_eq!(status(&m, 4).0, "extracted");
+    for pg in [2, 6] {
+        assert_eq!(entry(&m, pg)["resumable"], true, "{pg}");
+    }
+    // a range with nothing resumable changes nothing (still 5: pages 2 and 6 remain)
+    let before = std::fs::read(part.join("manifest.jsonl")).unwrap();
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), "--images-resume-pages", "3-5", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(5));
+    assert_eq!(std::fs::read(part.join("manifest.jsonl")).unwrap(), before);
+    // the rest, from the manifest alone again
+    manifest_only(&part);
+    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
+    let m = manifest(&part);
+    assert_eq!((&m["complete"], &m["resumes"]), (&true.into(), &2.into()));
+    assert_eq!(m["totals"]["extracted"], 6);
+    // --images-resume-pages without --images-resume is a usage error
+    let r = run(&p, &["--images-dir", s.0.join("x").to_str().unwrap(), "--images-resume-pages", "1", &pdf], &[]);
+    assert_eq!(r.status.code(), Some(2));
+}
