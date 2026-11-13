@@ -193,6 +193,38 @@ def oc_marked(kind, sections, operands=9990):
     return d.pages([content], resources=res, catalog_extra="/OCProperties << /OCGs [%d 0 R] /D << /OFF [%d 0 R] >> >>" % (off, off))
 
 
+def oc_history(kind):
+    """Two pages over shared /Properties, both naming the same OCMDs, so a whole-document run
+    answers page 2 from what page 1 cached. Page 2 ends with "hidden" in a section over an OFF
+    group:
+      spent   22 distinct OCMDs /VE /And of 9,990 shown groups, on each page: page 2's operand
+              budget runs out before its last section, so "hidden" counts as visible, limit-hit
+      under   10 such OCMDs: within budget, so "hidden" stays hidden, no limit-hit
+      shared  page 1's one section is /VE /And R (R an indirect /And of 9,998 shown groups);
+              page 2's only one is /VE [/And R off]: past the 10,000-operand expression limit,
+              so visible, limit-hit, even though page 1 evaluated R already"""
+    d = Doc()
+    on = d.add("<< /Type /OCG /Name (on) >>")
+    off = d.add("<< /Type /OCG /Name (off) >>")
+    font = d.add(FONT)
+    props = {}
+    if kind == "shared":
+        r = d.add("[/And %s]" % " ".join(["%d 0 R" % on] * 9998))
+        props["A"] = d.add("<< /Type /OCMD /VE [/And %d 0 R] >>" % r)
+        props["H"] = d.add("<< /Type /OCMD /VE [/And %d 0 R %d 0 R] >>" % (r, off))
+        early, late = "/OC /A BDC EMC\n", ""
+    else:
+        n = 22 if kind == "spent" else 10
+        for k in range(n):
+            props["M%d" % k] = d.add("<< /Type /OCMD /VE [/And %s] >>" % " ".join(["%d 0 R" % on] * 9990))
+        props["H"] = d.add("<< /Type /OCMD /OCGs [%d 0 R] >>" % off)
+        early = late = "".join("/OC /M%d BDC EMC\n" % k for k in range(n))
+    res = "/Font << /F1 %d 0 R >> /Properties << %s >>" % (font, " ".join("/%s %d 0 R" % kv for kv in props.items()))
+    c1 = d.stream(early + "BT /F1 12 Tf 72 700 Td (one) Tj ET\n")
+    c2 = d.stream(late + "BT /F1 12 Tf 72 700 Td (two) Tj ET\n/OC /H BDC BT /F1 12 Tf 72 600 Td (hidden) Tj ET EMC\n")
+    return d.pages([c1, c2], resources=res, catalog_extra="/OCProperties << /OCGs [%d 0 R %d 0 R] /D << /OFF [%d 0 R] >> >>" % (on, off, off))
+
+
 def nested_marked(depth):
     """<depth> nested BMC sections around one word, between two others (a few KB compressed)."""
     d = Doc()
@@ -341,6 +373,22 @@ with t.TempDir() as d:
             t.check("shown" in text and "hidden" in text and "limit-hit" in warn, "direct OCMD past the page budget: visible, limit-hit", repr((text[:80], warn)))
         else:
             t.check("shown" in text and "hidden" not in text and "limit-hit" not in warn, "%s OCMD over an OFF group: hidden, no limit-hit" % kind, repr((text[:80], warn)))
+
+    # 11. optional content: a page's visibility answers and limit-hit do not depend on what ran
+    #     before it in the process. A cached OCMD is charged to the page's budget as if evaluated
+    #     (22 sections over 9,991-operand OCMDs showed page 2's hidden layer cold but not after
+    #     page 1), and /VE sub-expressions are not kept across evaluations.
+    for kind, spent in (("spent", True), ("under", False), ("shared", True)):
+        path = d.write("oc-history-%s.pdf" % kind, oc_history(kind))
+        whole = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", path, "-"], capture_output=True, timeout=60).stdout.decode().split("\f")
+        alone = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-f", "2", "-l", "2", path, "-"], capture_output=True, timeout=60).stdout.decode().split("\f")
+        t.check(len(whole) > 2 and whole[1] == alone[0], "%s: pdftotext page 2 alone equals page 2 of the whole document" % kind, repr((whole[1:2], alone[:1])))
+        facts = [[json.loads(l) for l in cpu_run([os.path.join(BIN, "pdfpagefacts"), "-level", "full", "-timeout", "0"] + extra + [path])[1].decode("ascii").splitlines()] for extra in ([], ["-f", "2", "-l", "2"])]
+        p2 = [page(ls, 2) for ls in facts]
+        t.check(p2[0] == p2[1], "%s: pdfpagefacts page 2 alone equals page 2 of the whole document" % kind, repr(p2)[:600])
+        shown = "hidden" in alone[0] and "limit-hit" in p2[1]["parseWarnings"]
+        hidden = "hidden" not in alone[0] and "limit-hit" not in p2[1]["parseWarnings"]
+        t.check(shown if spent else hidden, "%s: page 2's last section %s" % (kind, "visible, limit-hit" if spent else "hidden, no limit-hit"), repr((alone[0][:80], p2[1]["parseWarnings"])))
 
     # 10. marked content: visibility is O(1) per BMC/BDC/EMC, not a walk of the stack (200,000
     #     nested BMC in 2.8 KB took 91 s), and nesting past 4096 is not tracked, with limit-hit
