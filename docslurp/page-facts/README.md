@@ -19,14 +19,14 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   same input, page range, level and include list, all three write **byte-identical** lines
   (tested), whatever else pdftomarkdown is asked for (`--markers`, `--stream`). Exceptions:
   `--math` adds `-glyphs`, which makes thin stencil image masks rules (grids drawn with them
-  differ); and pdftotext's XHTML header reads the document information (`/Title`, `/Author` and
-  so on), which `pdfpagefacts` never does: when such a read rebuilds the cross-reference table,
-  pdftotext's page lines say `xref-repaired-earlier` and withhold the thin-rule counts.
-- **Never on stdout** for pdftomarkdown: Markdown stays on stdout. Facts do not change it, except
-  on a damaged or unusual file where the `full` doc line's reads (outlines, names, page labels)
-  rebuild the cross-reference table or pull in an older `/Prev` section of it before the first
-  page is drawn: objects can then resolve that a run without facts leaves unresolved (see the
-  page-locality exceptions below).
+  differ). pdftotext's XHTML header reads the document information (`/Title`, `/Author` and so
+  on), which `pdfpagefacts` never does, but since issue 45 those reads cannot rebuild the
+  cross-reference table (a broken entry is left out of the header instead).
+- **Never on stdout** for pdftomarkdown: Markdown stays on stdout, and facts do not change it.
+  Every read the facts make beyond drawing (the doc line's catalog, `/Info` and `/Encrypt`, and a
+  page's annotation, widget, colour-space and optional-content lookups) is read-only: it cannot
+  rebuild the cross-reference table the pages are drawn from (issue 45). The whole `/Prev` chain is read when the file is opened (see
+  [Cross-reference reads](#cross-reference-reads)).
 - The JSON Schema is [`doppler-page-facts-1.schema.json`](doppler-page-facts-1.schema.json).
   The man page is `utils/pdfpagefacts.1`. Benchmarks: [PERF.md](PERF.md).
 
@@ -81,7 +81,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
 | `pdfVersion` | `"M.m"` from the header and catalog `/Version`, absent when not 1.0-2.9 |
 | `linearized` | a linearization dictionary is present |
-| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or while the doc line read the catalog's outlines, names or page labels |
+| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or when an object the doc line reads (outlines, names, page labels, `/Info`) is broken or missing and would have needed a rebuild (the doc line reads it as absent and the table is left alone) |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
 | `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
@@ -384,14 +384,11 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   see (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are
   unknown through `unlistedRuledGrids`, never known.
 - **One run, not two.** Anything else is outside the contract:
-  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). Two processes fetch
-    different objects (pdftotext's header reads the document information's `/Title`, `/Author`
-    and so on; the facts read outlines, names and page labels), and poppler resolves some
-    objects by what was fetched before: a fetch that rebuilds the cross-reference table, or one
-    that reads an older `/Prev` section of it (read only when a missing entry is asked for), can
-    make the same page draw differently in the two runs. A rebuild is visible (`pdftotext`
-    marks pages drawn after one `xrefRebuilt="1"` whenever `-rules` or `-images` is on); a
-    lazily read older section is not.
+  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). Since issue 45 neither
+    the doc line nor pdftotext's header can change what the pages resolve, and older `/Prev`
+    sections are read at open in every run, so for the same flags and range the two runs
+    write the same facts (tested on the fixtures and under mutation fuzz). The contract still
+    pairs one run's facts with that run's XHTML: that is the pairing the parity results cover.
   - Different flags or ranges: thin image-mask rules are rules only under `-glyphs` (which
     `pdftomarkdown --math` adds), and the run's rule budget depends on where the range starts.
   - `pdftomarkdown --page-facts`: it computes the same facts on its own pass, but keeps its
@@ -401,9 +398,9 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
   budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
   run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
-  were taken (by the doc line's reads of outlines, names or page labels, which pdftotext alone
-  never makes, or by an earlier fetch: an object may then resolve to another body than a run
-  that never rebuilt it reads; a rebuild at open is every run's and does not count); a thin
+  were taken (by an earlier fetch: an object may then resolve to another
+  body than a run that never rebuilt it reads; a rebuild at open is every run's and does not
+  count, and the facts' own reads never rebuild it); a thin
   rule's corners or extent are not finite, or its centre is past 10^9 points; more than
   4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
@@ -458,7 +455,7 @@ formatted for facts (their arguments are not read) and never kept.
 | `limit-hit` | a cap was reached (images, fonts, paths, rules, annotations, figure merging, the image colour-space budget when one of this page's images needed a refused lookup, an optional-content expression past 10,000 operands or the page's 200,000 optional-content operands, after which content counts as visible, marked content nested past 4,096 levels, a stream with more than 16 filters) |
 | `non-finite`, `out-of-range` | a number was not finite, or beyond ±10^9 points |
 | `xref-repaired` | the cross-reference table was rebuilt while this page was read |
-| `xref-repaired-earlier` | an earlier page of the run (or, in pdftotext, its XHTML header) rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
+| `xref-repaired-earlier` | an earlier read of the run found an object stream that parses differently by where it is reached from, and this page's read-only lookup refused it (issue 45); or an earlier page of the run rebuilt the table after the doc line: an object the file holds twice (two bodies under one number) can now resolve to the other one, so this page's facts (any of them read from such an object, an image's `px` or `bytesPerPixel` say) may differ from a run of this page alone. A rebuild while the document was opened does not set it (every range sees that one; the doc line says `xref: repaired`) |
 | `page-failed` | the page could not be displayed (`"error":"failed"`) |
 
 Errors raised while loading a shared resource (a font, an image dictionary) are reported on
@@ -511,12 +508,89 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
   grids also lose their thin-rule counts (`gridsTruncated`), as do a page's grids once the
-  cross-reference table was rebuilt after open. One more, older than issue 43: at levels that read the
-  catalog's outlines, names or page labels (`full`), a reference there to a missing or broken
-  object rebuilds the table before the first page is drawn (or, without a rebuild, reads an older
-  `/Prev` section of it, which makes an object resolve that a run without facts never reads), so
-  `pdftotext -page-facts-fd` can write different XHTML than the same run without facts on such a
-  file. A rebuild is flagged; an older section read is not.
+  cross-reference table was rebuilt after open. Before issue 45, a `full` doc line's read of a
+  missing or broken catalog object could rebuild the table before the first page was drawn, or
+  pull in an older `/Prev` section, so `pdftotext -page-facts-fd` could write different XHTML
+  than the same run without facts; neither can happen now (tested).
+
+## Cross-reference reads
+
+Issue 45. Upstream poppler reads cross-reference sections older than the main one (the `/Prev`
+chain) only when a missing entry is first asked for, so what an object resolves to could depend
+on what a run fetched first. Doppler reads the whole chain when the document is opened, newest
+first, as the lazy read did (an entry is taken from the newest section that lists it):
+
+- **Bounds**, each checked before the work or allocation it limits:
+  - at most 999 older sections (1,000 with the main one, the bound `incrementalUpdates` uses);
+  - at most 30,000,000 entries listed across them;
+  - table growth: older sections may add at most max(65,536, the main trailer's `/Size`) slots;
+  - parsing: twice the file's bytes plus 64 KiB, shared by the main section, the chain and every
+    nested `/XRefStm`. A section's bytes are charged before it follows its `/XRefStm`. A parse that
+    runs off the end of its substream is charged up to the budget or the end of the file,
+    whichever comes first; only the budget counts as hitting it;
+  - decoding: older xref streams' decoded entries (one row of `/W` widths each) and predictor rows
+    cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
+    refused before it is allocated, and the section counts as past a bound. The main section reads
+    as upstream (no decode budget). Filter work (inflating, say) is bounded by the parse and
+    decode budgets, not counted on its own.
+- **Where the walk stops early**, what it read stands and the rest of the chain is not read:
+  - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
+    dropped (the lazy read never used a section it could not read). Behind an xref stream they are
+    kept, as there;
+  - **a bound.** The section it stopped in is dropped.
+
+  A file whose objects the sections read all list then draws as upstream drew it. Otherwise the
+  first fetch of an entry no section read lists rebuilds the table. For an xref stream this
+  happens only after a bound; behind a loop or broken section, upstream never rebuilt.
+- **A rebuild** (at open or later) never extends the rebuilt table from the old chain. It drops the
+  object streams parsed before it, and parses the trailers it finds within one budget of twice
+  the file plus 64 KiB.
+- **An entry no section lists:** for a classic table the first fetch of it rebuilds the table, as
+  the lazy read did on its first missing entry (also after a bound, for an xref stream). That happens after open, so it is counted like
+  any later rebuild (`xref-repaired` on the page, `xref-repaired-earlier` after it, and
+  `xrefRebuilt="1"` in pdftotext's XHTML under `-rules` or `-images`), rather than silently
+  depending on whether an earlier fetch had already used up the chain.
+- **Linearized files** keep upstream's direct read of the main table's entries; their chain is
+  not followed lazily either.
+- **Read-only lookups (`XRef::RepairGuard`).** Reads that some runs make and others do not
+  are made under a guard:
+  - the doc line's catalog, `/Info` and `/Encrypt`;
+  - pdftotext's XHTML header (`/Info`);
+  - a page's facts (annotations, widgets, forms, image colour spaces, optional content);
+  - `-images`' scan-copy audit of an image's dictionary.
+
+  Under the guard, a fetch that would rebuild the table returns nothing and leaves the table as
+  it was:
+  - no entry is read, marked free or rebuilt;
+  - an object stream or stream parameter it parsed is not kept;
+  - a cache shared with drawing (image colour spaces, optional-content visibility) does not keep
+    an answer a refused repair shaped. The optional-content cache is also dropped when the table
+    is rebuilt.
+
+  A refused repair is a syntax error (`syntax-error` on the page). The doc line says
+  `xref: repaired`, the header leaves the field out (`<title></title>`), and the audit leaves the
+  image unevaluated (no `scan`/`copy` claim). Drawing alone may rebuild the table.
+- **Writers** (`pdfseparate`, `pdfunite`, saving) keep upstream's behaviour:
+  - once they have drained the chain, a missing entry is free;
+  - once the document has edits, a missing entry continues the chain where the walk stopped, as
+    the lazy read did, or, when the walk read it all, rebuilds the table, as the lazy read did.
+- **Caches shared with drawing**, filled under a guard:
+  - object streams parsed under a guard are kept apart from drawing's, by the kind of read: page
+    facts only (the doc line, a page's facts, the op tally); image geometry (facts or `-images`);
+    the `-images` audit. Each is reused only by reads of its own kind, which every run of that
+    kind makes in the same order. Page facts' and geometry's reads also ignore what drawing
+    parsed, since that depends on the run's flags. The XHTML header keeps its parses only until
+    its guard ends;
+  - a guarded parse that depended on where it was reached from (an object being fetched up the
+    stack, or the parser's depth limit) is refused, as a repair would be (`syntax-error`), and
+    remembered for that kind of read so it is not parsed again. A later page refused that way is
+    marked `xref-repaired-earlier`, since a run of the page alone may read it;
+  - guarded optional-content evaluations neither read nor fill drawing's visibility cache;
+  - the op tally evaluates optional content with a budget of its own, so it cannot spend the one
+    image geometry (and so `-images`) answers from;
+  - a rebuild made by a missing entry keeps the document's edits (a writer's added or changed
+    objects, its trailer and `/Info`);
+  - stream parameters are not stored at all.
 
 ## Hostile input
 

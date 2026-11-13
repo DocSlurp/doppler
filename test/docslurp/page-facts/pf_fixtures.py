@@ -888,8 +888,9 @@ def grid_split_pdf():
 
 
 def grid_rebuilt_pdf():
-    """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
-    doc line does, and pdftotext never does) rebuilds the cross-reference table."""
+    """A ruled table in a file whose catalog names a missing /Outlines object: the doc line reads
+    it (pdftotext never does) and, since issue 45, read-only: the refused rebuild leaves the
+    table the pages are drawn from alone (doc xref repaired)."""
     table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
     return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
 
@@ -906,7 +907,8 @@ def grid_reopened_pdf():
 
 def grid_titled_pdf():
     """A ruled table in a file whose document information /Title names a missing object: only
-    pdftotext's XHTML header reads it (and rebuilds the table), never the page facts."""
+    pdftotext's XHTML header reads it, never the page facts; since issue 45 that read cannot
+    rebuild the table (XRef::RepairGuard)."""
     table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
     return doc([{"content": table}], extras=["<< /Title 99 0 R >>"], trailer_extra="/Info {0} 0 R")
 
@@ -930,6 +932,150 @@ def caption_straddle_pdf():
     text += "BT /F1 10 Tf 200 395 Td (Photo by the crew) Tj ET\n"
     text += words(10, y=300)
     return doc([{"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + text, "resources": res}], extras=[photo])
+
+
+def _chain_pdf(newest, older_rows, objs_new, objs_old, trailer_new, trailer_old):
+    """Body: objs_new then objs_old (dicts of number -> body bytes). An older classic section at
+    the end lists older_rows (numbers, from objs_old first, else objs_new); then the newest
+    section: newest = ("stream", numbers, size) for an xref stream, or ("table", numbers) for a
+    classic table, whose /Prev is the older one."""
+    import struct
+    out = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    off_new, off_old = {}, {}
+    for n in sorted(objs_new):
+        off_new[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs_new[n] + b"\nendobj\n"
+    for n in sorted(objs_old):
+        off_old[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs_old[n] + b"\nendobj\n"
+    old_at = len(out)
+    top = max(older_rows) + 1
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % top
+    for n in range(1, top):
+        o = off_old.get(n, off_new.get(n)) if n in older_rows else None
+        out += b"%010d 00000 n \n" % o if o is not None else b"0000000000 00000 f \n"
+    out += b"trailer\n<< /Size %d %s >>\n" % (top, trailer_old)
+    new_at = len(out)
+    if newest[0] == "stream":
+        _, nums, size = newest
+        rows = b"\x00" + struct.pack(">I", 0) + b"\xff\xff" + b"".join(b"\x01" + struct.pack(">I", off_new[n]) + b"\x00\x00" for n in nums)
+        out += b"30 0 obj\n<< /Type /XRef /Size %d /Index [0 %d] /W [1 4 2] %s /Prev %d /Length %d >>\nstream\n" % (size, len(nums) + 1, trailer_new, old_at, len(rows)) + rows + b"\nendstream\nendobj\n"
+    else:
+        _, nums, size = newest
+        out += b"xref\n0 1\n0000000000 65535 f \n" + b"".join(b"%d 1\n%010d 00000 n \n" % (n, off_new[n]) for n in nums)
+        out += b"trailer\n<< /Size %d %s /Prev %d >>\n" % (size, trailer_new, old_at)
+    out += b"startxref\n%d\n%%%%EOF\n" % new_at
+    return bytes(out)
+
+
+def _grid_form():
+    form = ("0 0 0 RG 0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)).encode()
+    return b"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Length %d >>\nstream\n" % len(form) + form + b"\nendstream"
+
+
+def prev_redefined_pdf():
+    """Issue 45. An incremental update whose newest section (an xref stream, /Size 6) lists
+    objects 0-4; the older classic section lists 1-8, with an older body of the page's content
+    stream (4) and the page's ruled form (6), font (8) and outlines (5) that only it lists. The
+    newest section wins for 4; 6 and 8 resolve through the older section in every run, not only
+    after something (the doc line's /Outlines read) has made poppler read it. Upstream's run
+    without facts drew nothing on the page."""
+    page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Newest content) Tj ET"
+    old_content = b"BT /F1 12 Tf 72 740 Td (Older content) Tj ET"
+    objs_new = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /X 6 0 R >> /Font << /F1 8 0 R >> >> >>",
+        4: b"<< /Length %d >>\nstream\n" % len(page_content) + page_content + b"\nendstream",
+    }
+    objs_old = {
+        4: b"<< /Length %d >>\nstream\n" % len(old_content) + old_content + b"\nendstream",
+        5: b"<< /Type /Outlines /Count 0 >>",
+        6: _grid_form(),
+        7: b"<< /Producer (older) >>",
+        8: HELV.encode(),
+    }
+    return _chain_pdf(("stream", [1, 2, 3, 4], 6), set(range(1, 9)), objs_new, objs_old, b"/Root 1 0 R", b"/Root 1 0 R")
+
+
+def prev_unlisted_pdf():
+    """Issue 45. Classic tables: the newest section lists 0-4 (/Size 10), the older one 1-8; the
+    page's ruled form (9) is in the file but in no section. The first fetch of 9 rebuilds the
+    table in every run, flagged as a rebuild after open. (Upstream flagged it too, through
+    fetch's own rebuild; this guards that the eager chain read keeps it.)"""
+    page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Unlisted form) Tj ET"
+    objs_new = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /X 9 0 R >> /Font << /F1 8 0 R >> >> >>",
+        4: b"<< /Length %d >>\nstream\n" % len(page_content) + page_content + b"\nendstream",
+        9: _grid_form(),
+    }
+    objs_old = {5: b"<< /Type /Outlines /Count 0 >>", 6: b"<< >>", 7: b"<< >>", 8: HELV.encode()}
+    return _chain_pdf(("table", [1, 2, 3, 4], 10), set(range(1, 9)), objs_new, objs_old, b"/Root 1 0 R", b"/Root 1 0 R")
+
+
+def _content(text, extra=b""):
+    c = extra + b"BT /F1 12 Tf 72 700 Td (" + text + b") Tj ET"
+    return b"<< /Length %d >>\nstream\n" % len(c) + c + b"\nendstream"
+
+
+def _classic(objs, listed, size, trailer=b"", before_xref=b"", prev=None, tail_objs=()):
+    """A classic-table PDF: objs (number -> body), listed numbers in the table (with /Size size),
+    raw bytes before the table, and tail_objs ((number, body), ...) written after every listed
+    body but listed nowhere (a rebuild takes the last body of a number)."""
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    off = {}
+    for n in sorted(objs):
+        off[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs[n] + b"\nendobj\n"
+    for n, body in tail_objs:
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    out += before_xref
+    xat = len(out)
+    out += b"xref\n0 1\n0000000000 65535 f \n" + b"".join(b"%d 1\n%010d 00000 n \n" % (n, off[n]) for n in sorted(listed))
+    out += b"trailer\n<< /Size %d /Root 1 0 R%s%s >>\nstartxref\n%d\n%%%%EOF\n" % (size, trailer, b" /Prev %d" % prev if prev is not None else b"", xat)
+    return bytes(out)
+
+
+def prev_broken_pdf():
+    """Issue 45. The newest section lists everything the page draws; the catalog's /Outlines (5)
+    is listed only by an older section, which is garbage. Object 4 (the page's content) has a
+    second, unlisted body later in the file ("Bravo"). Upstream read the older section only when
+    the doc line asked for /Outlines, rebuilt there, and the page then drew Bravo with facts and
+    Alpha without. Now the chain ends at the broken section in every run, the doc line's guarded
+    read of /Outlines is refused (doc xref repaired), and every run draws Alpha."""
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>",
+        4: _content(b"Alpha"),
+        5: b"<< /Type /Outlines /Count 0 >>",
+        6: HELV.encode(),
+    }
+    probe = _classic(objs, [1, 2, 3, 4, 6], 7, tail_objs=[(4, _content(b"Bravo"))], before_xref=b"xre? 0 9\ngarbage\n")
+    old_at = probe.index(b"xre? ")
+    return _classic(objs, [1, 2, 3, 4, 6], 7, tail_objs=[(4, _content(b"Bravo"))], before_xref=b"xre? 0 9\ngarbage\n", prev=old_at)
+
+
+def facts_only_read_pdf():
+    """Issue 45 (council). One classic section; page 1's image names /ColorSpace 7, which no
+    section lists, and page 2's content (11) has a second, unlisted body ("Bravo"). Drawing never
+    resolves the colour space without -images; page facts do, under a RepairGuard, so they cannot
+    rebuild the table and change what page 2 draws."""
+    img = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace 7 0 R /Length 12 >>\nstream\n" + b"\x00" * 12 + b"\nendstream"
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> >> >>",
+        4: _content(b"Page one", b"q 100 0 0 100 72 400 cm /Im Do Q "),
+        5: HELV.encode(),
+        6: img,
+        7: b"/DeviceRGB",
+        10: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 11 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        11: _content(b"Alpha"),
+    }
+    return _classic(objs, [1, 2, 3, 4, 5, 6, 10, 11], 12, tail_objs=[(11, _content(b"Bravo"))])
 
 
 ALL = {
@@ -968,4 +1114,8 @@ ALL = {
     "grid_far": grid_far_pdf,
     "grid_reopened": grid_reopened_pdf,
     "grid_titled": grid_titled_pdf,
+    "prev_redefined": prev_redefined_pdf,
+    "prev_unlisted": prev_unlisted_pdf,
+    "prev_broken": prev_broken_pdf,
+    "facts_only_read": facts_only_read_pdf,
 }

@@ -2111,16 +2111,21 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kenum("pdfVersion", version);
     }
     j.kbool("linearized", doc->isLinearized());
-    // the doc line's own reads below (outlines, names, page labels) can rebuild the table too:
-    // "ok" written here is turned into "repaired" at the end if they did
+    // The doc line's reads (catalog, /Info, /Encrypt) are made under a RepairGuard, so they
+    // cannot rebuild or extend the table the pages are drawn from: a run with facts and one
+    // without draw the same objects. A repair the guard refused (a broken or missing object
+    // the doc line reads nothing from) turns "ok" into "repaired" at the end.
     const int reconstructionsAtXref = xref->getReconstructionCount();
     openReconstructions = reconstructionsAtXref;
+    const XRef::RepairGuard noRepair(xref, XRef::GuardKind::Facts);
+    const unsigned int suppressedAtXref = xref->getSuppressedRepairs();
+    auto trailerLookup = [&](const char *key) { return xref->getTrailerDict()->dictLookup(key); };
     const size_t xrefAt = j.s.size();
     j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
     if (xref->isEncrypted()) {
         bool emptyWorks = !passwordGiven;
         if (passwordGiven) {
-            Object encrypt = xref->getTrailerDict()->dictLookup("Encrypt");
+            Object encrypt = trailerLookup("Encrypt");
             if (encrypt.isDict()) {
                 SecurityHandler *handler = SecurityHandler::make(doc, &encrypt);
                 if (handler) {
@@ -2146,7 +2151,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kbool("locked", false);
 
-    Object catDict = xref->getCatalog();
+    // XRef::getCatalog would rebuild the table when the catalog does not parse
+    Object catDict = xref->fetch(xref->getRootNum(), xref->getRootGen());
     auto catLookup = [&](const char *key) { return catDict.isDict() ? catDict.dictLookup(key) : Object::null(); };
     if (wants(Structure)) {
         const int sections = xref->countSections(1000, 30000000LL);
@@ -2193,7 +2199,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
             features |= 1u << fJavascript;
         }
         bool stringsTruncated = false;
-        Object info = doc->getDocInfo();
+        Object info = trailerLookup("Info");
         if (info.isDict()) {
             Object producer = info.dictLookup("Producer");
             if (producer.isString()) {
@@ -2243,7 +2249,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kmask("unusualFeatures", features, featureNames, fXfaPresent + 1);
     j.close();
-    if (reconstructionsAtXref == 0 && xref->getReconstructionCount() > 0) {
+    if (reconstructionsAtXref == 0 && xref->getSuppressedRepairs() != suppressedAtXref) {
         const size_t ok = j.s.find("\"ok\"", xrefAt);
         if (ok != std::string::npos) {
             j.s.replace(ok, 4, "\"repaired\"");
@@ -2251,7 +2257,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.s += '\n';
     docXref = xref;
-    // rebuilds while the document was opened and its doc line read happen for every page range
+    // rebuilds while the document was opened happen for every page range (the doc line's reads
+    // are guarded and cannot add one)
     docReconstructions = xref->getReconstructionCount();
     return j.s;
 }
@@ -2319,6 +2326,10 @@ void PageFacts::noteError(ErrorCategory category, const char *format)
     note(wMissingFont, fontPrefixes);
     note(wBrokenImage, imagePrefixes);
     note(wLimit, limitPrefixes);
+    // issue 45: a read-only lookup refused an object stream an earlier read found to parse
+    // differently by where it is reached from: a run of this page alone may read it
+    static const char *const earlierPrefixes[] = { "Object stream parsed differently earlier" };
+    note(wXrefRepairedEarlier, earlierPrefixes);
 }
 
 void PageFacts::startPage(Page *page, double pageWidth, double pageHeight)
@@ -2751,6 +2762,11 @@ WidgetField widgetField(const Object &widget, FormObjects &objects)
 
 void PageFacts::endPage(const TextPage &text)
 {
+    // issue 45: the facts' own reads (annotations, widgets, forms) cannot rebuild the table
+    std::optional<XRef::RepairGuard> noRepair;
+    if (docXref) {
+        noRepair.emplace(docXref, XRef::GuardKind::Facts);
+    }
     State &s = *st;
     s.ended = true;
     Json j;
@@ -3491,9 +3507,15 @@ void ImageInfoCache::sync(XRef *xref)
     }
 }
 
+unsigned int ImageInfoCache::suppressed(XRef *xref)
+{
+    return xref ? xref->getSuppressedRepairs() : 0;
+}
+
 const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
 {
     sync(xref);
+    findSuppressed = suppressed(xref);
     const auto it = images.find(ref);
     return it == images.end() ? nullptr : &it->second;
 }
@@ -3501,7 +3523,7 @@ const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
 void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
 {
     sync(xref);
-    if (images.size() < maxEntries) {
+    if (images.size() < maxEntries && suppressed(xref) == findSuppressed) {
         images.emplace(ref, image);
     }
 }
@@ -3532,11 +3554,12 @@ ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
     const size_t before = refused;
+    const unsigned int repairsBefore = suppressed(xref);
     const Object resolved = xref->fetch(cs.getRef());
     const Space c = classify(resolved, xref);
     // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
     // without saying so (and a retry past the budget is refused at once)
-    if (refused == before && spaces.size() < maxEntries) {
+    if (refused == before && spaces.size() < maxEntries && suppressed(xref) == repairsBefore) {
         spaces.emplace(cs.getRef(), c);
     }
     return c;
@@ -3584,9 +3607,10 @@ ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
     if (!xref || !takeFetch()) {
         return { ImageColor::Other, false, false };
     }
+    const unsigned int repairsBefore = suppressed(xref);
     const Object name = xref->fetch(family.getRef());
     const Space c = !name.isName() ? Space { ImageColor::Other, false, false } : name.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(name.getNameString());
-    if (families.size() < maxEntries) {
+    if (families.size() < maxEntries && suppressed(xref) == repairsBefore) {
         families.emplace(family.getRef(), c);
     }
     return c;
@@ -3605,6 +3629,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
     if (!xref || !takeFetch()) {
         return ImageColor::Other;
     }
+    const unsigned int repairsBefore = suppressed(xref);
     ImageColor c = ImageColor::Other;
     const Object icc = xref->fetch(profile.getRef());
     const size_t before = refused;
@@ -3635,7 +3660,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
             }
         }
     }
-    if (refused == before && profiles.size() < maxEntries) {
+    if (refused == before && profiles.size() < maxEntries && suppressed(xref) == repairsBefore) {
         profiles.emplace(profile.getRef(), c);
     }
     return c;

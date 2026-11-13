@@ -38,6 +38,8 @@
 #ifndef XREF_H
 #define XREF_H
 
+#include <array>
+#include <unordered_set>
 #include <functional>
 #include <unordered_map>
 
@@ -217,6 +219,45 @@ public:
 
     // Was the XRef modified?
     bool isModified() const { return modified; }
+    // DocSlurp (issue 45): while a RepairGuard lives, a fetch that would rebuild the table (a
+    // broken entry, or one no section lists) returns null and leaves the table as it was: no
+    // entry is read, marked free or rebuilt, and no object stream or stream parameter is cached.
+    // Reads only some runs make (page facts, pdftotext's XHTML header) take one, so they cannot
+    // change what the pages resolve. Each refused repair adds one to getSuppressedRepairs(): a
+    // cache shared with drawing does not keep an answer computed after one.
+    //
+    // Object streams a guarded read parses are kept per kind of read: <kind> names which runs
+    // make it, so a kept parse is reused only by reads every such run makes in the same order.
+    // A parse that a refused repair or an object being fetched up the stack shaped is kept only
+    // until the outermost guard ends. Drawing never uses any of them.
+    enum class GuardKind
+    {
+        Scope, // nothing kept past the guard (pdftotext's XHTML header)
+        Facts, // page facts only: the doc line, endPage, the op tally
+        Geometry, // facts or -images: image geometry and its image info
+        Audit, // -images: the scan-copy audit
+    };
+    class RepairGuard
+    {
+    public:
+        explicit RepairGuard(XRef *xrefA, GuardKind kind = GuardKind::Scope) : xref(xrefA)
+        {
+            if (xref->repairSuppressed++ == 0) {
+                xref->guardKind = kind;
+            }
+        }
+        // the outermost guard's end drops what guarded reads cached (objStrsGuarded), so one
+        // guarded read (the doc line, the XHTML header, a page's facts) never sees another's
+        ~RepairGuard(); // the outermost one drops what its scope kept (objStrsGuarded, Scope's shaped set)
+        RepairGuard(const RepairGuard &) = delete;
+        RepairGuard &operator=(const RepairGuard &) = delete;
+
+    private:
+        XRef *xref;
+    };
+
+    unsigned int getSuppressedRepairs() const { return suppressedRepairs; }
+    bool isRepairSuppressed() const { return repairSuppressed > 0; }
     // DocSlurp page facts: how many times the table was rebuilt from a scan of the file (at open or
     // later, when a fetch found a broken entry).
     unsigned int getReconstructionCount() const { return reconstructions; }
@@ -276,6 +317,26 @@ private:
                          //   damaged files
     int streamEndsLen; // number of valid entries in streamEnds
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrs; // object streams map
+    // DocSlurp (issue 45): object streams parsed under a RepairGuard, kept until the outermost
+    // guard ends. Guarded reads use objStrs too, but drawing never uses these, nor does a later
+    // guarded scope: a parse can depend on where it was reached from (recursion depth, objects
+    // being fetched), so a read only some runs make must not decide what anything else gets.
+    // Both maps are also dropped with the table (constructXRef).
+    std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
+    std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
+    GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
+    // object streams whose guarded parse depended on where it was reached from (an object being
+    // fetched up the stack, or the parser's depth limit): refused, per kind, without re-parsing
+    std::array<std::unordered_set<Goffset>, 4> shapedByKind;
+    // kept guarded parses that needed a refused repair: each reuse counts (and reports) it again
+    // (value: an object stream refused as route-dependent was involved, so a reuse is reported
+    // as found earlier: page facts mark the page xref-repaired-earlier)
+    std::array<std::unordered_map<Goffset, bool>, 4> repairedByKind;
+    // guarded parses that failed (not ok); value: 0 plain, 1 a repair was refused inside, 2 a
+    // route-dependent refusal was inside (each reuse reports the same, so the page is flagged alike)
+    std::array<std::unordered_map<Goffset, int>, 4> failedByKind;
+    unsigned int shapedRefusals = 0;
+    unsigned int blockedFetches = 0; // fetches refused because the object was being fetched
     bool encrypted; // true if file is encrypted
     int encRevision;
     int encVersion; // encryption algorithm
@@ -284,10 +345,28 @@ private:
     int permFlags; // permission bits
     unsigned char fileKey[32]; // file decryption key
     bool ownerPasswordOk; // true if owner password is correct
-    Goffset prevXRefOffset; // position of prev XRef section (= next to read)
+    Goffset prevXRefOffset = 0; // position of prev XRef section (= next to read)
     Goffset mainXRefEntriesOffset; // offset of entries in main XRef table
     bool xRefStream; // true if last XRef section is a stream
-    Goffset mainXRefOffset; // position of the main XRef table/stream
+    Goffset mainXRefOffset = 0; // position of the main XRef table/stream
+    // DocSlurp: the /Prev chain is read whole at open (readPrevChain), so what an object resolves
+    // to cannot depend on which objects a run happened to fetch first. While the chain is read,
+    // these hold what is left of its budgets (-1 otherwise).
+    Goffset chainBytesLeft = -1;
+    long long chainListedLeft = -1; // entries the older sections may list
+    long long chainDecodeLeft = -1; // decoded xref-stream bytes and predictor rows they may cost
+    Goffset chainResumeOffset = 0; // where the walk stopped early (writers resume there)
+    long long chainGrowthLeft = -1; // slots they may add to the table
+    bool chainBudgetHit = false;
+    Goffset trailerBytesLeft = 0; // constructTrailerDict's budget, per rebuild
+    std::vector<int> *chainFilled = nullptr; // entries the older section being read filled
+    const char *chainBudgetName = nullptr;
+    // Set for a classic table read whole at open: an entry no section lists makes the first
+    // fetch of it rebuild the table, as a lazy read of the chain would have. The rebuild is
+    // counted (getReconstructionCount), so pages drawn after it are flagged.
+    bool rebuildOnMissing = false;
+    int repairSuppressed = 0; // RepairGuards alive
+    unsigned int suppressedRepairs = 0; // repairs a RepairGuard refused
     bool scannedSpecialFlags; // true if scanSpecialFlags has been called
     std::unique_ptr<BaseStream> strOwner; // ownership if any of str (can be null if others own the stream)
     mutable std::recursive_mutex mutex;
@@ -310,12 +389,16 @@ private:
     bool constructXRefEntry(int num, int gen, Goffset pos, XRefEntryType type);
 
     bool readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum);
-    bool readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum);
+    bool readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum, Goffset *chargedFrom);
+    void chargeChainBytes(Goffset after, Goffset *chargedFrom);
+    void noteChainBudget(const char *what);
     bool readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n);
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);
     void readXRefUntil(int untilEntryNum, std::vector<int> *xrefStreamObjsNum = nullptr);
+    void readPrevChain(bool *wasReconstructed);
+    bool chargeChainEntries(int first, int n, int newSize = 0);
     void markUnencrypted(Object *obj);
 
     class XRefWriter

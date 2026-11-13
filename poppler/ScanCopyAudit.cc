@@ -342,7 +342,18 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
     // the dictionary: a copy class (which Gfx can draw), nothing masked, device colour only
     // (the cache only classifies colour spaces by reference; every image fact is read here)
     bool limited = false;
+    // issue 45: the audit's reads are not drawing's, so they cannot rebuild the table; a repair
+    // they would have needed leaves the image unevaluated
+    XRef *xref = dict->getXRef();
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref, XRef::GuardKind::Audit);
+    }
+    const unsigned int suppressedBefore = xref ? xref->getSuppressedRepairs() : 0;
     const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res, colorCache, &limited);
+    if (xref && xref->getSuppressedRepairs() != suppressedBefore) {
+        limited = true;
+    }
     // a colour space the cache's fetch budget refused to look up is not known to be a device one
     if (limited) {
         deny(Reason::Unevaluated);
@@ -394,7 +405,14 @@ void ScanCopyAudit::imageDrawn(GfxState *state, GfxResources *res, Dict *dict, c
     if (!imageDict(dict, res)) {
         return;
     }
-    const bool imageMask = Gfx::readImageDictInfo(dict, false, res, colorCache).imageMask;
+    bool imageMask;
+    {
+        std::optional<XRef::RepairGuard> noRepair;
+        if (dict->getXRef()) {
+            noRepair.emplace(dict->getXRef(), XRef::GuardKind::Audit);
+        }
+        imageMask = Gfx::readImageDictInfo(dict, false, res, colorCache).imageMask;
+    }
 
     // how it is painted
     if (state->getFillOpacity() != 1.0 || state->getBlendMode() != gfxBlendNormal || !state->getTransfer().empty() || state->getFillOverprint()) {

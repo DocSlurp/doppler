@@ -154,6 +154,11 @@ private:
     Space familyOf(const Object &family, XRef *xref);
     ImageColor iccOf(const Object &profile, XRef *xref);
 
+    // issue 45: an answer a repair refused by a RepairGuard (page facts' reads) shaped is not
+    // kept, so drawing never reuses it: each store compares XRef::getSuppressedRepairs() with
+    // its value when that lookup began
+    static unsigned int suppressed(XRef *xref);
+    unsigned int findSuppressed = 0; // at the last find()
     XRef *docXref = nullptr;
     unsigned int generation = 0;
     std::unordered_map<Ref, Image> images;

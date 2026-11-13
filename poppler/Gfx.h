@@ -264,6 +264,11 @@ private:
     // DocSlurp: optional-content operands this page may evaluate, for drawing and (apart, so that
     // facts never change what is drawn) for the facts paths
     OCVisibilityBudget ocBudget, factsOcBudget;
+    // issue 45: the op tally (page facts only) evaluates XObject /OC with a budget and cache of
+    // its own, so it cannot spend the budget reportImageGeometry's answers (which -images uses
+    // with or without facts) depend on
+    OCVisibilityBudget tallyOcBudget;
+    std::unordered_map<Ref, bool> tallyOcVisible;
     GfxOpTally *opTally = nullptr; // DocSlurp page facts, see setOpTally
     ScanCopyAudit *scanAudit = nullptr; // DocSlurp page-scan copies (OutputDev::getScanCopyAudit)
     int ocLayerDepth = 0; // open BDC /OC sections
@@ -271,6 +276,7 @@ private:
     // image geometry) have evaluated on this page, by reference (at most 4096)
     std::unordered_map<Ref, bool> factsOcVisible;
     bool factsOcIsVisible(const Object &oc);
+    bool factsOcIsVisible(const Object &oc, OCVisibilityBudget &budget, std::unordered_map<Ref, bool> &cache, int guardKind); // an XRef::GuardKind
     bool ocIsVisible(const Object *oc); // drawing: charged to ocBudget; a limit denies the scan copy
     bool imageInfoLimitReported = false; // this page gave the ImageInfoCache limit-hit warning
     // readImageDictInfo with the device's ImageInfoCache; <limited> as there, and a refused

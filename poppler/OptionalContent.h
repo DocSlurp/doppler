@@ -117,6 +117,7 @@ private:
     void syncCache() const; // with cacheMutex held
     mutable std::mutex cacheMutex;
     mutable unsigned long cacheGeneration = 0;
+    mutable unsigned int cacheXRefGeneration = 0;
     mutable std::unordered_map<Ref, CachedVisibility> ocmdCache;
     bool allOn(const Array &ocgArray) const;
     bool allOff(const Array &ocgArray) const;

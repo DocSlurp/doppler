@@ -61,6 +61,7 @@
 //========================================================================
 
 #include <config.h>
+#include <optional>
 
 #include <climits>
 #include <cstdint>
@@ -74,6 +75,7 @@
 #include "GlobalParams.h"
 #include "CharTypes.h"
 #include "Object.h"
+#include "XRef.h"
 #include "PDFDoc.h"
 #include "Array.h"
 #include "Annot.h"
@@ -4221,7 +4223,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
     if (opTally && ocState && catalog->getOptContentConfig()) {
         const Object &oc = obj1StreamDict->lookupNF("OC");
         if (!oc.isNull()) {
-            uint64_t &n = factsOcIsVisible(oc) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
+            uint64_t &n = factsOcIsVisible(oc, tallyOcBudget, tallyOcVisible, static_cast<int>(XRef::GuardKind::Facts)) ? opTally->layerXObjectsShown : opTally->layerXObjectsHidden;
             n += n != UINT64_MAX;
         }
     }
@@ -4327,20 +4329,30 @@ bool Gfx::ocIsVisible(const Object *oc)
 // do not change while a page is drawn).
 bool Gfx::factsOcIsVisible(const Object &oc)
 {
+    return factsOcIsVisible(oc, factsOcBudget, factsOcVisible, static_cast<int>(XRef::GuardKind::Geometry));
+}
+
+bool Gfx::factsOcIsVisible(const Object &oc, OCVisibilityBudget &budget, std::unordered_map<Ref, bool> &cache, int guardKind)
+{
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref, static_cast<XRef::GuardKind>(guardKind));
+    }
     const OCGs *ocgs = catalog->getOptContentConfig();
     if (!ocgs) {
         return true;
     }
     if (!oc.isRef()) {
-        return ocgs->optContentIsVisible(&oc, &factsOcBudget);
+        return ocgs->optContentIsVisible(&oc, &budget);
     }
-    const auto it = factsOcVisible.find(oc.getRef());
-    if (it != factsOcVisible.end()) {
+    const auto it = cache.find(oc.getRef());
+    if (it != cache.end()) {
         return it->second;
     }
-    const bool visible = ocgs->optContentIsVisible(&oc, &factsOcBudget);
-    if (factsOcVisible.size() < 4096) {
-        factsOcVisible.emplace(oc.getRef(), visible);
+    const bool visible = ocgs->optContentIsVisible(&oc, &budget);
+    if (cache.size() < 4096) {
+        cache.emplace(oc.getRef(), visible);
     }
     return visible;
 }
@@ -4407,6 +4419,11 @@ static long long encodedStreamBytes(Stream *str, XRef *xref)
 // with the device's ImageInfoCache an image XObject's dictionary is read once per document.
 void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 {
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref, XRef::GuardKind::Geometry);
+    }
     const Object &objOC = dict->lookupNF("OC");
     if (!factsOcIsVisible(objOC)) {
         return;
@@ -4466,6 +4483,11 @@ void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 // that budget left unclassified: limit-hit only when this image's own lookup was refused.
 ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources, bool *limited)
 {
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref, XRef::GuardKind::Geometry);
+    }
     bool refused = false;
     const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, out->getImageInfoCache(), &refused);
     if (refused) {
@@ -4777,6 +4799,12 @@ void Gfx::doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly)
     // check for optional content key
     if (ref) {
         const Object &objOC = dict->lookupNF("OC");
+        // issue 45: in the audit-only pass (-images, the image not drawn) this read is the
+        // audit's, which runs without facts too but never in pdfpagefacts: read-only
+        std::optional<XRef::RepairGuard> noRepair;
+        if (auditOnly && xref) {
+            noRepair.emplace(xref, XRef::GuardKind::Audit);
+        }
         if (!ocIsVisible(&objOC)) {
             return;
         }

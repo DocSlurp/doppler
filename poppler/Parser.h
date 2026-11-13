@@ -47,6 +47,9 @@ public:
     Parser(const Parser &) = delete;
     Parser &operator=(const Parser &) = delete;
 
+    // DocSlurp (issue 45): parses on this thread cut by the recursion limit so far
+    static unsigned long depthLimitHits();
+
     // Get the next object from the input stream.  If <simpleOnly> is
     // true, do not parse compound objects (arrays, dictionaries, or
     // streams).
@@ -68,6 +71,11 @@ private:
     bool allowStreams; // parse stream objects?
     Object buf1, buf2; // next two tokens
     int inlineImg; // set when inline image data is encountered
+    // DocSlurp (issue 45): the recursion this parser's outermost getObj was entered at, and how
+    // deep in getObj it is now; a recursion-limit cut counts in depthLimitHits() only when that
+    // entry was above 0 (the cut then depends on how deep the caller was)
+    int entryRecursion = 0;
+    int getObjDepth = 0;
 
     std::unique_ptr<Stream> makeStream(Object &&dict, const unsigned char *fileKey, CryptAlgorithm encAlgorithm, int keyLength, int objNum, int objGen, int recursion, bool strict);
     void shift(int objNum = -1);

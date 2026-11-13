@@ -2,7 +2,8 @@
 
 pdfpagefacts must never die by a signal, must exit 0, 1, 2 or 3, and every line it writes
 must be JSON valid against the schema (a doc line first, a run line last when it finished).
-Every 10th case also runs pdftotext -page-facts-fd and must write the same lines.
+Every 10th case also runs pdftotext -page-facts-fd, which must write the same lines and the same
+XHTML as pdftotext without facts (issue 45).
 Set PAGE_FACTS_FUZZ_CASES to run more (default 320); the seed is fixed.
 """
 
@@ -100,8 +101,10 @@ def run_case(case):
         problems.append("stderr not fixed strings: %r" % p.stderr[:200])
     if i % 10 == 0 and p.returncode == 0:
         r, w = os.pipe()
+        flags = [os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", "-images", "-l", "8"]
+        out_path = path + ".xhtml"
         q = subprocess.Popen(
-            [os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-wordmeta", "-rules", "-compact-layout", "-images", "-l", "8", "-page-facts-fd", str(w), "-page-facts-level", "full", path, "-"],
+            flags + ["-page-facts-fd", str(w), "-page-facts-level", "full", path, out_path],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             pass_fds=(w,),
@@ -119,6 +122,12 @@ def run_case(case):
             problems.append("pdftotext killed by signal %d" % -q.returncode)
         elif got != p.stdout:
             problems.append("pdftotext -page-facts-fd differs from pdfpagefacts")
+        else:
+            # issue 45: the facts' reads never change what the pages resolve
+            plain = subprocess.run(flags + [path, "-"], capture_output=True, timeout=120).stdout
+            with open(out_path, "rb") as f:
+                if f.read() != plain:
+                    problems.append("pdftotext XHTML with facts differs from the run without")
     return i, name, p.returncode, problems
 
 

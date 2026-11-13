@@ -506,6 +506,24 @@ private:
 // StreamPredictor
 //------------------------------------------------------------------------
 
+// DocSlurp (issue 45): while one lives, a StreamPredictor whose row would be longer than
+// <maxRowBytes> is refused before its row is allocated (0 leaves the limit as it is). XRef sets
+// one while reading cross-reference sections, whose rows are a few bytes.
+class POPPLER_PRIVATE_EXPORT PredictorRowLimit
+{
+public:
+    explicit PredictorRowLimit(int maxRowBytes);
+    ~PredictorRowLimit();
+    PredictorRowLimit(const PredictorRowLimit &) = delete;
+    PredictorRowLimit &operator=(const PredictorRowLimit &) = delete;
+    static int current();
+    static unsigned long refusals(); // predictors refused on this thread so far
+    static unsigned long long allocated(); // predictor row bytes allocated on this thread so far
+
+private:
+    int previous;
+};
+
 class StreamPredictor
 {
 public:
