@@ -310,7 +310,7 @@ mod tests {
             "\"pages\":[1],\"status\":\"budget\",\"cut_page\":2",
             "\"pages\":[1,64],\"status\":\"forged\",\"cut_page\":2",
             "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":\"2\"",
-            "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2",
+            // a key this program does not write (the host's validator refuses it too)
             "\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2,\"run\":0",
             // inconsistent: ok with a cut_page, a cut_page outside the line, pages with no image
             "\"pages\":[1,64],\"status\":\"ok\",\"cut_page\":2",

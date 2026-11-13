@@ -151,9 +151,10 @@ fn pages(m: &serde_json::Value) -> Vec<(u64, u64)> {
         .unwrap()
         .iter()
         .map(|b| {
-            let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).collect();
+            // The test's manifest reader keeps a batch line's fields without its `type`.
+            let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).filter(|k| *k != "type").collect();
             keys.sort_unstable();
-            assert_eq!(keys, ["cut_page", "pages", "status", "type"], "{b}");
+            assert_eq!(keys, ["cut_page", "pages", "status"], "{b}");
             (b["pages"][0].as_u64().unwrap(), b["pages"][1].as_u64().unwrap())
         })
         .collect()
@@ -792,9 +793,11 @@ fn a_renderer_stop_that_left_nothing_does_not_pin_complete() {
     let b = batches(&m);
     assert_eq!(&b[..2], [("renderer".to_string(), None), ("renderer".to_string(), None)], "{m}");
     assert!(b[2..].iter().all(|(s, _)| s == "aborted"), "{m}");
-    // a resume that finishes the aborted pages drops the renderer lines (nothing of theirs is
-    // left): complete, exit 0, every line ok
-    let r = run(&p, &["--images-resume", part.to_str().unwrap(), &pdf], &[]);
+    // a resume that finishes the aborted pages, one page per batch again: its lines cover only
+    // 3..6, and the renderer lines [1,1] and [2,2] go because nothing of theirs is left
+    // stopped (not because a line covers them): complete, exit 0, every line ok
+    let one = ["--images-resume", part.to_str().unwrap(), "--images-batch-pages", "1", &pdf];
+    let r = run(&p, &one, &[]);
     assert_eq!(r.status.code(), Some(0), "{}", String::from_utf8_lossy(&r.stderr));
     let m = manifest(&part);
     assert_eq!((&m["complete"], &m["resumable"], &m["totals"]["extracted"]), (&true.into(), &false.into(), &6.into()));
