@@ -10,6 +10,7 @@ string (URIs, field names, file names) reaches the output.
 import json
 import os
 import subprocess
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -248,6 +249,29 @@ with t.TempDir() as d:
         whole = lines(facts(paths[name], "-level", "full")[1])
         ok = all(page(lines(facts(paths[name], "-level", "full", "-f", str(n), "-l", str(n))[1]), n) == page(whole, n) for n in range(1, count + 1))
         t.check(ok, "%s: page locality, -f p -l p equals the whole run's line" % name)
+
+    # --- D vectors: bar charts drawn only with filled boxes (doppler#38) ---------------------------------------
+    started = time.monotonic()
+    ls = lines(facts(paths["bars"], "-level", "full")[1])
+    took = time.monotonic() - started
+    bp = [page(ls, n) for n in range(1, 20)]
+    bv = [p["vectors"] for p in bp]
+    t.check(bv[0]["figureClusters"] == 1 and bv[0]["clusters"][0]["paths"] >= 6, "vertical bars: one cluster, bars and axis rules as paths", repr(bv[0]))
+    t.check(bv[1]["figureClusters"] == 1, "horizontal bars: one cluster", repr(bv[1]))
+    t.check([v["figureClusters"] for v in bv[2:5]] == [0, 0, 0], "shaded table, zebra rows, highlights: no cluster", repr([v["figureClusters"] for v in bv[2:5]]))
+    t.check(bv[5]["figureClusters"] == 64 and bv[5]["limitHit"] and took < 20, "1,320 bar runs on one page: the 64-run cap is reached, limitHit, bounded", repr((bv[5]["figureClusters"], bv[5]["limitHit"], took)))
+    t.check([v["figureClusters"] for v in bv[6:12]] == [0] * 6,
+            "redacted table and paragraph, form fields, a rowspan header, zebra rows with a note box, highlights behind 8 pt values: no cluster",
+            repr([v["figureClusters"] for v in bv[6:12]]))
+    t.check(bv[12]["figureClusters"] == 1, "bars with a trend line: one cluster, joined into the drawing's", repr(bv[12]))
+    # council M1/M2: bar detection has its own per-page budget, so the stress page leaves later pages' drawing facts alone
+    alone = page(lines(facts(paths["bars_curve"], "-level", "full")[1]), 1)["vectors"]
+    t.check(bv[13]["figureClusters"] == alone["figureClusters"] and not bv[13]["limitHit"] and not bv[12]["limitHit"],
+            "a page after the stress page: the same drawing facts as alone", repr((bv[13], alone)))
+    t.check([v["figureClusters"] for v in bv[14:18]] == [0] * 4,
+            "council r2: redactions in CMYK black, grey and navy beside a column rule, a blank form beside a divider: no cluster (no scale)",
+            repr([v["figureClusters"] for v in bv[14:18]]))
+    t.check(bv[18]["figureClusters"] == 1, "a black bar chart with its scale: one cluster (colour does not decide)", repr(bv[18]))
 
     # --- E forms -----------------------------------------------------------------------------------------------
     for name, xfa in (("forms", "none"), ("forms_xfa_static", "static"), ("forms_xfa_dynamic", "dynamic")):
