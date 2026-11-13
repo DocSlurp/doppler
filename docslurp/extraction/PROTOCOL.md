@@ -126,7 +126,8 @@ production.
     space, else `rgb8`), as rendering would read them.
   - Before a `gray1`, `gray8` or `rgb8` copy is decoded, the size the codec really decodes must
     be the image's `/Width` x `/Height`: a JPEG 2000 codestream's SIZ (raw, or in the jp2c box
-    of a JP2 file; image size minus offset), a JBIG2 page information segment (an unknown,
+    of a JP2 file; image size minus offset), a JPEG's frame header (a DCT stream decoded, not
+    copied: `/Decode`, a calibrated or ICC space), a JBIG2 page information segment (an unknown,
     striped height is refused), CCITT `/Columns` and `/Rows`. Otherwise `err:pixels`. A codec
     under another filter (`[/JPXDecode /FlateDecode]`) is `err:decode`. JBIG2 symbol and region
     bitmaps, and the codecs on the render path, stay bounded by `-max-memory` only.

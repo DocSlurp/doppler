@@ -600,15 +600,21 @@ def test_codec_sizes(d):
         # a JPX under a Flate filter: never decoded unchecked
         image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/JPXDecode /FlateDecode]", zlib.compress(j2k)),  # 10
     ]
-    pdf = pages_pdf(one_each(["I%d" % n for n in range(6, 11)]), "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in range(6, 11)), objs)
+    # a DCT stream to decode (/Decode [1 0]) whose progressive frame says 60000 x 60000: the
+    # render decodes something else (slowly) than a 100 x 100 copy would
+    sof = GRAY_JPEG.index(b"\xff\xc0")
+    huge = GRAY_JPEG[: sof + 5] + (60000).to_bytes(2, "big") * 2 + GRAY_JPEG[sof + 9 :]
+    objs.append(image("/Width 100 /Height 100 /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [1 0] /Filter /DCTDecode", huge))  # 11
+    pdf = pages_pdf(one_each(["I%d" % n for n in range(6, 12)]), "<< /XObject << %s >> >>" % " ".join("/I%d %d 0 R" % (n, n) for n in range(6, 12)), objs)
     path = d.write("codecs.pdf", pdf)
-    rc, r, err = copy(path, [("p%d.1" % (n - 5), n - 5, "%d.0" % n) for n in range(6, 11)])
+    rc, r, err = copy(path, [("p%d.1" % (n - 5), n - 5, "%d.0" % n) for n in range(6, 12)])
     t.check(rc == 0, "codec size checks: exit 0", err)
     got = {"p1.%d" % int(k[1:].split(".")[0]): v[0] for k, v in r.items()}
     t.check(got.get("p1.1") == "err:pixels" and got.get("p1.2") == "err:pixels", "JPX codestream larger than /Width x /Height: err:pixels", got)
     t.check(got.get("p1.3") == "err:pixels", "JBIG2 page larger than the image: err:pixels", got)
     t.check(got.get("p1.4") == "err:pixels", "CCITT /Columns not /Width: err:pixels", got)
     t.check(got.get("p1.5") in ("err:copy", "err:decode"), "a codec under another filter is not decoded", got)
+    t.check(got.get("p1.6") == "err:pixels", "JPEG frame larger than /Width x /Height (decoded, not copied): err:pixels", got)
 
 
 def mh_bits(bits):

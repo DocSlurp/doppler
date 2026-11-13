@@ -1579,6 +1579,44 @@ static bool readPrefix(Stream *str, size_t limit, std::vector<unsigned char> *ou
     return true;
 }
 
+// The frame size of a JPEG stream (the first SOFn header after SOI, segments walked by their
+// lengths); false when there is none to read in <d>.
+static bool jpegFrameSize(const std::vector<unsigned char> &d, uint64_t *width, uint64_t *height)
+{
+    if (d.size() < 4 || d[0] != 0xFF || d[1] != 0xD8) {
+        return false;
+    }
+    size_t i = 2;
+    while (i + 4 <= d.size()) {
+        if (d[i] != 0xFF) {
+            return false;
+        }
+        const unsigned char marker = d[i + 1];
+        if (marker == 0xFF) {
+            ++i; // fill byte
+            continue;
+        }
+        if (marker == 0xD8 || marker == 0xD9 || marker == 0xDA || marker == 0x00 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+            return false; // a scan, an image or the end before any frame
+        }
+        const size_t len = (static_cast<size_t>(d[i + 2]) << 8) | d[i + 3];
+        if (len < 2 || i + 2 + len > d.size()) {
+            return false;
+        }
+        // SOF0..SOF15 but DHT (C4), JPG (C8) and DAC (CC)
+        if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+            if (len < 8) {
+                return false;
+            }
+            *height = (static_cast<uint64_t>(d[i + 5]) << 8) | d[i + 6];
+            *width = (static_cast<uint64_t>(d[i + 7]) << 8) | d[i + 8];
+            return true;
+        }
+        i += 2 + len;
+    }
+    return false;
+}
+
 static uint32_t be32(const unsigned char *p)
 {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) | (static_cast<uint32_t>(p[2]) << 8) | p[3];
@@ -1884,6 +1922,21 @@ void Renderer::copyImage(const Job &job)
             return;
         }
         if (w != static_cast<uint64_t>(width) || h != static_cast<uint64_t>(height) || ncomps > 4) {
+            emitError(job, "pixels");
+            return;
+        }
+    } else if (kind == strDCT) {
+        // a JPEG decoded (not copied): its frame must be the image's size, or a 100x100 image
+        // whose frame says 60000x60000 decodes something else than the render shows (and costs
+        // what such a frame costs)
+        std::vector<unsigned char> head;
+        bool longer = false;
+        uint64_t w = 0, h = 0;
+        if (!readPrefix(str->getNextStream(), maxCopyBytes, &head, &longer) || !jpegFrameSize(head, &w, &h)) {
+            emitError(job, "decode");
+            return;
+        }
+        if (w != static_cast<uint64_t>(width) || h != static_cast<uint64_t>(height)) {
             emitError(job, "pixels");
             return;
         }
