@@ -889,7 +889,8 @@ def grid_split_pdf():
 
 def grid_rebuilt_pdf():
     """A ruled table in a file whose catalog names a missing /Outlines object: reading it (as the
-    doc line does, and pdftotext never does) rebuilds the cross-reference table."""
+    doc line does, and pdftotext never does) rebuilds the doc line's copy of the cross-reference
+    table, never the one the pages are drawn from (issue 45)."""
     table = "0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)
     return doc([{"content": table}], catalog_extra="/Outlines 99 0 R")
 
@@ -932,6 +933,96 @@ def caption_straddle_pdf():
     return doc([{"content": "q 300 0 0 200 72 400 cm /Photo Do Q\n" + text, "resources": res}], extras=[photo])
 
 
+def _chain_pdf(newest, older_rows, objs_new, objs_old, trailer_new, trailer_old):
+    """Body: objs_new then objs_old (dicts of number -> body bytes). An older classic section at
+    the end lists older_rows (numbers, from objs_old first, else objs_new); then the newest
+    section: newest = ("stream", numbers, size) for an xref stream, or ("table", numbers) for a
+    classic table, whose /Prev is the older one."""
+    import struct
+    out = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    off_new, off_old = {}, {}
+    for n in sorted(objs_new):
+        off_new[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs_new[n] + b"\nendobj\n"
+    for n in sorted(objs_old):
+        off_old[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs_old[n] + b"\nendobj\n"
+    old_at = len(out)
+    top = max(older_rows) + 1
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % top
+    for n in range(1, top):
+        o = off_old.get(n, off_new.get(n)) if n in older_rows else None
+        out += b"%010d 00000 n \n" % o if o is not None else b"0000000000 00000 f \n"
+    out += b"trailer\n<< /Size %d %s >>\n" % (top, trailer_old)
+    new_at = len(out)
+    if newest[0] == "stream":
+        _, nums, size = newest
+        rows = b"\x00" + struct.pack(">I", 0) + b"\xff\xff" + b"".join(b"\x01" + struct.pack(">I", off_new[n]) + b"\x00\x00" for n in nums)
+        out += b"30 0 obj\n<< /Type /XRef /Size %d /Index [0 %d] /W [1 4 2] %s /Prev %d /Length %d >>\nstream\n" % (size, len(nums) + 1, trailer_new, old_at, len(rows)) + rows + b"\nendstream\nendobj\n"
+    else:
+        _, nums, size = newest
+        out += b"xref\n0 1\n0000000000 65535 f \n" + b"".join(b"%d 1\n%010d 00000 n \n" % (n, off_new[n]) for n in nums)
+        out += b"trailer\n<< /Size %d %s /Prev %d >>\n" % (size, trailer_new, old_at)
+    out += b"startxref\n%d\n%%%%EOF\n" % new_at
+    return bytes(out)
+
+
+def _grid_form():
+    form = ("0 0 0 RG 0.5 w\n" + _hlines(72, 472, [700, 670, 640, 610]) + _vlines([72, 172, 272, 372, 472], 610, 700)).encode()
+    return b"<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Length %d >>\nstream\n" % len(form) + form + b"\nendstream"
+
+
+def prev_redefined_pdf():
+    """Issue 45. An incremental update whose newest section (an xref stream, /Size 6) lists
+    objects 0-4; the older classic section lists 1-8, with an older body of the page's content
+    stream (4) and the page's ruled form (6), font (8) and outlines (5) that only it lists. The
+    newest section wins for 4; 6 and 8 resolve through the older section in every run, not only
+    after something (the doc line's /Outlines read) has made poppler read it."""
+    page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Newest content) Tj ET"
+    old_content = b"BT /F1 12 Tf 72 740 Td (Older content) Tj ET"
+    objs_new = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /X 6 0 R >> /Font << /F1 8 0 R >> >> >>",
+        4: b"<< /Length %d >>\nstream\n" % len(page_content) + page_content + b"\nendstream",
+    }
+    objs_old = {
+        4: b"<< /Length %d >>\nstream\n" % len(old_content) + old_content + b"\nendstream",
+        5: b"<< /Type /Outlines /Count 0 >>",
+        6: _grid_form(),
+        7: b"<< /Producer (older) >>",
+        8: HELV.encode(),
+    }
+    return _chain_pdf(("stream", [1, 2, 3, 4], 6), set(range(1, 9)), objs_new, objs_old, b"/Root 1 0 R", b"/Root 1 0 R")
+
+
+def prev_unlisted_pdf():
+    """Issue 45. Classic tables: the newest section lists 0-4 (/Size 10), the older one 1-8; the
+    page's ruled form (9) is in the file but in no section. The first fetch of 9 rebuilds the
+    table, as the lazy read did when it still had the older section to read, and now in every run
+    (the lazy read skipped it once an earlier fetch had used the chain up): flagged as a rebuild
+    after open."""
+    page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Unlisted form) Tj ET"
+    objs_new = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << /X 9 0 R >> /Font << /F1 8 0 R >> >> >>",
+        4: b"<< /Length %d >>\nstream\n" % len(page_content) + page_content + b"\nendstream",
+        9: _grid_form(),
+    }
+    objs_old = {5: b"<< /Type /Outlines /Count 0 >>", 6: b"<< >>", 7: b"<< >>", 8: HELV.encode()}
+    return _chain_pdf(("table", [1, 2, 3, 4], 10), set(range(1, 9)), objs_new, objs_old, b"/Root 1 0 R", b"/Root 1 0 R")
+
+
+def prev_broken_pdf():
+    """Issue 45. prev_unlisted's file with garbage where its older section should be: the lazy
+    read rebuilt the table when a fetch first reached that section, at a point that depended on
+    what was fetched first; now every run rebuilds it at open (doc xref repaired)."""
+    pdf = prev_unlisted_pdf()
+    at = pdf.index(b"xref\n0 9\n")
+    return pdf[:at] + b"xre? " + pdf[at + 5 :]
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -968,4 +1059,7 @@ ALL = {
     "grid_far": grid_far_pdf,
     "grid_reopened": grid_reopened_pdf,
     "grid_titled": grid_titled_pdf,
+    "prev_redefined": prev_redefined_pdf,
+    "prev_unlisted": prev_unlisted_pdf,
+    "prev_broken": prev_broken_pdf,
 }

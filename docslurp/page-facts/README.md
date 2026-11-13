@@ -22,11 +22,11 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   differ); and pdftotext's XHTML header reads the document information (`/Title`, `/Author` and
   so on), which `pdfpagefacts` never does: when such a read rebuilds the cross-reference table,
   pdftotext's page lines say `xref-repaired-earlier` and withhold the thin-rule counts.
-- **Never on stdout** for pdftomarkdown: Markdown stays on stdout. Facts do not change it, except
-  on a damaged or unusual file where the `full` doc line's reads (outlines, names, page labels)
-  rebuild the cross-reference table or pull in an older `/Prev` section of it before the first
-  page is drawn: objects can then resolve that a run without facts leaves unresolved (see the
-  page-locality exceptions below).
+- **Never on stdout** for pdftomarkdown: Markdown stays on stdout, and facts do not change it.
+  The doc line reads the catalog, `/Info` and `/Encrypt` through its own copy of the
+  cross-reference table, so a rebuild those reads cause is the copy's, never the table the pages
+  are drawn from (issue 45). The whole `/Prev` chain is read when the file is opened (see
+  [Cross-reference reads](#cross-reference-reads)).
 - The JSON Schema is [`doppler-page-facts-1.schema.json`](doppler-page-facts-1.schema.json).
   The man page is `utils/pdfpagefacts.1`. Benchmarks: [PERF.md](PERF.md).
 
@@ -81,7 +81,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
 | `pdfVersion` | `"M.m"` from the header and catalog `/Version`, absent when not 1.0-2.9 |
 | `linearized` | a linearization dictionary is present |
-| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or while the doc line read the catalog's outlines, names or page labels |
+| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or the doc line's reads of the catalog (outlines, names, page labels) rebuilt its own copy of it (the pages' table is untouched) |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
 | `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
@@ -384,14 +384,13 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   see (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are
   unknown through `unlistedRuledGrids`, never known.
 - **One run, not two.** Anything else is outside the contract:
-  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). Two processes fetch
-    different objects (pdftotext's header reads the document information's `/Title`, `/Author`
-    and so on; the facts read outlines, names and page labels), and poppler resolves some
-    objects by what was fetched before: a fetch that rebuilds the cross-reference table, or one
-    that reads an older `/Prev` section of it (read only when a missing entry is asked for), can
-    make the same page draw differently in the two runs. A rebuild is visible (`pdftotext`
-    marks pages drawn after one `xrefRebuilt="1"` whenever `-rules` or `-images` is on); a
-    lazily read older section is not.
+  - Facts from a separate run (`pdfpagefacts`, or another `pdftotext`). pdftotext's header
+    reads the document information's `/Title`, `/Author` and so on through the pages' table,
+    which `pdfpagefacts` never does, and a fetch of a broken object rebuilds that table: the
+    same page can then draw differently in the two runs. Such a rebuild is visible (`pdftotext`
+    marks pages drawn after one `xrefRebuilt="1"` whenever `-rules` or `-images` is on). Older
+    `/Prev` sections no longer cause a difference: they are read at open in every run, and the
+    doc line's reads go through a copy of the table (issue 45).
   - Different flags or ranges: thin image-mask rules are rules only under `-glyphs` (which
     `pdftomarkdown --math` adds), and the run's rule budget depends on where the range starts.
   - `pdftomarkdown --page-facts`: it computes the same facts on its own pass, but keeps its
@@ -401,9 +400,9 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
   budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
   run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
-  were taken (by the doc line's reads of outlines, names or page labels, which pdftotext alone
-  never makes, or by an earlier fetch: an object may then resolve to another body than a run
-  that never rebuilt it reads; a rebuild at open is every run's and does not count); a thin
+  were taken (by an earlier fetch, or pdftotext's header: an object may then resolve to another
+  body than a run that never rebuilt it reads; a rebuild at open is every run's and does not
+  count, and the doc line's reads rebuild only their own copy); a thin
   rule's corners or extent are not finite, or its centre is past 10^9 points; more than
   4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
@@ -511,12 +510,33 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   run-wide caps (100,000 images, 200,000 rules, the form budget, the figure-merge and image
   colour-space budgets), past which `limit-hit` is set; past the 200,000-rule budget a page's
   grids also lose their thin-rule counts (`gridsTruncated`), as do a page's grids once the
-  cross-reference table was rebuilt after open. One more, older than issue 43: at levels that read the
-  catalog's outlines, names or page labels (`full`), a reference there to a missing or broken
-  object rebuilds the table before the first page is drawn (or, without a rebuild, reads an older
-  `/Prev` section of it, which makes an object resolve that a run without facts never reads), so
-  `pdftotext -page-facts-fd` can write different XHTML than the same run without facts on such a
-  file. A rebuild is flagged; an older section read is not.
+  cross-reference table was rebuilt after open. Before issue 45, a `full` doc line's read of a
+  missing or broken catalog object could rebuild the table before the first page was drawn, or
+  pull in an older `/Prev` section, so `pdftotext -page-facts-fd` could write different XHTML
+  than the same run without facts; neither can happen now (tested).
+
+## Cross-reference reads
+
+Issue 45. Upstream poppler reads cross-reference sections older than the main one (the `/Prev`
+chain) only when a missing entry is first asked for, so what an object resolves to could depend
+on what a run fetched first. Doppler reads the whole chain when the document is opened, newest
+first, as the lazy read did (an entry is taken from the newest section that lists it):
+
+- **Bounds:** at most 1,000 older sections, 10,000,000 entries across them and twice the file's
+  bytes plus 64 KiB of parsing (the bounds `incrementalUpdates` uses). Past any of them, on a
+  `/Prev` loop, or on a broken older section behind a classic table, the table is rebuilt from a
+  scan at open: every run does the same, and the doc line says `xref: repaired`. A broken older
+  section behind an xref stream ends the chain there, as the lazy read did.
+- **An entry no section lists:** for a classic table the first fetch of it rebuilds the table, as
+  the lazy read did on its first missing entry. That happens after open, so it is counted like
+  any later rebuild (`xref-repaired` on the page, `xref-repaired-earlier` after it, and
+  `xrefRebuilt="1"` in pdftotext's XHTML under `-rules` or `-images`), rather than silently
+  depending on whether an earlier fetch had already used up the chain.
+- **Linearized files** keep upstream's direct read of the main table's entries; their chain is
+  not followed lazily either.
+- **The doc line** reads through a copy of the table (`XRef::copy`), so outlines, names, page
+  labels, `/Info` and `/Encrypt` cannot rebuild or extend the table the pages use. If the copy
+  cannot be allocated the doc line reads nothing from the catalog and says `xref: repaired`.
 
 ## Hostile input
 

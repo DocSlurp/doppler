@@ -284,10 +284,20 @@ private:
     int permFlags; // permission bits
     unsigned char fileKey[32]; // file decryption key
     bool ownerPasswordOk; // true if owner password is correct
-    Goffset prevXRefOffset; // position of prev XRef section (= next to read)
+    Goffset prevXRefOffset = 0; // position of prev XRef section (= next to read)
     Goffset mainXRefEntriesOffset; // offset of entries in main XRef table
     bool xRefStream; // true if last XRef section is a stream
-    Goffset mainXRefOffset; // position of the main XRef table/stream
+    Goffset mainXRefOffset = 0; // position of the main XRef table/stream
+    // DocSlurp: the /Prev chain is read whole at open (readPrevChain), so what an object resolves
+    // to cannot depend on which objects a run happened to fetch first. While the chain is read,
+    // these hold what is left of its budgets (-1 otherwise).
+    Goffset chainBytesLeft = -1;
+    long long chainEntriesLeft = -1;
+    bool chainBudgetHit = false;
+    // Set for a classic table read whole at open: an entry no section lists makes the first
+    // fetch of it rebuild the table, as a lazy read of the chain would have. The rebuild is
+    // counted (getReconstructionCount), so pages drawn after it are flagged.
+    bool rebuildOnMissing = false;
     bool scannedSpecialFlags; // true if scanSpecialFlags has been called
     std::unique_ptr<BaseStream> strOwner; // ownership if any of str (can be null if others own the stream)
     mutable std::recursive_mutex mutex;
@@ -316,6 +326,7 @@ private:
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);
     void readXRefUntil(int untilEntryNum, std::vector<int> *xrefStreamObjsNum = nullptr);
+    void readPrevChain(bool *wasReconstructed);
     void markUnencrypted(Object *obj);
 
     class XRefWriter

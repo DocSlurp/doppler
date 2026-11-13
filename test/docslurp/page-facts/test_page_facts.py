@@ -227,7 +227,9 @@ with t.TempDir() as d:
     t.check([(x["hRules"], x["vRules"], x["connected"]) for x in v["grids"]] == [(5, 1, False)], "a stray tick touching nothing: every thin rule still counts (not connected)", repr(v["grids"]))
     ls = lines(facts(paths["grid_rebuilt"], "-level", "full")[1])
     v = page(ls, 1)["vectors"]
-    t.check(doc_line(ls)["xref"] == "repaired" and v["gridsTruncated"] and v["grids"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "a table rebuilt by the doc line's reads: doc xref repaired, no counts, gridsTruncated", repr((doc_line(ls)["xref"], v["grids"])))
+    # issue 45: the doc line reads through its own copy of the table, so its rebuild leaves the
+    # pages' table alone: doc xref repaired, the page counted and not flagged
+    t.check(doc_line(ls)["xref"] == "repaired" and not v["gridsTruncated"] and [(x["hRules"], x["vRules"]) for x in v["grids"]] == [(4, 5)] and not page(ls, 1)["parseWarnings"], "a rebuild by the doc line's reads: doc xref repaired, the page counted and unflagged", repr((doc_line(ls)["xref"], v["grids"], page(ls, 1)["parseWarnings"])))
     v = page(lines(facts(paths["grid_far"], "-level", "full")[1]), 1)["vectors"]
     t.check(v["gridsTruncated"] and not any("hRules" in x for x in v["grids"]) and "unlistedRuledGrids" not in v, "rules past 10^9 points: no counts, gridsTruncated", repr(v))
     # a rebuild at open is every run's: counts kept; the XHTML (with -rules alone) marks the pages
@@ -407,6 +409,25 @@ with t.TempDir() as d:
             ok = ok and page(alone, n) == page(whole, n) and alone[0] == whole[0]
         t.check(ok, "page locality (%s): -f p -l p equals the whole run's line" % level)
 
+    # --- issue 45: the /Prev chain is read at open; the doc line reads through a copy ------------
+    for name in ("prev_redefined", "prev_unlisted", "prev_broken"):
+        path = paths[name]
+        pf = [facts(path, "-level", "full")[1] for _ in range(3)]
+        fd = [pdftotext_facts(path, "-page-facts-level", "full") for _ in range(3)]
+        plain = [pdftotext_plain(path) for _ in range(3)]
+        t.check(len(set(pf)) == 1 and len({x[2] for x in fd}) == 1 and len({x[1] for x in fd}) == 1 and len(set(plain)) == 1, "%s: byte-identical across 3 separate processes (pdfpagefacts, pdftotext facts and XHTML, facts off)" % name)
+        t.check(fd[0][2] == pf[0], "%s: pdftotext -page-facts-fd == pdfpagefacts" % name, "%r\n%r" % (fd[0][2][:400], pf[0][:400]))
+        t.check(fd[0][1] == plain[0], "%s: XHTML with facts == without" % name)
+        ls = lines(pf[0])
+        v = page(ls, 1)["vectors"]
+        if name == "prev_redefined":
+            t.check(doc_line(ls)["xref"] == "ok" and not page(ls, 1)["parseWarnings"] and [(g["hRules"], g["vRules"]) for g in v["grids"]] == [(4, 5)], "%s: the form only the older section lists is drawn in every run, unflagged" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"], v["grids"])))
+            t.check(b"Newest" in plain[0] and b"Older" not in plain[0], "%s: the newest section's body of a redefined object wins" % name)
+        elif name == "prev_unlisted":
+            t.check(doc_line(ls)["xref"] == "ok" and "xref-repaired" in page(ls, 1)["parseWarnings"] and b'xrefRebuilt="1"' in plain[0] and b'<rule ' in plain[0], "%s: the entry no section lists rebuilds the table in every run, flagged (xref-repaired, xrefRebuilt)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
+        else:
+            t.check(doc_line(ls)["xref"] == "repaired" and "xref-repaired" not in page(ls, 1)["parseWarnings"] and b'xrefRebuilt="1"' in plain[0] and b'<rule ' in plain[0] and [(g["hRules"], g["vRules"]) for g in v["grids"]] == [(4, 5)], "%s: a broken older section rebuilds the table at open in every run (doc xref repaired, counts kept)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"], v["grids"])))
+
     # --- pdftotext -page-facts-fd == pdfpagefacts; XHTML unchanged ------------------------------------------------------------------
     for name, path in sorted(paths.items()):
         for level in ("basic", "full"):
@@ -432,15 +453,8 @@ with t.TempDir() as d:
             else:
                 t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
             plain = pdftotext_plain(path, images=images)
-            if name == "grid_rebuilt" and level == "full":
-                # documented exception (README, page locality): the doc line's read of a missing
-                # /Outlines object rebuilds the cross-reference table before pdftotext draws the
-                # page, which a run without facts never does; the XHTML says so (xrefRebuilt) and
-                # is otherwise unchanged, and the facts withhold the thin-rule counts
-                marked = xhtml.replace(b' xrefRebuilt="1"', b"").replace(b'  <xref rebuilt="1"/>\n', b"")
-                t.check(xhtml != plain and b'xrefRebuilt="1"' in xhtml and marked == plain, "%s %s: XHTML differs from a run without facts only by the rebuild markers" % (name, level))
-            else:
-                t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))
+            # grid_rebuilt included (issue 45): the doc line's rebuild is its copy's, never the pages'
+            t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))
             if images:
                 t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == got, "%s: same facts with -images -glyphs (as the same pdftotext run without them)" % name)
     t.check(facts(paths["multipage"], "-level", "full", "-f", "2", "-l", "4")[1] == pdftotext_facts(paths["multipage"], "-page-facts-level", "full", "-f", "2", "-l", "4")[2], "a page range: same lines")

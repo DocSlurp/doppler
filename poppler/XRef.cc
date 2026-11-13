@@ -57,6 +57,7 @@
 #include <cstring>
 #include <cctype>
 #include <climits>
+#include <unordered_set>
 #include <limits>
 #include "goo/gfile.h"
 #include "goo/gmem.h"
@@ -311,12 +312,23 @@ XRef::XRef(BaseStream *strA, Goffset pos, Goffset mainXRefEntriesOffsetA, bool *
         // read the xref table
     } else {
         std::vector<Goffset> followedXRefStm;
-        readXRef(&prevXRefOffset, &followedXRefStm, nullptr);
+        const bool more = readXRef(&prevXRefOffset, &followedXRefStm, nullptr);
 
         // if there was a problem with the xref table,
         // try to reconstruct it
         if (!ok) {
             if (!(ok = constructXRef(wasReconstructed))) {
+                errCode = errDamaged;
+                return;
+            }
+        } else if (xRefStream || !mainXRefEntriesOffset) {
+            // A linearized file's classic first-page table is the exception: getEntry reads its
+            // entries straight from the main table and never follows the chain.
+            if (!more) {
+                prevXRefOffset = 0; // readXRef leaves the position alone when there is no /Prev
+            }
+            readPrevChain(wasReconstructed);
+            if (!ok) {
                 errCode = errDamaged;
                 return;
             }
@@ -384,6 +396,9 @@ std::unique_ptr<XRef> XRef::copy() const
 
     xref->start = start;
     xref->prevXRefOffset = prevXRefOffset;
+    xref->mainXRefOffset = mainXRefOffset;
+    xref->rebuildOnMissing = rebuildOnMissing;
+    xref->xrefReconstructed = xrefReconstructed;
     xref->mainXRefEntriesOffset = mainXRefEntriesOffset;
     xref->xRefStream = xRefStream;
     xref->trailerDict = trailerDict.copy();
@@ -517,8 +532,26 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
         return false;
     }
 
-    // start up a parser, parse one token
-    parser = new Parser(nullptr, str->makeSubStream(parsePos, false, 0, Object::null()), true);
+    // start up a parser, parse one token. While readPrevChain runs, the parser sees only the
+    // bytes left of its budget, and what it reads is taken off the budget, so sections that
+    // overlap cannot make the chain re-read the file once per section.
+    const bool budgeted = chainBytesLeft >= 0;
+    if (budgeted && chainBytesLeft <= 0) {
+        chainBudgetHit = true;
+        ok = false;
+        return false;
+    }
+    parser = new Parser(nullptr, str->makeSubStream(parsePos, budgeted, budgeted ? chainBytesLeft : 0, Object::null()), true);
+    auto chargeBytes = [&] {
+        if (budgeted && chainBytesLeft >= 0) {
+            const Goffset after = parser->getPos();
+            const Goffset used = after > parsePos ? after - parsePos : chainBytesLeft;
+            chainBytesLeft = used >= chainBytesLeft ? 0 : chainBytesLeft - used;
+            if (chainBytesLeft == 0) {
+                chainBudgetHit = true;
+            }
+        }
+    };
     obj = parser->getObj(true);
 
     // parse an old-style xref table
@@ -549,10 +582,12 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
         goto err1;
     }
 
+    chargeBytes();
     delete parser;
     return more;
 
 err1:
+    chargeBytes();
     delete parser;
     ok = false;
     return false;
@@ -582,6 +617,13 @@ bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *fol
         n = obj.getInt();
         if (first < 0 || n < 0 || first > INT_MAX - n) {
             goto err0;
+        }
+        if (chainEntriesLeft >= 0) {
+            if (n > chainEntriesLeft) {
+                chainBudgetHit = true;
+                goto err0;
+            }
+            chainEntriesLeft -= n;
         }
         if (first + n > size) {
             if (resize(first + n) != first + n) {
@@ -816,6 +858,13 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
     }
     if (first + n < 0) {
         return false;
+    }
+    if (chainEntriesLeft >= 0) {
+        if (n > chainEntriesLeft) {
+            chainBudgetHit = true;
+            return false;
+        }
+        chainEntriesLeft -= n;
     }
     if (first + n > size) {
         if (resize(first + n) != size) {
@@ -1943,6 +1992,68 @@ int XRef::countSections(int maxSections, long long maxTokens)
     return pos > 0 ? 0 : static_cast<int>(seen.size());
 }
 
+void XRef::readPrevChain(bool *wasReconstructed)
+{
+    // DocSlurp: read every section older than the main one now, instead of when a missing entry
+    // is first asked for, so the table no longer depends on fetch order. The walk keeps the
+    // bounds countSections uses: at most 1000 older sections, 10,000,000 entries across them, and
+    // twice the file's bytes plus 64 KiB of parsing. Past a bound, or on a loop or a broken
+    // older section where the lazy read rebuilt (a classic main table), the table is rebuilt from
+    // a scan now: an open-time rebuild every run makes alike. A broken older section behind an
+    // xref stream ends the chain, as the lazy read did.
+    constexpr int maxSections = 1000;
+    constexpr long long maxEntries = 10000000LL;
+    const Goffset fileLength = str->getLength();
+    chainBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
+    chainEntriesLeft = maxEntries;
+    chainBudgetHit = false;
+    std::unordered_set<Goffset> seen;
+    seen.insert(mainXRefOffset);
+    int sections = 0;
+    bool rebuild = false;
+    while (prevXRefOffset) {
+        if (!seen.insert(prevXRefOffset).second) {
+            error(errSyntaxError, -1, "Circular XRef");
+            rebuild = !xRefStream;
+            break;
+        }
+        if (++sections > maxSections) {
+            error(errSyntaxError, -1, "More than {0:d} xref sections, reconstructing", maxSections);
+            rebuild = true;
+            break;
+        }
+        std::vector<Goffset> followedXRefStm;
+        if (!readXRef(&prevXRefOffset, &followedXRefStm, nullptr)) {
+            prevXRefOffset = 0;
+        }
+        if (chainBudgetHit) {
+            error(errSyntaxError, -1, "XRef sections past the read budget, reconstructing");
+            rebuild = true;
+            break;
+        }
+        if (!ok) {
+            if (xRefStream) {
+                ok = true; // the lazy read ignored a broken older section here
+                prevXRefOffset = 0;
+            } else {
+                rebuild = true;
+            }
+            break;
+        }
+    }
+    chainBytesLeft = -1;
+    chainEntriesLeft = -1;
+    chainBudgetHit = false;
+    prevXRefOffset = 0;
+    if (rebuild) {
+        ok = constructXRef(wasReconstructed);
+    } else {
+        // The lazy read re-read the main section on the first missing entry and, with a classic
+        // table, rebuilt when no section listed it: kept, for every classic table.
+        rebuildOnMissing = !xRefStream;
+    }
+}
+
 /* Traverse all XRef tables and, if untilEntryNum != -1, stop as soon as
  * untilEntryNum is found, or try to reconstruct the xref table if it's not
  * present in any xref.
@@ -2024,8 +2135,19 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                 return &dummyXRefEntry;
             }
         } else {
-            // Read XRef tables until the entry we're looking for is found
-            readXRefUntil(i);
+            if (prevXRefOffset) {
+                // Read XRef tables until the entry we're looking for is found (only when the
+                // chain was not read at open)
+                readXRefUntil(i);
+            } else if (rebuildOnMissing && i < size && entries[i].type == xrefEntryNone) {
+                // No section lists it: rebuild, as the lazy read of the chain did, but now
+                // whatever was fetched first, and counted as a rebuild after open.
+                rebuildOnMissing = false;
+                error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
+                if (!(ok = constructXRef(nullptr))) {
+                    errCode = errDamaged;
+                }
+            }
 
             // We might have reconstructed the xref
             // Check again i is in bounds

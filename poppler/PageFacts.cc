@@ -2111,16 +2111,26 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kenum("pdfVersion", version);
     }
     j.kbool("linearized", doc->isLinearized());
-    // the doc line's own reads below (outlines, names, page labels) can rebuild the table too:
-    // "ok" written here is turned into "repaired" at the end if they did
+    // The doc line reads the catalog, /Info and /Encrypt through a copy of the table, so its
+    // reads (and a rebuild they cause) cannot change what the pages resolve: a run with facts
+    // and one without draw the same objects. Its own rebuild turns "ok" into "repaired" at the
+    // end. Without a copy (allocation failed) nothing is read and the line says "repaired".
     const int reconstructionsAtXref = xref->getReconstructionCount();
     openReconstructions = reconstructionsAtXref;
+    const std::unique_ptr<XRef> docRefs = xref->copy();
+    auto viaCopy = [&](const Object &nf) {
+        if (!docRefs) {
+            return Object::null();
+        }
+        return nf.isRef() ? docRefs->fetch(nf.getRef()) : nf.copy();
+    };
+    auto trailerLookup = [&](const char *key) { return docRefs ? viaCopy(docRefs->getTrailerDict()->dictLookupNF(key)) : Object::null(); };
     const size_t xrefAt = j.s.size();
-    j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
+    j.kenum("xref", reconstructionsAtXref > 0 || !docRefs ? "repaired" : "ok");
     if (xref->isEncrypted()) {
         bool emptyWorks = !passwordGiven;
         if (passwordGiven) {
-            Object encrypt = xref->getTrailerDict()->dictLookup("Encrypt");
+            Object encrypt = trailerLookup("Encrypt");
             if (encrypt.isDict()) {
                 SecurityHandler *handler = SecurityHandler::make(doc, &encrypt);
                 if (handler) {
@@ -2146,7 +2156,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kbool("locked", false);
 
-    Object catDict = xref->getCatalog();
+    Object catDict = docRefs ? docRefs->getCatalog() : Object::null();
     auto catLookup = [&](const char *key) { return catDict.isDict() ? catDict.dictLookup(key) : Object::null(); };
     if (wants(Structure)) {
         const int sections = xref->countSections(1000, 30000000LL);
@@ -2193,7 +2203,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
             features |= 1u << fJavascript;
         }
         bool stringsTruncated = false;
-        Object info = doc->getDocInfo();
+        Object info = trailerLookup("Info");
         if (info.isDict()) {
             Object producer = info.dictLookup("Producer");
             if (producer.isString()) {
@@ -2243,7 +2253,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kmask("unusualFeatures", features, featureNames, fXfaPresent + 1);
     j.close();
-    if (reconstructionsAtXref == 0 && xref->getReconstructionCount() > 0) {
+    if (reconstructionsAtXref == 0 && docRefs && docRefs->getReconstructionCount() > 0) {
         const size_t ok = j.s.find("\"ok\"", xrefAt);
         if (ok != std::string::npos) {
             j.s.replace(ok, 4, "\"repaired\"");
@@ -2251,7 +2261,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.s += '\n';
     docXref = xref;
-    // rebuilds while the document was opened and its doc line read happen for every page range
+    // rebuilds while the document was opened happen for every page range (the doc line's reads
+    // go through its copy and cannot add one)
     docReconstructions = xref->getReconstructionCount();
     return j.s;
 }
