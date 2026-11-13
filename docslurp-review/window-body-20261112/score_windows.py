@@ -1,12 +1,13 @@
 """Score furniture-window x body-sample arms with the v3.6 judge on the 254 wild-v2 cases
-(doppler-md over the saved golden XHTML). Usage: score_windows.py DOPPLER_MD OUT.json"""
-import importlib.util, json, multiprocessing, subprocess, sys
+(doppler-md over the saved golden XHTML). Usage: DOPPLER_GOLDEN=DIR score_windows.py DOPPLER_MD OUT.json
+DOPPLER_GOLDEN is the golden set directory (it holds raw/*.raw), as for scripts/parity.sh."""
+import importlib.util, json, multiprocessing, os, subprocess, sys
 from pathlib import Path
 D = Path(__file__).parent
-spec = importlib.util.spec_from_file_location('judge36', D / 'judge36.py'); judge = importlib.util.module_from_spec(spec); spec.loader.exec_module(judge)
+spec = importlib.util.spec_from_file_location('judge36', D.parent / 'html-spans-20261030' / 'judge36.py'); judge = importlib.util.module_from_spec(spec); spec.loader.exec_module(judge)
 judge.COMPONENTS.update(tol_tables='tableTolerantScore', subst='substitutionRate')
 DM, OUT = sys.argv[1], sys.argv[2]
-RAW = Path('/home/dan/data/docslurp-evals/doppler-md-golden/raw')
+RAW = Path(os.environ['DOPPLER_GOLDEN']) / 'raw'
 ARMS = {'whole': []}
 for w in [2, 4, 6, 8, 16]:
     for b in [None, 16, 32]:
