@@ -388,7 +388,7 @@ fn public_combined_span_preserves_cells_and_pages() {
     assert!(plain[0].contains("Merged"));
     let single = page(&body);
     let (_, one) = to_markdown_report_with(&single, &Params::default(), &HTML);
-    let doc = Params { max_doc_work: one.doc_work as f64, ..Params::default() };
+    let doc = Params { max_doc_work: one.doc_work as f64, doc_work_per_page: 0.0, ..Params::default() };
     let (_, report) = to_markdown_report_with(&(single.clone() + &single), &doc, &HTML);
     assert_eq!(report.degraded, vec![(1, doppler_md::Degraded::DocWork)]);
     let (_, gfm) = to_markdown_report(&single, &Params::default());

@@ -144,6 +144,9 @@ static char timeoutMaxArg[16] = "0";
 static char pageFactsLevel[16] = "basic";
 static char pageFactsInclude[128] = "";
 static bool pageFactsTiming = false;
+// page facts lines only for the pages from/to these (0: every page read)
+static int pageFactsFirst = 0;
+static int pageFactsLast = 0;
 static int scanMaxWords = static_cast<int>(ScanThresholds::defaultMaxVisibleWords);
 static char scanMinCoverageArg[32] = "0.85";
 static char scanLayerOverlapArg[32] = "0.5";
@@ -185,6 +188,8 @@ static const ArgDesc argDesc[] = {
     { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
     { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
     { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
+    { .arg = "-page-facts-f", .kind = argInt, .val = &pageFactsFirst, .size = 0, .usage = "page facts: first page to write a page line for (default: the first page read)" },
+    { .arg = "-page-facts-l", .kind = argInt, .val = &pageFactsLast, .size = 0, .usage = "page facts: last page to write a page line for (default: the last page read)" },
     { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },
     { .arg = "-timeout", .kind = argString, .val = timeoutArg, .size = sizeof(timeoutArg), .usage = "wall-clock limit for the run in seconds, 0 for none (default 0; exit code 6)" },
     { .arg = "-timeout-per-page", .kind = argString, .val = timeoutPerPageArg, .size = sizeof(timeoutPerPageArg), .usage = "seconds added to -timeout per page of the range (default 0)" },
@@ -1071,13 +1076,17 @@ int main(int argc, char *argv[])
         return 99;
     }
     unsigned factsFamilies = 0;
-    if (pageFactsFd >= 0 || strcmp(pageFactsLevel, "basic") != 0 || pageFactsInclude[0] || pageFactsTiming) {
+    if (pageFactsFd >= 0 || strcmp(pageFactsLevel, "basic") != 0 || pageFactsInclude[0] || pageFactsTiming || pageFactsFirst != 0 || pageFactsLast != 0) {
         if (pageFactsFd < 3 || !bboxLayout) {
             error(errCommandLine, -1, "'-page-facts-fd' needs -bbox-layout and a descriptor of 3 or more");
             return 99;
         }
         if (!PageFacts::parseLevel(pageFactsLevel, &factsFamilies) || !PageFacts::parseInclude(pageFactsInclude, &factsFamilies)) {
             error(errCommandLine, -1, "Bad '-page-facts-level' or '-page-facts-include' value");
+            return 99;
+        }
+        if (pageFactsFirst < 0 || pageFactsLast < 0 || (pageFactsFirst > 0 && pageFactsLast > 0 && pageFactsFirst > pageFactsLast)) {
+            error(errCommandLine, -1, "'-page-facts-f' and '-page-facts-l' take page numbers, first no later than last");
             return 99;
         }
 #ifndef _WIN32
@@ -1580,12 +1589,17 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
         const auto pageStart = std::chrono::steady_clock::now();
+        // pages read only as context for the caller (outside -page-facts-f/-l) get no facts
+        PageFacts *const facts = pageFacts && (pageFactsFirst < 1 || page >= pageFactsFirst) && (pageFactsLast < 1 || page <= pageFactsLast) ? pageFacts : nullptr;
         if (pageFacts) {
-            pageFacts->beginPage(page);
+            textOut->setPageFacts(facts);
+        }
+        if (facts) {
+            facts->beginPage(page);
         }
         doc->displayPage(textOut, page, resolution, resolution, 0, !useCropBox, useCropBox, false);
-        if (pageFacts) {
-            writeFactsLine(pageFacts->finishPage(page, millisecondsSince(pageStart)));
+        if (facts) {
+            writeFactsLine(facts->finishPage(page, millisecondsSince(pageStart)));
         }
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();

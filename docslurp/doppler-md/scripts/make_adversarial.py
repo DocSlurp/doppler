@@ -3,6 +3,10 @@
 
     python3 -I scripts/make_adversarial.py OUT_DIR [SCALE]
     python3 -I scripts/make_adversarial.py --fuzz OUT_DIR SEED COUNT
+    python3 -I scripts/make_adversarial.py --pages OUT_FILE PAGES ROWS
+
+--pages writes one document of PAGES two-column key/value pages of ROWS rows each (the
+document work budget: every page spends up to its own limit, see PERF-ALGO.md).
 
 SCALE (default 1.0) multiplies every page's element count. --fuzz writes COUNT random
 documents (snapped coordinates, shared baselines, rules, styles, extreme values) for
@@ -30,15 +34,19 @@ def doc(pages):
     return '<?xml version="1.0" encoding="UTF-8"?>\n<html><body><doc>\n' + ''.join(pages) + '</doc></body></html>\n'
 
 
-def twocol(n):
-    """n rows of a short key/value list in two separate lines per row: a table-like gutter that
-    every band re-follows to the bottom of the page."""
+def twocol_page(n):
     out = []
     for i in range(n):
         y = 50 + 12 * i
         out.append(line([word(50, y, 70, y + 10, f'k{i}')]))
         out.append(line([word(300, y, 330, y + 10, f'v{i}')]))
-    return doc([page(612, 12 * n + 100, ''.join(out))])
+    return page(612, 12 * n + 100, ''.join(out))
+
+
+def twocol(n):
+    """n rows of a short key/value list in two separate lines per row: a table-like gutter that
+    every band re-follows to the bottom of the page."""
+    return doc([twocol_page(n)])
 
 
 def furniture(n):
@@ -154,6 +162,15 @@ def fuzz_doc(rng):
 
 
 def main():
+    if sys.argv[1] == '--pages':
+        out, n, rows = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+        one = twocol_page(rows)
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<html><body><doc>\n')
+            for _ in range(n):
+                f.write(one)
+            f.write('</doc></body></html>\n')
+        return
     if sys.argv[1] == '--fuzz':
         out, seed, count = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
         os.makedirs(out, exist_ok=True)

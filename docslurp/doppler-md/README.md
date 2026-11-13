@@ -4,8 +4,10 @@ Markdown from DocSlurp doppler `pdftotext -bbox-layout -wordmeta -rules` XHTML. 
 byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-10-26/`, v24).
 
 ```sh
-doppler-md [--html] [--math] [--stream | --window N] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--report] [--params JSON] [-f N] [-l N] [--opw PW] [--upw PW] [--text-timeout S] [--text-timeout-per-page P] [--text-timeout-max M] [--images-dir DIR ...] [--] FILE.pdf
+doppler-md [--html] [--math] [--markers] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--heading-levels size|rank] [--params JSON] [--report] [FILE|-]
+pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
+              [--heading-levels size|rank] [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW]
+              [--text-timeout S] [--text-timeout-per-page P] [--text-timeout-max M] [--images-dir DIR ...] [--] FILE.pdf
 ```
 
 Pages are written to stdout joined by form feeds. `--params` overrides the tuning parameters in
@@ -95,7 +97,7 @@ byte-identical.
   marker for it. A page that runs out of layout work is written as plain lines with its block
   markers after the text, top to bottom, and those images' entries gain `"degraded": true`.
   Placing pictures and drawings has a page budget of its own (`max_page_work`, charged to
-  `max_doc_work`); a page that used it up is listed in `images_budget_pages`, and its remaining
+  the document budget); a page that used it up is listed in `images_budget_pages`, and its remaining
   pictures are marked between paragraphs and its remaining drawings left `small`.
 - **Vector figures.** `![image](images/page-0012/figure-001.svg)` (id `pN.gK`): a chart or
   diagram drawn with paths.
@@ -497,43 +499,149 @@ field boxes, charts, org-chart boxes and photo labels stay as they were.
 ## Streaming
 
 Both binaries read their input in 64 KiB pieces and parse pages as they complete; the raw
-XHTML is never held whole. Two decisions look past one page: the body font size and colour
-(the most common in the document) and running headers and footers (margin lines repeated on
-`furniture_min_share` of the pages). By default both see the whole document, so every page
-waits for the last one; output is unchanged.
+XHTML is never held whole. Two decisions look past one page, and they are set separately:
 
-`--window N` decides them from a window instead: the body size from the first N + 1 pages,
-fixed after that, and headers and footers from the N pages either side of each page. Each
-page is written (and flushed) once the next N are complete; the parser completes a page when
-the following `<page>` opens. So at most N + 2 pages are held at a time (N + 1 in the converter
-and the one being parsed), with the margin keys of N more. `--stream` is `--window 16`. A document of at
-most N + 1 pages converts exactly as without a window.
+- **Furniture** (`--window N`): running headers and footers (margin lines repeated on
+  `furniture_min_share` of the pages), repeated watermark words and backdrop pictures, and with
+  `--markers` repeated header and footer pictures, are judged over the N pages either side of
+  each page. Each page is written (and flushed) once the next N are complete.
+- **Body size and colour** (the most common, by characters): heading levels, emphasis and table
+  decisions are relative to them, so they are fixed once, before the first page is written.
+  `--body-pages N` estimates them from the pages up to the N-th with text (at most 2N pages
+  read, so a scan without a text layer is not held). `--body-size PT` and `--body-color C`
+  give them instead (the values `--report` prints as `body_size` and `body_color`).
 
-**Do not use `--window 0`, and avoid very small windows.** Everything that finds content by
-its repetition across pages looks only inside the window: running headers and footers,
-repeated watermark words and backdrop pictures (`watermarks`), and, with `--markers`,
-repeated header and footer pictures. With `--window 0` the converter sees one page at a time,
-so none of these is removed: every running header, footer and repeated watermark lands in the
-body text (only page numbers and pale or diagonal watermarks, which a single page shows by
-itself, still go). The body size also comes from the first page alone, which shifts heading
-levels when that page is a cover. Use `--stream` (16 pages), or no window when latency does
-not matter. Cross-page continuation markers (`--markers`) are unaffected: they need only
-the previous page.
+Without `--window` both see the whole document, so every page waits for the last one. With a
+window the body sample defaults to 16 pages with text. `--stream` is `--window 4` with that
+sample. The converter holds the larger of the window + 1 and the body sample (plus the page
+being parsed, and the margin keys of N written pages); a document no longer than both converts
+exactly as without a window (a longer one with a window covering it does not: the body comes
+from the sample). The sample is bounded in size too: it also ends once its pages hold 262,144
+words, rules and glyph records (`BODY_SAMPLE_MAX_ITEMS`), so the worst case held before the
+first page is written is about that many items (tens of MB), not 64 maximal pages. `--window`
+is at most 64 and `--body-pages` at most 256. The report always has `body_size`, `body_color`,
+`body_sample_pages` (pages read when the estimate was fixed), `body_sample_text_pages` and
+`body_given`.
 
-The library API is
-`model::Parser`, `model::decode_lossy` and `Converter` (`to_markdown_report_with` is a
-`Converter` without a window).
+**Choosing a window.** Measured on 15 long PDFs (FURNITURE.md), with no difference in the
+judged golden cases for windows of 4 or more. `--stream` uses 4 pages either side: it leaves
+about 15% fewer running heads and footers than 16 (8 and 16 keep chapter-specific running
+heads that do not reach the share within the larger window). 16 differs least from the
+whole-document run (1.45% of lines against 2.00% at 4, and 0.096% against 0.116% of the whole
+run's words missing) and changes one golden input against three; use `--window 16` when
+agreeing with the whole document matters more than removing chapter heads. 2 pages also drops
+lines that appear on two of five nearby pages (it changed 10 judged golden cases), and the
+whole document keeps more running heads still. Most of what used to differ between small windows and the
+whole document was the body size taken from front matter (the old sample was the first
+window + 1 pages), not furniture. `--window 0` sees one page at a time and removes no repeated
+content at all (only page numbers and pale or diagonal watermarks, which a page shows by
+itself). Cross-page continuation markers (`--markers`) need only the previous page.
 
-On the 258-input golden set, `--stream` changes one document, the 477-page Ghostscript manual,
-where running chapter headers ("Chapter 6. Using") on under 40% of the document's pages now
-drop within their chapter instead of joining the body text. `--window 8` also changes the
-26-page inaugural scan (heading levels, from a body size taken over its OCR'd cover pages);
-`--window 64` changes nothing. On the Ghostscript manual, the first Markdown arrives after
-about 0.1 s instead of when pdftotext finishes (4 to 6 s on a loaded machine), and peak
-memory drops from 69 MB to that of pdftotext (about 25 MB) with or without a window.
+The library API is `model::Parser`, `model::decode_lossy` and `Converter` (`Converter::with`
+takes a `Window`: furniture window, `BodySample`, a given body, and context pages;
+`to_markdown_report_with` is a `Converter` without a window).
+
+On the 258-input golden set `--stream` (window 4) changes three documents: the 477-page
+Ghostscript manual (running chapter headers on under 40% of the document's pages drop within
+their chapter, as they also do at window 16), and a 10-K (a company name over the statements drops)
+and a US Code title (where "Page N" and section running heads sit). On the Ghostscript manual the first Markdown arrives about 0.05 s after the
+start instead of when pdftotext finishes, and peak memory is that of pdftotext (about 25 MB)
+instead of 69 MB; the converter alone stays at 16 MiB with a 32-page body sample.
 
 With a window, pages already written stay written when pdftotext later fails: the exit
 status, not the output, says whether the conversion finished.
+
+### Heading levels (`--heading-levels size|rank`)
+
+By default (`size`) a heading's level comes from its size relative to the body size: at least
+`h1_ratio` (1.6) times is `#`, `h2_ratio` (1.25) `##`, `heading_ratio` (1.15) `###`. A body
+estimate that is off (front matter in the body sample) shifts those levels.
+`--heading-levels rank` sets the level of every such heading by the rank of its size among the
+document's heading sizes instead, so the body size only decides which paragraphs are headings,
+not their level. It is built to stream (design and measurements in
+[FURNITURE.md](FURNITURE.md#heading-levels-by-rank-2026-11-12)):
+
+- **Seed.** Before any page is written, the first 16 pages with text (at most 32 pages, fewer
+  once they hold 262,144 items) are read whatever the body sample, and the sizes of their
+  heading-like lines are ranked: outside the margin bands, at most `heading_max_chars`, at
+  least `heading_ratio` times those pages' own most common size, not in a run of more than three
+  lines of one size. Sizes within `style_size` (5%) are one size; neighbouring sizes less than
+  `h2_ratio / heading_ratio` (1.087) apart share a level; the largest is `#`, then `##`, then
+  `###`.
+- **Additions.** A heading of a size the table does not have is added where it falls, at a
+  level that keeps the order without renumbering anything written: above every size `#`;
+  close to the size above (within 1.087) that size's level; else one level deeper than it when
+  the size below is deeper still.
+
+A whole run and a `--stream` (or `--window`) run take both steps the same way, so they give
+the same levels whenever the same paragraphs are headings. A range after page 1 cannot see the
+seed: its report's `identity` lists `headings`. Minor headings (bold or coloured body-size
+lines, `###`) are not ranked. The report gains `heading_sizes` (`seeded`, `total`).
+
+It is **off by default**. On the 254 judged golden cases the v3.6 judge's scores do not move
+(quality 0.7501 either way: its `headingF1` matches heading text, not level), but measured
+against the authored references' levels, `rank` gets fewer right: of the headings whose text
+matches, 73.6% are at the reference's level against 94.9% with `size` (level-aware heading F1
+0.560 against 0.707); the references level by size relative to the body, and ranking spreads
+title, subtitle and section sizes over three levels where they use two. On 14 long PDFs under
+`--stream`, levels agree with the whole run on 88.8% of its headings against 83.4% with
+`size`, and with a body sample of 2 pages (a different body size on 9 of the 14) 30.4% against 10.6%; that
+remaining gap is which lines are headings at all, which ranking does not change.
+
+### Page ranges and sharding (`--context`, `--body-size`, `--estimate-body`)
+
+A host that converts a long PDF as page ranges in parallel can get the same bytes as one run
+over the whole document with the same window:
+
+1. Estimate the body once: `pdftomarkdown --stream --estimate-body FILE.pdf` prints
+   `{"body_size":10,"body_color":"#000000","body_sample_pages":33,...}` and stops after the
+   sample (it reads only the sample pages: about 0.1 s; a document shorter than the sample, or
+   a run without a window, is read to the end and the estimate is over every page read).
+   `--report` of any run that starts at page 1 prints the same values. Give them back exactly
+   as printed (not rounded or within a tolerance); every estimate is a value `--body-size` and
+   `--body-color` accept.
+2. Convert each range with the same options (window, `--math`, `--markers`, `--html`), the body
+   given, and context at least the window (the default `--context` is the window, at most
+   64): `pdftomarkdown --stream --body-size 10 --body-color '#000000' -f 65 -l 128 FILE.pdf`.
+   pdftotext reads pages 49 to 144 (clamped to the document); the context pages count towards
+   repetition but are not written or reported (no Markdown, image notes, math or degraded
+   entries). They are not laid out, except with `--markers`, where the pages before the range
+   are laid out for continuation markers and their work is charged to the document budget
+   (and `doc_work`), as in a whole run. The report's `pages`, `page_closes`, `lines`, `words`,
+   `rules_truncated_pages`, `glyphs_truncated_pages` and `page_info` cover only the range; the
+   parser's skip counters (`words_missing_coord`, `words_bad_number`, `words_outside_line`,
+   `words_unclosed_line`, `rules_skipped`, `images_skipped`, `graphics_skipped`,
+   `glyphs_skipped`, `fonts_skipped`, `unclosed_line_at_eof`) cover every page read, context
+   included, so summed over ranges they can count a context page twice.
+3. Join the ranges' pages with form feeds.
+
+The report of a range has `"range":{"first_page":65,"context_before":4,"context_after":4,
+"identity":[...],"doc_work_limit":51300000}`. `identity` lists why its pages may still differ
+from the whole run:
+
+- `body`: the body was estimated from the range's own pages (no `--body-size` and
+  `--body-color`, and the range does not start at page 1, or ends before the sample is
+  complete).
+- `furniture`: no window, so repetition is judged over the whole document, which a range
+  cannot see.
+- `context`: fewer context pages than the window on a side where the document goes on.
+- `markers`: with `--markers`, a table that may run on from before the context (continuation
+  markers and inherited table headers follow it page to page; the leading context pages are
+  laid out, unwritten, to carry it).
+- `doc_work`: always for a range after page 1. The document work budget is spent page by
+  page, and a range cannot see what the pages before it spent. It is credited the pages before
+  it, though (the budget at a page depends on its page number, see [Work limits](#work-limits)),
+  so the range's `doc_work_limit` is the budget a whole run has at the range's first written
+  page. The ranges are identical to the whole run when, for every range, its `doc_work` plus
+  that of the ranges before it is at most its `doc_work_limit` (then the whole run degrades no
+  page for the budget either); otherwise compare the whole run's `degraded` entries.
+
+Measured locally on eight long PDFs (3,306 pages, 64-page ranges, `--context 4`, window 4 and
+the estimated body), every page was byte-identical to the whole run. Context costs pdftotext
+time for the extra pages (layout is skipped without `--markers`; these figures are without
+it): with 64-page ranges, `--context 4` adds 6 to 12%
+CPU over the same ranges without context and `--context 16` 31 to 39%; with 16-page ranges
+29 to 38% and 92 to 121%; with 256-page ranges at most a few percent (FURNITURE.md).
 
 ## Extracting images and figures (`--images-dir`)
 
@@ -590,8 +698,9 @@ is reached without following symbolic links), and a later `--images-dir` run ext
 (`--images-plan FILE`) without running pdftotext or converting again: the same files and
 manifest as extraction after the conversion. A plan names the PDF it was written for (SHA-256
 and size), its `-f`/`-l`, a digest of the conversion settings (`--params`, `--strict`,
-`--stream`/`--window`, `--math`, `--html`, `--scan-min-coverage`, `--scan-max-words`,
-`--scan-layer-overlap`, compared by value) and the version; the extracting
+`--stream`/`--window`, the body options, `--context`, `--heading-levels`, `--math`, `--html`,
+`--scan-min-coverage`, `--scan-max-words`, `--scan-layer-overlap`, compared by value) and the
+version; the extracting
 run must be given the same PDF and options (and the link options above: `--images-link-prefix`,
 `--images-repeats`, `--raster-format`, `--vector-format`, `--scan-pages`; the plan format is
 version 6, which adds each image's scan source and the converted page count that scales the default `--images-deadline`), and refuses any difference, or a malformed plan (non-finite coordinates,
@@ -814,8 +923,10 @@ Page facts (schema `doppler-page-facts/1`: a doc line, one line per page, a run 
 field in [docslurp/page-facts/README.md](../page-facts/README.md)) are computed by pdftotext
 on the conversion's own pass (`-page-facts-fd`) and written unchanged: pdftomarkdown never
 rewrites a line (it only drops an unterminated last one from FILE), so they are byte-identical to `pdfpagefacts` for the same range and
-level, with or without `--stream`, `--markers` or `--math`. The Markdown is the same with or
-without them. Facts never go to stdout.
+level, with or without `--stream`, `--markers` or `--math`. A range read with context pages
+(`--context`, or a window's default) has facts for the range's pages only (pdftotext
+`-page-facts-f`/`-page-facts-l`). The Markdown is the same with or without them. Facts never go
+to stdout.
 
 | option | |
 |---|---|
@@ -873,8 +984,9 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
 - `--report` prints one line of JSON to stderr: pages found and unclosed, lines and words kept,
   words skipped by reason (`missing_coord`, `bad_number` for a malformed or non-finite number,
   `outside_line`, `unclosed_line` for words of a `<line>` that never closed on a page), whether
-  the input ended inside a line, rules skipped, the work used, and the pages read as plain
-  lines with the reason. The library returns the same as `to_markdown_report`.
+  the input ended inside a line, rules skipped, the work used, the pages read as plain
+  lines with the reason, the body size and colour used (see Streaming), and for a page range
+  the `range` object. The library returns the same as `to_markdown_report`.
 - `rules_truncated_pages` lists pages whose producer marked `rulesTruncated="1"`, even when
   no rules were kept. This is incomplete upstream rule evidence, independent of layout
   degradation; it does not force plain-line fallback. An absent marker, `"0"`, or an
@@ -888,13 +1000,52 @@ Cost: PERF numbers in [docslurp/page-facts/PERF.md](../page-facts/PERF.md).
 Layout and table analysis are superlinear on hostile pages (a grid of one-cell lines re-follows
 every column gutter through every later band). A page over `max_page_lines` or `max_page_rules`
 (20,000 each), or whose layout uses more than `max_page_work` units (10 million), is read as
-plain lines in poppler order, one per Markdown line, without layout, tables or headings. Once
-the document has used `max_doc_work` (50 million lines plus work units), the remaining pages are
-read the same way. Gutter-table detection counts too: each run of rows that reaches column
-detection charges twice its word count. The largest page in the 258-input golden set has 303
-lines and uses 21,052 units (20,618 without the table charge), the largest document 59,725
-(54,463). Every degraded page is listed in the
-report. See PERF-ALGO.md for the measurements.
+plain lines in poppler order, one per Markdown line, without layout, tables or headings.
+
+The limits count work units, not time. A unit is one element visited by a step of the layout:
+each line laid out (40 units) and word (4), each element of a region search, each band a
+gutter is followed through, each word of a row that reaches table detection, each rule,
+line and row a ruled-table search visits, and each heading looked up or added with
+`--heading-levels rank`. Plain comparison scans (a filter over rule or row coordinates) count
+one unit per eight elements. They are weighted so that a unit is about the same CPU on every
+measured pattern, within about 3x (PERF-ALGO.md, one run each on a shared host, layout CPU per
+unit of `doc_work`):
+
+| page pattern (`scripts/make_adversarial.py`) | ns per unit |
+| --- | ---: |
+| two-column key/value list (`twocol`) | 27 |
+| grid of one-cell lines (`grid`) | 19 |
+| full-width rules with one line in each gap (`caption_rules`, 2,000 to 19,000 rules) | 38 to 44 |
+| hundreds to thousands of small ruled tables (`ruled_many`, 300 to 3,000) | 22 to 37 |
+| one 3,000-row ruled table (`rules`) | 17 |
+| plain lines, 1 or 10 words each | 28 to 32 |
+
+The whole document has a budget of lines plus work units too. It grows with the document: at
+page N (the PDF's page number) it is
+
+    min(max_doc_work + doc_work_per_page * N, max_doc_work_total)
+    = min(50,000,000 + 20,000 * N, 250,000,000)
+
+Each page that is laid out adds its lines and units to what the document has spent, and a page
+is laid out only within what the budget at its page number has left. Every page adds 20,000
+units of credit, so after heavy pages have spent the budget, a later light page gets new credit
+and is laid out again once that credit covers it. Past the cap the budget stops growing: once
+the pages have spent 250 million, the rest are plain lines. Long PDFs use about 2,700 to 22,000
+units a page on average (32,000 for a 114-page atlas; largest page 593,000), so a document
+degrades for the budget only beyond about 11,000 pages of the densest kind. The cap bounds a
+hostile document: about 7.5 s of layout CPU at about 30 ns a unit on a quiet host (15 s measured
+under heavy load), plus the linear cost of parsing and plain lines
+(PERF-ALGO.md). Because the budget at a page depends only on its page number, a `--stream` or
+`--window` run and a range with context see the same budget at each page as a whole run. The
+report prints `doc_work` (spent) and `doc_work_limit` (the budget at the last page read).
+
+The cap is per run. A caller that converts the ranges of one document in parallel (`-f`/`-l`
+runs) gets a full budget in every run, so the CPU of the whole document is bounded only by the
+number of runs times the cap: such a caller must enforce its own total (for example the sum of
+the runs' `doc_work`, or its own limit on runs per document).
+
+The largest page in the 258-input golden set uses 29,571 units, the largest document 1.8
+million; no golden page or long PDF degrades. Every degraded page is listed in the report.
 
 ## Rotated text and wide-spaced or wrapped borderless tables
 

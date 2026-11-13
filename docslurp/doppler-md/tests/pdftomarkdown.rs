@@ -246,9 +246,155 @@ fn a_failing_pdftotext_fails_the_run_and_only_a_window_writes_early_pages() {
     assert_eq!(whole.status.code(), Some(1));
     assert!(whole.stdout.is_empty(), "{}", String::from_utf8_lossy(&whole.stdout));
     // --window 0 writes a page once the next one opens: "third" waits for the end, which fails
-    let streamed = run(&fake, &["--window", "0", "x.pdf"]);
+    let streamed = run(&fake, &["--window", "0", "--body-pages", "1", "x.pdf"]);
     assert_eq!(streamed.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&streamed.stdout), "first\x0csecond");
+}
+
+/// An `n`-page Helvetica PDF: three cover pages in large print, then chapters of six pages,
+/// each with its own running header, a document-wide footer, a page number and body lines.
+fn book_pdf(n: usize) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {n} >>",
+            (0..n).map(|i| format!("{} 0 R", 4 + 2 * i)).collect::<Vec<_>>().join(" ")
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for i in 0..n {
+        let mut c = String::new();
+        if i < 3 {
+            c += &format!("BT /F1 26 Tf 72 500 Td (Cover page {i} of a generated volume) Tj ET\n");
+        } else {
+            let ch = (i - 3) / 6;
+            c += &format!("BT /F1 10 Tf 72 760 Td (Chapter {ch} running head) Tj ET\n");
+            if (i - 3) % 6 == 0 {
+                c += &format!("BT /F1 16 Tf 72 700 Td (Heading of chapter {ch}) Tj ET\n");
+            }
+            for k in 0..6 {
+                c += &format!(
+                    "BT /F1 10 Tf 72 {} Td (Body line {k} of page {i}, with words enough to read as prose.) Tj ET\n",
+                    660 - 14 * k
+                );
+            }
+            c += "BT /F1 8 Tf 72 40 Td (Generated Press Confidential) Tj ET\n";
+            c += &format!("BT /F1 8 Tf 300 28 Td ({}) Tj ET\n", i + 1);
+        }
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+            5 + 2 * i
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{c}endstream", c.len()));
+    }
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, obj) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{obj}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    let mut tail = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for o in offsets {
+        tail += &format!("{o:010} 00000 n \n");
+    }
+    tail += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+    pdf.extend_from_slice(tail.as_bytes());
+    pdf
+}
+
+#[test]
+fn ranges_with_context_and_the_estimated_body_match_a_whole_run() {
+    let Some(pdftotext) = pdftotext() else {
+        eprintln!("skipped: set PDFTOTEXT to the DocSlurp pdftotext (or build it in ../../build)");
+        return;
+    };
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-context-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let pdf = scratch.0.join("book.pdf");
+    // six whole chapters: every running header repeats
+    let n = 39;
+    std::fs::write(&pdf, book_pdf(n)).unwrap();
+    let pdf = pdf.to_str().unwrap();
+    for window in [&["--window", "4", "--body-pages", "32"][..], &["--window", "2", "--body-pages", "8"]] {
+        let whole = run(&pdftotext, &[window, &[pdf]].concat());
+        assert!(whole.status.success());
+        let whole = String::from_utf8(whole.stdout).unwrap();
+        let pages: Vec<&str> = whole.split('\x0c').collect();
+        assert_eq!(pages.len(), n);
+        // running headers and the footer are gone, the covers did not set the body size
+        assert!(!whole.contains("running head") && !whole.contains("Confidential"), "{window:?}");
+        assert!(whole.contains("# Heading of chapter 1"), "{window:?}");
+        let est = run(&pdftotext, &[window, &["--estimate-body", pdf]].concat());
+        assert!(est.status.success());
+        let est: serde_json::Value = serde_json::from_slice(&est.stdout).unwrap();
+        let (size, color) = (est["body_size"].to_string(), est["body_color"].as_str().unwrap().to_string());
+        assert_eq!(size, "10");
+        let mut shards = Vec::new();
+        for (f, l) in [(1, 7), (8, 21), (22, 22), (23, 39)] {
+            let (fs, ls) = (f.to_string(), l.to_string());
+            let args =
+                ["--report", "--body-size", &size, "--body-color", &color, "-f", &fs, "-l", &ls, "--context", "16"];
+            let r = run(&pdftotext, &[window, &args, &[pdf]].concat());
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+            let report: serde_json::Value =
+                serde_json::from_str(String::from_utf8_lossy(&r.stderr).lines().next().unwrap()).unwrap();
+            let range = &report["range"];
+            assert_eq!(range["first_page"], f);
+            assert_eq!(range["context_before"], (f - 1).min(16));
+            assert_eq!(range["context_after"], (n - l).min(16));
+            assert_eq!(report["pages"], l - f + 1);
+            let why: Vec<&str> = range["identity"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+            assert_eq!(why, if f > 1 { vec!["doc_work"] } else { vec![] }, "{f}-{l}");
+            shards.push(String::from_utf8(r.stdout).unwrap());
+        }
+        assert_eq!(shards.join("\x0c"), whole, "{window:?}");
+    }
+    // without the body and the context, a range says what may differ
+    let r = run(&pdftotext, &["--window", "4", "--report", "-f", "20", "-l", "25", "--context", "0", pdf]);
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(err.contains("\"identity\":[\"body\",\"context\",\"doc_work\"]"), "{err}");
+    // the context defaults to the window
+    let r = run(&pdftotext, &["--window", "4", "--report", "-f", "20", "-l", "25", pdf]);
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(err.contains("\"identity\":[\"body\",\"doc_work\"]"), "{err}");
+    // the default --stream window, estimate and default context: the same bytes as a whole run
+    let whole = run(&pdftotext, &["--stream", pdf]);
+    let est = run(&pdftotext, &["--stream", "--estimate-body", pdf]);
+    let est: serde_json::Value = serde_json::from_slice(&est.stdout).unwrap();
+    let (size, color) = (est["body_size"].to_string(), est["body_color"].as_str().unwrap().to_string());
+    let shards: Vec<String> = [(1, 10), (11, 30), (31, 39)]
+        .iter()
+        .map(|(f, l)| {
+            let (fs, ls) = (f.to_string(), l.to_string());
+            let r =
+                run(&pdftotext, &["--stream", "--body-size", &size, "--body-color", &color, "-f", &fs, "-l", &ls, pdf]);
+            assert!(r.status.success());
+            String::from_utf8(r.stdout).unwrap()
+        })
+        .collect();
+    assert_eq!(shards.join("\x0c"), String::from_utf8(whole.stdout).unwrap());
+}
+
+/// A stand-in pdftotext that writes `n` pages of doppler XHTML in `size` point print (whatever
+/// the page range asked for) and records its arguments in `args.txt` beside it.
+#[cfg(unix)]
+fn fake_pdftotext(dir: &Path, n: usize, size: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let mut xhtml = String::from("<doc>\n");
+    for i in 0..n {
+        xhtml += &format!(
+            "<page width=\"612\" height=\"792\"><flow><block><line><word xMin=\"72\" yMin=\"290\" \
+             xMax=\"200\" yMax=\"300\" fontName=\"F\" fontSize=\"{size}\" color=\"#000000\" \
+             baseline=\"298\">Page{i}</word></line></block></flow></page>\n"
+        );
+    }
+    xhtml += "</doc>\n";
+    let exe = dir.join("pdftotext");
+    let args = dir.join("args.txt");
+    std::fs::write(&exe, format!("#!/bin/sh\necho \"$@\" > '{}'\ncat <<'EOF'\n{xhtml}EOF\n", args.display())).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    exe
 }
 
 /// A stand-in pdftotext that records its arguments in `argv` and, when they set a time limit
@@ -273,6 +419,105 @@ fn sleeping_pdftotext(dir: &Path, argv: &Path) -> PathBuf {
     .unwrap();
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
     exe
+}
+
+#[cfg(unix)]
+#[test]
+fn estimate_body_succeeds_when_the_input_ends_before_the_sample() {
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-estimate-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    // 10 pages: fewer than the 32 with text of the sample
+    let fake = fake_pdftotext(&scratch.0, 10, "11");
+    for args in [
+        &["--stream", "--estimate-body", "x.pdf"][..],
+        // no window: the sample is the whole document
+        &["--estimate-body", "x.pdf"],
+        // a range shorter than the sample
+        &["--stream", "--estimate-body", "-f", "2", "-l", "3", "x.pdf"],
+        &["--window", "2", "--body-pages", "200", "--estimate-body", "x.pdf"],
+    ] {
+        let r = run(&fake, args);
+        assert_eq!(r.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&r.stderr));
+        let est: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+        assert_eq!(est["body_size"], 11, "{args:?}");
+        assert_eq!(est["body_color"], "#000000", "{args:?}");
+        assert_eq!(est["body_sample_pages"], 10, "{args:?}");
+    }
+    // still exit status 2 when nothing is read (not the fork)
+    if Path::new("/bin/true").is_file() {
+        let r = run(Path::new("/bin/true"), &["--stream", "--estimate-body", "x.pdf"]);
+        assert_eq!(r.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&r.stderr).contains("no <page>"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn every_estimate_is_accepted_back_as_the_body() {
+    // sizes a hostile PDF can set through its text matrix
+    for (k, size) in ["0.2", "20000", "-12", "1e308", "12.25"].into_iter().enumerate() {
+        let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-roundtrip-{}-{k}", std::process::id())));
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let fake = fake_pdftotext(&scratch.0, 3, size);
+        let r = run(&fake, &["--stream", "--estimate-body", "x.pdf"]);
+        assert_eq!(r.status.code(), Some(0), "{size}");
+        let est: serde_json::Value = serde_json::from_slice(&r.stdout).unwrap();
+        let (bs, bc) = (est["body_size"].to_string(), est["body_color"].as_str().unwrap().to_string());
+        let back = run(&fake, &["--stream", "--body-size", &bs, "--body-color", &bc, "-f", "2", "-l", "2", "x.pdf"]);
+        assert_eq!(back.status.code(), Some(0), "{size} -> {bs}: {}", String::from_utf8_lossy(&back.stderr));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_range_reads_the_window_either_side_by_default() {
+    let scratch = Scratch(std::env::temp_dir().join(format!("pdftomarkdown-ctx-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let fake = fake_pdftotext(&scratch.0, 50, "10");
+    let read = |args: &[&str]| {
+        let r = run(&fake, &[args, &["-f", "20", "-l", "25", "x.pdf"]].concat());
+        assert_eq!(r.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&r.stderr));
+        let a = std::fs::read_to_string(scratch.0.join("args.txt")).unwrap();
+        let a: Vec<&str> = a.split_whitespace().collect();
+        let at = |f: &str| a[a.iter().position(|x| *x == f).unwrap() + 1].to_string();
+        (at("-f"), at("-l"))
+    };
+    let p = |f: &str, l: &str| (f.to_string(), l.to_string());
+    assert_eq!(read(&["--stream"]), p("16", "29"));
+    assert_eq!(read(&["--window", "2"]), p("18", "27"));
+    assert_eq!(read(&["--window", "2", "--context", "0"]), p("20", "25"));
+    assert_eq!(read(&["--stream", "--context", "3"]), p("17", "28"));
+    // no window: repetition is judged over the whole document, which context cannot give
+    assert_eq!(read(&[]), p("20", "25"));
+}
+
+#[test]
+fn window_and_body_options_are_bounded() {
+    let bad = |args: &[&str]| {
+        let r = Command::new(PDFTOMARKDOWN).args(args).arg("x.pdf").env("PDFTOTEXT", "/nonexistent").output().unwrap();
+        assert_eq!(r.status.code(), Some(2), "{args:?}");
+        let err = String::from_utf8_lossy(&r.stderr).to_string();
+        // the usage text is whole, with the window and body options
+        assert!(!err.contains("%WINDOW%") && err.contains("--body-pages N"), "{err}");
+    };
+    bad(&["--window", "65"]);
+    bad(&["--body-pages", "257"]);
+    bad(&["--body-pages", "0"]);
+    bad(&["--context", "65"]);
+    bad(&["--body-size", "0.49"]);
+    bad(&["--body-size", "1000.5"]);
+    bad(&["--body-size", "5e-324"]);
+    bad(&["--body-color", &"c".repeat(65)]);
+    bad(&["-f", "50", "-l", "40"]);
+    // the bounds themselves are accepted (then pdftotext cannot run: status 1)
+    for args in [
+        &["--window", "64", "--body-pages", "256", "--context", "64"][..],
+        &["--body-size", "0.5"],
+        &["--body-size", "1000"],
+    ] {
+        let r = Command::new(PDFTOMARKDOWN).args(args).arg("x.pdf").env("PDFTOTEXT", "/nonexistent").output().unwrap();
+        assert_eq!(r.status.code(), Some(1), "{args:?}: {}", String::from_utf8_lossy(&r.stderr));
+    }
 }
 
 #[cfg(unix)]

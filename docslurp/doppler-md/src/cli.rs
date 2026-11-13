@@ -6,7 +6,7 @@ use std::io::{BufWriter, Read, StdoutLock, Write};
 use std::process::ExitCode;
 
 use doppler_md::model::{self, Parser};
-use doppler_md::{Converter, Options, Params, Report};
+use doppler_md::{BodySample, Converter, HeadingLevels, Options, Params, Report, Window};
 
 /// Read size. Pages are written as soon as the converter's window allows, so this bounds the
 /// input buffered ahead of the parser, not the latency.
@@ -26,21 +26,37 @@ pub struct Run<'p> {
     /// flush after every page (a streaming window), not only at the end
     flush_pages: bool,
     write_error: Option<std::io::Error>,
+    /// stop reading once the body estimate is fixed (`--estimate-body`)
+    stop_at_body: bool,
 }
 
 impl<'p> Run<'p> {
-    /// `window`: pages of lookahead (see [`Converter`]); `None` reads the whole document first.
-    pub fn new(p: &'p Params, o: &Options, window: Option<usize>) -> Self {
+    /// `win`: the furniture window, body estimate and context (see [`Converter`]).
+    pub fn new(p: &'p Params, o: &Options, win: Window) -> Self {
+        let flush_pages = win.furniture.is_some();
         Run {
             parser: Parser::with_glyphs(o.math),
-            conv: Converter::new(p, *o, window),
+            conv: Converter::with(p, *o, win),
             partial: Vec::new(),
             text: String::new(),
             out: BufWriter::new(std::io::stdout().lock()),
             written: 0,
-            flush_pages: window.is_some(),
+            flush_pages,
             write_error: None,
+            stop_at_body: false,
         }
+    }
+
+    /// Stop reading once the body estimate is fixed (the rest of the input is not needed).
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn stop_at_body(&mut self) {
+        self.stop_at_body = true;
+    }
+
+    /// Whether reading stopped early because the body estimate was fixed.
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn body_known(&self) -> bool {
+        self.conv.body().is_some()
     }
 
     /// The links of marked images (see [`doppler_md::extract::layout`]); before any input.
@@ -62,6 +78,9 @@ impl<'p> Run<'p> {
             };
             self.decode(&buf[..n], false);
             self.feed();
+            if self.stop_at_body && self.conv.body().is_some() {
+                return Ok(());
+            }
         }
         Ok(())
     }
@@ -159,8 +178,119 @@ fn write_page(
     }
 }
 
-/// The value of `--window N`: pages of lookahead either side.
-pub fn parse_window(v: Option<&str>) -> Result<usize, String> {
-    let v = v.ok_or("--window needs a number of pages")?;
-    v.parse::<usize>().map_err(|_| format!("--window: not a number of pages: {v:?}"))
+use doppler_md::{BODY_SIZE_MAX, BODY_SIZE_MIN, STREAM_WINDOW, body_color_ok, body_size_ok};
+
+/// The largest `--window` (pages either side): the converter holds the window + 1 pages.
+pub const MAX_WINDOW: usize = 64;
+/// The largest `--body-pages` (pages with text; at most twice as many are held).
+pub const MAX_BODY_PAGES: usize = 256;
+/// The largest `--context` (pages either side of a range; more than the window buys nothing).
+#[allow(dead_code)] // pdftomarkdown only
+pub const MAX_CONTEXT: usize = 64;
+
+/// The window and body options shared by both binaries.
+#[derive(Default)]
+pub struct WindowArgs {
+    stream: bool,
+    window: Option<usize>,
+    body_pages: Option<usize>,
+    body_size: Option<f64>,
+    body_color: Option<String>,
+    headings: HeadingLevels,
+}
+
+/// Help text for [`WindowArgs`].
+pub const WINDOW_HELP: &str = concat!(
+    "  --stream       write pages as they are converted: --window 4, body from 16 pages with text\n",
+    "  --window N     furniture window, 0 to 64: running headers/footers, repeated watermark\n",
+    "                 words and pictures are judged over the N pages either side of each page\n",
+    "                 (not the whole document); each page is written once the next N are\n",
+    "                 complete and the body sample is taken. 16 differs least from the whole\n",
+    "                 document; 4 removes more chapter running heads; 2 removes some content;\n",
+    "                 0 removes no repeated content at all\n",
+    "  --body-pages N estimate the body font size and colour from the pages up to the N-th with\n",
+    "                 text, 1 to 256 (at most 2N pages, and fewer when they hold over 262144\n",
+    "                 words and rules); none is written before then (default with a window: 16;\n",
+    "                 without one, the whole document)\n",
+    "  --body-size PT use this body font size, 0.5 to 1000, not an estimate (the report's\n",
+    "                 body_size, exactly as printed)\n",
+    "  --body-color C use this body colour, not an estimate (the report's body_color, exactly)\n",
+    "  --heading-levels size|rank\n",
+    "                 size (default): a heading's level from its size relative to the body size;\n",
+    "                 rank: from its size's rank among the document's heading sizes (the first\n",
+    "                 16 pages with text are read before any page is written)\n",
+);
+
+impl WindowArgs {
+    /// Takes `flag` (and its value from `next`) when it is one of these options.
+    pub fn take(&mut self, flag: &str, next: &mut dyn FnMut() -> Option<String>) -> Option<Result<(), String>> {
+        let count = |v: Option<String>, what: &str, min: usize, max: usize| -> Result<usize, String> {
+            let v = v.ok_or(format!("{what} needs a number of pages"))?;
+            match v.parse::<usize>() {
+                Ok(n) if (min..=max).contains(&n) => Ok(n),
+                _ => Err(format!("{what}: not a number of pages from {min} to {max}: {v:?}")),
+            }
+        };
+        let r = match flag {
+            "--stream" => {
+                self.stream = true;
+                Ok(())
+            }
+            "--window" => count(next(), "--window", 0, MAX_WINDOW).map(|n| self.window = Some(n)),
+            "--body-pages" => count(next(), "--body-pages", 1, MAX_BODY_PAGES).map(|n| self.body_pages = Some(n)),
+            // the range every estimate is in (lib::body_size clamps to it)
+            "--body-size" => match next().map(|v| (v.parse::<f64>(), v)) {
+                Some((Ok(pt), _)) if body_size_ok(pt) => {
+                    self.body_size = Some(pt);
+                    Ok(())
+                }
+                Some((_, v)) => {
+                    Err(format!("--body-size: not a font size in points ({BODY_SIZE_MIN} to {BODY_SIZE_MAX}): {v:?}"))
+                }
+                None => Err("--body-size needs a font size in points".into()),
+            },
+            "--body-color" => match next() {
+                Some(c) if body_color_ok(&c) => {
+                    self.body_color = Some(c);
+                    Ok(())
+                }
+                Some(_) => Err("--body-color: at most 64 characters, no control characters".into()),
+                None => Err("--body-color needs a colour (as the report's body_color)".into()),
+            },
+            "--heading-levels" => match next().as_deref() {
+                Some("size") => {
+                    self.headings = HeadingLevels::Size;
+                    Ok(())
+                }
+                Some("rank") => {
+                    self.headings = HeadingLevels::Rank;
+                    Ok(())
+                }
+                Some(v) => Err(format!("--heading-levels: size or rank, not {v:?}")),
+                None => Err("--heading-levels needs size or rank".into()),
+            },
+            _ => return None,
+        };
+        Some(r)
+    }
+
+    /// The furniture window these options ask for (`None`: the whole document).
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn furniture(&self) -> Option<usize> {
+        self.window.or(self.stream.then_some(STREAM_WINDOW))
+    }
+
+    /// The converter window these options ask for.
+    pub fn window(&self) -> Window {
+        Window {
+            furniture: self.furniture(),
+            // None: the library's default (DEFAULT_BODY_PAGES with a window, else the whole
+            // document)
+            body: self.body_pages.map(BodySample::TextPages),
+            body_size: self.body_size,
+            body_color: self.body_color.clone(),
+            headings: self.headings,
+            ..Window::default()
+        }
+    }
 }
