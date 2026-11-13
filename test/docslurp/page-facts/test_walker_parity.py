@@ -68,13 +68,16 @@ def walker_side(path, pages):
         xhtml = open(out, encoding="utf-8", errors="replace").read()
     listing = run([os.path.join(BIN, "pdfimages"), "-list", "-f", "1", "-l", str(pages), path]).stdout.decode("utf-8", "replace")
     rules = walker.page_rules(xhtml, range(pages))
+    # a page this separate XHTML run drew after rebuilding the table: unknown to a reader that
+    # pairs it with pdfpagefacts (README, "One run or two")
+    marked = [b'xrefRebuilt="1"' in head.encode() for head in (m.group(0) for m in walker._PAGE.finditer(xhtml))]
     layout = walker.layout_facts(path, listing, xhtml, None, 1, pages)["pages"]
     out = {}
     for n in range(1, pages + 1):
         grids = sorted((g["rows"], g["columns"]) for g in walker.ruled_grids(rules.get(n - 1, [])))
         entry = layout[n - 1]
         images = [(im["bbox"], im["wordsInside"]) for im in (entry.get("images") or []) if im.get("bbox") and im.get("wordsInside") is not None]
-        out[n] = {"grids": grids, "images": images}
+        out[n] = {"grids": grids, "images": images, "rebuilt": n - 1 < len(marked) and marked[n - 1]}
     return out
 
 
@@ -143,6 +146,8 @@ for name, path in inputs:
             totals["gridPages"] += 1
         totals["walkerGrids"] += len(wp["grids"])
         same = wp["grids"] == fp["grids"]
+        if wp["rebuilt"]:
+            fp["complete"] = False
         if not fp["complete"]:
             totals["gridPagesUnknown"] += 1
             totals["gridPagesUnknownWalkerGrids"] += bool(wp["grids"])
@@ -167,7 +172,7 @@ for name, path in inputs:
 
 print("totals: %s" % json.dumps(totals))
 # a regression that made every page unknown would pass the per-page checks: keep a floor
-t.check(totals["gridPagesKnownEqual"] >= 20 and totals["imagesEqual"] >= 30, "parity: at least 20 grid pages known and equal, 30 images equal", json.dumps(totals))
+t.check(totals["gridPagesKnownEqual"] >= 21 and totals["imagesEqual"] >= 36, "parity: at least 21 grid pages known and equal, 36 images equal (this test's count)", json.dumps(totals))
 if args.json:
     with open(args.json, "w") as out:
         json.dump({"totals": totals, "pages": report}, out, indent=1)

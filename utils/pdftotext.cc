@@ -1613,7 +1613,8 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         // met a broken entry, on this page or before): a reference may now resolve to another
         // object body than a reader that never rebuilt it sees, so no image of this page or a
         // later one is copyable, and the page says so (xrefRebuilt="1", which a reader keeps
-        // for the rest of the document)
+        // for the rest of the document). With -rules too: a page-facts reader pairing a separate
+        // run's facts with these rules must know this run's objects may differ from its
         const bool xrefRebuilt = doc->getXRef()->getReconstructionCount() > 0;
         if (collectImages) {
             // last: a full-page scan (see classifyScan) and the image that covers it
@@ -1621,9 +1622,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             if (scan.kind != ScanVerdict::None) {
                 glyphAttrs += std::string(" scan=\"") + scanKindName(scan.kind) + "\" scanImage=\"" + std::to_string(scan.image) + "\"";
             }
-            if (xrefRebuilt) {
-                glyphAttrs += " xrefRebuilt=\"1\"";
-            }
+        }
+        if ((collectImages || collectRules) && xrefRebuilt) {
+            glyphAttrs += " xrefRebuilt=\"1\"";
         }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());

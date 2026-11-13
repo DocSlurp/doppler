@@ -272,16 +272,20 @@ with t.TempDir() as d:
     for n in range(2, 9):
         alone = page(lines(facts(paths["lengths_rebuilt"], "-level", "full", "-f", str(n), "-l", str(n))[1]), n)
         a, b = dict(page(whole, n)), dict(alone)
+        rebuilt = "xref-repaired-earlier" in a["parseWarnings"] or "xref-repaired" in a["parseWarnings"]
         a.pop("parseWarnings"), b.pop("parseWarnings")  # the documented exception (errors not raised again)
-        # and a page read after a rebuild has no thin-rule counts (gridsTruncated, issue 43)
-        for v in (a.get("vectors"), b.get("vectors")):
-            if v is not None:
+        # and a page read after a rebuild has no thin-rule counts (gridsTruncated, issue 43):
+        # checked on those pages, then left out of the comparison
+        if rebuilt and a.get("vectors") is not None:
+            va = a["vectors"]
+            ok = ok and va["gridsTruncated"] and "unlistedRuledGrids" not in va and not any("hRules" in g for g in va.get("grids", []))
+            for v in (va, b.get("vectors") or {}):
                 v.pop("gridsTruncated", None), v.pop("unlistedRuledGrids", None)
                 for g in v.get("grids", []):
                     for k in ("hRules", "vRules", "outerSides", "connected"):
                         g.pop(k, None)
         ok = ok and a == b
-    t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings equal its single-page run")
+    t.check(ok, "after a mid-run xref rebuild: every page's facts but parseWarnings (and, on rebuilt pages, the withheld thin-rule counts) equal its single-page run")
     t.check(all("xref-repaired-earlier" in page(whole, n)["parseWarnings"] for n in range(2, 9)) and "xref-repaired-earlier" not in page(whole, 1)["parseWarnings"], "pages read after a mid-run rebuild: xref-repaired-earlier", repr([page(whole, n)["parseWarnings"] for n in range(1, 9)]))
     t.check(all("xref-repaired-earlier" not in page(lines(facts(paths["lengths_rebuilt"], "-f", str(n), "-l", str(n))[1]), n)["parseWarnings"] for n in (2, 5)), "a single-page run without a rebuild: no xref-repaired-earlier")
     t.check(all("xref-repaired-earlier" not in l.get("parseWarnings", []) for n in paths for l in lines(facts(paths[n])[1]) if n != "lengths_rebuilt"), "intact fixtures: no xref-repaired-earlier")
@@ -400,13 +404,16 @@ with t.TempDir() as d:
             images = level == "full"
             rc, xhtml, got = pdftotext_facts(path, "-page-facts-level", level, images=images)
             t.check(got == ref, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, level), "%r\n%r" % (got[:300], ref[:300]))
+            plain = pdftotext_plain(path, images=images)
             if name == "grid_rebuilt" and level == "full":
                 # documented exception (README, page locality): the doc line's read of a missing
                 # /Outlines object rebuilds the cross-reference table before pdftotext draws the
-                # page, which a run without facts never does; the facts then withhold the counts
-                t.check(b"<rule " in xhtml, "%s %s: XHTML written (may differ from a run without facts: the doc line rebuilt the table)" % (name, level))
-                continue
-            t.check(xhtml == pdftotext_plain(path, images=images), "%s %s: XHTML unchanged by facts" % (name, level))
+                # page, which a run without facts never does; the XHTML says so (xrefRebuilt) and
+                # is otherwise unchanged, and the facts withhold the thin-rule counts
+                marked = xhtml.replace(b' xrefRebuilt="1"', b"").replace(b'  <xref rebuilt="1"/>\n', b"")
+                t.check(xhtml != plain and b'xrefRebuilt="1"' in xhtml and marked == plain, "%s %s: XHTML differs from a run without facts only by the rebuild markers" % (name, level))
+            else:
+                t.check(xhtml == plain, "%s %s: XHTML unchanged by facts" % (name, level))
             if images:
                 t.check(pdftotext_facts(path, "-page-facts-level", level, images=True, glyphs=True)[2] == ref, "%s: same facts with -images -glyphs" % name)
     t.check(facts(paths["multipage"], "-level", "full", "-f", "2", "-l", "4")[1] == pdftotext_facts(paths["multipage"], "-page-facts-level", "full", "-f", "2", "-l", "4")[2], "a page range: same lines")

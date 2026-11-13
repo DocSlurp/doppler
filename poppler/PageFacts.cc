@@ -2114,6 +2114,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     // the doc line's own reads below (outlines, names, page labels) can rebuild the table too:
     // "ok" written here is turned into "repaired" at the end if they did
     const int reconstructionsAtXref = xref->getReconstructionCount();
+    openReconstructions = reconstructionsAtXref;
     const size_t xrefAt = j.s.size();
     j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
     if (xref->isEncrypted()) {
@@ -3089,10 +3090,11 @@ void PageFacts::endPage(const TextPage &text)
         // rule's extent or centre is not finite, more than maxGridRules thin rules run either
         // way, or the maxGridWork visits run out: counts from part of the rules could be wrong
         std::vector<ThinRule> th, tv;
-        // a rebuilt cross-reference table (at open, by the doc line's reads, or by any fetch
-        // before this point) can make an object resolve to another body than a reader that never
-        // rebuilt it sees, so the rules here may not be the ones a separate pdftotext run writes
-        bool thinComplete = !text.getRulesPageTruncated() && !(docXref && docXref->getReconstructionCount() > 0);
+        // a cross-reference table rebuilt after open (by the doc line's reads, or by any fetch
+        // before this point) can make an object resolve to another body than a run that never
+        // rebuilt it sees, so the rules here may not be the ones such a run writes; a rebuild at
+        // open is every run's. Without the doc line (never: both callers write it) fail closed.
+        bool thinComplete = !text.getRulesPageTruncated() && docXref && docXref->getReconstructionCount() == openReconstructions;
         if (thinComplete) {
             auto at01 = [](double v) {
                 // what printf's %.2f writes, read back (both round the exact binary value)

@@ -73,7 +73,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
 | `pdfVersion` | `"M.m"` from the header and catalog `/Version`, absent when not 1.0-2.9 |
 | `linearized` | a linearization dictionary is present |
-| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening |
+| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or while the doc line read the catalog's outlines, names or page labels |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
 | `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
@@ -373,17 +373,24 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   other can disagree on a table drawn with stencil masks. The two runs must also cover the same
   page range (the run's rule budget depends on where it starts), and a reader should treat a
   page with `xref-repaired` among its `parseWarnings` as unknown too: a rebuild after the
-  page's vector facts were taken is not seen by them. Pages the grid search cannot see
+  page's vector facts were taken is not seen by them.
+- **One run or two.** Facts from the same `pdftotext -rules -page-facts-fd` run as the XHTML
+  see every rebuild that run makes. Facts from a separate run (`pdfpagefacts`) cannot see a
+  rebuild only the XHTML run makes (its header reads the document information `/Title`,
+  `/Author` and so on, which the facts never fetch). `pdftotext` therefore marks such pages
+  `xrefRebuilt="1"` whenever `-rules` (or `-images`) is on, and a reader pairing two runs must
+  treat a page so marked as unknown. Pages the grid search cannot see
   (`/Rotate 90` and `270` turn a table's rules, rules lighter than luminance 0.97) are unknown
   through `unlistedRuledGrids`, never known.
 - Absent from every grid of the page (with `unlistedRuledGrids`, and `gridsTruncated` set) when
   the page's rule list is partial (the page's rule cap); the walker would read fewer rules than
   the page has (more than 5,000 non-box rules, its cap, or any past the run's 200,000-rule
   budget, which the XHTML leaves out: a run-wide exception to page locality, like the other
-  run-wide caps); the cross-reference table was rebuilt before the page's facts were taken (at
-  open, by the doc line's reads of outlines, names or page labels, which pdftotext alone never
-  makes, or by an earlier fetch: an object may then resolve to another body than a separate
-  pdftotext run reads); a thin rule's extent or centre is not finite or past 10^9 points; more than
+  run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
+  were taken (by the doc line's reads of outlines, names or page labels, which pdftotext alone
+  never makes, or by an earlier fetch: an object may then resolve to another body than a run
+  that never rebuilt it reads; a rebuild at open is every run's and does not count); a thin
+  rule's corners or extent are not finite, or its centre is past 10^9 points; more than
   4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
   the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
