@@ -1,0 +1,86 @@
+# doppler-md (pdftomarkdown): builds the three DocSlurp utils its integration tests run
+# (pdftotext, pdfregions, pdfpagefacts; no Qt, glib, cpp or signing backends) and runs the
+# library tests plus the toolchain-dependent suites with DOPPLER_REQUIRE_INTEGRATION=1, so a
+# missing or broken pdftotext fails the job instead of passing as skipped tests.
+name: doppler-md
+
+on:
+  pull_request:
+    paths:
+      - "docslurp/doppler-md/**"
+      - "poppler/**"
+      - "splash/**"
+      - "goo/**"
+      - "fofi/**"
+      - "utils/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/doppler-md.yml"
+  push:
+    branches: [master]
+    paths:
+      - "docslurp/doppler-md/**"
+      - "poppler/**"
+      - "splash/**"
+      - "goo/**"
+      - "fofi/**"
+      - "utils/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/doppler-md.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: doppler-md-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-14 ninja-build ccache pkg-config \
+            libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev libpng-dev \
+            libcairo2-dev liblcms2-dev zlib1g-dev python3
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-
+      - name: Build pdftotext, pdfregions, pdfpagefacts
+        env:
+          # C++23 (CMakeLists.txt): GCC 14 rather than 24.04's default 13
+          CC: gcc-14
+          CXX: g++-14
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DENABLE_QT5=OFF -DENABLE_QT6=OFF -DENABLE_GLIB=OFF -DENABLE_GOBJECT_INTROSPECTION=OFF \
+            -DENABLE_CPP=OFF -DENABLE_BOOST=OFF -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF \
+            -DENABLE_LIBCURL=OFF -DENABLE_LIBTIFF=OFF -DENABLE_BROTLI=OFF -DBUILD_GTK_TESTS=OFF \
+            -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_CPP_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF
+          cmake --build build --target pdftotext pdfregions pdfpagefacts
+          ccache --show-stats || true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: docslurp/doppler-md
+      - name: cargo test (toolchain required)
+        working-directory: docslurp/doppler-md
+        env:
+          DOPPLER_REQUIRE_INTEGRATION: "1"
+          PDFTOTEXT: ${{ github.workspace }}/build/utils/pdftotext
+          PDFPAGEFACTS: ${{ github.workspace }}/build/utils/pdfpagefacts
+          PDFREGIONS_REAL: ${{ github.workspace }}/build/utils/pdfregions
+          PDFREGIONS: ${{ github.workspace }}/build/utils/pdfregions
+        run: |
+          cargo test --release --lib
+          cargo test --release --test images_batches --test images_dir --test page_facts --test page_info --test page_scans
