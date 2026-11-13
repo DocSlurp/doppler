@@ -229,22 +229,28 @@ is known not to paint or change how it looks (`poppler/ScanCopyAudit.h`):
   rendering parameters; `gs` with only `LW LC LJ ML D RI FL SA SM Font Type OPM TK`, `OP`/`op`
   false, `CA`/`ca` 1, `BM` Normal, `SMask` None, `AIS` false; form XObjects without a
   transparency group whose content follows the same rules;
-- the scan itself: one image XObject drawn once, shown (no `/OC`), upright, wholly inside the
-  clip in force and the CropBox, full opacity, Normal blend, no transfer function or overprint,
+- the scan itself: one image XObject drawn once, and one Gfx really draws (counted where it
+  would be drawn: an image with a non-boolean `/ImageMask` or a missing, real or out-of-range
+  `/BitsPerComponent` renders blank, so it is never copied), shown (no `/OC`), upright, wholly
+  inside the clip in force and the CropBox (a rounding slack of at most a point and less than
+  half an image pixel on each axis, so a tall strip squeezed onto the page cannot hide rows
+  under a clip), full opacity, Normal blend, no transfer function or overprint,
   no mask or soft mask, `DeviceGray`, `DeviceRGB`, `DeviceCMYK` or indexed over them (a stencil
   mask only in black);
 - anything else, at any depth (forms, annotation appearances), makes the page not copyable:
   any fill, stroke, shading, pattern or inline image, a second image, visible text in any
   mode, a Type 3 font at all, a clip that is not such a rectangle, a soft mask, a blend mode,
-  an opacity below 1, a transparency group or page `/Group`, an annotation that draws an
-  appearance or a border, an ICC-based, calibrated, Lab, separation or `Default` colour space,
+  an opacity below 1, a transparency group or page `/Group`, an annotation that can draw an
+  appearance or a border in view or print mode (a `Print` `NoView` one included; only a link
+  or popup without an appearance or border passes), an ICC-based, calibrated, Lab, separation or `Default` colour space,
   or a `gs` key not listed above.
 
 pdfregions runs the same allow-list again on its own pass before every copy job (`err:copy`
 otherwise), so both must agree; the earlier overpaint estimate (`overlaid="0"`) stays as one
 more refusal, never as the permission. A copyable, upright (`orient="0"`) scan whose stream is a
 JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`, no `/Decode`, masks or
-colour transform) is `.jpg`; a bilevel one (CCITT, JBIG2, 1 bpc, `DeviceGray`, no `/Decode`)
+colour transform) is `.jpg`; a bilevel one (CCITT, JBIG2 or 1 bpc with an integer
+`/BitsPerComponent 1`, or a stencil, `DeviceGray`, no `/Decode`)
 `.png`; any other with a reference the raster format. Every other scan (tiled, layered,
 turned, clipped, inline, covered by anything, or from a producer without those attributes) is
 rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,
@@ -257,7 +263,7 @@ copied scan's page. `--scan-pages` says what to do with scans:
 
 | `--scan-pages` | Markdown | File |
 |---|---|---|
-| `image` (default) | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
+| `image` (default) | `![page N scan](...)` first | the JPEG stream without its metadata (`source: copy`; Exif, ICC, XMP and comments dropped, so viewers do not turn it; an Adobe segment kept without JFIF, so viewers decode the colours as poppler does); bilevel rows as a 1-bit PNG (`decode`); other samples decoded once at native size (at most 16,777,216 pixels, else rendered) and scaled to `--scan-max-dpi` (300) before WebP q90 or PNG (`decode`); tiled, layered, turned and covered scans rendered at `--scan-dpi` (`render`) |
 | `render` | the same, always the raster format | rendered at `--scan-dpi` (200, 36..300) |
 | `skip` | placed as any picture (a background under text, else a block marker or a watermark) | none (`not-extracted`, `reason: scan-pages`) |
 
@@ -315,6 +321,10 @@ allow-list on pdftotext's pass and pdfregions' own page pass before each copy jo
 1.4 ms of CPU a page). The same book with a visible page number on every page is rendered
 on every page both before and after (0 of 500 copied); at the new 200 dpi default that took
 149 s wall, 196 CPU-s, 225 MiB (79 MB of WebP) against 85 s, 120 CPU-s, 145 MiB at 150 dpi.
+After the 2026-11-12 review fixes (images counted where Gfx draws them, the half-pixel slack,
+print-mode annotations) a regenerated 500-page grey DCT book (2550 x 3300, 0.96 MB a page, 45
+lines of invisible OCR text) still copies 500 of 500 pages, every `.jpg` byte-identical to its
+stored stream (5.9 to 8.1 s wall, 7.1 to 8.5 user CPU-s over 3 runs, the machine under other load).
 
 ## Watermarks
 

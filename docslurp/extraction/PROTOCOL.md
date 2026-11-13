@@ -83,28 +83,36 @@ production.
   allow-list** (`poppler/ScanCopyAudit.h`), which pdfregions runs itself: the page's content,
   forms and annotations are run as the raster renders run them (media box, page `/Rotate`, not
   printing) through a device that draws nothing and decodes no image, and the job is answered
-  only when the one thing that paints on the page is that image, drawn once, shown, upright,
-  plainly (no mask, soft mask, group, blend mode, opacity, transfer function or overprint;
-  device colour only) and wholly inside the clip in force and the CropBox; everything else on
+  only when the one thing that paints on the page is that image, drawn once (counted where Gfx
+  would draw it, so an image Gfx refuses to draw, whose render is blank, never passes), shown,
+  upright, plainly (no mask, soft mask, group, blend mode, opacity, transfer function or
+  overprint; device colour only) and wholly inside the clip in force and the CropBox (a rounding
+  slack of at most a point and less than half an image pixel on each axis); everything else on
   the page must be an operator known not to paint (graphics and text state, path construction
   ended by `n`, rectangular clips containing the image, marked content, colour, `gs` with
   harmless keys, forms without a group) or text in render mode 3 (7 after the image) in a font
   that is not Type 3. Anything else at any depth (a fill, stroke, shading, inline image, second
-  image, visible text, Type 3 font, other clip, page `/Group`, drawn annotation, ...) is
-  `err:copy`. pdftotext's `copyable="1"` is the same allow-list on its own pass, so a copy needs
+  image, visible text, Type 3 font, other clip, page `/Group`, an annotation that can draw an
+  appearance or border in view or print mode, ...) is `err:copy`. A class also needs an image
+  Gfx would draw (a boolean `/ImageMask` if any, an integer `/BitsPerComponent` in range, ...):
+  otherwise it is `render`. pdftotext's `copyable="1"` is the same allow-list on its own pass, so a copy needs
   both. Width and height in the record are the image's `/Width` and `/Height`:
   - `kind=jpeg` (class `jpeg`): the DCT filter's input (the stored bytes, decrypted), after
     checks: SOI first, one frame header SOF0, SOF1 or SOF2 (Huffman baseline, extended or
     progressive) of 8-bit samples with the image's size and as many components as its colour
     space (1 or 3), scans, and EOI within the last 66 bytes (padding after it is cut); no other
     image inside. It is rewritten without metadata: tables (DQT, DHT, DRI), the frame, the scans
-    and their entropy-coded data stay; a JFIF APP0 and an Adobe APP14 become canonical (JFIF
-    1.01, 1:1, no thumbnail; Adobe with the stream's colour transform); every other APPn (Exif,
+    and their entropy-coded data stay; one canonical segment keeps the colour transform poppler
+    decodes with: an Adobe APP14 (its transform as 0 or 1) when the stream has one, with no
+    JFIF beside it (a viewer's libjpeg would let JFIF win), else a JFIF APP0 (1.01, 1:1, no
+    thumbnail) when the stream has one libjpeg recognises (14 data bytes), else neither (the
+    component ids decide, the same way in both); every other APPn (Exif,
     its orientation and thumbnail, ICC, XMP, Photoshop) and every COM goes, before the frame
     and between scans. Viewers then show the pixels as the PDF draws them, and no document
     string reaches the file. A stream without metadata comes back byte for byte. Nothing is
     decoded.
-  - `kind=gray1` (class `bilevel`: CCITT, JBIG2, 1 bpc grey or a stencil mask, no `/Decode`):
+  - `kind=gray1` (class `bilevel`: CCITT, JBIG2 or grey with an integer `/BitsPerComponent 1`,
+    or a stencil mask, no `/Decode`):
     the decoded samples, `ceil(width/8) * height` bytes, rows top first, most significant bit
     first, 0 black (the PDF's own sense); a short stream ends in white rows.
   - `kind=gray8` or `kind=rgb8` (class `decode`: another single image): its samples decoded once
