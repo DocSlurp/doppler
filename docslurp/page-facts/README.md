@@ -90,7 +90,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `truncated` | which of `embeddedFiles`, `outlineCount`, `strings` hit a cap |
 | `acroForm` | `none` or `present` (a catalog `/AcroForm` dictionary) |
 | `needAppearances` | `/AcroForm /NeedAppearances true` |
-| `xfa` | `none`, `static`, or `dynamic` when the XFA config packet sets `<dynamicRender>required` (at most 1 MiB of it is read, and only through Flate, LZW, ASCII hex/85 or RunLength filters: a packet behind an image codec is not decoded and reads as `static`) |
+| `xfa` | `none`, `static`, or `dynamic` when the XFA config packet sets `<dynamicRender>required` (at most 1 MiB of it is read, each packet stream once, and only through no filter or a single Flate, LZW, ASCII hex/85 or RunLength filter: a packet behind an image codec or stacked filters is not decoded and reads as `static`) |
 | `ocgCount`, `ocgOffByDefault` | optional content groups, and those off in the default configuration |
 | `unusualFeatures` | the document-level flags below |
 
@@ -245,6 +245,7 @@ most 32 `/Parent` levels). Values are never written.
 | `filled`, `empty` | text and choice: a non-empty value; check boxes and radio buttons: the value names this widget's on state |
 | `valueAppearanceMismatch` | the value and what the appearance draws disagree: a text or choice value whose appearance drew no glyph (or a glyph without a value); a button whose `/AS` disagrees with the value |
 | `signed`, `unsigned` | signature fields with and without a `/V` signature dictionary (no validation) |
+| `truncated` | the document's form budget (65,536 distinct indirect objects, or 64 MiB of string values, fetched for widgets) was spent before this page's widgets were all read: the rest are not counted, and `limit-hit` is set |
 
 ### `annots` (`annots`)
 
@@ -324,7 +325,8 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
 - A page line depends only on that page and the resources it shares with others, never on
   which other pages were processed: `-f p -l p` gives the same line as a whole run (tested).
   The exceptions are documented above: `parseWarnings` of shared resources, and the
-  run-wide caps (100,000 images, 200,000 rules), past which `limit-hit` is set.
+  run-wide caps (100,000 images, 200,000 rules, the form budget), past which `limit-hit` is
+  set.
 
 ## Hostile input
 
@@ -350,8 +352,11 @@ Doc line: `encrypted-empty-password`, `encrypted-user-password` (basic), `xfa-pr
   descriptor cannot be marked close-on-exec from safe Rust, so pdfregions (and pdfpagefacts)
   close every descriptor above 2 at start.
 - The structure and form walks fetch each shared object once: widgets' indirect `/Parent`,
-  `/V`, `/FT`, `/Ff`, `/AP` through a per-document cache, a name tree's shared `/Names` and
-  `/Kids` arrays once per walk, and the `/Prev` walk within a byte budget.
+  `/V`, `/FT`, `/Ff`, `/AP` through a per-document cache that keeps only what the facts test
+  (a string value is never copied per widget, and generation variants of a compressed object
+  are one entry) and stops fetching at its budget (forms `truncated`), a name tree's shared
+  `/Names` and `/Kids` arrays once per walk, and the `/Prev` walk within a byte budget. The
+  XFA config read takes each packet stream once, through at most one filter.
 - A facts reader that closes its end does not stop the conversion: pdftotext blocks SIGPIPE
   around facts writes, finishes the XHTML and exits 4; pdftomarkdown keeps the Markdown and
   exits 5.

@@ -190,7 +190,7 @@ with t.TempDir() as d:
         t.check(dl["acroForm"] == "present" and dl["xfa"] == xfa and dl["needAppearances"] is False and (("xfa-present" in dl["unusualFeatures"]) == (xfa != "none")), "%s: AcroForm, xfa %s" % (name, xfa), repr(dl))
         fm = page(ls, 1)["forms"]
         t.check(
-            fm == {"fields": 11, "text": 3, "checkbox": 2, "radio": 2, "choice": 1, "signature": 2, "pushButton": 1, "filled": 5, "empty": 3, "valueAppearanceMismatch": 1, "signed": 1, "unsigned": 1},
+            fm == {"fields": 11, "text": 3, "checkbox": 2, "radio": 2, "choice": 1, "signature": 2, "pushButton": 1, "filled": 5, "empty": 3, "valueAppearanceMismatch": 1, "signed": 1, "unsigned": 1, "truncated": False},
             "%s: fields by type, filled/empty, value without appearance, signed/unsigned" % name,
             repr(fm),
         )
@@ -361,6 +361,33 @@ with t.TempDir() as d:
     fm = page(lines(out), 1)["forms"] if rc == 0 else {}
     t.check(rc == 0 and secs < 10 and fm.get("text") == 2000 and fm.get("empty") == 2000, "2000 widgets sharing a large /V: fast, all counted", repr((rc, secs, fm)))
     check_schema(out, "shared widget value")
+    # widgets sharing one 8 MiB string /V from an object stream: the string is not copied per
+    # widget (Object::copy copies string bytes; was gigabytes of copying per page)
+    rc, out, secs = timed(d.write("widget-string.pdf", fx.shared_widget_string_pdf()), "-include", "forms")
+    fms = [page(lines(out), n)["forms"] for n in (1, 2, 3)] if rc == 0 else []
+    t.check(rc == 0 and secs < 10 and all(f["text"] == 9999 and f["filled"] == 9999 and not f["truncated"] for f in fms), "9999 widgets sharing an 8 MiB string /V on 3 pages: fast, all filled", repr((rc, secs, fms[:1])))
+    # generation variants of one compressed object ("4 0 R" ... "4 29996 R") are one cache entry,
+    # so they cannot fill the cache and bring back the re-parse of a large /V per widget
+    rc, out, secs = timed(d.write("form-cache-fill.pdf", fx.form_cache_fill_pdf()), "-include", "forms")
+    fms = [page(lines(out), n)["forms"] for n in (4, 5)] if rc == 0 else []
+    t.check(rc == 0 and secs < 10 and all(f["text"] == 9999 and not f["truncated"] for f in fms), "generation variants of a compressed object do not fill the form cache", repr((rc, secs, fms)))
+    # more distinct form objects than the budget: later widgets are not read (no re-fetch per
+    # widget), and the forms of those pages are truncated, with limit-hit
+    rc, out, secs = timed(d.write("form-budget.pdf", fx.form_cache_fill_pdf(fill_pages=7, distinct=True)), "-include", "forms")
+    ls = lines(out) if rc == 0 else []
+    fms = [page(ls, n)["forms"] for n in range(1, 10)] if ls else []
+    t.check(
+        rc == 0 and secs < 20 and [f["truncated"] for f in fms] == [False] * 6 + [True] * 3 and fms[6]["text"] == 65536 - 6 * 9999 and fms[8]["text"] == 0 and "limit-hit" in page(ls, 9)["parseWarnings"],
+        "form-object budget spent: later widgets not read, forms truncated",
+        repr((rc, secs, [(f["text"], f["truncated"]) for f in fms])),
+    )
+    check_schema(out, "form budget")
+    # an XFA config packet named 64 times, behind stacked Flate filters that decode 64 MiB to
+    # nothing: refused (one filter at most) and read once (was 28 s from a 2.3 KB file)
+    rc, out, secs = timed(d.write("xfa-bomb.pdf", fx.xfa_bomb_pdf()), "-include", "forms")
+    t.check(rc == 0 and secs < 5 and doc_line(lines(out))["xfa"] == "static", "XFA packet behind stacked Flate filters, named 64 times: not decoded", repr((rc, secs)))
+    rc, out, secs = timed(d.write("xfa-flate.pdf", fx.xfa_bomb_pdf(inner_mib=16, layers=1)), "-include", "forms")
+    t.check(rc == 0 and secs < 5 and doc_line(lines(out))["xfa"] == "static", "XFA packet of one Flate layer that decodes to nothing, named 64 times: read once", repr((rc, secs)))
     # name-tree nodes sharing one large /Names array: read once (was 37 s), counted once
     rc, out, secs = timed(d.write("names.pdf", fx.shared_names_pdf()), "-include", "structure")
     dl = doc_line(lines(out)) if rc == 0 else {}

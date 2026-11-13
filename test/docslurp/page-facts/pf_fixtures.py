@@ -462,6 +462,62 @@ def shared_widget_value_pdf(widgets=2000, items=300000):
     return doc([{"extra": "/Annots {0} 0 R"}], extras=["[" + w * widgets + "]", "[" + "1 " * items + "]"])
 
 
+def shared_widget_string_pdf(pages=3, widgets=9999, size=8 << 20):
+    """Pages sharing one /Annots array of widgets that all name one large string /V, packed in a
+    Flate object stream (a small file): copying the string per widget is gigabytes."""
+    plain = {1: b"<< /Type /Catalog /Pages 2 0 R >>", 2: b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % (5 + i) for i in range(pages)) + b"] /Count %d >>" % pages}
+    plain[3] = b"[" + b"<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /FT /Tx /V 4 0 R >>" * widgets + b"]"
+    for i in range(pages):
+        plain[5 + i] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots 3 0 R >>"
+    return objstm_pdf(plain, {4: b"(" + b"A" * size + b")"})
+
+
+def form_cache_fill_pdf(fill_pages=3, big_pages=2, items=300000, widgets=9999, distinct=False):
+    """Pages of filler widgets naming many refs, then pages sharing one /Annots of widgets whose
+    /V is a large uncompressed array. distinct=False: the filler refs are generation variants of
+    one compressed object ("4 0 R", "4 1 R", ...), which XRef::fetch reads as the same object;
+    distinct=True: each names its own small object, past the form-object budget."""
+    plain = {1: b"<< /Type /Catalog /Pages 2 0 R >>"}
+    npages = fill_pages + big_pages
+    first_page = 6 + max(fill_pages, 4)
+    plain[2] = b"<< /Type /Pages /Kids [" + b" ".join(b"%d 0 R" % (first_page + i) for i in range(npages)) + b"] /Count %d >>" % npages
+    plain[3] = b"[" + b"<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /FT /Tx /V 5 0 R >>" * widgets + b"]"
+    plain[5] = b"[" + b"1 " * items + b"]"
+    first_obj = first_page + npages
+    packed = {4: b"null"}
+    g = 0
+    for k in range(fill_pages):
+        ws = []
+        for i in range(widgets):
+            if distinct:
+                ws.append(b"<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /FT /Tx /V %d 0 R >>" % (first_obj + g))
+                plain[first_obj + g] = b"(v)"
+                g += 1
+            else:
+                ws.append(b"<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /FT 4 %d R /Ff 4 %d R /V 4 %d R >>" % (g, g + 1, g + 2))
+                g += 3
+        plain[6 + k] = b"[" + b"".join(ws) + b"]"
+    for k in range(fill_pages, 4):
+        plain[6 + k] = b"null"
+    for i in range(npages):
+        annots = (6 + i) if i < fill_pages else 3
+        plain[first_page + i] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots %d 0 R >>" % annots
+    return objstm_pdf(plain, packed)
+
+
+def xfa_bomb_pdf(refs=64, inner_mib=64, layers=3):
+    """An XFA array naming one config packet <refs> times; the packet's last Flate layer is
+    <inner_mib> MiB of empty stored blocks (decoding to nothing), under <layers> Flate filters."""
+    import zlib
+
+    data = b"\x78\x01" + b"\x00\x00\x00\xff\xff" * (inner_mib * (1 << 20) // 5) + b"\x03\x00" + b"\x00\x00\x00\x01"
+    for _ in range(layers - 1):
+        data = zlib.compress(data, 9)
+    xs = stream("/Filter [%s]" % " ".join(["/FlateDecode"] * layers), data.decode("latin-1"))
+    arr = "[" + " ".join("(config) {1} 0 R" for _ in range(refs)) + "]"
+    return doc([{"content": words(10)}], extras=["<< /Fields [] /XFA {2} 0 R >>", xs, arr], catalog_extra="/AcroForm {0} 0 R")
+
+
 def shared_names_pdf(nodes=1000, items=600000):
     """An embedded-files name tree whose leaf nodes (direct, in one indirect /Kids array) all name
     one large /Names array."""

@@ -370,7 +370,8 @@ constexpr size_t maxItems = 32; // images and figure clusters listed per page
 constexpr size_t maxFonts = 256; // distinct fonts tracked per page
 constexpr uint64_t maxPaths = 100000; // painted paths summarised per page
 constexpr size_t maxAnnots = 10000; // annotations examined per page
-constexpr size_t maxFormObjects = 65536; // indirect form objects kept fetched per document
+constexpr size_t maxFormObjects = 65536; // distinct indirect form objects fetched per document
+constexpr uint64_t maxFormBytes = 64ull << 20; // bytes of string form values fetched per document
 constexpr int maxTreeNodes = 10000; // outline items and name-tree nodes walked
 constexpr uint64_t maxTreeEntries = 1000000; // name-tree entries counted (embeddedFiles)
 constexpr size_t maxStringPoints = 128; // producer and creator code points
@@ -803,10 +804,11 @@ int countOutline(const Object &outlines, bool *truncated)
     return items;
 }
 
-// whether a stream's filters are all cheap, streaming text filters (Flate, LZW, ASCIIHex,
-// ASCII85, RunLength), so that reading a capped prefix costs no more than the cap: an image
-// codec (JPX, JBIG2, DCT, CCITT) decodes far more than it is asked for, and has no business in
-// an XML packet
+// whether a stream has no filter or a single cheap, streaming text filter (Flate, LZW, ASCIIHex,
+// ASCII85, RunLength), so that reading it costs no more than its raw bytes plus the decoded bytes
+// kept: an image codec (JPX, JBIG2, DCT, CCITT) decodes far more than it is asked for, and has no
+// business in an XML packet; and a filter behind another (Flate over Flate, or ASCIIHex over
+// Flate output that is all white space) can make the reader decode gigabytes that yield nothing
 bool textFiltersOnly(Stream *str)
 {
     Dict *dict = str->getDict();
@@ -832,15 +834,7 @@ bool textFiltersOnly(Stream *str)
     if (filter.isName()) {
         return ok(filter);
     }
-    if (!filter.isArray() || filter.arrayGetLength() > 4) {
-        return false;
-    }
-    for (int i = 0; i < filter.arrayGetLength(); ++i) {
-        if (!ok(filter.arrayGet(i))) {
-            return false;
-        }
-    }
-    return true;
+    return filter.isArray() && filter.arrayGetLength() == 1 && ok(filter.arrayGet(0));
 }
 
 // reads at most <cap> decoded bytes of a stream whose filters are textFiltersOnly (nothing
@@ -876,10 +870,17 @@ const char *xfaKind(const Object &xfa)
         Object copy = xfa.copy();
         text = readCapped(copy, maxXfaBytes);
     } else if (xfa.isArray()) {
+        // each distinct packet stream is read once: a stream that decodes to nothing costs its
+        // raw bytes however many times the array names it
         const int n = std::min(xfa.arrayGetLength(), 128);
+        std::set<Ref> read;
         for (int i = 0; i + 1 < n && text.size() < maxXfaBytes; i += 2) {
             Object name = xfa.arrayGet(i);
             if (name.isString() && name.getString() == "config") {
+                const Object &packetRef = xfa.getArray()->getNF(i + 1);
+                if (packetRef.isRef() && !read.insert(packetRef.getRef()).second) {
+                    continue;
+                }
                 Object packet = xfa.arrayGet(i + 1);
                 text += readCapped(packet, maxXfaBytes - text.size());
             }
@@ -913,6 +914,14 @@ inline void add(uint64_t &a, uint64_t b)
 {
     a = b > UINT64_MAX - a ? UINT64_MAX : a + b;
 }
+
+// the form objects fetched for a document (FormObjects, below)
+struct FormCache
+{
+    std::map<Ref, Object> objects;
+    uint64_t stringBytes = 0;
+    bool exhausted = false;
+};
 
 } // namespace
 
@@ -960,7 +969,7 @@ struct PageFacts::State
 
     // kept across pages: indirect objects named by widgets (FormObjects), for the xref
     // generation they were fetched under
-    std::map<Ref, Object> formObjects;
+    FormCache formObjects;
     unsigned formObjectsGeneration = 0;
 
     void reset(int num)
@@ -969,7 +978,7 @@ struct PageFacts::State
         std::vector<uint64_t> cells = std::move(charCells), inv = std::move(invisibleCells);
         std::vector<FontSeen> fontBuffer = std::move(fonts);
         std::vector<AnnotDraw> drawBuffer = std::move(draws);
-        std::map<Ref, Object> formCache = std::move(formObjects);
+        FormCache formCache = std::move(formObjects);
         const unsigned formGeneration = formObjectsGeneration;
         *this = State();
         formObjects = std::move(formCache);
@@ -1561,36 +1570,71 @@ struct WidgetField
     bool appearanceOn = false; // a button's /AS is not Off
 };
 
+// What widgetField tests of a value, without its payload: a string becomes "" (empty), the bare
+// UTF-16 byte order mark, or "x" (anything else). Object::copy copies a string's bytes, so a
+// string /V that thousands of widgets share would otherwise be copied for every one of them;
+// dicts, arrays and streams are shared, and copy in constant time.
+Object formSummary(const Object &obj)
+{
+    if (!obj.isString()) {
+        return obj.copy();
+    }
+    const std::string &str = obj.getString();
+    return Object(std::string(str.empty() ? "" : str == "\xfe\xff" ? "\xfe\xff" : "x"));
+}
+
 // Indirect objects that widgets name (/Parent, /V, /FT, /Ff, /AP), each fetched once per
 // document: thousands of widgets (on every page sharing one /Annots array) can name one field or
-// one large /V, and XRef::fetch parses an object again on every call.
+// one large /V, and XRef::fetch parses an object again on every call. Only summaries are kept
+// (formSummary). The work is bounded, not just the cache: once maxFormObjects distinct objects
+// (or maxFormBytes of strings) have been fetched, nothing more is fetched for the document and
+// the forms read as truncated. Nothing is evicted and fetched again: that would bring back the
+// re-parse per widget. Compressed objects are keyed without their generation, which
+// XRef::fetch ignores for them ("4 0 R" and "4 7 R" are the same object, and one cache entry).
 class FormObjects
 {
 public:
-    FormObjects(std::map<Ref, Object> &cacheA, XRef *xrefA) : cache(cacheA), xref(xrefA) { }
+    FormObjects(FormCache &cacheA, XRef *xrefA) : cache(cacheA), xref(xrefA) { }
     Object get(const Object &dict, const char *key)
     {
+        if (!dict.isDict()) {
+            return Object::null();
+        }
         const Object &nf = dict.dictLookupNF(key);
         if (!nf.isRef()) {
-            return nf.copy();
+            return formSummary(nf);
         }
         if (!xref) {
-            return dict.dictLookup(key);
+            cache.exhausted = true; // no table to fetch through once: do not parse per widget
+            return Object::null();
         }
-        const Ref ref = nf.getRef();
-        const auto it = cache.find(ref);
-        if (it != cache.end()) {
+        Ref ref = nf.getRef();
+        if (ref.num < 0 || ref.num >= xref->getNumObjects()) {
+            return Object::null(); // XRef::fetch gives null without reading anything
+        }
+        if (xref->getEntry(ref.num, false)->type == xrefEntryCompressed) {
+            ref.gen = 0;
+        }
+        const auto it = cache.objects.find(ref);
+        if (it != cache.objects.end()) {
             return it->second.copy();
         }
-        Object obj = xref->fetch(ref);
-        if (cache.size() < maxFormObjects) {
-            cache.emplace(ref, obj.copy());
+        if (cache.exhausted || cache.objects.size() >= maxFormObjects || cache.stringBytes >= maxFormBytes) {
+            cache.exhausted = true;
+            return Object::null();
         }
-        return obj;
+        const Object obj = xref->fetch(nf.getRef());
+        if (obj.isString()) {
+            cache.stringBytes += obj.getString().size();
+        }
+        Object summary = formSummary(obj);
+        cache.objects.emplace(ref, summary.copy());
+        return summary;
     }
+    bool exhausted() const { return cache.exhausted; }
 
 private:
-    std::map<Ref, Object> &cache;
+    FormCache &cache;
     XRef *xref;
 };
 
@@ -1970,10 +2014,10 @@ void PageFacts::endPage(const TextPage &text)
         std::array<uint64_t, 27> bySubtype {};
         uint64_t total = 0, visible = 0, linkUri = 0, linkInternal = 0, linkOther = 0;
         uint64_t fText = 0, fCheck = 0, fRadio = 0, fChoice = 0, fSig = 0, fPush = 0, filledN = 0, emptyN = 0, mismatch = 0, signedN = 0, unsignedN = 0;
-        bool truncatedAnnots = false;
+        bool truncatedAnnots = false, formsTruncated = false;
         size_t drawCursor = 0;
         if (docXref && s.formObjectsGeneration != docXref->getGeneration()) {
-            s.formObjects.clear();
+            s.formObjects = FormCache();
             s.formObjectsGeneration = docXref->getGeneration();
         }
         FormObjects formObjects(s.formObjects, docXref);
@@ -2006,7 +2050,12 @@ void PageFacts::endPage(const TextPage &text)
                     }
                 }
                 if (a->getType() == Annot::typeWidget && wants(Forms)) {
-                    const WidgetField w = widgetField(a->getAnnotObj(), formObjects);
+                    // past the document's form budget a widget is not read, and not counted
+                    const WidgetField w = formObjects.exhausted() ? WidgetField() : widgetField(a->getAnnotObj(), formObjects);
+                    if (formObjects.exhausted()) {
+                        formsTruncated = true;
+                        continue;
+                    }
                     const bool shows = draw && draw->glyphs > 0;
                     switch (w.kind) {
                     case WidgetField::Text:
@@ -2048,7 +2097,11 @@ void PageFacts::endPage(const TextPage &text)
             j.kint("valueAppearanceMismatch", mismatch);
             j.kint("signed", signedN);
             j.kint("unsigned", unsignedN);
+            j.kbool("truncated", formsTruncated);
             j.close();
+            if (formsTruncated) {
+                s.warnings |= 1u << wLimit;
+            }
             if (filledN > 0) {
                 features |= 1u << fAcroformFilled;
             }
