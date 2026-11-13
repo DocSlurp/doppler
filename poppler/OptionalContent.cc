@@ -21,6 +21,7 @@
 #include "goo/GooString.h"
 #include "Error.h"
 #include "OptionalContent.h"
+#include "XRef.h"
 
 #include <atomic>
 
@@ -209,7 +210,11 @@ bool OCGs::optContentIsVisible(const Object *dictRef, OCVisibilityBudget *budget
     }
     long cost = 1;
     bool cacheable = true, limited = false;
+    const unsigned int suppressedBefore = m_xref ? m_xref->getSuppressedRepairs() : 0;
     const bool result = evalVisibility(dictRef, cost, cacheable, limited);
+    if (m_xref && m_xref->getSuppressedRepairs() != suppressedBefore) {
+        cacheable = false; // shaped by a repair a RepairGuard refused (issue 45)
+    }
     if (dictRef->isRef() && cacheable) {
         if (budget) {
             budget->answered.emplace(dictRef->getRef(), OCVisibilityBudget::Answer { result, limited });

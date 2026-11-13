@@ -61,6 +61,7 @@
 //========================================================================
 
 #include <config.h>
+#include <optional>
 
 #include <climits>
 #include <cstdint>
@@ -74,6 +75,7 @@
 #include "GlobalParams.h"
 #include "CharTypes.h"
 #include "Object.h"
+#include "XRef.h"
 #include "PDFDoc.h"
 #include "Array.h"
 #include "Annot.h"
@@ -4327,6 +4329,11 @@ bool Gfx::ocIsVisible(const Object *oc)
 // do not change while a page is drawn).
 bool Gfx::factsOcIsVisible(const Object &oc)
 {
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref);
+    }
     const OCGs *ocgs = catalog->getOptContentConfig();
     if (!ocgs) {
         return true;
@@ -4407,6 +4414,11 @@ static long long encodedStreamBytes(Stream *str, XRef *xref)
 // with the device's ImageInfoCache an image XObject's dictionary is read once per document.
 void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 {
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref);
+    }
     const Object &objOC = dict->lookupNF("OC");
     if (!factsOcIsVisible(objOC)) {
         return;
@@ -4466,6 +4478,11 @@ void Gfx::reportImageGeometry(Dict *dict, Stream *str, Ref ref)
 // that budget left unclassified: limit-hit only when this image's own lookup was refused.
 ImageDictInfo Gfx::factsImageInfo(Dict *dict, bool inlineImg, GfxResources *resources, bool *limited)
 {
+    // issue 45: reads only page facts make cannot rebuild the table the page is drawn from
+    std::optional<XRef::RepairGuard> noRepair;
+    if (xref) {
+        noRepair.emplace(xref);
+    }
     bool refused = false;
     const ImageDictInfo info = readImageDictInfo(dict, inlineImg, resources, out->getImageInfoCache(), &refused);
     if (refused) {

@@ -747,6 +747,27 @@ void ImageStream::skipLine()
 // StreamPredictor
 //------------------------------------------------------------------------
 
+namespace {
+thread_local int predictorRowLimit = 0; // 0: none
+}
+
+PredictorRowLimit::PredictorRowLimit(int maxRowBytes) : previous(predictorRowLimit)
+{
+    if (maxRowBytes > 0 && (predictorRowLimit == 0 || maxRowBytes < predictorRowLimit)) {
+        predictorRowLimit = maxRowBytes;
+    }
+}
+
+PredictorRowLimit::~PredictorRowLimit()
+{
+    predictorRowLimit = previous;
+}
+
+int PredictorRowLimit::current()
+{
+    return predictorRowLimit;
+}
+
 StreamPredictor::StreamPredictor(Stream *strA, int predictorA, int widthA, int nCompsA, int nBitsA)
 {
     str = strA;
@@ -765,6 +786,9 @@ StreamPredictor::StreamPredictor(Stream *strA, int predictorA, int widthA, int n
     }
     pixBytes = (nComps * nBits + 7) >> 3;
     rowBytes = ((nVals * nBits + 7) >> 3) + pixBytes;
+    if (predictorRowLimit > 0 && rowBytes > predictorRowLimit) {
+        return;
+    }
     predLine = static_cast<unsigned char *>(gmalloc(rowBytes));
     memset(predLine, 0, rowBytes);
     predIdx = rowBytes;

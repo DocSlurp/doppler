@@ -218,9 +218,11 @@ public:
     // Was the XRef modified?
     bool isModified() const { return modified; }
     // DocSlurp (issue 45): while a RepairGuard lives, a fetch that would rebuild the table (a
-    // broken entry, or one no section lists) returns null and leaves the table as it was, so a
-    // read made by one kind of run only (pdftotext's XHTML header) cannot change what the pages
-    // resolve.
+    // broken entry, or one no section lists) returns null and leaves the table as it was: no
+    // entry is read, marked free or rebuilt, and no object stream or stream parameter is cached.
+    // Reads only some runs make (page facts, pdftotext's XHTML header) take one, so they cannot
+    // change what the pages resolve. Each refused repair adds one to getSuppressedRepairs(): a
+    // cache shared with drawing does not keep an answer computed after one.
     class RepairGuard
     {
     public:
@@ -233,6 +235,8 @@ public:
         XRef *xref;
     };
 
+    unsigned int getSuppressedRepairs() const { return suppressedRepairs; }
+    bool isRepairSuppressed() const { return repairSuppressed > 0; }
     // DocSlurp page facts: how many times the table was rebuilt from a scan of the file (at open or
     // later, when a fetch found a broken entry).
     unsigned int getReconstructionCount() const { return reconstructions; }
@@ -308,13 +312,17 @@ private:
     // to cannot depend on which objects a run happened to fetch first. While the chain is read,
     // these hold what is left of its budgets (-1 otherwise).
     Goffset chainBytesLeft = -1;
-    long long chainEntriesLeft = -1;
+    long long chainListedLeft = -1; // entries the older sections may list
+    long long chainGrowthLeft = -1; // slots they may add to the table
     bool chainBudgetHit = false;
+    Goffset trailerBytesLeft = 0; // constructTrailerDict's budget, per rebuild
+    const char *chainBudgetName = nullptr;
     // Set for a classic table read whole at open: an entry no section lists makes the first
     // fetch of it rebuild the table, as a lazy read of the chain would have. The rebuild is
     // counted (getReconstructionCount), so pages drawn after it are flagged.
     bool rebuildOnMissing = false;
     int repairSuppressed = 0; // RepairGuards alive
+    unsigned int suppressedRepairs = 0; // repairs a RepairGuard refused
     bool scannedSpecialFlags; // true if scanSpecialFlags has been called
     std::unique_ptr<BaseStream> strOwner; // ownership if any of str (can be null if others own the stream)
     mutable std::recursive_mutex mutex;
@@ -337,7 +345,9 @@ private:
     bool constructXRefEntry(int num, int gen, Goffset pos, XRefEntryType type);
 
     bool readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum);
-    bool readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum);
+    bool readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum, Goffset *chargedFrom);
+    void chargeChainBytes(Goffset after, Goffset *chargedFrom);
+    void noteChainBudget(const char *what);
     bool readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n);
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);

@@ -411,7 +411,7 @@ with t.TempDir() as d:
         t.check(ok, "page locality (%s): -f p -l p equals the whole run's line" % level)
 
     # --- issue 45: the /Prev chain is read at open; the doc line reads through a copy ------------
-    for name in ("prev_redefined", "prev_unlisted", "prev_broken"):
+    for name in ("prev_redefined", "prev_unlisted", "prev_broken", "facts_only_read"):
         path = paths[name]
         pf = [facts(path, "-level", "full")[1] for _ in range(3)]
         fd = [pdftotext_facts(path, "-page-facts-level", "full") for _ in range(3)]
@@ -426,8 +426,19 @@ with t.TempDir() as d:
             t.check(b"Newest" in plain[0] and b"Older" not in plain[0], "%s: the newest section's body of a redefined object wins" % name)
         elif name == "prev_unlisted":
             t.check(doc_line(ls)["xref"] == "ok" and "xref-repaired" in page(ls, 1)["parseWarnings"] and b'xrefRebuilt="1"' in plain[0] and b'<rule ' in plain[0], "%s: the entry no section lists rebuilds the table in every run, flagged (xref-repaired, xrefRebuilt)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
+        elif name == "prev_broken":
+            t.check(doc_line(ls)["xref"] == "repaired" and "xref-repaired" not in page(ls, 1)["parseWarnings"] and b"Bravo" in plain[0] and b"Alpha" not in plain[0], "%s: a broken older section rebuilds the table at open in every run (doc xref repaired, the rebuilt table's body drawn)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"])))
         else:
-            t.check(doc_line(ls)["xref"] == "repaired" and "xref-repaired" not in page(ls, 1)["parseWarnings"] and b'xrefRebuilt="1"' in plain[0] and b'<rule ' in plain[0] and [(g["hRules"], g["vRules"]) for g in v["grids"]] == [(4, 5)], "%s: a broken older section rebuilds the table at open in every run (doc xref repaired, counts kept)" % name, repr((doc_line(ls), page(ls, 1)["parseWarnings"], v["grids"])))
+            # no -rules or -images: the facts' colour-space read is the only one, and it is guarded
+            bare = [os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout"]
+            r, w = os.pipe()
+            q = subprocess.Popen(bare + ["-page-facts-fd", str(w), "-page-facts-level", "full", path, "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, pass_fds=(w,))
+            os.close(w)
+            on = q.communicate(timeout=60)[0]
+            os.read(r, 1 << 20)
+            os.close(r)
+            off = subprocess.run(bare + [path, "-"], capture_output=True, timeout=60).stdout
+            t.check(on == off and b"Alpha" in off, "%s: pdftotext -bbox-layout alone: the facts' read of a missing colour space changes nothing the pages draw" % name, repr((on[-300:], off[-300:])))
 
     # --- pdftotext -page-facts-fd == pdfpagefacts; XHTML unchanged ------------------------------------------------------------------
     for name, path in sorted(paths.items()):

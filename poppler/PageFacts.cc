@@ -2111,22 +2111,17 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         j.kenum("pdfVersion", version);
     }
     j.kbool("linearized", doc->isLinearized());
-    // The doc line reads the catalog, /Info and /Encrypt through a copy of the table, so its
-    // reads (and a rebuild they cause) cannot change what the pages resolve: a run with facts
-    // and one without draw the same objects. Its own rebuild turns "ok" into "repaired" at the
-    // end. Without a copy (allocation failed) nothing is read and the line says "repaired".
+    // The doc line's reads (catalog, /Info, /Encrypt) are made under a RepairGuard, so they
+    // cannot rebuild or extend the table the pages are drawn from: a run with facts and one
+    // without draw the same objects. A repair the guard refused (a broken or missing object
+    // the doc line reads nothing from) turns "ok" into "repaired" at the end.
     const int reconstructionsAtXref = xref->getReconstructionCount();
     openReconstructions = reconstructionsAtXref;
-    const std::unique_ptr<XRef> docRefs = xref->copy();
-    auto viaCopy = [&](const Object &nf) {
-        if (!docRefs) {
-            return Object::null();
-        }
-        return nf.isRef() ? docRefs->fetch(nf.getRef()) : nf.copy();
-    };
-    auto trailerLookup = [&](const char *key) { return docRefs ? viaCopy(docRefs->getTrailerDict()->dictLookupNF(key)) : Object::null(); };
+    const XRef::RepairGuard noRepair(xref);
+    const unsigned int suppressedAtXref = xref->getSuppressedRepairs();
+    auto trailerLookup = [&](const char *key) { return xref->getTrailerDict()->dictLookup(key); };
     const size_t xrefAt = j.s.size();
-    j.kenum("xref", reconstructionsAtXref > 0 || !docRefs ? "repaired" : "ok");
+    j.kenum("xref", reconstructionsAtXref > 0 ? "repaired" : "ok");
     if (xref->isEncrypted()) {
         bool emptyWorks = !passwordGiven;
         if (passwordGiven) {
@@ -2156,7 +2151,8 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kbool("locked", false);
 
-    Object catDict = docRefs ? docRefs->getCatalog() : Object::null();
+    // XRef::getCatalog would rebuild the table when the catalog does not parse
+    Object catDict = xref->fetch(xref->getRootNum(), xref->getRootGen());
     auto catLookup = [&](const char *key) { return catDict.isDict() ? catDict.dictLookup(key) : Object::null(); };
     if (wants(Structure)) {
         const int sections = xref->countSections(1000, 30000000LL);
@@ -2253,7 +2249,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     }
     j.kmask("unusualFeatures", features, featureNames, fXfaPresent + 1);
     j.close();
-    if (reconstructionsAtXref == 0 && docRefs && docRefs->getReconstructionCount() > 0) {
+    if (reconstructionsAtXref == 0 && xref->getSuppressedRepairs() != suppressedAtXref) {
         const size_t ok = j.s.find("\"ok\"", xrefAt);
         if (ok != std::string::npos) {
             j.s.replace(ok, 4, "\"repaired\"");
@@ -2262,7 +2258,7 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
     j.s += '\n';
     docXref = xref;
     // rebuilds while the document was opened happen for every page range (the doc line's reads
-    // go through its copy and cannot add one)
+    // are guarded and cannot add one)
     docReconstructions = xref->getReconstructionCount();
     return j.s;
 }
@@ -2762,6 +2758,11 @@ WidgetField widgetField(const Object &widget, FormObjects &objects)
 
 void PageFacts::endPage(const TextPage &text)
 {
+    // issue 45: the facts' own reads (annotations, widgets, forms) cannot rebuild the table
+    std::optional<XRef::RepairGuard> noRepair;
+    if (docXref) {
+        noRepair.emplace(docXref);
+    }
     State &s = *st;
     s.ended = true;
     Json j;
@@ -3499,7 +3500,13 @@ void ImageInfoCache::sync(XRef *xref)
         profiles.clear();
         docXref = xref;
         generation = xref ? xref->getGeneration() : 0;
+        suppressedAtSync = xref ? xref->getSuppressedRepairs() : 0;
     }
+}
+
+bool ImageInfoCache::untainted(XRef *xref) const
+{
+    return !xref || xref->getSuppressedRepairs() == suppressedAtSync;
 }
 
 const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
@@ -3512,7 +3519,7 @@ const ImageInfoCache::Image *ImageInfoCache::find(Ref ref, XRef *xref)
 void ImageInfoCache::store(Ref ref, XRef *xref, const Image &image)
 {
     sync(xref);
-    if (images.size() < maxEntries) {
+    if (images.size() < maxEntries && untainted(xref)) {
         images.emplace(ref, image);
     }
 }
@@ -3547,7 +3554,7 @@ ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
     const Space c = classify(resolved, xref);
     // a result shaped by a refused lookup is not kept: it would answer later lookups as limited
     // without saying so (and a retry past the budget is refused at once)
-    if (refused == before && spaces.size() < maxEntries) {
+    if (refused == before && spaces.size() < maxEntries && untainted(xref)) {
         spaces.emplace(cs.getRef(), c);
     }
     return c;
@@ -3597,7 +3604,7 @@ ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
     }
     const Object name = xref->fetch(family.getRef());
     const Space c = !name.isName() ? Space { ImageColor::Other, false, false } : name.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(name.getNameString());
-    if (families.size() < maxEntries) {
+    if (families.size() < maxEntries && untainted(xref)) {
         families.emplace(family.getRef(), c);
     }
     return c;
@@ -3646,7 +3653,7 @@ ImageColor ImageInfoCache::iccOf(const Object &profile, XRef *xref)
             }
         }
     }
-    if (refused == before && profiles.size() < maxEntries) {
+    if (refused == before && profiles.size() < maxEntries && untainted(xref)) {
         profiles.emplace(profile.getRef(), c);
     }
     return c;

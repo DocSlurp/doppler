@@ -311,8 +311,17 @@ XRef::XRef(BaseStream *strA, Goffset pos, Goffset mainXRefEntriesOffsetA, bool *
 
         // read the xref table
     } else {
+        // The main section and the /Prev chain share one parse budget (readPrevChain): twice the
+        // file plus 64 KiB, so nested /XRefStm or overlapping sections cannot re-read the file
+        // once per level.
+        const Goffset fileLength = str->getLength();
+        chainBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
         std::vector<Goffset> followedXRefStm;
         const bool more = readXRef(&prevXRefOffset, &followedXRefStm, nullptr);
+        if (!ok) {
+            chainBytesLeft = -1;
+            chainBudgetHit = false;
+        }
 
         // if there was a problem with the xref table,
         // try to reconstruct it
@@ -537,26 +546,25 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
     // overlap cannot make the chain re-read the file once per section.
     const bool budgeted = chainBytesLeft >= 0;
     if (budgeted && chainBytesLeft <= 0) {
-        chainBudgetHit = true;
+        noteChainBudget("parse");
         ok = false;
         return false;
     }
+    // an xref stream's predictor row is a few bytes (its /W widths); a larger one is refused
+    // before it is allocated (StreamPredictor)
+    const PredictorRowLimit rowLimit(budgeted ? 4096 : 0);
     parser = new Parser(nullptr, str->makeSubStream(parsePos, budgeted, budgeted ? chainBytesLeft : 0, Object::null()), true);
+    Goffset chargedFrom = parsePos;
     auto chargeBytes = [&] {
-        if (budgeted && chainBytesLeft >= 0) {
-            const Goffset after = parser->getPos();
-            const Goffset used = after > parsePos ? after - parsePos : chainBytesLeft;
-            chainBytesLeft = used >= chainBytesLeft ? 0 : chainBytesLeft - used;
-            if (chainBytesLeft == 0) {
-                chainBudgetHit = true;
-            }
+        if (budgeted) {
+            chargeChainBytes(parser->getPos(), &chargedFrom);
         }
     };
     obj = parser->getObj(true);
 
     // parse an old-style xref table
     if (obj.isCmd("xref")) {
-        more = readXRefTable(parser, pos, followedXRefStm, xrefStreamObjsNum);
+        more = readXRefTable(parser, pos, followedXRefStm, xrefStreamObjsNum, budgeted ? &chargedFrom : nullptr);
 
         // parse an xref stream
     } else if (obj.isInt()) {
@@ -593,7 +601,34 @@ err1:
     return false;
 }
 
-bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum)
+void XRef::noteChainBudget(const char *what)
+{
+    if (!chainBudgetHit) {
+        chainBudgetName = what;
+    }
+    chainBudgetHit = true;
+}
+
+void XRef::chargeChainBytes(Goffset after, Goffset *chargedFrom)
+{
+    // Takes what the parser read since *chargedFrom off the parse budget. A parser that reached
+    // the end of its substream (the budget) spent it; one that stopped short did not.
+    if (chainBytesLeft < 0 || !chargedFrom) {
+        return;
+    }
+    const Goffset used = after > *chargedFrom ? after - *chargedFrom : 0;
+    if (after > *chargedFrom) {
+        *chargedFrom = after;
+    }
+    if (used >= chainBytesLeft) {
+        chainBytesLeft = 0;
+        noteChainBudget("parse");
+    } else {
+        chainBytesLeft -= used;
+    }
+}
+
+bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *followedXRefStm, std::vector<int> *xrefStreamObjsNum, Goffset *chargedFrom)
 {
     XRefEntry entry;
     bool more;
@@ -740,7 +775,14 @@ bool XRef::readXRefTable(Parser *parser, Goffset *pos, std::vector<Goffset> *fol
         }
         if (ok) {
             followedXRefStm->push_back(pos2);
-            readXRef(&pos2, followedXRefStm, xrefStreamObjsNum);
+            // charge this section's bytes so far first, so a nested section's parser sees only
+            // what is left of the budget
+            chargeChainBytes(parser->getPos(), chargedFrom);
+            if (chainBudgetHit) {
+                ok = false;
+            } else {
+                readXRef(&pos2, followedXRefStm, xrefStreamObjsNum);
+            }
         }
         if (!ok) {
             goto err0;
@@ -961,6 +1003,12 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
         *wasReconstructed = true;
     }
     ++reconstructions;
+    // DocSlurp (issue 45): a rebuilt table is not extended later by a lazy read of the old chain
+    prevXRefOffset = 0;
+    {
+        const Goffset fileLength = str->getLength();
+        trailerBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
+    }
 
     if (xrefReconstructedCb) {
         xrefReconstructedCb();
@@ -1074,10 +1122,18 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
 // Attempt to construct a trailer dict at [pos] in the stream.
 void XRef::constructTrailerDict(Goffset pos, bool needCatalogDict)
 {
-    Parser parser { nullptr,
-
-                    str->makeSubStream(pos, false, 0, Object {}), false };
+    // DocSlurp (issue 45): the trailers a rebuild finds are parsed within one budget of twice the
+    // file plus 64 KiB (set by constructXRef), so many trailers whose dictionaries run over the
+    // rest of the file cannot make the rebuild re-read it once per trailer. Past the budget the
+    // trailers already read stand.
+    if (trailerBytesLeft <= 0) {
+        return;
+    }
+    Parser parser { nullptr, str->makeSubStream(pos, true, trailerBytesLeft, Object {}), false };
     Object newTrailerDict = parser.getObj();
+    const Goffset after = parser.getPos();
+    const Goffset used = after > pos ? after - pos : 0;
+    trailerBytesLeft = used >= trailerBytesLeft ? 0 : trailerBytesLeft - used;
     if (newTrailerDict.isDict()) {
         saveTrailerDict(newTrailerDict.getDict(), false, needCatalogDict);
     }
@@ -1342,6 +1398,11 @@ Object XRef::getCatalog()
     if (catalog.isDict()) {
         return catalog;
     }
+    if (repairSuppressed) {
+        ++suppressedRepairs; // RepairGuard
+        error(errSyntaxError, -1, "Catalog is broken; not rebuilt for a read-only lookup");
+        return catalog;
+    }
     bool wasReconstructed = false;
     if (constructXRef(&wasReconstructed, true)) {
         catalog = fetch(rootNum, rootGen);
@@ -1365,8 +1426,9 @@ Object XRef::fetchStreamParam(const Ref ref, int recursion)
     if (it != streamParams.end()) {
         return it->second.copy();
     }
+    const unsigned int suppressedBefore = suppressedRepairs;
     Object obj = fetch(ref, recursion);
-    if ((obj.isName() || obj.isArray() || obj.isDict()) && streamParamsGeneration == generation && streamParams.size() < 4096) {
+    if ((obj.isName() || obj.isArray() || obj.isDict()) && streamParamsGeneration == generation && suppressedRepairs == suppressedBefore && streamParams.size() < 4096) {
         streamParams.emplace(ref, obj.copy());
     }
     return obj;
@@ -1454,6 +1516,23 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
         ObjectStream *objStr = nullptr;
         if (const auto it = objStrs.find(e->offset); it != objStrs.end()) {
             objStr = it->second.get();
+        } else if (repairSuppressed) {
+            // RepairGuard: an object stream parsed now (perhaps cut short by a refused /Length) is
+            // used once and not kept
+            const unsigned int before = suppressedRepairs;
+            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(e->offset), recursion + 1));
+            if (!once->isOk()) {
+                goto err;
+            }
+            if (endPos) {
+                *endPos = -1;
+            }
+            Object result = once->getObject(e->gen, num);
+            if (suppressedRepairs == before) {
+                e = getEntry(num);
+                objStrs.emplace(e->offset, std::move(once));
+            }
+            return result;
         } else {
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);
             if (!objStr->isOk()) {
@@ -1482,7 +1561,10 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
     }
 
 err:
-    if (!xRefStream && !xrefReconstructed && !repairSuppressed) {
+    if (!xRefStream && !xrefReconstructed && repairSuppressed) {
+        ++suppressedRepairs;
+        error(errSyntaxError, -1, "Object {0:d} is broken or missing; not rebuilt for a read-only lookup", num);
+    } else if (!xRefStream && !xrefReconstructed) {
         // Check if there has been any updated object, if there has been we can't reconstruct because that would mean losing the changes
         bool xrefHasChanges = false;
         for (int i = 0; i < size; i++) {
@@ -1989,38 +2071,51 @@ int XRef::countSections(int maxSections, long long maxTokens)
 
 bool XRef::chargeChainEntries(int first, int n, int newSize)
 {
-    // While readPrevChain runs, the entries an older section lists and the slots it adds to the
-    // table (a larger /Size or first + n) come out of one budget, checked before anything is
-    // allocated: a hostile older section cannot grow the table past it.
-    if (chainEntriesLeft < 0) {
+    // While readPrevChain runs: the entries older sections list come out of one budget, and the
+    // slots they add to the table (a larger /Size or first + n) out of another, both checked
+    // before anything is allocated, so a hostile older section cannot grow the table far past
+    // what the main section made it.
+    if (chainListedLeft < 0) {
         return true;
     }
-    const long long end = std::max(static_cast<long long>(first) + n, static_cast<long long>(newSize));
-    const long long cost = static_cast<long long>(n) + (end > size ? end - size : 0);
-    if (cost > chainEntriesLeft) {
-        chainBudgetHit = true;
+    if (n > chainListedLeft) {
+        noteChainBudget("entry");
         return false;
     }
-    chainEntriesLeft -= cost;
+    chainListedLeft -= n;
+    const long long end = std::max(static_cast<long long>(first) + n, static_cast<long long>(newSize));
+    const long long growth = end > size ? end - size : 0;
+    if (growth > chainGrowthLeft) {
+        noteChainBudget("table-growth");
+        return false;
+    }
+    chainGrowthLeft -= growth;
     return true;
 }
 
 void XRef::readPrevChain(bool *wasReconstructed)
 {
     // DocSlurp: read every section older than the main one now, instead of when a missing entry
-    // is first asked for, so the table no longer depends on fetch order. The walk keeps the
-    // bounds countSections uses: at most 1000 older sections, 10,000,000 entries across them (the
-    // entries listed plus the slots they add to the table), and
-    // twice the file's bytes plus 64 KiB of parsing. Past a bound, or on a loop or a broken
+    // is first asked for, so the table no longer depends on fetch order. Bounds: at most 1000
+    // older sections (as countSections), 100,000,000 entries listed across them, table growth of
+    // at most max(65,536, the size the main section gave it) slots, and twice the file's bytes
+    // plus 64 KiB of parsing shared with the main section. Past a bound, or on a loop or a broken
     // older section where the lazy read rebuilt (a classic main table), the table is rebuilt from
     // a scan now: an open-time rebuild every run makes alike. A broken older section behind an
     // xref stream ends the chain, as the lazy read did.
     constexpr int maxSections = 1000;
-    constexpr long long maxEntries = 10000000LL;
-    const Goffset fileLength = str->getLength();
-    chainBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
-    chainEntriesLeft = maxEntries;
-    chainBudgetHit = false;
+    constexpr long long maxListed = 100000000LL;
+    if (chainBytesLeft < 0) {
+        const Goffset fileLength = str->getLength();
+        chainBytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
+    }
+    long long mainSize = size;
+    const Object &trailerSize = trailerDict.dictLookupNF("Size");
+    if (trailerSize.isInt() && trailerSize.getInt() > mainSize) {
+        mainSize = trailerSize.getInt();
+    }
+    chainListedLeft = maxListed;
+    chainGrowthLeft = std::max<long long>(65536, mainSize);
     std::unordered_set<Goffset> seen;
     seen.insert(mainXRefOffset);
     int sections = 0;
@@ -2041,7 +2136,7 @@ void XRef::readPrevChain(bool *wasReconstructed)
             prevXRefOffset = 0;
         }
         if (chainBudgetHit) {
-            error(errSyntaxError, -1, "XRef sections past the read budget, reconstructing");
+            error(errSyntaxError, -1, "XRef sections past the {0:s} budget, reconstructing", chainBudgetName ? chainBudgetName : "read");
             rebuild = true;
             break;
         }
@@ -2056,8 +2151,10 @@ void XRef::readPrevChain(bool *wasReconstructed)
         }
     }
     chainBytesLeft = -1;
-    chainEntriesLeft = -1;
+    chainListedLeft = -1;
+    chainGrowthLeft = -1;
     chainBudgetHit = false;
+    chainBudgetName = nullptr;
     prevXRefOffset = 0;
     if (rebuild) {
         ok = constructXRef(wasReconstructed);
@@ -2149,8 +2246,13 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                 return &dummyXRefEntry;
             }
         } else {
-            if (repairSuppressed && (prevXRefOffset || (rebuildOnMissing && i < size && entries[i].type == xrefEntryNone))) {
-                return &dummyXRefEntry; // neither read nor rebuild nor mark it free (RepairGuard)
+            if (repairSuppressed) {
+                // neither read the chain, nor rebuild, nor mark the entry free (RepairGuard)
+                if (prevXRefOffset || (rebuildOnMissing && i < size && entries[i].type == xrefEntryNone)) {
+                    ++suppressedRepairs;
+                    error(errSyntaxError, -1, "XRef entry {0:d} is in no section; not rebuilt for a read-only lookup", i);
+                }
+                return &dummyXRefEntry;
             }
             if (prevXRefOffset) {
                 // Read XRef tables until the entry we're looking for is found (only when the
@@ -2160,9 +2262,18 @@ XRefEntry *XRef::getEntry(int i, bool complainIfMissing)
                 // No section lists it: rebuild, as the lazy read of the chain did, but now
                 // whatever was fetched first, and counted as a rebuild after open.
                 rebuildOnMissing = false;
-                error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
-                if (!(ok = constructXRef(nullptr))) {
-                    errCode = errDamaged;
+                bool hasChanges = false;
+                for (int k = 0; k < size && !hasChanges; ++k) {
+                    hasChanges = entries[k].getFlag(XRefEntry::Updated);
+                }
+                if (hasChanges) {
+                    // as fetch: a rebuild would lose the edits
+                    error(errInternal, -1, "XRef entry {0:d} is in no section, document has changes, reconstruct aborted", i);
+                } else {
+                    error(errSyntaxError, -1, "XRef entry {0:d} is in no section, reconstructing", i);
+                    if (!(ok = constructXRef(nullptr))) {
+                        errCode = errDamaged;
+                    }
                 }
             }
 
@@ -2244,6 +2355,8 @@ void XRef::scanSpecialFlags()
     if (!streamEndsLen) { // don't do it for already reconstructed xref
         readXRefUntil(-1 /* read all xref sections */, &xrefStreamObjNums);
     }
+    // upstream: once the chain is drained, a missing entry is free (writers must not rebuild)
+    rebuildOnMissing = false;
 
     // Mark object streams as DontRewrite, because we write each object
     // individually in full rewrite mode.

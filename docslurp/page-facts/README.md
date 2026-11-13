@@ -23,9 +23,9 @@ pdftomarkdown --stream --page-facts-fd 3 FILE.pdf 3>facts.jsonl                 
   on), which `pdfpagefacts` never does, but since issue 45 those reads cannot rebuild the
   cross-reference table (a broken entry is left out of the header instead).
 - **Never on stdout** for pdftomarkdown: Markdown stays on stdout, and facts do not change it.
-  The doc line reads the catalog, `/Info` and `/Encrypt` through its own copy of the
-  cross-reference table, so a rebuild those reads cause is the copy's, never the table the pages
-  are drawn from (issue 45). The whole `/Prev` chain is read when the file is opened (see
+  Every read the facts make beyond drawing (the doc line's catalog, `/Info` and `/Encrypt`, and a
+  page's annotation, widget, colour-space and optional-content lookups) is read-only: it cannot
+  rebuild the cross-reference table the pages are drawn from (issue 45). The whole `/Prev` chain is read when the file is opened (see
   [Cross-reference reads](#cross-reference-reads)).
 - The JSON Schema is [`doppler-page-facts-1.schema.json`](doppler-page-facts-1.schema.json).
   The man page is `utils/pdfpagefacts.1`. Benchmarks: [PERF.md](PERF.md).
@@ -81,7 +81,7 @@ A flag of `unusualFeatures` appears only when its family was computed (`type3-fo
 | `pageCount` | the page count poppler processes (the root `/Count`, not the walked tree: bill and limit by `pdfpagecount`) |
 | `pdfVersion` | `"M.m"` from the header and catalog `/Version`, absent when not 1.0-2.9 |
 | `linearized` | a linearization dictionary is present |
-| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or the doc line's reads of the catalog (outlines, names, page labels) rebuilt its own copy of it (the pages' table is untouched) |
+| `xref` | `ok`, or `repaired` when poppler rebuilt the cross-reference table while opening, or when an object the doc line reads (outlines, names, page labels, `/Info`) is broken or missing and would have needed a rebuild (the doc line reads it as absent and the table is left alone) |
 | `encryption` | `none`, `empty-user-password` (opens without a password), `user-password-required` (a password was needed, and given) |
 | `permissions` | with encryption: `print`, `printHighRes`, `modify`, `copy`, `annotate`, `fillForms`, `accessibility`, `assemble` as the document declares them |
 | `incrementalUpdates` | cross-reference sections (tables or streams) chained by `/Prev`, minus one (and minus the first-page section of a linearized file); read with a separate parser, at most 1,000 sections, 30 million tokens and twice the file's bytes, absent past that or when the table was rebuilt (`xref: repaired`) |
@@ -400,7 +400,7 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   run-wide caps); the cross-reference table was rebuilt after open and before the page's facts
   were taken (by an earlier fetch: an object may then resolve to another
   body than a run that never rebuilt it reads; a rebuild at open is every run's and does not
-  count, and the doc line's reads rebuild only their own copy); a thin
+  count, and the facts' own reads never rebuild it); a thin
   rule's corners or extent are not finite, or its centre is past 10^9 points; more than
   4,096 thin rules run either
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
@@ -520,12 +520,21 @@ chain) only when a missing entry is first asked for, so what an object resolves 
 on what a run fetched first. Doppler reads the whole chain when the document is opened, newest
 first, as the lazy read did (an entry is taken from the newest section that lists it):
 
-- **Bounds:** at most 1,000 older sections, 10,000,000 entries across them (entries listed plus
-  the slots a larger `/Size` or subsection adds to the table, checked before it is allocated)
-  and twice the file's bytes plus 64 KiB of parsing (the bounds `incrementalUpdates` uses). Past any of them, on a
-  `/Prev` loop, or on a broken older section behind a classic table, the table is rebuilt from a
-  scan at open: every run does the same, and the doc line says `xref: repaired`. A broken older
-  section behind an xref stream ends the chain there, as the lazy read did.
+- **Bounds**, each checked before the work or allocation it limits:
+  - at most 1,000 older sections (the bound `incrementalUpdates` uses);
+  - at most 100,000,000 entries listed across them;
+  - table growth: older sections may add at most max(65,536, the main section's `/Size`) slots,
+    so the table stays within about twice what the main section makes it;
+  - parsing: twice the file's bytes plus 64 KiB, shared by the main section, the chain and every
+    nested `/XRefStm` (a section's bytes are charged before it follows its `/XRefStm`);
+  - an xref stream's predictor row (its `/DecodeParms` `/Columns`, `/Colors`, `/BitsPerComponent`)
+    of at most 4,096 bytes, refused before it is allocated.
+
+  Past any bound, on a `/Prev` loop, or on a broken older section behind a classic table, the
+  table is rebuilt from a scan at open: every run does the same, and the doc line says
+  `xref: repaired`. A broken older section behind an xref stream ends the chain there, as the lazy
+  read did. A rebuild (at open or later) never extends the rebuilt table from the old chain, and
+  the trailers it finds are parsed within one budget of twice the file plus 64 KiB.
 - **An entry no section lists:** for a classic table the first fetch of it rebuilds the table, as
   the lazy read did on its first missing entry. That happens after open, so it is counted like
   any later rebuild (`xref-repaired` on the page, `xref-repaired-earlier` after it, and
@@ -533,13 +542,25 @@ first, as the lazy read did (an entry is taken from the newest section that list
   depending on whether an earlier fetch had already used up the chain.
 - **Linearized files** keep upstream's direct read of the main table's entries; their chain is
   not followed lazily either.
-- **The doc line** reads through a copy of the table (`XRef::copy`), so outlines, names, page
-  labels, `/Info` and `/Encrypt` cannot rebuild or extend the table the pages use. If the copy
-  cannot be allocated the doc line reads nothing from the catalog and says `xref: repaired`.
-- **pdftotext's XHTML header** reads `/Info` under `XRef::RepairGuard`: a fetch that would
-  rebuild the table returns nothing instead (the field is left out, `<title></title>`), and an
-  entry no section lists is neither rebuilt nor marked free, so the header cannot change what the
-  pages resolve either.
+- **Read-only lookups (`XRef::RepairGuard`).** Reads that some runs make and others do not
+  are made under a guard:
+  - the doc line's catalog, `/Info` and `/Encrypt`;
+  - pdftotext's XHTML header (`/Info`);
+  - a page's facts (annotations, widgets, forms, image colour spaces, optional content);
+  - `-images`' scan-copy audit of an image's dictionary.
+
+  Under the guard, a fetch that would rebuild the table returns nothing and leaves the table as
+  it was:
+  - no entry is read, marked free or rebuilt;
+  - an object stream or stream parameter it parsed is not kept;
+  - a cache shared with drawing (image colour spaces, optional-content visibility) does not
+    keep an answer computed after a refused repair.
+
+  A refused repair is a syntax error (`syntax-error` on the page). The doc line says
+  `xref: repaired`, the header leaves the field out (`<title></title>`), and the audit leaves the
+  image unevaluated (no `scan`/`copy` claim). Drawing alone may rebuild the table.
+- **Writers** (`pdfseparate`, saving) keep upstream's behaviour once they have drained the chain:
+  a missing entry is free, and a rebuild that would lose edits is refused.
 
 ## Hostile input
 

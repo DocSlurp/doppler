@@ -978,7 +978,8 @@ def prev_redefined_pdf():
     objects 0-4; the older classic section lists 1-8, with an older body of the page's content
     stream (4) and the page's ruled form (6), font (8) and outlines (5) that only it lists. The
     newest section wins for 4; 6 and 8 resolve through the older section in every run, not only
-    after something (the doc line's /Outlines read) has made poppler read it."""
+    after something (the doc line's /Outlines read) has made poppler read it. Upstream's run
+    without facts drew nothing on the page."""
     page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Newest content) Tj ET"
     old_content = b"BT /F1 12 Tf 72 740 Td (Older content) Tj ET"
     objs_new = {
@@ -1000,9 +1001,8 @@ def prev_redefined_pdf():
 def prev_unlisted_pdf():
     """Issue 45. Classic tables: the newest section lists 0-4 (/Size 10), the older one 1-8; the
     page's ruled form (9) is in the file but in no section. The first fetch of 9 rebuilds the
-    table, as the lazy read did when it still had the older section to read, and now in every run
-    (the lazy read skipped it once an earlier fetch had used the chain up): flagged as a rebuild
-    after open."""
+    table in every run, flagged as a rebuild after open. (Upstream flagged it too, through
+    fetch's own rebuild; this guards that the eager chain read keeps it.)"""
     page_content = b"q /X Do Q BT /F1 12 Tf 72 740 Td (Unlisted form) Tj ET"
     objs_new = {
         1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
@@ -1015,13 +1015,66 @@ def prev_unlisted_pdf():
     return _chain_pdf(("table", [1, 2, 3, 4], 10), set(range(1, 9)), objs_new, objs_old, b"/Root 1 0 R", b"/Root 1 0 R")
 
 
+def _content(text, extra=b""):
+    c = extra + b"BT /F1 12 Tf 72 700 Td (" + text + b") Tj ET"
+    return b"<< /Length %d >>\nstream\n" % len(c) + c + b"\nendstream"
+
+
+def _classic(objs, listed, size, trailer=b"", before_xref=b"", prev=None, tail_objs=()):
+    """A classic-table PDF: objs (number -> body), listed numbers in the table (with /Size size),
+    raw bytes before the table, and tail_objs ((number, body), ...) written after every listed
+    body but listed nowhere (a rebuild takes the last body of a number)."""
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    off = {}
+    for n in sorted(objs):
+        off[n] = len(out)
+        out += b"%d 0 obj\n" % n + objs[n] + b"\nendobj\n"
+    for n, body in tail_objs:
+        out += b"%d 0 obj\n" % n + body + b"\nendobj\n"
+    out += before_xref
+    xat = len(out)
+    out += b"xref\n0 1\n0000000000 65535 f \n" + b"".join(b"%d 1\n%010d 00000 n \n" % (n, off[n]) for n in sorted(listed))
+    out += b"trailer\n<< /Size %d /Root 1 0 R%s%s >>\nstartxref\n%d\n%%%%EOF\n" % (size, trailer, b" /Prev %d" % prev if prev is not None else b"", xat)
+    return bytes(out)
+
+
 def prev_broken_pdf():
-    """Issue 45. prev_unlisted's file with garbage where its older section should be: the lazy
-    read rebuilt the table when a fetch first reached that section, at a point that depended on
-    what was fetched first; now every run rebuilds it at open (doc xref repaired)."""
-    pdf = prev_unlisted_pdf()
-    at = pdf.index(b"xref\n0 9\n")
-    return pdf[:at] + b"xre? " + pdf[at + 5 :]
+    """Issue 45. The newest section lists everything the page draws; the catalog's /Outlines (5)
+    is listed only by an older section, which is garbage. Object 4 (the page's content) has a
+    second, unlisted body later in the file ("Bravo"). Upstream read the older section only when
+    the doc line asked for /Outlines, rebuilt there, and the page then drew Bravo with facts and
+    Alpha without. Now every run rebuilds at open and draws Bravo (doc xref repaired)."""
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R /Outlines 5 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 6 0 R >> >> >>",
+        4: _content(b"Alpha"),
+        5: b"<< /Type /Outlines /Count 0 >>",
+        6: HELV.encode(),
+    }
+    probe = _classic(objs, [1, 2, 3, 4, 6], 7, tail_objs=[(4, _content(b"Bravo"))], before_xref=b"xre? 0 9\ngarbage\n")
+    old_at = probe.index(b"xre? ")
+    return _classic(objs, [1, 2, 3, 4, 6], 7, tail_objs=[(4, _content(b"Bravo"))], before_xref=b"xre? 0 9\ngarbage\n", prev=old_at)
+
+
+def facts_only_read_pdf():
+    """Issue 45 (council). One classic section; page 1's image names /ColorSpace 7, which no
+    section lists, and page 2's content (11) has a second, unlisted body ("Bravo"). Drawing never
+    resolves the colour space without -images; page facts do, under a RepairGuard, so they cannot
+    rebuild the table and change what page 2 draws."""
+    img = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /BitsPerComponent 8 /ColorSpace 7 0 R /Length 12 >>\nstream\n" + b"\x00" * 12 + b"\nendstream"
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 10 0 R] /Count 2 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> >> >>",
+        4: _content(b"Page one", b"q 100 0 0 100 72 400 cm /Im Do Q "),
+        5: HELV.encode(),
+        6: img,
+        7: b"/DeviceRGB",
+        10: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 11 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        11: _content(b"Alpha"),
+    }
+    return _classic(objs, [1, 2, 3, 4, 5, 6, 10, 11], 12, tail_objs=[(11, _content(b"Bravo"))])
 
 
 ALL = {
@@ -1063,4 +1116,5 @@ ALL = {
     "prev_redefined": prev_redefined_pdf,
     "prev_unlisted": prev_unlisted_pdf,
     "prev_broken": prev_broken_pdf,
+    "facts_only_read": facts_only_read_pdf,
 }
