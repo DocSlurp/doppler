@@ -17,6 +17,9 @@ G4 stream), so no binary fixture is checked in:
   huge.pdf    a 4200 x 4200 Flate grey scan, past the copy cap (rendered instead)
   slow.pdf    a 1000 x 1000 Flate grey scan whose lossless encode at the highest effort takes
               seconds (an encode past the deadline is dropped)
+  rebuilt.pdf p1 the DCT scan, p2 a Flate grey scan, p3 the DCT scan again (another object),
+              whose content stream's cross-reference entry points at the font: fetching it
+              rebuilds the table, after pages 1 and 2 were found copyable
 """
 
 import os
@@ -147,3 +150,23 @@ noise = bytes(((x * 7 + y * 13) ^ (x * y >> 5)) & 255 for y in range(1000) for x
 slow = img("/Width 1000 /Height 1000 /ColorSpace /DeviceGray /BitsPerComponent 8", noise, compress=True)
 with open(os.path.join(out, "slow.pdf"), "wb") as f:
     f.write(simple_doc([b"q 1000 0 0 1000 0 0 cm /N Do Q"], {"N": slow}, mediabox="0 0 1000 1000"))
+
+
+def break_entry(pdf, num, like):
+    """<pdf> (from build_pdf) with object <num>'s cross-reference entry pointing at object
+    <like>'s offset, so fetching <num> finds another object and poppler rebuilds the table."""
+    at = pdf.rindex(b"\nxref\n") + 1
+    first = pdf.index(b"\n", pdf.index(b"\n", at) + 1) + 1  # the entry of object 0
+    entry = lambda n: first + 20 * n
+    head, tail = pdf[: entry(num)], pdf[entry(num) + 20 :]
+    return head + pdf[entry(like) : entry(like) + 20] + tail
+
+
+gray_w, gray_h = 153, 198
+gray = img("/Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8" % (gray_w, gray_h), bytes((x * 255 // gray_w) for y in range(gray_h) for x in range(gray_w)), compress=True)
+dct_again = img("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode", jpeg)
+scan = b"q 612 0 0 792 0 0 cm /%s Do Q"
+# objects: 1 catalog, 2 pages, 3..5 pages, 6 font, 7 S, 8 G, 9 U, 10..12 contents
+rebuilt = simple_doc([scan % b"S", scan % b"G", scan % b"U"], {"S": dct, "G": gray, "U": dct_again})
+with open(os.path.join(out, "rebuilt.pdf"), "wb") as f:
+    f.write(break_entry(rebuilt, 12, 6))

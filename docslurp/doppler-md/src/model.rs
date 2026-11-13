@@ -412,7 +412,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 31] = [
+const KEYS: [&str; 33] = [
     "xMin",
     "yMin",
     "xMax",
@@ -444,6 +444,8 @@ const KEYS: [&str; 31] = [
     "overlaid",
     "smask",
     "copyable",
+    "xrefRebuilt",
+    "rebuilt",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -480,6 +482,8 @@ fn key_index(name: &str) -> Option<usize> {
         "overlaid" => 28,
         "smask" => 29,
         "copyable" => 30,
+        "xrefRebuilt" => 31,
+        "rebuilt" => 32,
         _ => return None,
     })
 }
@@ -646,6 +650,8 @@ enum Tag<'a> {
     Image(&'a str),
     /// `<graphic .../>`
     Graphic(&'a str),
+    /// `<xref .../>`: the cross-reference table, after the last page
+    Xref(&'a str),
     /// `<g .../>` (only when parsing glyphs)
     Glyph(&'a str),
     /// `<font .../>` (only when parsing glyphs)
@@ -780,6 +786,15 @@ fn tag_at<'s>(s: &'s str, lt: usize, scan: &mut Scan, glyphs: bool) -> Option<(T
         }
         return None;
     }
+    // <xref ([^>]*)/>
+    if rest.starts_with("xref ") {
+        let a = lt + 1 + "xref ".len();
+        let gt = scan.gt(b, a)?;
+        if gt > a && b[gt - 1] == b'/' {
+            return Some((Tag::Xref(&s[a..gt - 1]), gt + 1));
+        }
+        return None;
+    }
     // <(rule|box) ([^>]*)/>
     for (n, boxed) in [("rule ", false), ("box ", true)] {
         if rest.starts_with(n) {
@@ -826,6 +841,8 @@ const SCAN_IMAGE: usize = 27;
 const OVERLAID: usize = 28;
 const SMASK: usize = 29;
 const COPYABLE: usize = 30;
+const XREF_REBUILT: usize = 31;
+const REBUILT: usize = 32;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -922,6 +939,11 @@ pub struct ParseReport {
     pub glyphs_truncated_pages: Vec<usize>,
     /// one entry per `<page>`, in order: its text layer and size (see [`PageInfo`])
     pub page_info: Vec<PageInfo>,
+    /// The producer rebuilt the document's cross-reference table from a scan of the file (a
+    /// page's `xrefRebuilt="1"`, or `<xref rebuilt="1"/>` after the last page): one reference
+    /// may resolve to different object bodies, so no image is copied. From the page that says
+    /// so on, images are neither copyable nor plain; extraction renders every page scan.
+    pub xref_rebuilt: bool,
 }
 
 /// What one page holds: kept words, how many of them are invisible (render mode 3, usually an
@@ -1290,8 +1312,10 @@ impl ParseState {
                         },
                         copy_exact: a.0[ORIENT] == Some("0")
                             && a.0[OVERLAID] == Some("0")
-                            && a.0[COPYABLE] == Some("1"),
-                        plain: a.0[ORIENT] == Some("0")
+                            && a.0[COPYABLE] == Some("1")
+                            && !report.xref_rebuilt,
+                        plain: !report.xref_rebuilt
+                            && a.0[ORIENT] == Some("0")
                             && a.0[OVERLAID] == Some("0")
                             && a.0[SMASK].is_none()
                             && a.0[KIND] != Some("mask"),
@@ -1304,6 +1328,10 @@ impl ParseState {
                             report.images_skipped += 1;
                         }
                     }
+                }
+                Tag::Xref(attrs) => {
+                    a.parse_into(attrs);
+                    report.xref_rebuilt |= a.0[REBUILT] == Some("1");
                 }
                 Tag::Graphic(attrs) => {
                     if !have_page {
@@ -1342,6 +1370,7 @@ impl ParseState {
                 Tag::Open("page", attrs) => {
                     report.pages += 1;
                     a.parse_into(attrs);
+                    report.xref_rebuilt |= a.0[XREF_REBUILT] == Some("1");
                     let dim = |k: usize, d: f64| a.0[k].map_or(Some(d), py_float).unwrap_or(d);
                     let rules_truncated = match a.0[RULES_TRUNCATED] {
                         Some("1") => Some(true),

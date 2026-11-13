@@ -169,6 +169,30 @@ fn turned_or_unreferenced_scans_are_rendered() {
 }
 
 #[test]
+fn a_rebuilt_cross_reference_table_makes_scans_render_only() {
+    // pdftotext marks the page where it found the table rebuilt (xrefRebuilt="1"): from there
+    // on no image is copyable or plain, even with copyable="1" (a hostile or older producer);
+    // the pages before keep their copy class, and the report says the document was rebuilt
+    let p1 = page(1, Some(("single", 1)), &image(FULL, (2550, 3300), 9, DCT));
+    let p2 = image(FULL, (2550, 3300), 10, DCT);
+    let p2 = format!(
+        "<page width=\"612\" height=\"792\" number=\"2\" scan=\"single\" scanImage=\"1\" xrefRebuilt=\"1\"><flow>{p2}</flow></page>"
+    );
+    let p3 = page(3, Some(("single", 1)), &image(FULL, (2550, 3300), 11, DCT));
+    let (md, report) = convert(&doc(&[p1.clone(), p2, p3]), ScanPages::Image);
+    assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.jpg)");
+    assert_eq!(md[1], "![page 2 scan](images/page-0002/image-001.webp)");
+    assert_eq!(md[2], "![page 3 scan](images/page-0003/image-001.webp)", "the mark holds for later pages");
+    assert!(report.parse.xref_rebuilt);
+    // the end-of-document mark alone: the report says so (extraction then copies nothing)
+    let (md, report) = convert(&format!("<doc>{p1}<xref rebuilt=\"1\"/></doc>"), ScanPages::Image);
+    assert_eq!(md[0], "![page 1 scan](images/page-0001/image-001.jpg)");
+    assert!(report.parse.xref_rebuilt);
+    let (_, report) = convert(&format!("<doc>{p1}<xref rebuilt=\"0\"/></doc>"), ScanPages::Image);
+    assert!(!report.parse.xref_rebuilt);
+}
+
+#[test]
 fn scan_pages_skip_and_render() {
     let body = image(FULL, (2550, 3300), 9, DCT);
     let xhtml =
@@ -479,6 +503,42 @@ fn a_spent_figure_budget_does_not_stop_the_scans_after_it() {
     }
     assert_eq!(m["totals"]["scans"], 2);
     assert_eq!(m["batches"][0]["status"], "budget");
+}
+
+#[test]
+fn a_document_whose_cross_reference_table_was_rebuilt_copies_no_scan() {
+    // page 3's content entry is broken: pdftotext rebuilds the table on page 3, after pages 1
+    // (a JPEG) and 2 (a Flate scan to decode) were found copyable. A rebuilt table may resolve a
+    // reference to another object body than the page draws, so nothing is copied: the JPEG
+    // (linked as .jpg before the mark) is not extracted, the Flate scan is rendered into its
+    // link, and page 3 is rendered
+    let Some((t, r, s)) = fixtures("rebuilt") else { return };
+    let pdf = s.0.join("rebuilt.pdf");
+    let out = s.0.join("out");
+    let res = run(&t, &r, &["--images-dir", out.to_str().unwrap(), pdf.to_str().unwrap()]);
+    assert!(matches!(res.status.code(), Some(0 | 5)), "{}", String::from_utf8_lossy(&res.stderr));
+    let md = String::from_utf8(res.stdout.clone()).unwrap();
+    let pages: Vec<&str> = md.split('\u{c}').collect();
+    assert_eq!(
+        pages,
+        [
+            "![page 1 scan](images/page-0001/image-001.jpg)",
+            "![page 2 scan](images/page-0002/image-001.webp)",
+            "![page 3 scan](images/page-0003/image-001.webp)"
+        ]
+    );
+    let m = manifest(&out);
+    let e = entry(&m, "p1.1");
+    assert_eq!(
+        (e["status"].as_str(), e["reason"].as_str(), e["error"].as_str()),
+        (Some("not-extracted"), Some("copy"), Some("xref")),
+        "{e}"
+    );
+    assert!(!out.join("page-0001/image-001.jpg").exists());
+    for id in ["p2.1", "p3.1"] {
+        let e = entry(&m, id);
+        assert_eq!((e["status"].as_str(), e["source"].as_str()), (Some("extracted"), Some("render")), "{e}");
+    }
 }
 
 #[test]

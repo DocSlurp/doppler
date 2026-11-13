@@ -253,7 +253,15 @@ JPEG to copy (sole `DCTDecode`, 8 bits, `DeviceGray` or `DeviceRGB`, no `/Decode
 colour transform) is `.jpg`; a bilevel one (CCITT, JBIG2 or 1 bpc with an integer
 `/BitsPerComponent 1`, or a stencil, `DeviceGray`, no `/Decode`; never JPEG 2000, which
 decodes to 8 bits whatever its dictionary says)
-`.png`; any other with a reference the raster format. Every other scan (tiled, layered,
+`.png`; any other with a reference the raster format.
+
+A document whose cross-reference table poppler rebuilt from a scan of the file (a broken
+`xref` entry, at open or when a fetch meets it) copies no scan: one reference may then resolve
+to another object body than a page draws. pdftotext marks the page where it noticed
+(`xrefRebuilt="1"`, no `copyable="1"` from there on) and the end of the document
+(`<xref rebuilt="1"/>`); scans to decode are rendered instead (same link), and a JPEG or
+bilevel scan linked before the mark is not extracted (`reason: copy`, `error: xref`).
+pdfregions refuses a copy job (`err:copy`) in a document whose table it rebuilt. Every other scan (tiled, layered,
 turned, clipped, inline, covered by anything, or from a producer without those attributes) is
 rendered at `--scan-dpi`, in the raster format, so the file shows what the page shows,
 redactions included.

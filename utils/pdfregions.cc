@@ -1752,14 +1752,33 @@ static bool jbig2Segments(const std::vector<unsigned char> &d, bool pageInfo, ui
 //           native size through its colour space.
 // The page must pass the copy allow-list (ScanAuditOutputDev): the image is the only thing that
 // paints on it. Bilevel and Decode images at most -max-copy-pixels. Errors: copy (not such an
-// image, class Render, or a page that does not pass), copysize, pixels, jpeg (the stream is not a JPEG to copy), decode.
+// image, class Render, a page that does not pass, or a cross-reference table that was rebuilt
+// or changed), copysize, pixels, jpeg (the stream is not a JPEG to copy), decode.
 void Renderer::copyImage(const Job &job)
 {
     XRef *xref = doc->getXRef();
+    // A reference resolves to one object body only while the cross-reference table stays as
+    // it is: a rebuilt table (at open, or when any fetch meets a broken entry, the page audit's
+    // included) may resolve job.ref to another body than the one the page draws. A document
+    // whose table was ever rebuilt is never copied, and the table must not change during the
+    // job (checked again before the record is written).
+    const unsigned int generation = xref->getGeneration();
+    auto xrefStable = [&] { return xref->getReconstructionCount() == 0 && xref->getGeneration() == generation; };
+    if (!xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
     Page *page = doc->getPage(job.page);
     std::set<Ref> forms;
     int budget = copyMaxEntries;
     if (!page || !xobjectReachable(xref, page->getResourceDict(), job.ref, &forms, &budget)) {
+        emitError(job, "copy");
+        return;
+    }
+    // the page shows exactly that image: nothing else paints, it is drawn plainly, once. The
+    // audit comes first, so the object fetched below is the one it saw drawn (unless the table
+    // changed, which refuses the job)
+    if (!pageCopyable(job.page, job.ref) || !xrefStable()) {
         emitError(job, "copy");
         return;
     }
@@ -1779,12 +1798,7 @@ void Renderer::copyImage(const Job &job)
         return o.isInt() ? o.getInt() : 0;
     };
     const int width = size("Width", "W"), height = size("Height", "H");
-    if (info.copy == ImageCopy::Render || width < 1 || height < 1) {
-        emitError(job, "copy");
-        return;
-    }
-    // and the page shows exactly that image: nothing else paints, it is drawn plainly, once
-    if (!pageCopyable(job.page, job.ref)) {
+    if (info.copy == ImageCopy::Render || width < 1 || height < 1 || !xrefStable()) {
         emitError(job, "copy");
         return;
     }
@@ -1815,6 +1829,10 @@ void Renderer::copyImage(const Job &job)
         std::vector<unsigned char> clean;
         if (!cleanJpeg(data, width, height, comps, &clean)) {
             emitError(job, "jpeg");
+            return;
+        }
+        if (!xrefStable()) {
+            emitError(job, "copy");
             return;
         }
         emitRecord(job, "ok", "jpeg", width, height, reinterpret_cast<const char *>(clean.data()), clean.size());
@@ -1914,6 +1932,10 @@ void Renderer::copyImage(const Job &job)
             at += static_cast<size_t>(got);
         }
         str->close();
+        if (!xrefStable()) {
+            emitError(job, "copy");
+            return;
+        }
         emitRecord(job, "ok", "gray1", width, height, reinterpret_cast<const char *>(data.data()), data.size());
         return;
     }
@@ -1985,6 +2007,10 @@ void Renderer::copyImage(const Job &job)
         }
     }
     imgStr.close();
+    if (!xrefStable()) {
+        emitError(job, "copy");
+        return;
+    }
     emitRecord(job, "ok", gray ? "gray8" : "rgb8", width, height, reinterpret_cast<const char *>(data.data()), data.size());
 }
 

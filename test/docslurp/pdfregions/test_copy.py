@@ -710,6 +710,51 @@ def test_jpx_dictionary_bits(d):
         t.check((rw, rh) == (w, h) and len(payload) == len(rendered) and diff < 2, "%s: the copy is the render (mean abs diff %.2f)" % (name, diff), (rw, rh, len(payload)))
 
 
+def test_rebuilt_xref(d):
+    # A cross-reference entry that points at the wrong object makes poppler rebuild the table
+    # from a scan of the file when it is fetched, and the rebuilt table resolves image 6 to the
+    # file's later body of it (B) where the table pointed at the first (A). The page audit
+    # fetches the broken entry (the content stream), so a copy fetched before the audit would
+    # be body A while the page draws body B. A document whose table was rebuilt is never
+    # copyable: pdftotext says xrefRebuilt="1" (and <xref rebuilt="1"/>) and no copyable="1";
+    # pdfregions answers err:copy.
+    body = lambda which: image("/Width 160 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Note (%s)" % which, GRAY_JPEG)
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /S 6 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        t.stream("", b"q 612 0 0 792 0 0 cm /S Do Q\n"),
+        body("A"),
+    ]
+    for broken in (False, True):
+        o = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        offs = []
+        for n, b in enumerate(objs, 1):
+            offs.append(len(o))
+            o += b"%d 0 obj\n" % n + b + b"\nendobj\n"
+        o += b"6 0 obj\n" + body("B") + b"\nendobj\n"  # a second body of object 6
+        xref = len(o)
+        o += b"xref\n0 7\n0000000000 65535 f \n"
+        for n, off in enumerate(offs, 1):
+            o += b"%010d 00000 n \n" % (offs[3] if broken and n == 5 else off)
+        o += b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % xref
+        name = "rebuilt.pdf" if broken else "rebuilt-control.pdf"
+        path = d.write(name, bytes(o))
+        rc, out, _ = run("pdftotext", "-bbox-layout", "-images", path, "-")
+        text = out.decode()
+        images = re.findall(r"<image [^>]*/>", text)
+        if broken:
+            t.check(' xrefRebuilt="1"' in text and '<xref rebuilt="1"/>' in text, "%s: pdftotext says the table was rebuilt" % name, text[:400])
+            t.check(len(images) == 1 and ' copyable="1"' not in images[0], "%s: not copyable" % name, images)
+        else:
+            t.check("xrefRebuilt" not in text and "<xref" not in text, "%s: no rebuilt marker" % name, text[:400])
+            t.check(len(images) == 1 and ' copyable="1"' in images[0], "%s: copyable" % name, images)
+        rc, r, _ = copy(path, [("p1.1", 1, "6.0")])
+        want = "err:copy" if broken else "ok"
+        t.check(r["p1.1"][0] == want, "%s: copy job %s" % (name, want), r["p1.1"][:4])
+
+
 with t.TempDir() as d:
     path = d.write("copy.pdf", copy_pdf())
     test_copies(path)
@@ -728,4 +773,5 @@ with t.TempDir() as d:
     test_ccitt_black(d)
     test_reachable_shallow(d)
     test_jpx_dictionary_bits(d)
+    test_rebuilt_xref(d)
 t.finish()

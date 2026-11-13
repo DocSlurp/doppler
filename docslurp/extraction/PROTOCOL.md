@@ -96,7 +96,11 @@ production.
   appearance or border in view or print mode, ...) is `err:copy`. A class also needs an image
   Gfx would draw (a boolean `/ImageMask` if any, an integer `/BitsPerComponent` in range, ...):
   otherwise it is `render`. pdftotext's `copyable="1"` is the same allow-list on its own pass, so a copy needs
-  both. Width and height in the record are the image's `/Width` and `/Height`:
+  both. The page is audited before the image object is fetched, and a document whose
+  cross-reference table was ever rebuilt from a scan of the file (at open, or when a fetch met
+  a broken entry, the audit's included), or whose table changes during the job, is `err:copy`:
+  a rebuilt table may resolve the job's reference to another object body than the one the page
+  draws. Width and height in the record are the image's `/Width` and `/Height`:
   - `kind=jpeg` (class `jpeg`): the DCT filter's input (the stored bytes, decrypted), after
     checks: SOI first, one frame header SOF0, SOF1 or SOF2 (Huffman baseline, extended or
     progressive) of 8-bit samples with the image's size and as many components as its colour
@@ -162,7 +166,9 @@ production.
   for an image XObject, so repeats of one object can be found; `filter= bpc= cs= smask=
   decode= inline= copy=` from its dictionary, then `orient=` and `overlaid=` on every image,
   `copyable="1"` on a single scan's image whose page passed the copy allow-list; and
-  `scan= scanImage=` on `<page>` for a full-page scan).
+  `scan= scanImage=` on `<page>` for a full-page scan; `xrefRebuilt="1"` on `<page>`, and no
+  `copyable="1"`, once the cross-reference table was rebuilt, and `<xref rebuilt="1"/>` after
+  the last page when it was rebuilt at all: pdftomarkdown then copies no scan).
 - `pdfregions`: renders regions and copies images it can verify; no policy, no files.
 - `pdftomarkdown` (Rust): what to extract (fates, min side, repeats, caps), checks records
   against the report (id, size), encodes WebP / compacts and allowlists SVG, writes DIR and

@@ -291,15 +291,30 @@ pub fn extract(
             }
             entries[i].repeat_of = Some(first.clone());
         }
+        // a document whose cross-reference table the producer rebuilt is render-only for
+        // scans: one reference may resolve to another object body than the page draws (a page
+        // before the rebuild still said copyable). A scan to decode is rendered (same raster
+        // format, so the same link); a JPEG or bilevel copy, whose link names its own format,
+        // is not extracted
+        let rebuilt = scan && report.parse.xref_rebuilt;
+        if rebuilt && matches!(n.scan, Some(ScanSource::Jpeg | ScanSource::Bilevel)) {
+            let e = &mut entries[i];
+            e.status = Status::NotExtracted("copy");
+            e.error = Some("xref".to_string());
+            continue;
+        }
         // a scan to decode past the copy cap is rendered instead (same raster format, so the
         // same link): its samples would cost more than a render
         let pixels = u64::from(n.px.0).saturating_mul(u64::from(n.px.1));
-        let decode_too_big = n.scan == Some(ScanSource::Decode) && pixels > regions::MAX_COPY_PIXELS;
-        if scan && decode_too_big {
+        let decode_rendered =
+            n.scan == Some(ScanSource::Decode) && (pixels > regions::MAX_COPY_PIXELS || report.parse.xref_rebuilt);
+        if scan && decode_rendered {
             scan_render.insert(i);
         }
         let job = match (scan, n.scan, n.obj) {
-            (true, Some(ScanSource::Jpeg | ScanSource::Bilevel | ScanSource::Decode), Some(obj)) if !decode_too_big => {
+            (true, Some(ScanSource::Jpeg | ScanSource::Bilevel | ScanSource::Decode), Some(obj))
+                if !decode_rendered =>
+            {
                 Job { id: n.id.clone(), page: n.page, bbox: n.bbox, mode: Mode::Copy, dpi: 0, obj: Some(obj) }
             }
             (true, _, _) => {
