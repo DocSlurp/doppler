@@ -332,7 +332,9 @@ private:
     // (value: an object stream refused as route-dependent was involved, so a reuse is reported
     // as found earlier: page facts mark the page xref-repaired-earlier)
     std::array<std::unordered_map<Goffset, bool>, 4> repairedByKind;
-    std::array<std::unordered_set<Goffset>, 4> failedByKind; // guarded parses that failed (not ok)
+    // guarded parses that failed (not ok); value: 0 plain, 1 a repair was refused inside, 2 a
+    // route-dependent refusal was inside (each reuse reports the same, so the page is flagged alike)
+    std::array<std::unordered_map<Goffset, int>, 4> failedByKind;
     unsigned int shapedRefusals = 0;
     unsigned int blockedFetches = 0; // fetches refused because the object was being fetched
     bool encrypted; // true if file is encrypted

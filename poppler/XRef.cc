@@ -1609,8 +1609,16 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 return Object::null();
             }
             auto *kept = guardKind == GuardKind::Scope ? &objStrsGuarded : &objStrsByKind[kind - 1];
-            if (failedByKind[kind].count(e->offset)) {
-                goto err; // as its parse did (not parsed again)
+            if (const auto f = failedByKind[kind].find(e->offset); f != failedByKind[kind].end()) {
+                // as its parse did (not parsed again), reported as it was
+                if (f->second == 2) {
+                    ++suppressedRepairs;
+                    error(errSyntaxError, -1, "Object stream parsed differently earlier in the run; not used for a read-only lookup");
+                } else if (f->second == 1) {
+                    ++suppressedRepairs;
+                    error(errSyntaxError, -1, "Object stream {0:d} needed a repair; read without it for a read-only lookup", static_cast<int>(e->offset));
+                }
+                goto err;
             }
             if (const auto k = kept->find(e->offset); k != kept->end()) {
                 if (const auto r = repairedByKind[kind].find(e->offset); r != repairedByKind[kind].end()) {
@@ -1636,7 +1644,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 return refuse();
             }
             if (!once->isOk()) {
-                failedByKind[kind].insert(at);
+                failedByKind[kind][at] = shapedRefusals != shapedBefore ? 2 : suppressedRepairs != repairsBefore ? 1 : 0;
                 goto err;
             }
             if (endPos) {
