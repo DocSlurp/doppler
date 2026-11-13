@@ -1540,18 +1540,23 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
         if (const auto it = objStrs.find(e->offset); it != objStrs.end()) {
             objStr = it->second.get();
         } else if (repairSuppressed) {
-            // RepairGuard: an object stream parsed now (perhaps cut short by a refused /Length) is
-            // used once and not kept
+            // RepairGuard: an object stream whose parse a refused repair shaped (a /Length that
+            // would have needed a rebuild, say) is used once and not kept
             const unsigned int before = suppressedRepairs;
-            const std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(e->offset), recursion + 1));
+            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(e->offset), recursion + 1));
             if (!once->isOk()) {
                 goto err;
             }
             if (endPos) {
                 *endPos = -1;
             }
-            (void)before;
-            return once->getObject(e->gen, num);
+            Object result = once->getObject(e->gen, num);
+            if (suppressedRepairs == before) {
+                // read as an unguarded fetch would have read it; constructXRef drops it with the
+                // table it was parsed under
+                objStrs.emplace(e->offset, std::unique_ptr<ObjectStream>(once.release()));
+            }
+            return result;
         } else {
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);
             if (!objStr->isOk()) {
