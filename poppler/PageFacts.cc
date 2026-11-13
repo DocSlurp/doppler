@@ -2365,9 +2365,14 @@ ImageColor colorOfName(const std::string &n)
     return ImageColor::Other;
 }
 
+bool isDeviceName(const std::string &n)
+{
+    return n == "DeviceGray" || n == "DeviceRGB" || n == "DeviceCMYK";
+}
+
 ImageInfoCache::Space spaceOfName(const std::string &n)
 {
-    return { colorOfName(n), n == "CalGray" || n == "CalRGB" };
+    return { colorOfName(n), n == "CalGray" || n == "CalRGB", isDeviceName(n) };
 }
 
 } // namespace
@@ -2409,16 +2414,7 @@ bool ImageInfoCache::takeFetch()
     return true;
 }
 
-ImageColor ImageInfoCache::colorSpace(const Object &cs, XRef *xref, bool *calibrated)
-{
-    const Space space = spaceOf(cs, xref);
-    if (calibrated) {
-        *calibrated = space.calibrated;
-    }
-    return space.color;
-}
-
-ImageInfoCache::Space ImageInfoCache::spaceOf(const Object &cs, XRef *xref)
+ImageInfoCache::Space ImageInfoCache::colorSpace(const Object &cs, XRef *xref)
 {
     sync(xref);
     if (!cs.isRef()) {
@@ -2429,7 +2425,7 @@ ImageInfoCache::Space ImageInfoCache::spaceOf(const Object &cs, XRef *xref)
         return it->second;
     }
     if (!xref || !takeFetch()) {
-        return { ImageColor::Other, false };
+        return { ImageColor::Other, false, false };
     }
     // classify() only reads the array's first two entries (by reference): a large lookup
     // string is parsed here once and never copied
@@ -2444,24 +2440,31 @@ ImageInfoCache::Space ImageInfoCache::spaceOf(const Object &cs, XRef *xref)
 ImageInfoCache::Space ImageInfoCache::classify(const Object &cs, XRef *xref)
 {
     if (cs.isNull()) {
-        return { ImageColor::None, false };
+        return { ImageColor::None, false, false };
     }
     if (cs.isName()) {
         return spaceOfName(cs.getNameString());
     }
     if (!cs.isArray() || cs.arrayGetLength() < 1) {
-        return { ImageColor::Other, false };
+        return { ImageColor::Other, false, false };
     }
     // the family, by name (None stands for ICCBased, which colorOfName never returns)
     const Object &family = cs.getArray()->getNF(0);
-    Space c { ImageColor::Other, false };
+    Space c { ImageColor::Other, false, false };
     if (family.isName()) {
-        c = family.isName("ICCBased") ? Space { ImageColor::None, false } : spaceOfName(family.getNameString());
+        c = family.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(family.getNameString());
     } else if (family.isRef()) {
         c = familyOf(family, xref);
     }
     if (c.color == ImageColor::None) {
-        return { cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other, false };
+        return { cs.arrayGetLength() >= 2 ? iccOf(cs.getArray()->getNF(1), xref) : ImageColor::Other, false, false };
+    }
+    // a device space only as a bare name; an array is one only as [/Indexed /Device... ...],
+    // both names given directly
+    c.device = false;
+    if (family.isName("Indexed") && cs.arrayGetLength() >= 2) {
+        const Object &base = cs.getArray()->getNF(1);
+        c.device = base.isName() && isDeviceName(base.getNameString());
     }
     return c;
 }
@@ -2474,10 +2477,10 @@ ImageInfoCache::Space ImageInfoCache::familyOf(const Object &family, XRef *xref)
         return it->second;
     }
     if (!xref || !takeFetch()) {
-        return { ImageColor::Other, false };
+        return { ImageColor::Other, false, false };
     }
     const Object name = xref->fetch(family.getRef());
-    const Space c = !name.isName() ? Space { ImageColor::Other, false } : name.isName("ICCBased") ? Space { ImageColor::None, false } : spaceOfName(name.getNameString());
+    const Space c = !name.isName() ? Space { ImageColor::Other, false, false } : name.isName("ICCBased") ? Space { ImageColor::None, false, false } : spaceOfName(name.getNameString());
     if (families.size() < maxEntries) {
         families.emplace(family.getRef(), c);
     }

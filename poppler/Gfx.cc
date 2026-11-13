@@ -4609,13 +4609,15 @@ ImageDictInfo Gfx::readImageDictInfo(Dict *dict, bool inlineImg, GfxResources *r
         cs = &dict->lookupNF("CS");
     }
     if (!cs->isNull()) {
-        info.color = cache->colorSpace(*cs, xref, &info.calibrated);
+        ImageInfoCache::Space space = cache->colorSpace(*cs, xref);
         // an inline image may name a colour space of the resources (one level)
-        if (inlineImg && resources && cs->isName() && info.color == ImageColor::Other) {
+        if (inlineImg && resources && cs->isName() && space.color == ImageColor::Other) {
             Object named = resources->lookupColorSpace(cs->getNameString());
-            info.calibrated = false;
-            info.color = named.isNull() ? ImageColor::Other : cache->colorSpace(named, xref, &info.calibrated);
+            space = named.isNull() ? ImageInfoCache::Space {} : cache->colorSpace(named, xref);
         }
+        info.color = space.color;
+        info.calibrated = space.calibrated;
+        info.deviceSpace = space.device;
     } else if (info.imageMask) {
         info.color = ImageColor::None;
     }

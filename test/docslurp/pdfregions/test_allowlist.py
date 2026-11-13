@@ -86,12 +86,17 @@ OBJECTS = [
     # a full page): a 1 pt rounding slack would hide 25 rows or columns
     image("/Width 10 /Height 20000 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 29
     image("/Width 20000 /Height 10 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\xff" * 200000, compress=True),  # 30
+    # 31: indexed directly over DeviceGray; 32: the same with its base by reference (33), which
+    # the audit does not follow
+    image("/Width 4 /Height 4 /ColorSpace [/Indexed /DeviceGray 1 <00ff>] /BitsPerComponent 8", b"\x01" * 16, compress=True),  # 31
+    image("/Width 4 /Height 4 /ColorSpace [/Indexed 33 0 R 1 <00ff>] /BitsPerComponent 8", b"\x01" * 16, compress=True),  # 32
+    "/DeviceGray",  # 33
 ]
 
 SHADING = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 612 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
 RES = (
     "<< /Font << /F1 4 0 R /T3 9 0 R >> /XObject << /S 6 0 R /P 7 0 R /G 8 0 R /F 11 0 R /Box 12 0 R /I 13 0 R /C 15 0 R /O 18 0 R /M 19 0 R"
-    " /R1 21 0 R /R2 22 0 R /R3 23 0 R /R4 24 0 R /R5 25 0 R /R6 26 0 R /R7 27 0 R /R8 28 0 R /Tall 29 0 R /Wide 30 0 R >>"
+    " /R1 21 0 R /R2 22 0 R /R3 23 0 R /R4 24 0 R /R5 25 0 R /R6 26 0 R /R7 27 0 R /R8 28 0 R /Tall 29 0 R /Wide 30 0 R /X1 31 0 R /X2 32 0 R >>"
     " /Shading << /Sh %s >> /Properties << /oc1 17 0 R >>"
     " /ExtGState << /Half << /ca 0.5 >> /Zero << /ca 0 >> /Mul << /BM /Multiply >> /Mask << /SMask << /S /Luminosity /G 12 0 R >> >>"
     " /Lines << /Type /ExtGState /LW 3 /LC 1 /LJ 1 /ML 4 /D [[] 0] /RI /Perceptual /FL 1 /SA true /CA 1 /ca 1 /BM /Normal /SMask /None /OP false /op false /OPM 1 >>"
@@ -106,6 +111,8 @@ SHOWN = "/OCProperties << /OCGs [17 0 R] /D << /ON [17 0 R] >> >>"
 CASES = {
     # allowed
     "plain": (SCAN, "", "", 6, True),
+    "indexed-device": (b"q 612 0 0 792 0 0 cm /X1 Do Q\n", "", "", 31, True),
+    "indexed-base-by-ref": (b"q 612 0 0 792 0 0 cm /X2 Do Q\n", "", "", 32, False),
     "ocr-layer": (SCAN + OCR, "", "", 6, True),
     "ocr-before": (OCR + SCAN, "", "", 6, True),
     "ocr-mode7-after": (SCAN + OCR.replace(b"3 Tr", b"7 Tr"), "", "", 6, True),

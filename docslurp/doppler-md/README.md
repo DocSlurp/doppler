@@ -235,8 +235,8 @@ is known not to paint or change how it looks (`poppler/ScanCopyAudit.h`):
   inside the clip in force and the CropBox (a rounding slack of at most a point and less than
   half an image pixel on each axis, so a tall strip squeezed onto the page cannot hide rows
   under a clip), full opacity, Normal blend, no transfer function or overprint,
-  no mask or soft mask, `DeviceGray`, `DeviceRGB`, `DeviceCMYK` or indexed over them (a stencil
-  mask only in black);
+  no mask or soft mask, `DeviceGray`, `DeviceRGB`, `DeviceCMYK` or indexed directly over them
+  (the base named in the array, not by reference; a stencil mask only in black);
 - anything else, at any depth (forms, annotation appearances), makes the page not copyable:
   any fill, stroke, shading, pattern or inline image, a second image, visible text in any
   mode, a Type 3 font at all, a clip that is not such a rectangle, a soft mask, a blend mode,

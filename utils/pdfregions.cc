@@ -1216,6 +1216,8 @@ private:
     // the copy allow-list of the last page audited (copy jobs come sorted by page)
     int auditedPage = 0;
     ScanCopyAudit pageAudit;
+    // colour spaces by reference, classified once for every page audit and copy job
+    ImageInfoCache imageInfoCache;
     bool pageCopyable(int pageNum, Ref ref);
 };
 
@@ -1223,6 +1225,7 @@ bool Renderer::pageCopyable(int pageNum, Ref ref)
 {
     if (auditedPage != pageNum) {
         ScanAuditOutputDev dev;
+        dev.audit.setColorCache(&imageInfoCache);
         doc->displayPage(&dev, pageNum, 72.0, 72.0, 0, true, false, false);
         pageAudit = dev.audit;
         auditedPage = pageNum;
@@ -1767,7 +1770,7 @@ void Renderer::copyImage(const Job &job)
     }
     Stream *str = image.getStream();
     Dict *dict = str->getDict();
-    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, nullptr);
+    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, nullptr, &imageInfoCache);
     auto size = [dict](const char *key, const char *abbrev) {
         Object o = dict->lookup(key);
         if (o.isNull()) {

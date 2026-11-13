@@ -63,6 +63,7 @@ class AnnotColor;
 class Dict;
 class GfxResources;
 class GfxState;
+class ImageInfoCache;
 class Page;
 
 class POPPLER_PRIVATE_EXPORT ScanCopyAudit
@@ -109,6 +110,10 @@ public:
     // so an image Gfx refuses to draw is never counted.
     void imageDrawn(GfxState *state, GfxResources *res, Dict *dict, const Object *ref, int width, int height);
     void deny(Reason why);
+    // The document's ImageInfoCache (may be null; kept across pages), used only to classify
+    // colour spaces by reference, so a large shared one is parsed once per document rather
+    // than on every page. Image facts are never taken from it: each image is read where drawn.
+    void setColorCache(ImageInfoCache *cache) { colorCache = cache; }
 
     // The page passes for the image object <image>: it drew exactly that image, once, and
     // nothing else that paints.
@@ -123,6 +128,7 @@ private:
     Reason reason = Reason::None;
     int images = 0;
     Ref imageRef = Ref::INVALID();
+    ImageInfoCache *colorCache = nullptr;
     double cropX0 = 0, cropY0 = 0, cropX1 = 0, cropY1 = 0; // the CropBox in device space
     double tolerance = 1; // a point, in device units (at most half an image pixel is used)
 };

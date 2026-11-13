@@ -98,11 +98,6 @@ bool quietAnnotation(const Annot &annot)
     return (type == Annot::typeLink || type == Annot::typePopup) && !annot.getAppearStreams() && annot.getAppearance().isNull() && !drawsBorder(annot.getBorder(), annot.getColor());
 }
 
-bool isDeviceSpaceName(const Object &o)
-{
-    return o.isName("DeviceGray") || o.isName("DeviceRGB") || o.isName("DeviceCMYK");
-}
-
 } // namespace
 
 const char *ScanCopyAudit::reasonName(Reason r)
@@ -159,7 +154,9 @@ void ScanCopyAudit::deny(Reason why)
 
 void ScanCopyAudit::startPage(Page *page, const GfxState *state)
 {
+    ImageInfoCache *keep = colorCache;
     *this = ScanCopyAudit();
+    colorCache = keep;
     started = true;
     if (!page || !state) {
         deny(Reason::CropBox);
@@ -341,7 +338,8 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
         return false;
     }
     // the dictionary: a copy class (which Gfx can draw), nothing masked, device colour only
-    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res);
+    // (the cache only classifies colour spaces by reference; every image fact is read here)
+    const ImageDictInfo info = Gfx::readImageDictInfo(dict, false, res, colorCache);
     if (!info.drawable || info.copy == ImageCopy::Render || info.external || info.softMask || info.mask || info.calibrated || info.defaultSpaces || info.inlineImg) {
         deny(Reason::ImageDict);
         return false;
@@ -351,14 +349,9 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
     case ImageColor::RGB:
     case ImageColor::CMYK:
         break;
-    case ImageColor::Indexed: {
-        Object cs = dict->lookup("ColorSpace");
-        if (!cs.isArray() || cs.arrayGetLength() < 2 || !isDeviceSpaceName(cs.arrayGet(1))) {
-            deny(Reason::ImageDict);
-            return false;
-        }
+    case ImageColor::Indexed:
+        // only directly over DeviceGray, DeviceRGB or DeviceCMYK (checked below)
         break;
-    }
     case ImageColor::None:
         if (info.imageMask) {
             break;
@@ -370,13 +363,11 @@ bool ScanCopyAudit::imageDict(Dict *dict, GfxResources *res)
         return false;
     }
     // CalGray and CalRGB read as Gray and RGB above, and are caught by info.calibrated; a
-    // device colour space must be named as one
-    if (!info.imageMask) {
-        Object cs = dict->lookup("ColorSpace");
-        if (!(isDeviceSpaceName(cs) || (cs.isArray() && cs.arrayGetLength() >= 1 && cs.arrayGet(0).isName("Indexed")))) {
-            deny(Reason::ImageDict);
-            return false;
-        }
+    // device colour space must be named as one: DeviceGray, DeviceRGB or DeviceCMYK, or
+    // [/Indexed /Device... ...] with both names given directly (info.deviceSpace)
+    if (!info.imageMask && !info.deviceSpace) {
+        deny(Reason::ImageDict);
+        return false;
     }
     return true;
 }
@@ -395,7 +386,7 @@ void ScanCopyAudit::imageDrawn(GfxState *state, GfxResources *res, Dict *dict, c
     if (!imageDict(dict, res)) {
         return;
     }
-    const bool imageMask = Gfx::readImageDictInfo(dict, false, res).imageMask;
+    const bool imageMask = Gfx::readImageDictInfo(dict, false, res, colorCache).imageMask;
 
     // how it is painted
     if (state->getFillOpacity() != 1.0 || state->getBlendMode() != gfxBlendNormal || !state->getTransfer().empty() || state->getFillOverprint()) {

@@ -90,6 +90,7 @@ struct ImageDictInfo
     bool inlineImg = false;
     bool calibrated = false; // CalGray or CalRGB: their gamma and matrix change what the samples show
     bool defaultSpaces = false; // the resources define DefaultGray, DefaultRGB or DefaultCMYK, which replace Device spaces
+    bool deviceSpace = false; // /ColorSpace is DeviceGray, DeviceRGB or DeviceCMYK by full name, or /Indexed directly over one
     bool drawable = false; // Gfx::doImage would draw it, as far as the dictionary shows (none of its early returns)
     ImageCopy copy = ImageCopy::Render;
 };
@@ -114,6 +115,9 @@ public:
     {
         ImageColor color = ImageColor::Other;
         bool calibrated = false; // CalGray or CalRGB
+        // DeviceGray, DeviceRGB or DeviceCMYK by its full name, or [/Indexed base ...] with such
+        // a base given directly (a base by reference does not count)
+        bool device = false;
     };
     struct Image
     {
@@ -130,16 +134,15 @@ public:
     const Image *find(Ref ref, XRef *xref);
     void store(Ref ref, XRef *xref, const Image &image);
     // The colour space family of <cs> (a /ColorSpace value, unresolved: a reference is
-    // resolved here, once per document). A null value is None. <calibrated>, when given, is
-    // set to whether the family is CalGray or CalRGB (which read as Gray and RGB).
-    ImageColor colorSpace(const Object &cs, XRef *xref, bool *calibrated = nullptr);
+    // resolved here, once per document). A null value is None. Space adds whether it is
+    // calibrated (CalGray or CalRGB, which read as Gray and RGB) and a plain device space.
+    Space colorSpace(const Object &cs, XRef *xref);
     // Whether a colour space was reported as Other because the fetch budget ran out.
     bool limitHit() const { return fetchLimitHit; }
 
 private:
     void sync(XRef *xref);
     bool takeFetch();
-    Space spaceOf(const Object &cs, XRef *xref);
     Space classify(const Object &cs, XRef *xref);
     Space familyOf(const Object &family, XRef *xref);
     ImageColor iccOf(const Object &profile, XRef *xref);

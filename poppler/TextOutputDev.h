@@ -1109,7 +1109,11 @@ public:
     void setWordsOnly(bool on) { wordsOnly = on; }
     GfxOpTally *getOpTally() override;
     // page-scan copies: the page's allow-list (with setCollectImages), see ScanCopyAudit.h
-    ScanCopyAudit *getScanCopyAudit() override { return collectImages ? &scanAudit : nullptr; }
+    ScanCopyAudit *getScanCopyAudit() override
+    {
+        scanAudit.setColorCache(&imageInfoCache);
+        return collectImages ? &scanAudit : nullptr;
+    }
     const ScanCopyAudit &getPageScanAudit() const { return scanAudit; }
     ImageInfoCache *getImageInfoCache() override { return &imageInfoCache; }
     void beginAnnot(Annot *annot) override;
