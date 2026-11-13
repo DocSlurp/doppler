@@ -107,9 +107,11 @@ with t.TempDir() as d:
         "deepoc": ("deepoc.py", ["600"]),
         "repairbomb": ("repairbomb2.py", ["200", "20000000"]),
         "shapedbomb_decodeparms": ("shapedbomb_decodeparms.py", ["200", "20000000"]),
+        "dp_reuse": ("dp_reuse.py", ["249"]),
+        "notokbomb": ("notokbomb.py", ["200", "20000000"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -169,7 +171,7 @@ with t.TempDir() as d:
             subprocess.run([detach, "-saveall", "-o", out_dir, attached], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
             saved = os.path.join(out_dir, "note.txt")
             t.check(os.path.exists(saved) and open(saved, "rb").read() == b"quarterly beat note\n", "gapprev: pdfattach keeps the attached file's data (edits survive a rebuild)")
-        if name == "depthpred" and rc == 0:
+        if name in ("depthpred", "dp_reuse") and rc == 0:
             # page 2's widget value sits in an object stream page 1 reached at the depth limit:
             # refused on page 2 too, and the page says a run of it alone may differ
             p2 = [json.loads(l) for l in pf.splitlines() if json.loads(l).get("page") == 2]

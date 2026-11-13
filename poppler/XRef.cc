@@ -624,6 +624,7 @@ XRef::RepairGuard::~RepairGuard()
         xref->objStrsGuarded.clear();
         xref->shapedByKind[static_cast<int>(GuardKind::Scope)].clear();
         xref->repairedByKind[static_cast<int>(GuardKind::Scope)].clear();
+        xref->failedByKind[static_cast<int>(GuardKind::Scope)].clear();
     }
 }
 
@@ -1067,6 +1068,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     }
     for (auto &repaired : repairedByKind) {
         repaired.clear();
+    }
+    for (auto &failed : failedByKind) {
+        failed.clear();
     }
     {
         const Goffset fileLength = str->getLength();
@@ -1592,6 +1596,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             const int kind = static_cast<int>(guardKind);
             auto refuse = [&]() {
                 ++suppressedRepairs;
+                ++shapedRefusals;
                 error(errSyntaxError, -1, "Object stream {0:d} parses differently by where it is reached from; not used for a read-only lookup", static_cast<int>(e->offset));
                 return Object::null();
             };
@@ -1599,22 +1604,30 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 // refused because an earlier read found it so: a run of this page alone may read
                 // it (page facts mark the page xref-repaired-earlier)
                 ++suppressedRepairs;
+                ++shapedRefusals;
                 error(errSyntaxError, -1, "Object stream parsed differently earlier in the run; not used for a read-only lookup");
                 return Object::null();
             }
             auto *kept = guardKind == GuardKind::Scope ? &objStrsGuarded : &objStrsByKind[kind - 1];
+            if (failedByKind[kind].count(e->offset)) {
+                goto err; // as its parse did (not parsed again)
+            }
             if (const auto k = kept->find(e->offset); k != kept->end()) {
-                if (repairedByKind[kind].count(e->offset)) {
+                if (const auto r = repairedByKind[kind].find(e->offset); r != repairedByKind[kind].end()) {
                     // parsed with a repair refused: the same answer, refused again (flagged)
                     ++suppressedRepairs;
-                    error(errSyntaxError, -1, "Object stream {0:d} needed a repair; read without it for a read-only lookup", static_cast<int>(e->offset));
+                    if (r->second) {
+                        error(errSyntaxError, -1, "Object stream parsed differently earlier in the run; not used for a read-only lookup");
+                    } else {
+                        error(errSyntaxError, -1, "Object stream {0:d} needed a repair; read without it for a read-only lookup", static_cast<int>(e->offset));
+                    }
                 }
                 if (endPos) {
                     *endPos = -1;
                 }
                 return k->second->getObject(e->gen, num);
             }
-            const unsigned int repairsBefore = suppressedRepairs, blockedBefore = blockedFetches;
+            const unsigned int repairsBefore = suppressedRepairs, blockedBefore = blockedFetches, shapedBefore = shapedRefusals;
             const unsigned long depthBefore = Parser::depthLimitHits();
             const Goffset at = e->offset;
             std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(at), recursion + 1));
@@ -1623,6 +1636,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                 return refuse();
             }
             if (!once->isOk()) {
+                failedByKind[kind].insert(at);
                 goto err;
             }
             if (endPos) {
@@ -1633,7 +1647,7 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             // marked, and each reuse is refused (counted, flagged) again. The Scope kind keeps it
             // until the outermost guard ends; constructXRef drops all.
             if (suppressedRepairs != repairsBefore) {
-                repairedByKind[kind].insert(at);
+                repairedByKind[kind][at] = shapedRefusals != shapedBefore;
             }
             kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
             return result;
