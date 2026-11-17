@@ -129,6 +129,18 @@ public:
     std::unique_ptr<XRef> copy() const;
 
     // Is xref table valid?
+    // Object streams keep every member for the life of the document (about 50 bytes each); a file may
+    // have this many in all, so thousands of streams that each declare a million empty members cannot
+    // take gigabytes from a few kilobytes. Returns false, taking nothing, past the budget.
+    bool takeObjectStreamMembers(int n)
+    {
+        if (n < 0 || n > objStrMembersLeft) {
+            return false;
+        }
+        objStrMembersLeft -= n;
+        return true;
+    }
+
     bool isOk() const { return ok; }
 
     // Is the last XRef section a stream or a table?
@@ -394,6 +406,7 @@ private:
     void noteChainBudget(const char *what);
     bool readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n);
     bool chainStreamFiltersOk(Dict *dict);
+    long long objStrMembersLeft = 2000000; // takeObjectStreamMembers
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);

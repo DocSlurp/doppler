@@ -529,14 +529,16 @@ first, as the lazy read did (an entry is taken from the newest section that list
     runs off the end of its substream is charged up to the budget or the end of the file,
     whichever comes first; only the budget counts as hitting it;
   - decoding: older xref streams' decoded entries (one row of `/W` widths each) and predictor rows
-    cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
+    cost at most four times the file plus 4 MiB. A predictor row larger than what is left is
     refused before it is allocated, and the section counts as past a bound. The main section reads
-    as upstream (no decode budget). An older xref stream may use only Flate or LZW (at most four filters, read as the stream
-    builder reads them: `/Filter`, else `/F`): an image codec allocates and clears its whole bitmap before
-    it yields a byte, and ASCIIHex or ASCII85 skip any amount of whitespace a Flate stream feeds them,
-    neither of which a budget here can see, so a section behind one is treated as past a bound (`filter`).
+    as upstream (no decode budget). An older xref stream may use only Flate or LZW, with ASCIIHex or ASCII85 allowed only as the first
+    filter (at most four filters, read as the stream builder reads them: `/Filter`, else `/F`): an
+    image codec allocates and clears its whole bitmap before it yields a byte, and ASCIIHex or ASCII85
+    behind a Flate stream skip any amount of inflated whitespace, neither of which a budget here can see, so a section behind one is treated as past a bound (`filter`).
     A rebuild reads an object stream's header only behind the same filters. Filter work of the allowed kinds (inflating, say) is bounded by the parse and decode budgets.
-    An offset past the end of the file is refused before it reaches the stream.
+    An offset past the end of the file is refused before it reaches the stream. Object streams (in any
+    file) decode at most 4 MiB each and may declare 2,000,000 members in all, since each member is kept
+    for the life of the document.
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are

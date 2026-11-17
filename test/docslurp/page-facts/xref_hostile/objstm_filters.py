@@ -1,12 +1,14 @@
 # K valid object streams (each holds one page dict) in a file with an intact xref stream, behind a filter the object-stream reader
 # must refuse or bound: jbig2 (page-info W x W bitmap), wsflate (Flate+ASCIIHex over W MiB of spaces), wsflateonly (Flate over W MiB of spaces).
-# usage: objstm_filters.py out.pdf K W jbig2|wsflate|wsflateonly|flate
+# usage: objstm_filters.py out.pdf K W jbig2|wsflate|wsflateonly|a85flate|flate
 import sys, struct, zlib
 out_path=sys.argv[1]; K=int(sys.argv[2]); W=int(sys.argv[3]); mode=sys.argv[4]  # jbig2 | wsflate | flate
 pi=struct.pack(">IIIIBH",W,W,0,0,0,0); seg=struct.pack(">IBBBI",0,48,0,1,len(pi))+pi
 if mode=="jbig2": data=seg; filt=b"/Filter /JBIG2Decode"
 elif mode=="wsflate":
     co=zlib.compressobj(9); p=[co.compress(b" "*(1<<20)) for _ in range(W)]; p.append(co.compress(b"10 0 << /Type /Page >>")); p.append(co.flush()); data=b"".join(p); filt=b"/Filter [/FlateDecode /ASCIIHexDecode]"
+elif mode=="a85flate":
+    import base64; data=base64.a85encode(zlib.compress(b"10 0 << /Type /Page >>"))+b"~>"; filt=b"/Filter [/ASCII85Decode /FlateDecode]"
 elif mode=="wsflateonly":
     co=zlib.compressobj(9); p=[co.compress(b" "*(1<<20)) for _ in range(W)]; p.append(co.compress(b"10 0 << /Type /Page >>")); p.append(co.flush()); data=b"".join(p); filt=b"/Filter /FlateDecode"
 else: data=zlib.compress(b"10 0 << /Type /Page >>"); filt=b"/Filter /FlateDecode"

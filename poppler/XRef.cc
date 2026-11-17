@@ -93,14 +93,23 @@ constexpr int defPermFlags = 0xfffc;
 // a rebuild or an ordinary fetch) may use: the ones whose work is bounded by the bytes they are asked for.
 // Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and clear their whole bitmap before yielding a byte, so a
 // few hundred bytes per stream would cost seconds each. ASCIIHex and ASCII85 skip any amount of whitespace
-// inside the filter, before it yields a byte, which neither the chain's budgets nor a limit on the bytes read
-// from them can see. Real xref and object streams use Flate (LZW at most).
-static bool filterAllowed(const char *name)
+// inside the filter, before it yields a byte: harmless as the first filter (what they skip is the file's own
+// bytes, which the parse budget counts), but behind a Flate or LZW stream it is inflated whitespace that
+// nothing counts. Real xref and object streams use Flate (LZW, or ASCII85 or ASCIIHex wrapping Flate, at most).
+static bool filterAllowed(const char *name, bool first)
 {
     static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW" };
+    static const char *const ascii[] = { "ASCIIHexDecode", "AHx", "ASCII85Decode", "A85" };
     for (const char *a : allowed) {
         if (strcmp(name, a) == 0) {
             return true;
+        }
+    }
+    if (first) {
+        for (const char *a : ascii) {
+            if (strcmp(name, a) == 0) {
+                return true;
+            }
         }
     }
     return false;
@@ -117,14 +126,14 @@ static bool streamFiltersOk(Dict *dict)
         return true;
     }
     if (f.isName()) {
-        return filterAllowed(f.getName());
+        return filterAllowed(f.getName(), true);
     }
     if (!f.isArray() || f.arrayGetLength() > 4) {
         return false;
     }
     for (int i = 0; i < f.arrayGetLength(); ++i) {
         Object n = f.arrayGet(i);
-        if (!n.isName() || !filterAllowed(n.getName())) {
+        if (!n.isName() || !filterAllowed(n.getName(), i == 0)) {
             return false;
         }
     }
@@ -133,7 +142,7 @@ static bool streamFiltersOk(Dict *dict)
 
 // The most an object stream may decode: its header, its members and the rest the reader drains. Real object
 // streams hold a few hundred objects (well under a megabyte); this bounds a Flate stream of whitespace.
-static constexpr long long maxObjectStreamDecoded = 16LL << 20;
+static constexpr long long maxObjectStreamDecoded = 4LL << 20;
 
 class ObjectStream
 {
@@ -216,6 +225,10 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     // object streams to 100-200 objects)
     if (nObjects > 1000000) {
         error(errSyntaxError, -1, "Too many objects in an object stream");
+        return;
+    }
+    if (!xref->takeObjectStreamMembers(nObjects)) {
+        error(errSyntaxError, -1, "Too many objects in the object streams of this file");
         return;
     }
     if (!objStrStream->rewind()) {
