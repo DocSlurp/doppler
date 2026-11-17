@@ -1150,6 +1150,7 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     prevXRefOffset = 0;
     chainResumeOffset = 0;
     objStrs.clear();
+    objStrsFailed.clear();
     objStrsGuarded.clear();
     for (auto &kept : objStrsByKind) {
         kept.clear();
@@ -1763,10 +1764,16 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
             return result;
         } else {
+            // an object stream that failed to read is not decoded again for each object that lives in it
+            const Goffset failedAt = e->offset;
+            if (objStrsFailed.count(failedAt)) {
+                goto err;
+            }
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);
             if (!objStr->isOk()) {
                 delete objStr;
                 objStr = nullptr;
+                objStrsFailed.insert(failedAt);
                 goto err;
             } else {
                 // XRef could be reconstructed in constructor of ObjectStream:

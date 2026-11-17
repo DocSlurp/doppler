@@ -334,6 +334,7 @@ private:
     // guarded scope: a parse can depend on where it was reached from (recursion depth, objects
     // being fetched), so a read only some runs make must not decide what anything else gets.
     // Both maps are also dropped with the table (constructXRef).
+    std::unordered_set<Goffset> objStrsFailed; // object streams (by offset) the unguarded reads failed to parse; constructXRef clears it
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
     GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
