@@ -89,6 +89,52 @@ constexpr int defPermFlags = 0xfffc;
 // ObjectStream
 //------------------------------------------------------------------------
 
+// Filters a stream the xref machinery reads at open (an older xref stream in readPrevChain, an object stream in
+// a rebuild or an ordinary fetch) may use: the ones whose work is bounded by the bytes they are asked for.
+// Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and clear their whole bitmap before yielding a byte, so a
+// few hundred bytes per stream would cost seconds each. ASCIIHex and ASCII85 skip any amount of whitespace
+// inside the filter, before it yields a byte, which neither the chain's budgets nor a limit on the bytes read
+// from them can see. Real xref and object streams use Flate (LZW at most).
+static bool filterAllowed(const char *name)
+{
+    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW" };
+    for (const char *a : allowed) {
+        if (strcmp(name, a) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool streamFiltersOk(Dict *dict)
+{
+    // as Stream::addFilters reads it: /Filter, and /F when that is absent or null
+    Object f = dict->lookup("Filter");
+    if (f.isNone() || f.isNull()) {
+        f = dict->lookup("F");
+    }
+    if (f.isNone() || f.isNull()) {
+        return true;
+    }
+    if (f.isName()) {
+        return filterAllowed(f.getName());
+    }
+    if (!f.isArray() || f.arrayGetLength() > 4) {
+        return false;
+    }
+    for (int i = 0; i < f.arrayGetLength(); ++i) {
+        Object n = f.arrayGet(i);
+        if (!n.isName() || !filterAllowed(n.getName())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The most an object stream may decode: its header, its members and the rest the reader drains. Real object
+// streams hold a few hundred objects (well under a megabyte); this bounds a Flate stream of whitespace.
+static constexpr long long maxObjectStreamDecoded = 16LL << 20;
+
 class ObjectStream
 {
 public:
@@ -138,6 +184,10 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     }
     Stream *objStrStream = objStr.getStream();
     Dict *objStrStreamDict = objStrStream->getDict();
+    if (!streamFiltersOk(objStrStreamDict)) {
+        error(errSyntaxError, -1, "Object stream behind a filter whose work cannot be bounded; stream refused");
+        return;
+    }
 
     obj1 = objStrStreamDict->lookup("N", recursion);
     if (!obj1.isInt()) {
@@ -157,7 +207,7 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     } else {
         first = obj1.getInt64();
     }
-    if (first < 0) {
+    if (first < 0 || first > maxObjectStreamDecoded) {
         return;
     }
 
@@ -206,6 +256,14 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     }
     delete parser;
 
+    // what is left of the decode budget after the header; each member below is read through a stream cut to it
+    long long decodeLeft = maxObjectStreamDecoded - first;
+    if (offsets[0] - first > decodeLeft) {
+        gfree(offsets);
+        return;
+    }
+    decodeLeft -= std::max<Goffset>(offsets[0] - first, 0);
+
     // skip to the first object - this shouldn't be necessary because
     // the First key is supposed to be equal to offsets[0], but just in
     // case...
@@ -216,10 +274,16 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     // parse the objects
     for (i = 0; i < nObjects; ++i) {
         std::unique_ptr<Stream> strPtr;
+        if (decodeLeft <= 0 && i != nObjects - 1 && offsets[i + 1] > offsets[i]) {
+            gfree(offsets);
+            return;
+        }
         if (i == nObjects - 1) {
-            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), false, 0);
+            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, std::max<long long>(decodeLeft, 0));
         } else {
-            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, offsets[i + 1] - offsets[i]);
+            const long long len = std::min<long long>(offsets[i + 1] - offsets[i], decodeLeft);
+            decodeLeft -= len;
+            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, len);
         }
         parser = new Parser(xref, std::move(strPtr), false);
         objs[i] = parser->getObj();
@@ -836,45 +900,9 @@ err0:
     return false;
 }
 
-// Filters an older xref stream (readPrevChain) or an object stream the rebuild reads may use: the ones whose
-// work is bounded by the bytes they are asked for. Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and
-// clear their whole bitmap before yielding a byte, so a few hundred bytes per section would cost seconds
-// each; ASCIIHex and ASCII85 skip any amount of whitespace a Flate or LZW stream feeds them, unseen by the
-// budgets. Real xref and object streams use Flate (LZW at most).
-static bool chainFilterAllowed(const char *name)
-{
-    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW" };
-    for (const char *a : allowed) {
-        if (strcmp(name, a) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool XRef::chainStreamFiltersOk(Dict *dict)
 {
-    // as Stream::addFilters reads it: /Filter, and /F when that is absent or null
-    Object f = dict->lookup("Filter");
-    if (f.isNone() || f.isNull()) {
-        f = dict->lookup("F");
-    }
-    if (f.isNone() || f.isNull()) {
-        return true;
-    }
-    if (f.isName()) {
-        return chainFilterAllowed(f.getName());
-    }
-    if (!f.isArray() || f.arrayGetLength() > 4) {
-        return false;
-    }
-    for (int i = 0; i < f.arrayGetLength(); ++i) {
-        Object n = f.arrayGet(i);
-        if (!n.isName() || !chainFilterAllowed(n.getName())) {
-            return false;
-        }
-    }
-    return true;
+    return streamFiltersOk(dict);
 }
 
 bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
@@ -1344,7 +1372,7 @@ char *XRef::constructObjectEntry(char *p, Goffset pos, int *objNum)
 // of its objects.
 void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
 {
-    if (!chainStreamFiltersOk(objStr->getStream()->getDict())) {
+    if (!streamFiltersOk(objStr->getStream()->getDict())) {
         // the rebuild reads every object stream's header: not behind a filter whose work it cannot bound
         return;
     }
@@ -1359,8 +1387,13 @@ void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
         return;
     }
 
-    // parse the header: object numbers and offsets
-    Parser parser { nullptr, objStr, false };
+    // parse the header: object numbers and offsets, within what a header of nObjects entries needs
+    // (a Flate stream of whitespace would otherwise be skipped to its end)
+    Stream *objStrStream = objStr->getStream();
+    if (!objStrStream->rewind()) {
+        return;
+    }
+    Parser parser { nullptr, std::make_unique<EmbedStream>(objStrStream, Object::null(), true, 64LL * nObjects + 4096), false };
     for (int i = 0; i < nObjects; ++i) {
         auto obj1 = parser.getObj(true);
         auto obj2 = parser.getObj(true);
