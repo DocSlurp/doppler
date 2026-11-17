@@ -1483,18 +1483,6 @@ def math_matrix_pdf():
     )
 
 
-def unsorted_kids_pdf():
-    """A parent tree whose root /Kids are out of key order ([10-19, 0-9, 20-29], each kid's
-    /Limits true): every page's entry (one Formula) is still found."""
-    pages = [{"content": "/P << /MCID 0 >> BDC " + words(5) + " EMC\n", "extra": "/StructParents %d" % i} for i in range(30)]
-    # extras: 0 root, 1 Document, 2-31 Formula elements, 32-34 kids, 35 tree
-    extras = ["<< /Type /StructTreeRoot /K {1} 0 R /ParentTree {35} 0 R >>", "<< /Type /StructElem /S /Document /P {0} 0 R >>"]
-    extras += ["<< /Type /StructElem /S /Formula /P {1} 0 R /K 0 >>"] * 30
-    kid = lambda a, b: "<< /Limits [%d %d] /Nums [%s] >>" % (a, b, " ".join("%d {%d} 0 R" % (k, 2 + k) for k in range(a, b + 1)))
-    extras += [kid(10, 19), kid(0, 9), kid(20, 29), "<< /Kids [{32} 0 R {33} 0 R {34} 0 R] >>"]
-    return doc(pages, extras=extras, catalog_extra="/StructTreeRoot {0} 0 R /MarkInfo << /Marked true >>")
-
-
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -1540,5 +1528,4 @@ ALL = {
     "math_tables_council": math_tables_council_pdf,
     "math_tables_round2": math_tables_round2_pdf,
     "math_matrix": math_matrix_pdf,
-    "unsorted_kids": unsorted_kids_pdf,
 }

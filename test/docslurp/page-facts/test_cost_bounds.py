@@ -368,30 +368,6 @@ def hex_chain(n):
 # --- measuring ------------------------------------------------------------------------------
 
 
-def struct_shared(elements=20000, pages=1000, direct_entry=False, direct_root=False, nums=0):
-    """Tagged pages that all name parent-tree entry 0: an array of <elements> Formula element
-    references (indirect, or written directly inside /Nums); with <direct_root> the
-    StructTreeRoot and its ParentTree are direct in the catalog and /Nums also holds <nums>
-    integer entries. The structure must be resolved and the shared entry walked once per
-    document, not once per page (was 44 s for 3,600 pages of a 20,000-element entry)."""
-    d = Doc()
-    root = d.reserve()
-    els = [d.add("<< /Type /StructElem /S /Formula /P %d 0 R /K 0 >>" % root) for _ in range(elements)]
-    arr = " ".join("%d 0 R" % e for e in els)
-    entry = "[%s]" % arr if direct_entry else "%d 0 R" % d.add("[%s]" % arr)
-    extra_nums = " ".join("%d %d" % (k, k) for k in range(1, nums + 1))
-    tree = "<< /Nums [0 %s %s] >>" % (entry, extra_nums)
-    content = d.stream("/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Revenue rose again) Tj ET EMC")
-    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    if direct_root:
-        cat = "/StructTreeRoot << /Type /StructTreeRoot /ParentTree %s >> /MarkInfo << /Marked true >>" % tree
-        d.objs.pop(root, None)
-    else:
-        d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % d.add(tree), root)
-        cat = "/StructTreeRoot %d 0 R /MarkInfo << /Marked true >>" % root
-    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >>" % font, catalog_extra=cat, page_extra="/StructParents 0")
-
-
 def shared_program(fonts=6000, pages=30):
     """<fonts> TrueType font dictionaries sharing one FontFile2 that is 200 KB of empty stored
     deflate blocks (decodes to nothing): the program is read once, not once a font (was +3 s)."""
@@ -408,38 +384,6 @@ def shared_program(fonts=6000, pages=30):
         contents.append(d.stream("".join("BT /T%d 6 Tf %d %d Td (x) Tj ET\n" % (pg * per + k, 30 + (k % 25) * 22, 760 - (k // 25) * 12) for k in range(per))))
         res.append("/Font << %s >>" % " ".join(names))
     return d.pages(contents, resources=res)
-
-
-def struct_honest(elements=400, pages=12000):
-    """An honest large tagged document: every page its own parent-tree entry listing the same
-    <elements> elements (one a Formula): 4.8 million cached element visits, which a document
-    budget counting every visit cut short from page 10,116 on."""
-    d = Doc()
-    root = d.reserve()
-    docel = d.add("<< /Type /StructElem /S /Document /P %d 0 R >>" % root)
-    els = [d.add("<< /Type /StructElem /S /%s /P %d 0 R >>" % ("Formula" if i == 0 else "P", docel)) for i in range(elements)]
-    arr = "[%s]" % " ".join("%d 0 R" % e for e in els)
-    entries = [d.add(arr) for _ in range(pages)]
-    tree = d.add("<< /Nums [%s] >>" % " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries)))
-    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % tree, root)
-    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
-    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    pages_num = d.reserve()
-    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (pages_num, content, font, i)) for i in range(pages)]
-    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), pages_num)
-    # Doc.pages() adds its own page tree: build the catalog here instead
-    cat = d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (pages_num, root))
-    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
-    offs = {}
-    for num in sorted(d.objs):
-        offs[num] = len(out)
-        out += b"%d 0 obj\n" % num + d.objs[num] + b"\nendobj\n"
-    xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (d.n + 1)
-    for i in range(1, d.n + 1):
-        out += b"%010d 00000 n \n" % offs[i] if i in offs else b"0000000000 65535 f \n"
-    out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (d.n + 1, cat, xref)
-    return bytes(out)
 
 
 def font_compilation(pages=1200, fonts=4, size=14000):
@@ -656,68 +600,36 @@ with t.TempDir() as d:
     quiet = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", small, os.devnull], capture_output=True).stderr
     t.check(quiet == b"", "pdftotext -q: no messages")
 
-    # mathtables structure: resolved once a document, a shared parent-tree entry walked once,
-    # a direct entry longer than a page's budget not walked, a document-wide budget
-    ls = bounded("1,000 pages sharing a 20,000-element parent-tree entry", d.write("struct-shared.pdf", struct_shared()))
-    st = page(ls, 1000)["structure"]
-    t.check(st["formulas"] == 20000 and not st["truncated"], "shared parent-tree entry: every element counted on every page", repr(st))
-    ls = bounded("300 pages sharing a 300,000-reference entry", d.write("struct-big.pdf", struct_shared(elements=300000, pages=300)))
-    st = page(ls, 300)["structure"]
-    t.check(st["truncated"] and page(ls, 300)["mathBits"] >> 12 & 1, "an entry longer than a page's budget is truncated, not walked", repr(st))
-    ls = bounded("300 pages sharing a direct 20,000-element entry in a direct /Nums", d.write("struct-direct.pdf", struct_shared(pages=300, direct_entry=True)))
-    t.check(page(ls, 300)["structure"]["formulas"] == 20000, "direct parent-tree entry: counted", repr(page(ls, 300)["structure"]))
-    ls = bounded("300 pages of a direct StructTreeRoot with a 50,000-entry direct /Nums", d.write("struct-catalog.pdf", struct_shared(elements=10, pages=300, direct_entry=True, direct_root=True, nums=50000)))
-    t.check(page(ls, 300)["structure"]["formulas"] == 10, "direct StructTreeRoot and ParentTree: resolved once", repr(page(ls, 300)["structure"]))
-
+    # mathtables font classes: a shared program is read once; an honest compilation is classed
     ls = bounded("6,000 font dictionaries sharing one 200 KB empty-deflate program", d.write("shared-program.pdf", shared_program()))
     t.check(page(ls, 1)["mathBits"] >> 12 & 1, "a program that decodes to nothing is unknown (analysis-truncated)", repr(page(ls, 1)["mathFlags"]))
-
-    # each page lists 400 elements of its own entry (no two pages share one), so every page
-    # walks 400 cached elements: linear, about 0.15 ms a page, on pages whose drawing costs
-    # 0.05 ms (a real page draws for far longer); the bound is 5x this unusually cheap base
-    ls = bounded("12,000 pages of an honest tagged document, 400 elements an entry", d.write("struct-honest.pdf", struct_honest()), factor=5.0)
-    pgs = [l for l in ls if l["type"] == "page"]
-    t.check(len(pgs) == 12000 and not any(p["mathBits"] >> 12 & 1 for p in pgs) and all(p["structure"]["formulas"] == 1 for p in pgs), "an honest large tagged document is never truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
     ls = bounded("1,200 pages, each embedding 4 programs of its own (67 MB)", d.write("compilation.pdf", font_compilation()))
     pgs = [l for l in ls if l["type"] == "page"]
     t.check(len(pgs) == 1200 and not any(p["mathBits"] >> 12 & 1 for p in pgs), "an honest compilation's fonts are all classed: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
-
-    # hostile structure (council #51 final): every visit, cached or not, and every number-tree
-    # node read is charged to one document budget, so these stay near the plain pass (they took
-    # minutes, a gigabyte, or timed out) and their later pages say truncated
-    ls = bounded("2,000 pages, each walking 1,024 leaves of 64-deep chains", d.write("chain.pdf", struct_tree(2000, entry_leaves=1024, depth=64)), factor=100.0)
-    pgs = [l for l in ls if l["type"] == "page"]
-    t.check(pgs[-1]["mathBits"] >> 12 & 1 and pgs[-1]["structure"]["truncated"], "deep chains: the document budget runs out, later pages are truncated", repr(pgs[-1]["structure"]))
-    # the same chains with the entries in object streams: every structure parse charges its
-    # stream's estimated size to the document's stream budget (2^15 + 2^9 a page), so the reads
-    # stop before they hold more than a few streams (unbounded, this held 1 GB at 20,000 pages)
-    chain = d.write("chain-objstm.pdf", struct_tree(4000, entry_leaves=1024, depth=64, objstm=200))
-    rc_b, pg_b, rss_b = max_rss("-level", "basic", chain)
-    rc_f, pg_f, rss_f = max_rss("-level", "full", chain)
-    t.check(rc_b == 0 and rc_f == 0 and len(pg_f) == len(pg_b) == 4000, "chains in object streams: every page's line written", repr((rc_b, rc_f, len(pg_b), len(pg_f))))
-    t.check(rss_f <= 2 * rss_b + 64, "chains in object streams: peak RSS at most 2x the basic level + 64 MB", "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
-    t.check(pg_f[-1]["structure"]["truncated"], "chains in object streams: the stream budget runs out, later pages are truncated", repr(pg_f[-1]["structure"]))
-    print("  chains in object streams: basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
-    ls = bounded("2,000 pages behind 60,000 decoy parent-tree nodes", d.write("decoys.pdf", struct_tree(2000, decoys=60000)), factor=100.0)
-    pgs = [l for l in ls if l["type"] == "page"]
-    t.check(all(p["structure"]["formulas"] == 1 for p in pgs), "decoy number-tree nodes: a binary search finds every page's node", repr(pgs[-1]["structure"]))
-    ls = bounded("300 pages walking 4,224 chains of 64 elements (past the element cache)", d.write("elcache.pdf", struct_tree(300, entry_leaves=4224, depth=64)), factor=100.0)
     ls = bounded("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", d.write("t3inflate.pdf", type3_inflate()), factor=100.0)
     t.check(page(ls, 1)["mathBits"] >> 12 & 1, "inflating procedures: the font budget (charged decoded bytes) runs out: analysis-truncated", repr(page(ls, 1)["mathFlags"]))
 
-    # guarded object-stream parses (council #51 final-2): kept for the run up to 64 MB decoded and
-    # never parsed twice; past the bound refused (read as unknown); their own member budget
-    ls = bounded("one page reading 2,000 leaves round-robin over 9 object streams of 4 MB", d.write("rr9.pdf", objstm_rounds()), factor=100.0)
-    t.check(page(ls, 1)["structure"]["formulas"] == 1, "round-robin object streams: every element read, each stream parsed once", repr(page(ls, 1)["structure"]))
-    ls = bounded("2,000 pages reading 2,000 leaves round-robin over 9 object streams of 4 MB", d.write("rr9p.pdf", objstm_rounds(pages=2000)), factor=100.0)
-    t.check(len([l for l in ls if l["type"] == "page"]) == 2000, "round-robin object streams on 2,000 pages: every page's line written")
-    ls = bounded("page 1 reading 18,000 leaves of 9 object streams of 2,000 members, then page 2", d.write("drain.pdf", objstm_rounds(members=2000, leaves=18000, pad=False, drain=True)), factor=100.0)
+    # mathtables never reads the structure tree (council #51 final-4): documents whose parent
+    # trees reach deep chains, many large object streams or decoy nodes cost the full level what
+    # they cost the basic level (a structure walk held 1 GB at 20,000 pages, or ran out of
+    # address space on honest tagged documents of 5,000 pages)
+    for label, name, pdf in (
+        ("4,000 pages whose entries in object streams list 1,024 leaves of 64-deep chains", "chain-objstm.pdf", lambda: struct_tree(4000, entry_leaves=1024, depth=64, objstm=200)),
+        ("2,000 pages behind 60,000 decoy parent-tree nodes", "decoys.pdf", lambda: struct_tree(2000, decoys=60000)),
+        ("2,000 pages reading 2,000 leaves round-robin over 9 object streams of 4 MB", "rr9p.pdf", lambda: objstm_rounds(pages=2000)),
+        ("page 1 reading 18,000 leaves of 9 object streams of 2,000 members, then page 2", "drain.pdf", lambda: objstm_rounds(members=2000, leaves=18000, pad=False, drain=True)),
+    ):
+        path = d.write(name, pdf())
+        ls = bounded(label, path)
+        pgs = [l for l in ls if l["type"] == "page"]
+        t.check(all(set(p["structure"]) == {"actualText", "actualTextTexLike", "truncated"} and not p["mathBits"] >> 12 & 1 for p in pgs), "%s: no structure read, nothing truncated" % label, repr(pgs[-1]["structure"]))
+        rc_b, pg_b, rss_b = max_rss("-level", "basic", path)
+        rc_f, pg_f, rss_f = max_rss("-level", "full", path)
+        t.check(rc_b == rc_f == 0 and len(pg_f) == len(pg_b) == len(pgs), "%s: every page's line written" % label, repr((rc_b, rc_f, len(pg_b), len(pg_f))))
+        t.check(rss_f <= 1.2 * rss_b + 16, "%s: peak RSS at most 1.2x the basic level + 16 MB" % label, "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
+        print("  %s: basic %.0f MB, full %.0f MB" % (label, rss_b, rss_f))
     p2 = page(ls, 2)
-    t.check("error" not in p2 and p2["tableBits"] >> 5 & 1 and p2["text"]["wordCount"] == 4, "guarded parses never drain drawing's member budget: page 2 is drawn", repr(p2.get("error") or p2["text"]))
-    # 1,000 element visits a page (linear, about 0.27 ms) on pages that draw in 0.05 ms
-    ls = bounded("6,000 pages of an honest tagged document, 1,000 elements an entry", d.write("struct-honest-1000.pdf", struct_honest(elements=1000, pages=6000)), factor=8.0)
-    pgs = [l for l in ls if l["type"] == "page"]
-    t.check(not any(p["mathBits"] >> 12 & 1 for p in pgs), "6,000 x 1,000 honest structure: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
+    t.check("error" not in p2 and p2["text"]["wordCount"] == 4, "a page whose objects sit in their own object stream is drawn", repr(p2.get("error") or p2["text"]))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))

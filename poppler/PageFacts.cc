@@ -23,7 +23,6 @@
 #include <set>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #ifndef _WIN32
 #    include <sys/resource.h>
 #endif
@@ -1924,30 +1923,8 @@ constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checke
 // memo by reference and this allowance, which grows only with pages
 constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
 constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
-// structure visits over a document, every one charged (cached or not: element visits, parent-tree
-// node and entry reads): 2^22, plus 2^11 for every page begun. An honest document visits up to
-// a couple of thousand elements a page (6,000 pages x 1,000 and 12,000 x 400 fit); a document
-// making every page walk the per-page maximum runs it out, and its later pages are truncated.
-constexpr size_t structWorkDoc = size_t(1) << 22;
-constexpr size_t structWorkPerPage = size_t(1) << 11;
-// object streams the structure reads make the cross-reference table parse (and keep for the run):
-// the first time a read reaches an object in a stream not reached before, the stream's estimated
-// parse size (StructWalk::streamCost: /N plus KB decoded, with containerBytes per container) is
-// charged to 2^15, plus 2^9 for every page begun. Past it the structure reads stop for the
-// document (fail closed: the remaining pages are truncated). An honest tagged document charges
-// about 300 a page (a 200-member stream of struct elements per page)
-constexpr size_t structStreamDoc = size_t(1) << 15;
-constexpr size_t structStreamPerPage = size_t(1) << 9;
-constexpr size_t containerBytes = 64;
-// a page's parent-tree entry is read only while at least this much of the document's budget is
-// left: past it a page is truncated without fetching (an entry array in an object stream costs
-// a parse of that stream, and a hostile document can give every page its own)
-constexpr size_t structWorkToStart = size_t(1) << 16;
 constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
-constexpr size_t maxStructWork = size_t(1) << 16; // structure objects visited for one page
-constexpr int maxStructDepth = 64; // parent links followed up from one element
-constexpr int maxNumberTreeDepth = 32;
-constexpr size_t maxTexScan = 4096; // code units of an Alt or ActualText string checked for TeX
+constexpr size_t maxTexScan = 4096; // code units of an ActualText string checked for TeX
 constexpr size_t maxMathGlyphs = 8192; // math-font glyph centres kept per page
 constexpr size_t maxMathWords = 4096; // math-font word boxes kept per page
 constexpr size_t maxRegions = 64; // mathRegions listed per page
@@ -2101,7 +2078,7 @@ CharProcPaint charProcPaint(std::string_view p)
     return r;
 }
 
-// An Alt or ActualText string that looks like TeX source: a backslash command (\ and two
+// A marked-content ActualText string that looks like TeX source: a backslash command (\ and two
 // letters) or ^{ or _{. The first maxTexScan code units (UTF-16BE after its byte order mark,
 // else bytes) are read: texYes, texNo, or texUnknown when none was found in them and the string
 // is longer (never a definite "not TeX" from a prefix).
@@ -2155,16 +2132,6 @@ int unicodeMathBlock(Unicode c)
     return -1;
 }
 
-// structure facts of one page
-struct StructCounts
-{
-    uint64_t formulas = 0, tables = 0, tableRows = 0, tableCells = 0, spannedCells = 0, mathml = 0, mathmlFiles = 0, altText = 0, altTextTexLike = 0, actualText = 0, actualTextTexLike = 0;
-    bool truncated = false; // a cap or budget was hit: the counts are lower bounds
-    bool roleCapped = false; // a RoleMap chain past 8 hops (or a cycle): an element's role is unknown
-    bool texUnknown = false; // an Alt or ActualText longer than the scanned prefix held no TeX in it: TeX-likeness unknown
-    bool unknown = false; // the page's structure could not be read (a missing parent-tree entry, a broken element): counts are not a definite 0
-};
-
 // per-document caches of the mathtables family (kept across pages, dropped when the
 // cross-reference table changes)
 struct MathDocCache
@@ -2172,28 +2139,6 @@ struct MathDocCache
     XRef *xref = nullptr;
     unsigned generation = 0;
     std::unordered_map<Ref, uint8_t> fontClasses;
-    std::map<std::string, uint8_t, std::less<>> roles;
-    std::unordered_map<Ref, bool> mathmlNamespaces;
-    std::unordered_map<Ref, uint8_t> mathmlFiles; // 0 not MathML, 1 MathML, 2 unknown (unreadable or past the budget)
-    // parent-tree nodes by reference (a flat /Nums array of every page is parsed once, not once a
-    // page); at most 4,096, never one a refused repair shaped
-    std::unordered_map<Ref, Object> treeNodes;
-    // structure elements by reference, read once a document (an ancestor many pages share, or a
-    // large Alt string many elements name, is parsed once): at most maxStructElementCache
-    struct Element
-    {
-        Ref parent = Ref::INVALID();
-        uint8_t role = 0; // StructRole
-        uint8_t flags = 0; // StructFlag bits
-        uint8_t mathmlFiles = 0;
-        bool terminal = false; // not an element (the tree root, or not a dictionary)
-        bool unreadable = false;
-        bool roleCapped = false; // its RoleMap chain did not end within 8 hops
-    };
-    std::unordered_map<Ref, Element> elements;
-    // indirect Alt and ActualText strings: bit 0 a string, bit 1 TeX-like
-    std::unordered_map<Ref, uint8_t> strings;
-    size_t sniffBytesLeft = size_t(4) << 20; // encoded bytes of untyped associated files sniffed a document
     size_t fontBytesLeft = maxFontProbeBytesRun; // over the run
     std::unordered_map<Ref, bool> maskXObjects; // a Type 3 font's resource /XObject dictionary: has an image mask among its first entries
     // read results by stream reference, so many fonts sharing one program or glyph procedure
@@ -2201,27 +2146,8 @@ struct MathDocCache
     // program's MATH table (SfntMath, bit 7: unknown)
     std::unordered_map<Ref, uint8_t> charProcs;
     std::unordered_map<Ref, uint8_t> programs;
-    // the document's structure tree, resolved once (per cross-reference generation)
-    bool structResolved = false;
-    bool structTagged = false; // the catalog names a /StructTreeRoot
-    Object structRoot; // the /StructTreeRoot dictionary (null: none, or unreadable when tagged)
-    Object structRoleMap;
-    Object structParentTree; // the parent tree's root node
-    // a parent-tree entry's counts by /StructParents key and by the entry's reference: pages
-    // sharing an entry walk it once
-    std::unordered_map<int, StructCounts> entryByKey;
-    std::unordered_map<Ref, StructCounts> entryByRef;
-    size_t structWorkLeft = structWorkDoc; // structure objects read for the first time over the document
-    std::unordered_set<int> structStreams; // object streams the structure reads have reached (and paid for)
-    size_t structStreamLeft = structStreamDoc;
-    bool structStopped = false; // the stream budget ran out: no more structure reads in this document
-    // a page was begun: its allowances (saturating)
-    void pageBegun()
-    {
-        fontBytesLeft = fontBytesLeft > SIZE_MAX - fontProbeBytesPerPage ? SIZE_MAX : fontBytesLeft + fontProbeBytesPerPage;
-        structWorkLeft = structWorkLeft > SIZE_MAX - structWorkPerPage ? SIZE_MAX : structWorkLeft + structWorkPerPage;
-        structStreamLeft = structStreamLeft > SIZE_MAX - structStreamPerPage ? SIZE_MAX : structStreamLeft + structStreamPerPage;
-    }
+    // a page was begun: its allowance (saturating)
+    void pageBegun() { fontBytesLeft = fontBytesLeft > SIZE_MAX - fontProbeBytesPerPage ? SIZE_MAX : fontBytesLeft + fontProbeBytesPerPage; }
     void sync(XRef *x)
     {
         if (x != xref || (x && x->getGeneration() != generation)) {
@@ -2229,24 +2155,6 @@ struct MathDocCache
             maskXObjects.clear();
             charProcs.clear();
             programs.clear();
-            structResolved = false;
-            structTagged = false;
-            structRoot = Object::null();
-            structRoleMap = Object::null();
-            structParentTree = Object::null();
-            entryByKey.clear();
-            entryByRef.clear();
-            structWorkLeft = structWorkDoc;
-            structStreams.clear();
-            structStreamLeft = structStreamDoc;
-            structStopped = false;
-            roles.clear();
-            mathmlNamespaces.clear();
-            mathmlFiles.clear();
-            treeNodes.clear();
-            elements.clear();
-            strings.clear();
-            sniffBytesLeft = size_t(4) << 20;
             xref = x;
             generation = x ? x->getGeneration() : 0;
         }
@@ -2322,7 +2230,6 @@ std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypt
 
 constexpr size_t maxCharProcRaw = 65536; // encoded bytes of a Type 3 glyph procedure read
 constexpr size_t maxFontProbeRaw = 65536; // encoded bytes of a font program's head read
-constexpr size_t maxSniffRaw = 16384; // encoded bytes of an untyped associated file read
 
 // One font's class. Reads (under a RepairGuard, so they cannot rebuild the table drawing uses):
 // a Type 3 font's first maxCharProcsProbed glyph procedures (maxCharProcBytes each, text filters
@@ -2520,687 +2427,6 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
     }
     return cls;
 }
-
-
-enum StructFlag : uint8_t
-{
-    sfMathml = 1,
-    sfAlt = 2,
-    sfAltTex = 4,
-    sfActual = 8,
-    sfActualTex = 16,
-    sfSpanned = 32,
-    sfTexUnknown = 64 // an Alt or ActualText whose scanned prefix held no TeX: unknown, not "not TeX"
-};
-constexpr size_t maxStructElementCache = size_t(1) << 18;
-
-enum StructRole : uint8_t
-{
-    roleOther,
-    roleFormula,
-    roleTable,
-    roleTR,
-    roleTD,
-    roleTH
-};
-
-StructRole standardRole(std::string_view s)
-{
-    if (s == "Formula") {
-        return roleFormula;
-    }
-    if (s == "Table") {
-        return roleTable;
-    }
-    if (s == "TR") {
-        return roleTR;
-    }
-    if (s == "TD") {
-        return roleTD;
-    }
-    if (s == "TH") {
-        return roleTH;
-    }
-    return roleOther;
-}
-
-constexpr std::string_view mathmlNamespace = "http://www.w3.org/1998/Math/MathML";
-
-// The page's structure: the elements its marked content belongs to (the parent tree's entry for
-// the page's /StructParents, as ISO 32000 14.7.5.4 defines it) and every ancestor of them, each
-// counted once. At most maxStructWork objects are visited; truncated past it.
-class StructWalk
-{
-public:
-    StructWalk(XRef *xrefA, MathDocCache &cacheA) : xref(xrefA), cache(cacheA) { cache.sync(xref); }
-
-    StructCounts page(Page *pg)
-    {
-        StructCounts c;
-        if (!xref || !pg) {
-            return c;
-        }
-        const Object &pageObj = pg->getPageObj();
-        if (pageObj.isDict()) {
-            Object af = pageObj.dictLookup("AF");
-            c.mathmlFiles += afMathml(af.isArray() ? af : pageObj.dictLookupNF("AF"), &c);
-        }
-        if (!resolve()) {
-            // the stream budget stopped the reads: truncated (fail closed); otherwise unreadable
-            (cache.structStopped ? c.truncated : c.unknown) = true;
-            return c;
-        }
-        if (!cache.structRoot.isDict()) {
-            c.unknown = c.unknown || cache.structTagged; // a /StructTreeRoot that is not a readable dictionary
-            return c;
-        }
-        Object sp = pageObj.isDict() ? pageObj.dictLookup("StructParents") : Object::null();
-        if (!sp.isInt()) {
-            return c; // a page with no marked structure: a definite 0
-        }
-        const auto it = cache.entryByKey.find(sp.getInt());
-        if (it != cache.entryByKey.end()) {
-            merge(it->second, &c);
-            return c;
-        }
-        if (cache.structStopped) {
-            c.truncated = true; // the document's stream budget ran out: nothing more is read
-            return c;
-        }
-        roleMap = cache.structRoleMap.copy();
-        const StructCounts e = entry(sp.getInt());
-        if (cache.entryByKey.size() < maxStructElementCache) {
-            cache.entryByKey.emplace(sp.getInt(), e);
-        }
-        merge(e, &c);
-        return c;
-    }
-
-    // the document's tagged flag, structure tree root, RoleMap and parent-tree root, read once
-    // false when the read failed (the catalog is not a dictionary, or a refused repair shaped
-    // it): nothing is cached, and the page's structure is unknown
-    bool resolve()
-    {
-        if (cache.structResolved) {
-            return true;
-        }
-        const unsigned int repairsBefore = xref->getSuppressedRepairs();
-        StructCounts admission;
-        Object catalog = fetch({ xref->getRootNum(), xref->getRootGen() }, &admission);
-        if (!catalog.isDict() || xref->getSuppressedRepairs() != repairsBefore) {
-            return false;
-        }
-        const bool tagged = !catalog.dictLookupNF("StructTreeRoot").isNull();
-        Object root = catalog.dictLookup("StructTreeRoot");
-        Object roleMap = root.isDict() ? root.dictLookup("RoleMap") : Object::null();
-        Object parentTree = root.isDict() ? cachedFetch(root.dictLookupNF("ParentTree"), &admission) : Object::null();
-        if (xref->getSuppressedRepairs() != repairsBefore || admission.truncated) {
-            return false;
-        }
-        cache.structResolved = true;
-        cache.structTagged = tagged;
-        if (root.isDict()) {
-            cache.structRoleMap = std::move(roleMap);
-            cache.structParentTree = std::move(parentTree);
-            cache.structRoot = std::move(root);
-        }
-        return true;
-    }
-
-    static void merge(const StructCounts &e, StructCounts *c)
-    {
-        c->formulas += e.formulas;
-        c->tables += e.tables;
-        c->tableRows += e.tableRows;
-        c->tableCells += e.tableCells;
-        c->spannedCells += e.spannedCells;
-        c->mathml += e.mathml;
-        c->mathmlFiles += e.mathmlFiles;
-        c->altText += e.altText;
-        c->altTextTexLike += e.altTextTexLike;
-        c->actualText += e.actualText;
-        c->actualTextTexLike += e.actualTextTexLike;
-        c->truncated = c->truncated || e.truncated;
-        c->roleCapped = c->roleCapped || e.roleCapped;
-        c->texUnknown = c->texUnknown || e.texUnknown;
-        c->unknown = c->unknown || e.unknown;
-    }
-
-    // one parent-tree entry: its elements and their ancestors, each counted once, walked as the
-    // leaves are read (duplicates skipped before any budget is spent); an entry array longer
-    // than the page's budget is not walked (truncated)
-    StructCounts entry(int key)
-    {
-        StructCounts c;
-        if (cache.structWorkLeft < structWorkToStart) {
-            c.truncated = true; // the document's budget is (nearly) spent: not read at all
-            return c;
-        }
-        Object valueNF = numberTreeGet(cache.structParentTree.copy(), key, &c);
-        if (valueNF.isNull()) {
-            c.unknown = !c.truncated; // the page names a parent-tree entry the tree does not give
-            return c;
-        }
-        if (valueNF.isRef()) {
-            const auto it = cache.entryByRef.find(valueNF.getRef());
-            if (it != cache.entryByRef.end()) {
-                return it->second;
-            }
-        }
-        Object value = valueNF.isRef() ? fetch(valueNF.getRef(), &c) : valueNF.copy();
-        auto walk = [&](const Object &leaf) {
-            if (leaf.isNull() || leaf.isInt()) {
-                return; // an MCID with no element (allowed)
-            }
-            if (!leaf.isRef()) {
-                c.unknown = true; // elements are indirect
-                return;
-            }
-            Ref cur = leaf.getRef();
-            for (int depth = 0; depth < maxStructDepth && !c.truncated && cur != Ref::INVALID(); ++depth) {
-                if (!seen.insert(cur).second || !spend(&c)) {
-                    break; // counted already (or a cycle), or the budget
-                }
-                const MathDocCache::Element e = element(cur, &c);
-                if (e.unreadable) {
-                    c.unknown = true;
-                }
-                c.roleCapped = c.roleCapped || e.roleCapped;
-                if (e.terminal) {
-                    break;
-                }
-                add(e, &c);
-                cur = e.parent;
-            }
-        };
-        if (value.isArray()) {
-            const int n = value.arrayGetLength();
-            if (n < 0 || static_cast<size_t>(n) > maxStructWork) {
-                c.truncated = true; // longer than a page's whole budget: not walked
-            } else {
-                for (int i = 0; i < n && !c.truncated; ++i) {
-                    const Object &leaf = value.getArray()->getNF(i);
-                    if (leaf.isRef() && seen.count(leaf.getRef())) {
-                        continue; // a duplicate costs nothing
-                    }
-                    walk(leaf);
-                }
-            }
-        } else {
-            walk(valueNF);
-        }
-        if (valueNF.isRef() && cache.entryByRef.size() < maxStructElementCache) {
-            cache.entryByRef.emplace(valueNF.getRef(), c);
-        }
-        return c;
-    }
-
-private:
-    // a page's budget (maxStructWork) and the document's (MathDocCache::structWorkLeft)
-    // every visit: the page's budget (maxStructWork) and the document's (structWorkLeft)
-    bool spend(StructCounts *c)
-    {
-        if (work >= maxStructWork || cache.structWorkLeft == 0) {
-            c->truncated = true;
-            return false;
-        }
-        ++work;
-        --cache.structWorkLeft;
-        return true;
-    }
-    bool spendDoc(StructCounts *c) { return spend(c); }
-
-    // what parsing object stream <num> costs: /N plus the KB its parse holds, estimated as its
-    // decoded size (not /Length) plus containerBytes per '[', '<' or '(' (an empty array is
-    // two bytes but a whole allocation); the decode only counts, in a fixed buffer, and stops
-    // once the cost passes what the document has left
-    size_t streamCost(int num)
-    {
-        size_t cost = 1;
-        Object str = xref->fetch(num, 0);
-        if (!str.isStream() || !str.getStream()->getDict()) {
-            return cost;
-        }
-        Object n = str.getStream()->getDict()->lookup("N");
-        cost += n.isInt() && n.getInt() > 0 ? static_cast<size_t>(n.getInt()) : 0;
-        if (cost > cache.structStreamLeft) {
-            return cost;
-        }
-        const size_t capKb = cache.structStreamLeft - cost + 1;
-        size_t bytes = 0;
-        Stream *s = str.getStream();
-        if (textFiltersOnly(s) && s->rewind()) {
-            unsigned char buf[4096];
-            while (bytes / 1024 < capKb) {
-                const int got = s->doGetChars(sizeof(buf), buf);
-                if (got <= 0) {
-                    break;
-                }
-                bytes += static_cast<size_t>(got);
-                for (int i = 0; i < got; ++i) {
-                    // an array, dictionary or string costs the parse an allocation of its own
-                    if (buf[i] == '[' || buf[i] == '<' || buf[i] == '(') {
-                        bytes += containerBytes;
-                    }
-                }
-            }
-            s->close();
-        } else {
-            BaseStream *base = s->getBaseStream();
-            const Goffset len = base ? base->getLength() : 0;
-            bytes = len > 0 ? static_cast<size_t>(len) : 0; // unreadable: its raw size
-        }
-        return cost + (bytes + 1023) / 1024;
-    }
-
-    // whether a structure read may fetch <r>: an object in an object stream the reads have not
-    // reached yet charges that stream (/N + /Length / 1 KB, from its dictionary) to the
-    // document's stream budget; past it the reads stop for the document (truncated)
-    bool admit(Ref r, StructCounts *c)
-    {
-        if (cache.structStopped) {
-            c->truncated = true;
-            return false;
-        }
-        if (r.num < 0 || r.num >= xref->getNumObjects()) {
-            return true; // the fetch gives null without reading anything
-        }
-        const XRefEntry *e = xref->getEntry(r.num, false);
-        if (!e || e->type != xrefEntryCompressed || e->offset > static_cast<Goffset>(std::numeric_limits<int>::max())) {
-            return true;
-        }
-        const int stream = static_cast<int>(e->offset);
-        if (cache.structStreams.count(stream)) {
-            return true;
-        }
-        const size_t cost = streamCost(stream);
-        if (cost > cache.structStreamLeft) {
-            cache.structStopped = true;
-            c->truncated = true;
-            return false;
-        }
-        cache.structStreamLeft -= cost;
-        cache.structStreams.insert(stream);
-        return true;
-    }
-
-    Object fetch(Ref r, StructCounts *c) { return admit(r, c) ? xref->fetch(r) : Object::null(); }
-
-    Object cachedFetch(const Object &nf, StructCounts *c)
-    {
-        if (!nf.isRef()) {
-            return nf.copy();
-        }
-        const auto it = cache.treeNodes.find(nf.getRef());
-        if (it != cache.treeNodes.end()) {
-            return it->second.copy();
-        }
-        const unsigned int before = xref->getSuppressedRepairs();
-        if (!admit(nf.getRef(), c)) {
-            return Object::null(); // not cached: the stop is the document's
-        }
-        Object obj = xref->fetch(nf.getRef());
-        if (cache.treeNodes.size() < 4096 && xref->getSuppressedRepairs() == before) {
-            cache.treeNodes.emplace(nf.getRef(), obj.copy());
-        }
-        return obj;
-    }
-
-    Object numberTreeGet(Object node, int key, StructCounts *c)
-    {
-        std::set<Ref> visited;
-        for (int depth = 0; depth < maxNumberTreeDepth && node.isDict(); ++depth) {
-            Object nums = cachedFetch(node.dictLookupNF("Nums"), c);
-            if (nums.isArray()) {
-                // pairs sorted by key: binary search (keys are direct integers)
-                int lo = 0, hi = nums.arrayGetLength() / 2 - 1;
-                while (lo <= hi) {
-                    if (!spend(c)) {
-                        return Object::null();
-                    }
-                    const int mid = lo + (hi - lo) / 2;
-                    const Object &k = nums.getArray()->getNF(2 * mid);
-                    if (!k.isInt()) {
-                        return Object::null();
-                    }
-                    if (k.getInt() == key) {
-                        return nums.getArray()->getNF(2 * mid + 1).copy(); // unresolved: the caller memoizes by reference
-                    }
-                    (k.getInt() < key ? lo : hi) = k.getInt() < key ? mid + 1 : mid - 1;
-                }
-                return Object::null();
-            }
-            Object kids = cachedFetch(node.dictLookupNF("Kids"), c);
-            if (!kids.isArray()) {
-                return Object::null();
-            }
-            // kids sorted by /Limits: a binary search (every node read charged); a node whose
-            // Limits do not read as two integers ends the search, which then scans linearly
-            Object next = Object::null();
-            const int n = kids.arrayGetLength();
-            // 1: the key is in it, 0: below it, 2: above it, -1: unreadable or already visited
-            auto probe = [&](int i, Object *kidOut) {
-                const Object &ref = kids.getArray()->getNF(i);
-                if (ref.isRef() && visited.count(ref.getRef())) {
-                    return -1;
-                }
-                Object kid = cachedFetch(ref, c);
-                Object limits = kid.isDict() ? kid.dictLookup("Limits") : Object::null();
-                if (!limits.isArray() || limits.arrayGetLength() != 2) {
-                    return -1;
-                }
-                Object a = limits.arrayGet(0), b = limits.arrayGet(1);
-                if (!a.isInt() || !b.isInt()) {
-                    return -1;
-                }
-                if (key < a.getInt()) {
-                    return 0;
-                }
-                if (key > b.getInt()) {
-                    return 2;
-                }
-                if (ref.isRef()) {
-                    visited.insert(ref.getRef());
-                }
-                *kidOut = std::move(kid);
-                return 1;
-            };
-            int lo = 0, hi = n - 1;
-            bool linear = false;
-            while (lo <= hi && next.isNull()) {
-                if (!spend(c)) {
-                    return Object::null();
-                }
-                const int mid = lo + (hi - lo) / 2;
-                const int r = probe(mid, &next);
-                if (r == -1) {
-                    linear = true;
-                    break;
-                }
-                (r == 0 ? hi : lo) = r == 0 ? mid - 1 : mid + 1;
-                if (r == 1) {
-                    break;
-                }
-            }
-            // a miss (Kids out of key order) is not trusted either: the bounded linear scan decides
-            linear = linear || next.isNull();
-            for (int i = 0; linear && next.isNull() && i < n; ++i) {
-                if (!spend(c)) {
-                    return Object::null();
-                }
-                probe(i, &next);
-            }
-            node = std::move(next);
-        }
-        return Object::null();
-    }
-
-    StructRole roleOf(const std::string &s, const Object &ns, bool *capped)
-    {
-        // a PDF 2.0 namespace's /RoleMapNS first (one hop: [name ns] or name)
-        std::string name = s;
-        if (ns.isDict()) {
-            Object nsMap = ns.dictLookup("RoleMapNS");
-            Object to = nsMap.isDict() ? nsMap.dictLookup(s) : Object::null();
-            if (to.isArray() && to.arrayGetLength() >= 1) {
-                to = to.arrayGet(0);
-            }
-            if (to.isName()) {
-                name = to.getNameString();
-            }
-        }
-        const auto it = cache.roles.find(name);
-        if (it != cache.roles.end()) {
-            *capped = *capped || (it->second & 0x80);
-            return static_cast<StructRole>(it->second & 0x7f);
-        }
-        StructRole r = standardRole(name);
-        std::string cur = name;
-        bool ended = r != roleOther || !roleMap.isDict();
-        for (int hop = 0; hop < 8 && !ended; ++hop) {
-            Object to = roleMap.dictLookup(cur);
-            if (!to.isName()) {
-                ended = true; // the chain ends on a type with no mapping: not one of ours
-                break;
-            }
-            cur = to.getNameString();
-            r = standardRole(cur);
-            ended = r != roleOther;
-        }
-        if (!ended) {
-            // still mapping after 8 hops (a long chain or a cycle): the role is unknown, not "other"
-            Object to = roleMap.dictLookup(cur);
-            ended = !to.isName();
-        }
-        *capped = *capped || !ended;
-        if (cache.roles.size() < 4096 && name.size() <= 128) {
-            cache.roles.emplace(name, static_cast<uint8_t>(r | (ended ? 0 : 0x80)));
-        }
-        return r;
-    }
-
-    bool mathmlNs(const Object &nsNF, const Object &ns)
-    {
-        if (!ns.isDict()) {
-            return false;
-        }
-        if (nsNF.isRef()) {
-            const auto it = cache.mathmlNamespaces.find(nsNF.getRef());
-            if (it != cache.mathmlNamespaces.end()) {
-                return it->second;
-            }
-        }
-        Object uri = ns.dictLookup("NS");
-        const bool m = uri.isString() && uri.getString() == mathmlNamespace;
-        if (nsNF.isRef() && cache.mathmlNamespaces.size() < 4096) {
-            cache.mathmlNamespaces.emplace(nsNF.getRef(), m);
-        }
-        return m;
-    }
-
-public:
-    // the MathML files of an /AF value (an array of file specifications, or one)
-    uint64_t afMathml(const Object &af, StructCounts *c)
-    {
-        uint64_t n = 0;
-        if (af.isArray()) {
-            for (int i = 0; i < std::min(af.arrayGetLength(), 16); ++i) {
-                n += mathmlFile(af.getArray()->getNF(i), c);
-            }
-        } else if (af.isDict() || af.isRef() || af.isStream()) {
-            n += mathmlFile(af, c);
-        }
-        return n;
-    }
-
-private:
-    // a file specification whose embedded file is application/mathml+xml (its /Subtype; without
-    // one, its first 2 KB name the MathML namespace). A bare embedded-file stream counts too.
-    bool mathmlFile(const Object &specNF, StructCounts *c)
-    {
-        if (specNF.isRef()) {
-            const auto it = cache.mathmlFiles.find(specNF.getRef());
-            if (it != cache.mathmlFiles.end()) {
-                c->unknown = c->unknown || it->second == 2;
-                return it->second == 1;
-            }
-        }
-        if (!spend(c)) {
-            return false;
-        }
-        Object spec = specNF.isRef() ? fetch(specNF.getRef(), c) : specNF.copy();
-        bool m = false, undecided = false;
-        auto test = [&](Object &file) {
-            if (!file.isStream() || !file.getStream()->getDict()) {
-                return;
-            }
-            Object sub = file.getStream()->getDict()->lookup("Subtype");
-            if (sub.isName()) {
-                m = sub.isName("application/mathml+xml");
-            } else if (cache.sniffBytesLeft < maxSniffRaw) {
-                undecided = true; // the document's sniff budget is spent: unknown, not false
-            } else if (spend(c)) {
-                bool unreadable = false;
-                size_t used = 0;
-                m = readHead(file, 2048, maxSniffRaw, xref->isEncrypted(), &unreadable, &used).find(mathmlNamespace) != std::string::npos;
-                cache.sniffBytesLeft -= std::min(cache.sniffBytesLeft, used);
-                undecided = undecided || (unreadable && !m);
-            }
-        };
-        if (spec.isStream()) {
-            test(spec);
-        }
-        Object ef = spec.isDict() ? spec.dictLookup("EF") : Object::null();
-        for (const char *key : { "F", "UF" }) {
-            if (m || !ef.isDict() || !spend(c)) {
-                break;
-            }
-            Object file = ef.dictLookup(key);
-            test(file);
-        }
-        if (undecided) {
-            c->unknown = true;
-        }
-        // undecided files are remembered too: one unreadable file many elements share is read once
-        if (specNF.isRef() && cache.mathmlFiles.size() < maxStructElementCache) {
-            cache.mathmlFiles.emplace(specNF.getRef(), undecided ? uint8_t(2) : uint8_t(m ? 1 : 0));
-        }
-        return m;
-    }
-
-    static void add(const MathDocCache::Element &e, StructCounts *c)
-    {
-        switch (static_cast<StructRole>(e.role)) {
-        case roleFormula:
-            ++c->formulas;
-            break;
-        case roleTable:
-            ++c->tables;
-            break;
-        case roleTR:
-            ++c->tableRows;
-            break;
-        case roleTD:
-        case roleTH:
-            ++c->tableCells;
-            c->spannedCells += (e.flags & sfSpanned) != 0;
-            break;
-        case roleOther:
-            break;
-        }
-        c->mathml += (e.flags & sfMathml) != 0;
-        c->altText += (e.flags & sfAlt) != 0;
-        c->altTextTexLike += (e.flags & sfAltTex) != 0;
-        c->actualText += (e.flags & sfActual) != 0;
-        c->actualTextTexLike += (e.flags & sfActualTex) != 0;
-        c->texUnknown = c->texUnknown || (e.flags & sfTexUnknown) != 0;
-        c->mathmlFiles += e.mathmlFiles;
-    }
-
-    // an /Alt or /ActualText value: (is a string, is TeX-like). An indirect string is read once a
-    // document (a large string many elements share); its first maxTexScan code units are tested.
-    // (is a string, TeX verdict)
-    std::pair<bool, TexVerdict> textValue(const Object &dict, const char *key, StructCounts *c)
-    {
-        const Object &nf = dict.dictLookupNF(key);
-        if (nf.isString()) {
-            return { true, texLike(nf.getString()) };
-        }
-        if (!nf.isRef()) {
-            return { false, texNo };
-        }
-        const auto it = cache.strings.find(nf.getRef());
-        if (it != cache.strings.end()) {
-            return { (it->second & 1) != 0, static_cast<TexVerdict>(it->second >> 1) };
-        }
-        if (!spend(c) || !spendDoc(c)) {
-            return { false, texNo };
-        }
-        if (!admit(nf.getRef(), c)) {
-            return { false, texNo };
-        }
-        Object v = xref->fetch(nf.getRef());
-        const bool str = v.isString();
-        const TexVerdict tex = str ? texLike(v.getString()) : texNo;
-        if (cache.strings.size() < maxStructElementCache) {
-            cache.strings.emplace(nf.getRef(), uint8_t((str ? 1 : 0) | (tex << 1)));
-        }
-        return { str, tex };
-    }
-
-    // an element's facts, from the cache or read once (its role, flags, /AF MathML files, parent)
-    MathDocCache::Element element(Ref ref, StructCounts *c)
-    {
-        const auto it = cache.elements.find(ref);
-        if (it != cache.elements.end()) {
-            return it->second;
-        }
-        MathDocCache::Element out;
-        if (!spendDoc(c)) {
-            out.terminal = true; // not read (and not cached): the page is truncated
-            return out;
-        }
-        const unsigned int repairsBefore = xref->getSuppressedRepairs();
-        if (!admit(ref, c)) {
-            out.terminal = true; // not read (and not cached): the page is truncated
-            return out;
-        }
-        Object e = xref->fetch(ref);
-        if (!e.isDict() || e.isDict("StructTreeRoot")) {
-            out.terminal = true;
-            out.unreadable = !e.isDict();
-        } else {
-            Object s = e.dictLookup("S");
-            const Object &nsNF = e.dictLookupNF("NS");
-            Object ns = nsNF.isRef() ? (spend(c) ? fetch(nsNF.getRef(), c) : Object::null()) : nsNF.copy();
-            uint8_t flags = mathmlNs(nsNF, ns) ? sfMathml : 0;
-            const StructRole role = s.isName() ? roleOf(s.getNameString(), ns, &out.roleCapped) : roleOther;
-            if (role == roleTD || role == roleTH) {
-                Object a = e.dictLookup("A");
-                bool spanned = false;
-                auto check = [&](const Object &attrs) {
-                    if (!attrs.isDict()) {
-                        return;
-                    }
-                    for (const char *key : { "RowSpan", "ColSpan" }) {
-                        Object v = attrs.dictLookup(key);
-                        spanned = spanned || (v.isInt() && v.getInt() > 1);
-                    }
-                };
-                if (a.isArray()) {
-                    for (int i = 0; i < std::min(a.arrayGetLength(), 8) && spend(c); ++i) {
-                        check(a.arrayGet(i));
-                    }
-                } else {
-                    check(a);
-                }
-                flags |= spanned ? sfSpanned : 0;
-            }
-            const auto [alt, altTex] = textValue(e, "Alt", c);
-            const auto [actual, actualTex] = textValue(e, "ActualText", c);
-            flags |= (alt ? sfAlt : 0) | (altTex == texYes ? sfAltTex : 0) | (actual ? sfActual : 0) | (actualTex == texYes ? sfActualTex : 0);
-            flags |= (altTex == texUnknown || actualTex == texUnknown) ? sfTexUnknown : 0;
-            const Object &afNF = e.dictLookupNF("AF");
-            Object af = afNF.isRef() ? (spend(c) ? fetch(afNF.getRef(), c) : Object::null()) : afNF.copy();
-            out.mathmlFiles = static_cast<uint8_t>(std::min<uint64_t>(afMathml(af.isArray() ? af : afNF, c), 16));
-            out.role = role;
-            out.flags = flags;
-            const Object &p = e.dictLookupNF("P");
-            out.parent = p.isRef() ? p.getRef() : Ref::INVALID();
-        }
-        // a result a budget or a refused repair shaped is not kept
-        if (!c->truncated && xref->getSuppressedRepairs() == repairsBefore && cache.elements.size() < maxStructElementCache) {
-            cache.elements.emplace(ref, out);
-        }
-        return out;
-    }
-
-    XRef *xref;
-    MathDocCache &cache;
-    Object roleMap;
-    std::unordered_set<Ref> seen;
-    size_t work = 0;
-};
 
 // an axis-aligned box in page space (y down)
 struct FlowBox
@@ -4077,7 +3303,8 @@ uint64_t log2Bucket(uint64_t n)
     return n == 0 ? 0 : std::min<uint64_t>(15, static_cast<uint64_t>(std::bit_width(n)));
 }
 
-// bit order of mathBits and tableBits (an API: append only)
+// bit order of mathBits and tableBits (an API: append only). alt-tex, mathml, formula-struct and
+// tagged-table are reserved: they needed the structure tree, which is never read, and are never set
 constexpr const char *mathBitNames[] = { "text-math",         "stacked-math",         "actualtext-tex",     "alt-tex",        "mathml",      "raster-strips",     "glyph-outlines",
                                          "type3-bitmap-font", "math-font-no-unicode", "plain-unicode-math", "formula-struct", "math-matrix", "analysis-truncated" };
 constexpr const char *tableBitNames[] = { "rule-grid", "hrule-open", "booktabs", "whitespace", "shaded-rows", "tagged-table", "raster-table-like", "outlined-text-grid", "math-grid", "analysis-truncated" };
@@ -4389,14 +3616,6 @@ std::string PageFacts::docLine(PDFDoc *doc, bool passwordGiven)
         }
         bool outlineTruncated = false;
         j.kint("outlineCount", static_cast<uint64_t>(countOutline(catLookup("Outlines"), &outlineTruncated)));
-        if (wants(MathTables)) {
-            // MathML files associated with the whole document (the catalog's /AF)
-            StructCounts c;
-            StructWalk walk(xref, st->mathDoc);
-            Object af = catLookup("AF");
-            Object afNF = catDict.isDict() ? catDict.dictLookupNF("AF").copy() : Object::null();
-            j.kint("mathmlFiles", walk.afMathml(af.isArray() ? af : afNF, &c));
-        }
         j.kbool("pageLabels", !catLookup("PageLabels").isNull());
         Object names = catLookup("Names");
         bool filesTruncated = false;
@@ -5190,7 +4409,6 @@ void PageFacts::endPage(const TextPage &text)
     std::vector<RuleTable> rTables, wTables;
     bool rTablesTruncated = false;
     size_t shadedTables = 0;
-    StructCounts sc;
     uint64_t mathBits = 0, tableBits = 0, encodingCounts = 0;
     if (mt) {
         for (const State::WordBox &w : s.wordBoxes) {
@@ -5359,10 +4577,6 @@ void PageFacts::endPage(const TextPage &text)
         shadedTables = shadedRowTables(text.getRules(), aw, body, pageW, pageH, ruled, budget, &shadedSpans);
         ruled.insert(ruled.end(), shadedSpans.begin(), shadedSpans.end());
         wTables = whitespaceTables(aw, body, ruled, budget);
-        if (docXref && s.page) {
-            StructWalk walk(docXref, s.mathDoc);
-            sc = walk.page(s.page);
-        }
         std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
         for (const TextRule &r : text.getRules()) {
             const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
@@ -5387,33 +4601,32 @@ void PageFacts::endPage(const TextPage &text)
             }
             whitespace += !matrix;
         }
-        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
-        const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
+        const bool truncatedAnalysis = budget.hit || s.markedTexUnknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
+        const uint64_t texSources = s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
-                           sc.actualTextTexLike + s.markedActualTex > 0,
-                           sc.altTextTexLike > 0,
-                           sc.mathml + sc.mathmlFiles > 0,
+                           s.markedActualTex > 0,
+                           false, // alt-tex: reserved (never set)
+                           false, // mathml: reserved (never set)
                            mathStrips > 0,
                            outlineClusters > 0,
                            s.classGlyphs[mcType3Bitmap] > 0,
                            s.mathUnreadable >= 2 && 4 * s.mathUnreadable >= s.mathReadable + s.mathUnreadable,
                            s.uniPlainCore >= 3,
-                           sc.formulas > 0,
+                           false, // formula-struct: reserved (never set)
                            mathGrids > 0,
                            truncatedAnalysis };
         static_assert(sizeof(m) / sizeof(m[0]) == mathBitCount);
         for (int i = 0; i < mathBitCount; ++i) {
             mathBits |= uint64_t(m[i]) << i;
         }
-        const bool t[] = { ruledGrids > 0, open > 0, booktabs > 0, whitespace > 0, shadedTables > 0, sc.tables > 0, rasterTableLike > 0, outlinedGrids > 0, mathGrids > 0, truncatedAnalysis };
+        const bool t[] = { ruledGrids > 0, open > 0, booktabs > 0, whitespace > 0, shadedTables > 0, false /* tagged-table: reserved (never set) */, rasterTableLike > 0, outlinedGrids > 0, mathGrids > 0, truncatedAnalysis };
         static_assert(sizeof(t) / sizeof(t[0]) == tableBitCount);
         for (int i = 0; i < tableBitCount; ++i) {
             tableBits |= uint64_t(t[i]) << i;
         }
-        const uint64_t counts[] = {
-            s.mathReadable, s.uniPlain, s.mathUnreadable + s.classGlyphs[mcType3Bitmap], mathStrips, outlineClusters, sc.formulas, texSources, sc.mathml + sc.mathmlFiles, ruledGrids, rTables.size(), wTables.size(), sc.tables, regions.size()
-        };
+        // nibbles 5 (formulas), 7 (mathml) and 11 (tagged tables) are reserved: always 0
+        const uint64_t counts[] = { s.mathReadable, s.uniPlain, s.mathUnreadable + s.classGlyphs[mcType3Bitmap], mathStrips, outlineClusters, 0, texSources, 0, ruledGrids, rTables.size(), wTables.size(), 0, regions.size() };
         static_assert(sizeof(counts) / sizeof(counts[0]) == 13); // 52 bits: exact in a JSON reader's double
         for (size_t i = 0; i < 13; ++i) {
             encodingCounts |= log2Bucket(counts[i]) << (4 * i);
@@ -5988,25 +5201,13 @@ void PageFacts::endPage(const TextPage &text)
         }
     }
 
-    // mathtables: the structure facts, the readable math and table summaries (full), and the
+    // mathtables: the marked-content facts, the readable math and table summaries (full), and the
     // packed words (every level that includes the family)
     if (mt && wants(Structure)) {
         j.kopen("structure");
-        j.kint("formulas", sc.formulas);
-        j.kint("tables", sc.tables);
-        j.kint("tableRows", sc.tableRows);
-        j.kint("tableCells", sc.tableCells);
-        j.kint("spannedCells", sc.spannedCells);
-        j.kint("mathml", sc.mathml);
-        j.kint("mathmlFiles", sc.mathmlFiles);
-        j.kint("altText", sc.altText);
-        j.kint("altTextTexLike", sc.altTextTexLike);
-        j.kint("actualText", sc.actualText + s.markedActual);
-        j.kint("actualTextTexLike", sc.actualTextTexLike + s.markedActualTex);
-        j.kint("markedActualText", s.markedActual);
-        j.kint("markedActualTextTexLike", s.markedActualTex);
-        j.kbool("truncated", sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown);
-        j.kbool("unknown", sc.unknown);
+        j.kint("actualText", s.markedActual);
+        j.kint("actualTextTexLike", s.markedActualTex);
+        j.kbool("truncated", s.markedTexUnknown);
         j.close();
     }
     if (mt && full) {
