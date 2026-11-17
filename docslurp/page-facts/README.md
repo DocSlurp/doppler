@@ -493,6 +493,19 @@ readable directory (bare CFF, not embedded); `symbol`; `text`. A font's class is
 document by reference; reads are made under a RepairGuard (they cannot rebuild the
 cross-reference table) and at most 65,536 a run (past it, names alone: `analysis-truncated`).
 
+**Reads stay bounded and say when they are partial.** A font's class is computed once per font
+object (a direct font dictionary by its content hash, so a form drawn thousands of times
+classifies its inline fonts once). Every stream read for classification (Type 3 glyph
+procedures, a font program's head, an untyped associated file) caps the encoded bytes read
+(16 KB, 64 KB, 16 KB) as well as the decoded bytes (1 KB, 4 KB, 2 KB): a longer stream is decoded
+from a copy of its first encoded bytes (an encrypted document's is not read), so a deflate
+stream of empty stored blocks costs at most the cap. Structure elements and indirect Alt and
+ActualText strings are read once a document (a string thousands of elements share is parsed
+once; its first 4,096 code units are tested); associated files once each, under a document
+budget of 4 MB of encoded bytes. What cannot be read is reported: `structure.unknown`, and a
+font whose procedures or program could not be read, or a font past the 256-font cap, makes
+the page `analysis-truncated` rather than a definite class.
+
 **Bounds.** Math glyph centres (8,192), math words (4,096), regions (64 listed), rule tables
 (64), rules (4,096 a direction), a page's comparisons (2^21: `analysis-truncated`), structure
 objects a page (65,536), parent links (64), number-tree depth (32, a binary search of `/Nums`),

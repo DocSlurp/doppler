@@ -301,7 +301,7 @@
         "structure": {
           "description": "structure and mathtables: the page's tagged structure: the elements its marked content belongs to (the parent tree's entry for the page's /StructParents) and all their ancestors, each counted once, RoleMap (8 hops) and a namespace's RoleMapNS applied; at most 65,536 objects visited a page (truncated). Added within /1.",
           "type": "object",
-          "required": ["formulas", "tables", "tableRows", "tableCells", "spannedCells", "mathml", "mathmlFiles", "altText", "altTextTexLike", "actualText", "actualTextTexLike", "markedActualText", "markedActualTextTexLike", "truncated"],
+          "required": ["formulas", "tables", "tableRows", "tableCells", "spannedCells", "mathml", "mathmlFiles", "altText", "altTextTexLike", "actualText", "actualTextTexLike", "markedActualText", "markedActualTextTexLike", "truncated", "unknown"],
           "properties": {
             "formulas": { "$ref": "#/$defs/count" }, "tables": { "$ref": "#/$defs/count" }, "tableRows": { "$ref": "#/$defs/count" }, "tableCells": { "$ref": "#/$defs/count", "description": "TD and TH" },
             "spannedCells": { "$ref": "#/$defs/count", "description": "cells whose attributes set RowSpan or ColSpan above 1" },
@@ -312,7 +312,8 @@
             "actualTextTexLike": { "$ref": "#/$defs/count" },
             "markedActualText": { "$ref": "#/$defs/count", "description": "marked-content /ActualText spans alone" },
             "markedActualTextTexLike": { "$ref": "#/$defs/count" },
-            "truncated": { "type": "boolean" }
+            "truncated": { "type": "boolean", "description": "a cap or budget was hit: the counts are lower bounds" },
+            "unknown": { "type": "boolean", "description": "part of the page's structure could not be read (a parent-tree entry the page names is missing, an element is not a dictionary, an associated file cannot be read or the document's 4 MB sniff budget is spent): the counts are not a definite 0" }
           }
         },
         "mathRegions": {

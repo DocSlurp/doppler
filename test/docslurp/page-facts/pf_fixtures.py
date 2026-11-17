@@ -1246,6 +1246,51 @@ def math_tables_hostile_pdf():
     )
 
 
+def _empty_deflate(n_blocks):
+    """A zlib stream of empty stored blocks: decodes to nothing, costs a full inflate."""
+    return b"\x78\x01" + b"\x00\x00\x00\xff\xff" * n_blocks + b"\x01\x00\x00\xff\xff" + b"\x00\x00\x00\x01"
+
+
+def math_tables_council_pdf():
+    """Council negative cases for the mathtables reads (each must stay bounded):
+    1 50,000 Formula elements sharing one 1 MB Alt string and one /AF array whose file is an
+      untyped stream of empty stored deflate blocks (2 MB encoded, decodes to nothing);
+    2 3,000 Tf of an inline (direct) Type 3 font whose glyph procedures are such streams, a form
+      with its own inline Type 3 font drawn 2,000 times, and a TrueType program that is one.
+    Objects are numbered directly (doc()'s placeholders would be quadratic in 50,000 objects)."""
+    big = _empty_deflate(400000)
+    elems = 50000
+    # 1 catalog, 2 pages, 3 Helvetica, 4/5 page 1, 6/7 page 2, then:
+    root, docel, ptree, leaves, alt, afarr, spec, efile, empty, form = range(8, 18)
+    first = 18
+    t3 = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R /b %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>" % (empty, empty)
+    tt = "<< /Type /Font /Subtype /TrueType /BaseFont /EmptyBlocks /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor << /Type /FontDescriptor /FontName /EmptyBlocks /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >> >>" % (" ".join(["500"] * 95), empty)
+    page2 = "".join("BT /T3 10 Tf %d %d Td (ab) Tj ET\n" % (72 + (k % 40) * 12, 700 - (k // 40) * 8) for k in range(3000))
+    page2 += "q /Fm Do Q\n" * 2000 + "BT /TT 10 Tf 72 40 Td (xyz) Tj ET\n"
+    page1 = "/P << /MCID 0 >> BDC " + words(10) + " EMC\n"
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot %d 0 R >>" % root,
+        "<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>",
+        HELV,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /StructParents 0 >>",
+        t.stream("", page1),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /T3 %s /TT %s >> /XObject << /Fm %d 0 R >> >> /Contents 7 0 R >>" % (t3, tt, form),
+        t.stream("", page2),
+        "<< /Type /StructTreeRoot /K %d 0 R /ParentTree %d 0 R >>" % (docel, ptree),
+        "<< /Type /StructElem /S /Document /P %d 0 R >>" % root,
+        "<< /Nums [0 %d 0 R] >>" % leaves,
+        "[%s]" % " ".join("%d 0 R" % (first + k) for k in range(elems)),
+        "(\\\\frac{a}{b} %s)" % ("x" * (1 << 20)),
+        "[%d 0 R]" % spec,
+        "<< /Type /Filespec /F (f.bin) /EF << /F %d 0 R >> >>" % efile,
+        t.stream("/Type /EmbeddedFile /Filter /FlateDecode", big),
+        t.stream("/Filter /FlateDecode", big),
+        t.stream("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /Font << /T4 << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [600] /Resources << >> >> >> >>" % empty, "BT /T4 10 Tf 0 0 Td (a) Tj ET"),
+    ]
+    assert len(objs) == first - 1
+    objs += ["<< /Type /StructElem /S /Formula /P %d 0 R /K 0 /Alt %d 0 R /AF %d 0 R >>" % (docel, alt, afarr)] * elems
+    return t.build_pdf(objs)
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -1288,4 +1333,5 @@ ALL = {
     "facts_only_read": facts_only_read_pdf,
     "math_tables": math_tables_pdf,
     "math_tables_hostile": math_tables_hostile_pdf,
+    "math_tables_council": math_tables_council_pdf,
 }

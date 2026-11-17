@@ -689,7 +689,7 @@ with t.TempDir() as d:
     t.check(pages[9]["mathLayout"]["fractionBars"] == 1 and pages[9]["mathLayout"]["matrixRegions"] == 1, "mathLayout: a fraction bar and a 2x2 matrix", repr(pages[9]["mathLayout"]))
     st = pages[8]["structure"]
     t.check(
-        st == {"formulas": 1, "tables": 1, "tableRows": 1, "tableCells": 1, "spannedCells": 1, "mathml": 2, "mathmlFiles": 1, "altText": 1, "altTextTexLike": 1, "actualText": 1, "actualTextTexLike": 1, "markedActualText": 1, "markedActualTextTexLike": 1, "truncated": False},
+        st == {"formulas": 1, "tables": 1, "tableRows": 1, "tableCells": 1, "spannedCells": 1, "mathml": 2, "mathmlFiles": 1, "altText": 1, "altTextTexLike": 1, "actualText": 1, "actualTextTexLike": 1, "markedActualText": 1, "markedActualTextTexLike": 1, "truncated": False, "unknown": False},
         "structure: Formula, role-mapped Table, spanned cell, MathML elements and file, TeX Alt and ActualText", repr(st))
     t.check(pages[10]["vectors"]["glyphOutlineClusters"] == 1 and [r["kind"] for r in pages[10]["mathRegions"]] == ["outline"], "vectors: a glyph-outline formula, an outline region", repr(pages[10].get("mathRegions")))
     t.check(all(b"PlainFace" not in l and b"CMMI" not in l and b"\\\\frac" not in l and b"KaTeX" not in l for l in facts(paths["math_tables"], "-level", "full")[1].splitlines()), "mathtables: no font name or Alt text in the output")
@@ -711,6 +711,18 @@ with t.TempDir() as d:
     hs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
     t.check(hs[2]["structure"]["formulas"] == 1 and hs[2]["structure"]["tables"] == 1, "mathtables hostile: a cyclic /P chain counts each element once", repr(hs[2]["structure"]))
     t.check(hs[4]["mathBits"] >> 12 & 1 and hs[4]["tableBits"] >> 9 & 1 and "limit-hit" in hs[4]["parseWarnings"], "mathtables hostile: the page's analysis budget runs out: analysis-truncated, limit-hit", repr(hs[4]["mathFlags"]))
+    # council negative cases: a 1 MB Alt string and an /AF array that 50,000 elements share,
+    # untyped files and glyph procedures of empty stored deflate blocks (2 MB, decode to
+    # nothing), an inline Type 3 font set 3,000 times and drawn by a form 2,000 times: bounded,
+    # and what could not be read is reported as truncated or unknown, never a definite 0
+    start = time.monotonic()
+    rc, out, err = facts(paths["math_tables_council"], "-level", "full")
+    took = time.monotonic() - start
+    t.check(rc == 0 and took < 20, "mathtables council: exit 0, bounded time", "%r %.1fs" % (rc, took))
+    cs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
+    st = cs[1]["structure"]
+    t.check(st["formulas"] > 0 and st["altTextTexLike"] == st["formulas"] and (st["truncated"] or st["formulas"] == 50000) and st["unknown"] and cs[1]["mathBits"] >> 12 & 1, "mathtables council: shared Alt and /AF read once; capped or unreadable reads say truncated/unknown", repr(st))
+    t.check(cs[2]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and cs[2]["mathBits"] >> 12 & 1 and cs[2]["tableBits"] >> 9 & 1, "mathtables council: an unreadable Type 3 font is unknown (analysis-truncated), not a definite class", repr(cs[2]["mathFlags"]))
     t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
 
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------

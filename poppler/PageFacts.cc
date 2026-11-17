@@ -2130,10 +2130,25 @@ struct MathDocCache
     std::unordered_map<Ref, uint8_t> fontClasses;
     std::map<std::string, uint8_t, std::less<>> roles;
     std::unordered_map<Ref, bool> mathmlNamespaces;
-    std::unordered_map<Ref, bool> mathmlFiles;
+    std::unordered_map<Ref, uint8_t> mathmlFiles; // 0 not MathML, 1 MathML, 2 unknown (unreadable or past the budget)
     // parent-tree nodes by reference (a flat /Nums array of every page is parsed once, not once a
     // page); at most 4,096, never one a refused repair shaped
     std::unordered_map<Ref, Object> treeNodes;
+    // structure elements by reference, read once a document (an ancestor many pages share, or a
+    // large Alt string many elements name, is parsed once): at most maxStructElementCache
+    struct Element
+    {
+        Ref parent = Ref::INVALID();
+        uint8_t role = 0; // StructRole
+        uint8_t flags = 0; // StructFlag bits
+        uint8_t mathmlFiles = 0;
+        bool terminal = false; // not an element (the tree root, or not a dictionary)
+        bool unreadable = false;
+    };
+    std::unordered_map<Ref, Element> elements;
+    // indirect Alt and ActualText strings: bit 0 a string, bit 1 TeX-like
+    std::unordered_map<Ref, uint8_t> strings;
+    size_t sniffBytesLeft = size_t(4) << 20; // encoded bytes of untyped associated files sniffed a document
     size_t fontReadsLeft = maxFontProbeReads; // over the run
     void sync(XRef *x)
     {
@@ -2143,11 +2158,69 @@ struct MathDocCache
             mathmlNamespaces.clear();
             mathmlFiles.clear();
             treeNodes.clear();
+            elements.clear();
+            strings.clear();
+            sniffBytesLeft = size_t(4) << 20;
             xref = x;
             generation = x ? x->getGeneration() : 0;
         }
     }
 };
+
+// The first <decodedCap> decoded bytes of a stream with text filters only (textFiltersOnly),
+// reading at most <rawCap> of its encoded bytes: a filter that yields nothing (a deflate stream
+// of empty stored blocks) cannot make the read cost the whole stream. A stream longer than
+// rawCap is decoded from a copy of its first rawCap encoded bytes; in an encrypted document that
+// copy would skip decryption, so nothing is read (*unknown). *unknown is also set when the
+// stream cannot be read at all.
+std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypted, bool *unknown)
+{
+    if (!obj.isStream() || !textFiltersOnly(obj.getStream())) {
+        *unknown = *unknown || obj.isStream();
+        return {};
+    }
+    Stream *str = obj.getStream();
+    BaseStream *base = str->getBaseStream();
+    const Goffset len = base ? base->getLength() : -1;
+    if (len >= 0 && static_cast<uint64_t>(len) <= rawCap) {
+        return readCapped(obj, decodedCap);
+    }
+    Stream *raw = str->getUndecodedStream();
+    if (encrypted || !raw || !str->getDict() || !raw->rewind()) {
+        *unknown = true;
+        return {};
+    }
+    std::vector<char> head(rawCap);
+    const int got = raw->doGetChars(static_cast<int>(rawCap), reinterpret_cast<unsigned char *>(head.data()));
+    raw->close();
+    if (got <= 0) {
+        *unknown = true;
+        return {};
+    }
+    head.resize(static_cast<size_t>(got));
+    std::unique_ptr<Stream> decoded = Stream::addFilters(std::make_unique<AutoFreeMemStream>(std::move(head), Object::null()), str->getDict());
+    std::string out;
+    if (!decoded || !decoded->rewind()) {
+        *unknown = true;
+        return out;
+    }
+    unsigned char buf[4096];
+    while (out.size() < decodedCap) {
+        const int n = decoded->doGetChars(static_cast<int>(std::min(sizeof(buf), decodedCap - out.size())), buf);
+        if (n <= 0) {
+            break;
+        }
+        out.append(reinterpret_cast<const char *>(buf), n);
+    }
+    decoded->close();
+    // a cut copy that decoded to less than asked: what the rest holds is unknown
+    *unknown = *unknown || out.size() < decodedCap;
+    return out;
+}
+
+constexpr size_t maxCharProcRaw = 16384; // encoded bytes of a Type 3 glyph procedure read
+constexpr size_t maxFontProbeRaw = 65536; // encoded bytes of a font program's head read
+constexpr size_t maxSniffRaw = 16384; // encoded bytes of an untyped associated file read
 
 // One font's class. Reads (under a RepairGuard, so they cannot rebuild the table drawing uses):
 // a Type 3 font's first maxCharProcsProbed glyph procedures (maxCharProcBytes each, text filters
@@ -2160,11 +2233,15 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
 {
     cache.sync(xref);
     const Ref id = *font->getID();
-    const bool cacheable = id.num >= 0 && id.gen < 100000; // GfxFontDict gives direct font dicts gen >= 100000
+    // once per font object: a direct font dictionary has a content-hash id (GfxFontDict, gen >=
+    // 100000), so a form drawn thousands of times, each draw parsing its resources again, still
+    // classifies its inline fonts once (a hash collision can only misclass a hostile file's font)
+    const bool cacheable = true;
     if (cacheable) {
         const auto it = cache.fontClasses.find(id);
         if (it != cache.fontClasses.end()) {
-            return it->second;
+            *limited = *limited || (it->second & 0x80); // bit 7: the class is from names alone
+            return it->second & 0x7f;
         }
     }
     std::optional<XRef::RepairGuard> guard;
@@ -2193,8 +2270,10 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                     break;
                 }
                 Object proc = procs->getVal(i);
-                const std::string text = readCapped(proc, maxCharProcBytes);
+                bool unreadable = false;
+                const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable);
                 if (text.empty()) {
+                    budgetHit = budgetHit || unreadable; // unknown, not a definite vector font
                     continue;
                 }
                 ++examined;
@@ -2236,7 +2315,8 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
     Ref embedded;
     if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
         Object program = xref->fetch(embedded);
-        table = sfntMath(readCapped(program, maxFontProbeBytes));
+        bool unreadable = false;
+        table = sfntMath(readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable));
         if (table == SfntMath::Yes) {
             cls = mcOtfMath;
         }
@@ -2256,8 +2336,10 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
         cls = mcText;
     }
     *limited = *limited || budgetHit;
-    if (cacheable && !budgetHit && cache.fontClasses.size() < maxFontClassCache) {
-        cache.fontClasses.emplace(id, cls);
+    // cached even when limited (once per font object: a font whose class is unknown stays so, and
+    // every page it is drawn on is analysis-truncated through fontClassLimited of the first)
+    if (cacheable && cache.fontClasses.size() < maxFontClassCache) {
+        cache.fontClasses.emplace(id, budgetHit ? static_cast<uint8_t>(cls | 0x80) : cls);
     }
     return cls;
 }
@@ -2266,8 +2348,20 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
 struct StructCounts
 {
     uint64_t formulas = 0, tables = 0, tableRows = 0, tableCells = 0, spannedCells = 0, mathml = 0, mathmlFiles = 0, altText = 0, altTextTexLike = 0, actualText = 0, actualTextTexLike = 0;
-    bool truncated = false;
+    bool truncated = false; // a cap or budget was hit: the counts are lower bounds
+    bool unknown = false; // the page's structure could not be read (a missing parent-tree entry, a broken element): counts are not a definite 0
 };
+
+enum StructFlag : uint8_t
+{
+    sfMathml = 1,
+    sfAlt = 2,
+    sfAltTex = 4,
+    sfActual = 8,
+    sfActualTex = 16,
+    sfSpanned = 32
+};
+constexpr size_t maxStructElementCache = size_t(1) << 18;
 
 enum StructRole : uint8_t
 {
@@ -2321,16 +2415,21 @@ public:
             c.mathmlFiles += afMathml(af.isArray() ? af : pageObj.dictLookupNF("AF"), &c);
         }
         Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
+        const bool tagged = catalog.isDict() && !catalog.dictLookupNF("StructTreeRoot").isNull();
         Object root = catalog.isDict() ? catalog.dictLookup("StructTreeRoot") : Object::null();
+        Object sp = pageObj.isDict() ? pageObj.dictLookup("StructParents") : Object::null();
         if (!root.isDict()) {
+            c.unknown = tagged; // a /StructTreeRoot that is not a readable dictionary
             return c;
         }
-        Object sp = pageObj.isDict() ? pageObj.dictLookup("StructParents") : Object::null();
         if (!sp.isInt()) {
-            return c;
+            return c; // a page with no marked structure: a definite 0
         }
         roleMap = root.dictLookup("RoleMap");
         Object entry = numberTreeGet(cachedFetch(root.dictLookupNF("ParentTree")), sp.getInt(), &c);
+        if (entry.isNull() && !c.truncated) {
+            c.unknown = true; // the page names a parent-tree entry the tree does not give
+        }
         std::vector<Object> leaves;
         if (entry.isArray()) {
             for (int i = 0; i < entry.arrayGetLength(); ++i) {
@@ -2343,27 +2442,27 @@ public:
             leaves.push_back(entry.copy());
         }
         for (const Object &leaf : leaves) {
-            Object cur = leaf.copy();
-            for (int depth = 0; depth < maxStructDepth && !c.truncated; ++depth) {
-                if (cur.isRef()) {
-                    if (!seen.insert(cur.getRef()).second) {
-                        break; // counted already (or a cycle)
-                    }
-                    if (!spend(&c)) {
-                        break;
-                    }
-                    cur = xref->fetch(cur.getRef());
-                } else if (depth > 0) {
-                    break; // a parent must be indirect
+            if (leaf.isNull() || leaf.isInt()) {
+                continue; // an MCID with no element (allowed)
+            }
+            if (!leaf.isRef()) {
+                c.unknown = true; // elements are indirect
+                continue;
+            }
+            Ref cur = leaf.getRef();
+            for (int depth = 0; depth < maxStructDepth && !c.truncated && cur != Ref::INVALID(); ++depth) {
+                if (!seen.insert(cur).second || !spend(&c)) {
+                    break; // counted already (or a cycle), or the budget
                 }
-                if (!cur.isDict() || cur.isDict("StructTreeRoot")) {
+                const MathDocCache::Element e = element(cur, &c);
+                if (e.unreadable) {
+                    c.unknown = true;
+                }
+                if (e.terminal) {
                     break;
                 }
-                element(cur, &c);
-                cur = cur.dictLookupNF("P").copy();
-                if (!cur.isRef()) {
-                    break;
-                }
+                add(e, &c);
+                cur = e.parent;
             }
             if (c.truncated) {
                 break;
@@ -2531,14 +2630,15 @@ private:
         if (specNF.isRef()) {
             const auto it = cache.mathmlFiles.find(specNF.getRef());
             if (it != cache.mathmlFiles.end()) {
-                return it->second;
+                c->unknown = c->unknown || it->second == 2;
+                return it->second == 1;
             }
         }
         if (!spend(c)) {
             return false;
         }
         Object spec = specNF.isRef() ? xref->fetch(specNF.getRef()) : specNF.copy();
-        bool m = false;
+        bool m = false, undecided = false;
         auto test = [&](Object &file) {
             if (!file.isStream() || !file.getStream()->getDict()) {
                 return;
@@ -2546,8 +2646,13 @@ private:
             Object sub = file.getStream()->getDict()->lookup("Subtype");
             if (sub.isName()) {
                 m = sub.isName("application/mathml+xml");
+            } else if (cache.sniffBytesLeft < maxSniffRaw) {
+                undecided = true; // the document's sniff budget is spent: unknown, not false
             } else if (spend(c)) {
-                m = readCapped(file, 2048).find(mathmlNamespace) != std::string::npos;
+                cache.sniffBytesLeft -= maxSniffRaw;
+                bool unreadable = false;
+                m = readHead(file, 2048, maxSniffRaw, xref->isEncrypted(), &unreadable).find(mathmlNamespace) != std::string::npos;
+                undecided = undecided || (unreadable && !m);
             }
         };
         if (spec.isStream()) {
@@ -2561,22 +2666,19 @@ private:
             Object file = ef.dictLookup(key);
             test(file);
         }
-        if (specNF.isRef() && cache.mathmlFiles.size() < 4096) {
-            cache.mathmlFiles.emplace(specNF.getRef(), m);
+        if (undecided) {
+            c->unknown = true;
+        }
+        // undecided files are remembered too: one unreadable file many elements share is read once
+        if (specNF.isRef() && cache.mathmlFiles.size() < maxStructElementCache) {
+            cache.mathmlFiles.emplace(specNF.getRef(), undecided ? uint8_t(2) : uint8_t(m ? 1 : 0));
         }
         return m;
     }
 
-    void element(const Object &e, StructCounts *c)
+    static void add(const MathDocCache::Element &e, StructCounts *c)
     {
-        Object s = e.dictLookup("S");
-        const Object &nsNF = e.dictLookupNF("NS");
-        Object ns = nsNF.isRef() ? (spend(c) ? xref->fetch(nsNF.getRef()) : Object::null()) : nsNF.copy();
-        if (mathmlNs(nsNF, ns)) {
-            ++c->mathml;
-        }
-        const StructRole role = s.isName() ? roleOf(s.getNameString(), ns) : roleOther;
-        switch (role) {
+        switch (static_cast<StructRole>(e.role)) {
         case roleFormula:
             ++c->formulas;
             break;
@@ -2587,44 +2689,103 @@ private:
             ++c->tableRows;
             break;
         case roleTD:
-        case roleTH: {
+        case roleTH:
             ++c->tableCells;
-            Object a = e.dictLookup("A");
-            bool spanned = false;
-            auto check = [&](const Object &attrs) {
-                if (!attrs.isDict()) {
-                    return;
-                }
-                for (const char *key : { "RowSpan", "ColSpan" }) {
-                    Object v = attrs.dictLookup(key);
-                    spanned = spanned || (v.isInt() && v.getInt() > 1);
-                }
-            };
-            if (a.isArray()) {
-                for (int i = 0; i < std::min(a.arrayGetLength(), 8) && spend(c); ++i) {
-                    check(a.arrayGet(i));
-                }
-            } else {
-                check(a);
-            }
-            c->spannedCells += spanned;
+            c->spannedCells += (e.flags & sfSpanned) != 0;
             break;
-        }
         case roleOther:
             break;
         }
-        Object alt = e.dictLookup("Alt");
-        if (alt.isString()) {
-            ++c->altText;
-            c->altTextTexLike += texLike(alt.getString());
+        c->mathml += (e.flags & sfMathml) != 0;
+        c->altText += (e.flags & sfAlt) != 0;
+        c->altTextTexLike += (e.flags & sfAltTex) != 0;
+        c->actualText += (e.flags & sfActual) != 0;
+        c->actualTextTexLike += (e.flags & sfActualTex) != 0;
+        c->mathmlFiles += e.mathmlFiles;
+    }
+
+    // an /Alt or /ActualText value: (is a string, is TeX-like). An indirect string is read once a
+    // document (a large string many elements share); its first maxTexScan code units are tested.
+    std::pair<bool, bool> textValue(const Object &dict, const char *key, StructCounts *c)
+    {
+        const Object &nf = dict.dictLookupNF(key);
+        if (nf.isString()) {
+            return { true, texLike(nf.getString()) };
         }
-        Object actual = e.dictLookup("ActualText");
-        if (actual.isString()) {
-            ++c->actualText;
-            c->actualTextTexLike += texLike(actual.getString());
+        if (!nf.isRef()) {
+            return { false, false };
         }
-        Object af = e.dictLookup("AF");
-        c->mathmlFiles += afMathml(af.isArray() ? af : e.dictLookupNF("AF"), c);
+        const auto it = cache.strings.find(nf.getRef());
+        if (it != cache.strings.end()) {
+            return { (it->second & 1) != 0, (it->second & 2) != 0 };
+        }
+        if (!spend(c)) {
+            return { false, false };
+        }
+        Object v = xref->fetch(nf.getRef());
+        const bool str = v.isString(), tex = str && texLike(v.getString());
+        if (cache.strings.size() < maxStructElementCache) {
+            cache.strings.emplace(nf.getRef(), uint8_t((str ? 1 : 0) | (tex ? 2 : 0)));
+        }
+        return { str, tex };
+    }
+
+    // an element's facts, from the cache or read once (its role, flags, /AF MathML files, parent)
+    MathDocCache::Element element(Ref ref, StructCounts *c)
+    {
+        const auto it = cache.elements.find(ref);
+        if (it != cache.elements.end()) {
+            return it->second;
+        }
+        MathDocCache::Element out;
+        const unsigned int repairsBefore = xref->getSuppressedRepairs();
+        Object e = xref->fetch(ref);
+        if (!e.isDict() || e.isDict("StructTreeRoot")) {
+            out.terminal = true;
+            out.unreadable = !e.isDict();
+        } else {
+            Object s = e.dictLookup("S");
+            const Object &nsNF = e.dictLookupNF("NS");
+            Object ns = nsNF.isRef() ? (spend(c) ? xref->fetch(nsNF.getRef()) : Object::null()) : nsNF.copy();
+            uint8_t flags = mathmlNs(nsNF, ns) ? sfMathml : 0;
+            const StructRole role = s.isName() ? roleOf(s.getNameString(), ns) : roleOther;
+            if (role == roleTD || role == roleTH) {
+                Object a = e.dictLookup("A");
+                bool spanned = false;
+                auto check = [&](const Object &attrs) {
+                    if (!attrs.isDict()) {
+                        return;
+                    }
+                    for (const char *key : { "RowSpan", "ColSpan" }) {
+                        Object v = attrs.dictLookup(key);
+                        spanned = spanned || (v.isInt() && v.getInt() > 1);
+                    }
+                };
+                if (a.isArray()) {
+                    for (int i = 0; i < std::min(a.arrayGetLength(), 8) && spend(c); ++i) {
+                        check(a.arrayGet(i));
+                    }
+                } else {
+                    check(a);
+                }
+                flags |= spanned ? sfSpanned : 0;
+            }
+            const auto [alt, altTex] = textValue(e, "Alt", c);
+            const auto [actual, actualTex] = textValue(e, "ActualText", c);
+            flags |= (alt ? sfAlt : 0) | (altTex ? sfAltTex : 0) | (actual ? sfActual : 0) | (actualTex ? sfActualTex : 0);
+            const Object &afNF = e.dictLookupNF("AF");
+            Object af = afNF.isRef() ? (spend(c) ? xref->fetch(afNF.getRef()) : Object::null()) : afNF.copy();
+            out.mathmlFiles = static_cast<uint8_t>(std::min<uint64_t>(afMathml(af.isArray() ? af : afNF, c), 16));
+            out.role = role;
+            out.flags = flags;
+            const Object &p = e.dictLookupNF("P");
+            out.parent = p.isRef() ? p.getRef() : Ref::INVALID();
+        }
+        // a result a budget or a refused repair shaped is not kept
+        if (!c->truncated && xref->getSuppressedRepairs() == repairsBefore && cache.elements.size() < maxStructElementCache) {
+            cache.elements.emplace(ref, out);
+        }
+        return out;
     }
 
     XRef *xref;
@@ -4052,6 +4213,7 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
     }
     if (fams & MathTables) {
         const uint8_t cls = f ? f->mathClass : uint8_t(mcText);
+        s.fontClassLimited = s.fontClassLimited || (!f && s.fontsTruncated); // a font past the 256 cap: its class is unknown
         const bool mathFont = isMathClass(cls);
         ++s.classGlyphs[cls];
         for (int i = 0; i < uLen; ++i) {
@@ -4704,7 +4866,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         matrixRegions += delimitedMatrices(aw, budget);
         mathGrids += matrixRegions;
-        const bool truncatedAnalysis = budget.hit || sc.truncated || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
+        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
         const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
@@ -5323,6 +5485,7 @@ void PageFacts::endPage(const TextPage &text)
         j.kint("markedActualText", s.markedActual);
         j.kint("markedActualTextTexLike", s.markedActualTex);
         j.kbool("truncated", sc.truncated);
+        j.kbool("unknown", sc.unknown);
         j.close();
     }
     if (mt && full) {
