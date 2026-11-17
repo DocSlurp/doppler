@@ -124,11 +124,13 @@ with t.TempDir() as d:
         "objstm_valid_wsflate": ("objstm_filters.py", ["3", "500", "wsflateonly"]),
         "objstm_valid_a85flate": ("objstm_filters.py", ["3", "1", "a85flate"]),
         "objstm_members": ("objstm_members.py", ["100", "1000000"]),
+        "objstm_members_rebuild": ("objstm_members.py", ["100", "1000000", "members", "damaged"]),
+        "objstm_ws_rebuild2": ("objstm_ws_rebuild2.py", ["20", "64"]),
         "objstm_failing": ("objstm_failing.py", ["1000", "4194304"]),
         "objstm_rebuild_wsflate": ("objstm_ws_rebuild.py", ["3", "500"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py", "jbig2chain.py", "prevbig.py", "wsbomb.py", "objstm_jbig2.py", "objstm_filters.py", "objstm_ws_rebuild.py", "objstm_members.py", "objstm_failing.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py", "jbig2chain.py", "prevbig.py", "wsbomb.py", "objstm_jbig2.py", "objstm_filters.py", "objstm_ws_rebuild.py", "objstm_members.py", "objstm_failing.py", "objstm_ws_rebuild2.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():

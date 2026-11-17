@@ -1125,6 +1125,7 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
 // Attempt to construct an xref table for a damaged file.
 bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
 {
+    rebuildMembersLeft = 1000000; // object-stream members this rebuild reads the headers of (a file may rebuild a few times)
     ++generation;
     int *streamObjNums = nullptr;
     int streamObjNumsLen = 0;
@@ -1397,9 +1398,10 @@ void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
         return;
     }
     int nObjects = objN.getInt();
-    if (nObjects <= 0 || nObjects > 1000000) {
+    if (nObjects <= 0 || nObjects > 1000000 || nObjects > rebuildMembersLeft) {
         return;
     }
+    rebuildMembersLeft -= nObjects;
 
     // parse the header: object numbers and offsets, within what a header of nObjects entries needs
     // (a Flate stream of whitespace would otherwise be skipped to its end)
@@ -1407,7 +1409,7 @@ void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
     if (!objStrStream->rewind()) {
         return;
     }
-    Parser parser { nullptr, std::make_unique<EmbedStream>(objStrStream, Object::null(), true, 64LL * nObjects + 4096), false };
+    Parser parser { nullptr, std::make_unique<EmbedStream>(objStrStream, Object::null(), true, std::min<long long>(64LL * nObjects + 4096, maxObjectStreamDecoded)), false };
     for (int i = 0; i < nObjects; ++i) {
         auto obj1 = parser.getObj(true);
         auto obj2 = parser.getObj(true);

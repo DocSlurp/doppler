@@ -1,5 +1,5 @@
 import sys, struct, zlib
-# K ObjStms each with N zero-length members; page k lives in ObjStm k idx 0.  usage: out K N [mode]
+# K ObjStms each with N zero-length members; page k lives in ObjStm k idx 0.  usage: out K N [mode [damaged]]
 out_path=sys.argv[1]; K=int(sys.argv[2]); N=int(sys.argv[3]); mode=sys.argv[4] if len(sys.argv)>4 else "members"
 S=1000
 out=bytearray(b"%PDF-1.5\n"); off={}
@@ -24,5 +24,5 @@ for n in range(size):
     elif 10<=n<10+K: rows+=struct.pack(">BIH",2,S+(n-10),0)
     else: rows+=struct.pack(">BIH",0,0,0)
 out+=b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root 1 0 R /Length %d >>\nstream\n"%(S+K,size,len(rows))+bytes(rows)+b"\nendstream\nendobj\n"
-out+=b"startxref\n%d\n%%%%EOF\n"%xr
+out+=b"startxref\n%d\n%%%%EOF\n"%(1 if "damaged" in sys.argv[5:] else xr)  # damaged: the rebuild reads every header
 open(out_path,"wb").write(out)

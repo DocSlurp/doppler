@@ -407,6 +407,7 @@ private:
     void noteChainBudget(const char *what);
     bool readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n);
     bool chainStreamFiltersOk(Dict *dict);
+    long long rebuildMembersLeft = 0; // constructXRef sets it: object-stream members left for this rebuild's header reads
     long long objStrMembersLeft = 2000000; // takeObjectStreamMembers
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
