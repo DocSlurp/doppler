@@ -539,7 +539,9 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
         ok = false;
         return false;
     }
-    if (parsePos < 0) {
+    if (parsePos < 0 || parsePos > str->getStart() + str->getLength()) {
+        // An offset past the end of the file reads nothing; refusing it here also keeps a
+        // /Prev near 2^63 out of the file stream's offset arithmetic.
         ok = false;
         return false;
     }
@@ -834,6 +836,41 @@ err0:
     return false;
 }
 
+// Filters an older xref stream may use (readPrevChain): the ones whose work is bounded by the bytes
+// they are asked for. Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and clear their whole
+// bitmap before yielding a byte, so a few hundred bytes per section would cost seconds each.
+static bool chainFilterAllowed(const char *name)
+{
+    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW", "ASCIIHexDecode", "AHx", "ASCII85Decode", "A85" };
+    for (const char *a : allowed) {
+        if (strcmp(name, a) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool XRef::chainStreamFiltersOk(Dict *dict)
+{
+    Object f = dict->lookup("Filter");
+    if (f.isNone() || f.isNull()) {
+        return true;
+    }
+    if (f.isName()) {
+        return chainFilterAllowed(f.getName());
+    }
+    if (!f.isArray() || f.arrayGetLength() > 4) {
+        return false;
+    }
+    for (int i = 0; i < f.arrayGetLength(); ++i) {
+        Object n = f.arrayGet(i);
+        if (!n.isName() || !chainFilterAllowed(n.getName())) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
 {
     int w[3];
@@ -841,6 +878,13 @@ bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
     Object obj;
 
     ok = false;
+
+    if (chainDecodeLeft >= 0 && !chainStreamFiltersOk(xrefStr->getDict())) {
+        // an older section behind a filter whose cost the budgets cannot see is not read; like a
+        // refused predictor row, the first missing entry rebuilds
+        noteChainBudget("filter");
+        return false;
+    }
 
     Dict *dict = xrefStr->getDict();
     obj = dict->lookupNF("Size").copy();

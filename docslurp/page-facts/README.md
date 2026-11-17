@@ -531,8 +531,11 @@ first, as the lazy read did (an entry is taken from the newest section that list
   - decoding: older xref streams' decoded entries (one row of `/W` widths each) and predictor rows
     cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
     refused before it is allocated, and the section counts as past a bound. The main section reads
-    as upstream (no decode budget). Filter work (inflating, say) is bounded by the parse and
-    decode budgets, not counted on its own.
+    as upstream (no decode budget). An older xref stream may use only Flate, LZW, ASCIIHex and ASCII85
+    (at most four filters): an image codec allocates and clears its whole bitmap before it yields a
+    byte, which no budget here can see, so a section behind one is treated as past a bound (`filter`).
+    Filter work of the allowed kinds (inflating, say) is bounded by the parse and decode budgets.
+    An offset past the end of the file is refused before it reaches the stream.
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are

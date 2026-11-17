@@ -393,6 +393,7 @@ private:
     void chargeChainBytes(Goffset after, Goffset *chargedFrom);
     void noteChainBudget(const char *what);
     bool readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n);
+    bool chainStreamFiltersOk(Dict *dict);
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);

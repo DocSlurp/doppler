@@ -110,9 +110,13 @@ with t.TempDir() as d:
         "dp_reuse": ("dp_reuse.py", ["249"]),
         "notokbomb": ("notokbomb.py", ["200", "20000000"]),
         "failpred": ("failpred.py", ["249"]),
+        # council round 2 of the release after 4578a65: image-filtered older xref streams, the
+        # rebuild's predictor rows, and a /Prev near 2^63
+        "jbig2chain": ("jbig2chain.py", ["999", "60000", "60000"]),
+        "prevbig": ("prevbig.py", []),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py", "jbig2chain.py", "prevbig.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
