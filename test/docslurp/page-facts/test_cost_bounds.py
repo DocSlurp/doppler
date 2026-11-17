@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import resource
+import tempfile
 import subprocess
 import sys
 import time
@@ -459,12 +460,14 @@ def font_compilation(pages=1200, fonts=4, size=14000):
     return d.pages(contents, resources=res)
 
 
-def struct_tree(pages, entry_leaves=0, depth=1, decoys=0):
+def struct_tree(pages, entry_leaves=0, depth=1, decoys=0, objstm=0):
     """Tagged pages, each with its own parent-tree entry; the entries list <entry_leaves> leaves
     whose parent chains are <depth> deep (shared by every page), or, with <decoys>, the parent
     tree's root /Kids holds <decoys> nodes whose Limits lie below every key, then one node per
-    page (a linear Kids scan reads every decoy on every page)."""
+    page (a linear Kids scan reads every decoy on every page). With <objstm>, the elements and
+    the entries sit in object streams of that many members (each entry stream parses to ~10 MB)."""
     d = Doc()
+    first = d.n + 1
     root = d.reserve()
     docel = d.add("<< /Type /StructElem /S /Document /P %d 0 R >>" % root)
     leaves = []
@@ -484,7 +487,14 @@ def struct_tree(pages, entry_leaves=0, depth=1, decoys=0):
     d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % tree, root)
     content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
     font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    return d.pages_tagged([content] * pages, font, root)
+    if not objstm:
+        return d.pages_tagged([content] * pages, font, root)
+    packed = [k for k in range(first, tree) if k != root]
+    ptree = d.reserve()
+    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (ptree, content, font, i)) for i in range(pages)]
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), ptree)
+    cat = d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (ptree, root))
+    return d.write_objstm(cat, [packed[i:i + objstm] for i in range(0, len(packed), objstm)])
 
 
 def type3_inflate(fonts=2000):
@@ -582,6 +592,25 @@ def bounded(label, path, slack=3.0, factor=3.0):
     return [json.loads(l) for l in facts2.decode("ascii").splitlines()]
 
 
+# a peak RSS survives exec, so pdfpagefacts is started from a small launcher, not from this
+# process (which holds the generated documents): it prints "<exit code> <peak RSS KB>"
+RSS_LAUNCHER = """import os, subprocess, sys
+p = subprocess.Popen(sys.argv[1:], stdout=sys.stdout, stderr=subprocess.DEVNULL)
+_, status, ru = os.wait4(p.pid, 0)
+sys.stderr.write("%d %d" % (os.waitstatus_to_exitcode(status), ru.ru_maxrss))
+"""
+
+
+def max_rss(*args):
+    """pdfpagefacts ARGS: (exit code, page lines, peak RSS in MB of that run alone)."""
+    with tempfile.TemporaryFile() as out:
+        r = subprocess.run([sys.executable, "-I", "-c", RSS_LAUNCHER, os.path.join(BIN, "pdfpagefacts")] + list(args), stdout=out, stderr=subprocess.PIPE, timeout=300)
+        out.seek(0)
+        lines = [json.loads(l) for l in out.read().decode("ascii").splitlines()]
+    rc, kb = (int(v) for v in r.stderr.split()[-2:])
+    return rc, [l for l in lines if l["type"] == "page"], kb / 1024
+
+
 def page(ls, n):
     return next(l for l in ls if l["type"] == "page" and l["page"] == n)
 
@@ -659,6 +688,16 @@ with t.TempDir() as d:
     ls = bounded("2,000 pages, each walking 1,024 leaves of 64-deep chains", d.write("chain.pdf", struct_tree(2000, entry_leaves=1024, depth=64)), factor=100.0)
     pgs = [l for l in ls if l["type"] == "page"]
     t.check(pgs[-1]["mathBits"] >> 12 & 1 and pgs[-1]["structure"]["truncated"], "deep chains: the document budget runs out, later pages are truncated", repr(pgs[-1]["structure"]))
+    # the same chains with the entries in object streams: every structure parse charges its
+    # stream's estimated size to the document's stream budget (2^15 + 2^9 a page), so the reads
+    # stop before they hold more than a few streams (unbounded, this held 1 GB at 20,000 pages)
+    chain = d.write("chain-objstm.pdf", struct_tree(4000, entry_leaves=1024, depth=64, objstm=200))
+    rc_b, pg_b, rss_b = max_rss("-level", "basic", chain)
+    rc_f, pg_f, rss_f = max_rss("-level", "full", chain)
+    t.check(rc_b == 0 and rc_f == 0 and len(pg_f) == len(pg_b) == 4000, "chains in object streams: every page's line written", repr((rc_b, rc_f, len(pg_b), len(pg_f))))
+    t.check(rss_f <= 2 * rss_b + 64, "chains in object streams: peak RSS at most 2x the basic level + 64 MB", "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
+    t.check(pg_f[-1]["structure"]["truncated"], "chains in object streams: the stream budget runs out, later pages are truncated", repr(pg_f[-1]["structure"]))
+    print("  chains in object streams: basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
     ls = bounded("2,000 pages behind 60,000 decoy parent-tree nodes", d.write("decoys.pdf", struct_tree(2000, decoys=60000)), factor=100.0)
     pgs = [l for l in ls if l["type"] == "page"]
     t.check(all(p["structure"]["formulas"] == 1 for p in pgs), "decoy number-tree nodes: a binary search finds every page's node", repr(pgs[-1]["structure"]))

@@ -1930,6 +1930,15 @@ constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
 // making every page walk the per-page maximum runs it out, and its later pages are truncated.
 constexpr size_t structWorkDoc = size_t(1) << 22;
 constexpr size_t structWorkPerPage = size_t(1) << 11;
+// object streams the structure reads make the cross-reference table parse (and keep for the run):
+// the first time a read reaches an object in a stream not reached before, the stream's estimated
+// parse size (StructWalk::streamCost: /N plus KB decoded, with containerBytes per container) is
+// charged to 2^15, plus 2^9 for every page begun. Past it the structure reads stop for the
+// document (fail closed: the remaining pages are truncated). An honest tagged document charges
+// about 300 a page (a 200-member stream of struct elements per page)
+constexpr size_t structStreamDoc = size_t(1) << 15;
+constexpr size_t structStreamPerPage = size_t(1) << 9;
+constexpr size_t containerBytes = 64;
 // a page's parent-tree entry is read only while at least this much of the document's budget is
 // left: past it a page is truncated without fetching (an entry array in an object stream costs
 // a parse of that stream, and a hostile document can give every page its own)
@@ -2203,11 +2212,15 @@ struct MathDocCache
     std::unordered_map<int, StructCounts> entryByKey;
     std::unordered_map<Ref, StructCounts> entryByRef;
     size_t structWorkLeft = structWorkDoc; // structure objects read for the first time over the document
+    std::unordered_set<int> structStreams; // object streams the structure reads have reached (and paid for)
+    size_t structStreamLeft = structStreamDoc;
+    bool structStopped = false; // the stream budget ran out: no more structure reads in this document
     // a page was begun: its allowances (saturating)
     void pageBegun()
     {
         fontBytesLeft = fontBytesLeft > SIZE_MAX - fontProbeBytesPerPage ? SIZE_MAX : fontBytesLeft + fontProbeBytesPerPage;
         structWorkLeft = structWorkLeft > SIZE_MAX - structWorkPerPage ? SIZE_MAX : structWorkLeft + structWorkPerPage;
+        structStreamLeft = structStreamLeft > SIZE_MAX - structStreamPerPage ? SIZE_MAX : structStreamLeft + structStreamPerPage;
     }
     void sync(XRef *x)
     {
@@ -2224,6 +2237,9 @@ struct MathDocCache
             entryByKey.clear();
             entryByRef.clear();
             structWorkLeft = structWorkDoc;
+            structStreams.clear();
+            structStreamLeft = structStreamDoc;
+            structStopped = false;
             roles.clear();
             mathmlNamespaces.clear();
             mathmlFiles.clear();
@@ -2570,7 +2586,8 @@ public:
             c.mathmlFiles += afMathml(af.isArray() ? af : pageObj.dictLookupNF("AF"), &c);
         }
         if (!resolve()) {
-            c.unknown = true;
+            // the stream budget stopped the reads: truncated (fail closed); otherwise unreadable
+            (cache.structStopped ? c.truncated : c.unknown) = true;
             return c;
         }
         if (!cache.structRoot.isDict()) {
@@ -2584,6 +2601,10 @@ public:
         const auto it = cache.entryByKey.find(sp.getInt());
         if (it != cache.entryByKey.end()) {
             merge(it->second, &c);
+            return c;
+        }
+        if (cache.structStopped) {
+            c.truncated = true; // the document's stream budget ran out: nothing more is read
             return c;
         }
         roleMap = cache.structRoleMap.copy();
@@ -2604,15 +2625,16 @@ public:
             return true;
         }
         const unsigned int repairsBefore = xref->getSuppressedRepairs();
-        Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
+        StructCounts admission;
+        Object catalog = fetch({ xref->getRootNum(), xref->getRootGen() }, &admission);
         if (!catalog.isDict() || xref->getSuppressedRepairs() != repairsBefore) {
             return false;
         }
         const bool tagged = !catalog.dictLookupNF("StructTreeRoot").isNull();
         Object root = catalog.dictLookup("StructTreeRoot");
         Object roleMap = root.isDict() ? root.dictLookup("RoleMap") : Object::null();
-        Object parentTree = root.isDict() ? cachedFetch(root.dictLookupNF("ParentTree")) : Object::null();
-        if (xref->getSuppressedRepairs() != repairsBefore) {
+        Object parentTree = root.isDict() ? cachedFetch(root.dictLookupNF("ParentTree"), &admission) : Object::null();
+        if (xref->getSuppressedRepairs() != repairsBefore || admission.truncated) {
             return false;
         }
         cache.structResolved = true;
@@ -2665,7 +2687,7 @@ public:
                 return it->second;
             }
         }
-        Object value = valueNF.isRef() ? xref->fetch(valueNF.getRef()) : valueNF.copy();
+        Object value = valueNF.isRef() ? fetch(valueNF.getRef(), &c) : valueNF.copy();
         auto walk = [&](const Object &leaf) {
             if (leaf.isNull() || leaf.isInt()) {
                 return; // an MCID with no element (allowed)
@@ -2728,7 +2750,83 @@ private:
     }
     bool spendDoc(StructCounts *c) { return spend(c); }
 
-    Object cachedFetch(const Object &nf)
+    // what parsing object stream <num> costs: /N plus the KB its parse holds, estimated as its
+    // decoded size (not /Length) plus containerBytes per '[', '<' or '(' (an empty array is
+    // two bytes but a whole allocation); the decode only counts, in a fixed buffer, and stops
+    // once the cost passes what the document has left
+    size_t streamCost(int num)
+    {
+        size_t cost = 1;
+        Object str = xref->fetch(num, 0);
+        if (!str.isStream() || !str.getStream()->getDict()) {
+            return cost;
+        }
+        Object n = str.getStream()->getDict()->lookup("N");
+        cost += n.isInt() && n.getInt() > 0 ? static_cast<size_t>(n.getInt()) : 0;
+        if (cost > cache.structStreamLeft) {
+            return cost;
+        }
+        const size_t capKb = cache.structStreamLeft - cost + 1;
+        size_t bytes = 0;
+        Stream *s = str.getStream();
+        if (textFiltersOnly(s) && s->rewind()) {
+            unsigned char buf[4096];
+            while (bytes / 1024 < capKb) {
+                const int got = s->doGetChars(sizeof(buf), buf);
+                if (got <= 0) {
+                    break;
+                }
+                bytes += static_cast<size_t>(got);
+                for (int i = 0; i < got; ++i) {
+                    // an array, dictionary or string costs the parse an allocation of its own
+                    if (buf[i] == '[' || buf[i] == '<' || buf[i] == '(') {
+                        bytes += containerBytes;
+                    }
+                }
+            }
+            s->close();
+        } else {
+            BaseStream *base = s->getBaseStream();
+            const Goffset len = base ? base->getLength() : 0;
+            bytes = len > 0 ? static_cast<size_t>(len) : 0; // unreadable: its raw size
+        }
+        return cost + (bytes + 1023) / 1024;
+    }
+
+    // whether a structure read may fetch <r>: an object in an object stream the reads have not
+    // reached yet charges that stream (/N + /Length / 1 KB, from its dictionary) to the
+    // document's stream budget; past it the reads stop for the document (truncated)
+    bool admit(Ref r, StructCounts *c)
+    {
+        if (cache.structStopped) {
+            c->truncated = true;
+            return false;
+        }
+        if (r.num < 0 || r.num >= xref->getNumObjects()) {
+            return true; // the fetch gives null without reading anything
+        }
+        const XRefEntry *e = xref->getEntry(r.num, false);
+        if (!e || e->type != xrefEntryCompressed || e->offset > static_cast<Goffset>(std::numeric_limits<int>::max())) {
+            return true;
+        }
+        const int stream = static_cast<int>(e->offset);
+        if (cache.structStreams.count(stream)) {
+            return true;
+        }
+        const size_t cost = streamCost(stream);
+        if (cost > cache.structStreamLeft) {
+            cache.structStopped = true;
+            c->truncated = true;
+            return false;
+        }
+        cache.structStreamLeft -= cost;
+        cache.structStreams.insert(stream);
+        return true;
+    }
+
+    Object fetch(Ref r, StructCounts *c) { return admit(r, c) ? xref->fetch(r) : Object::null(); }
+
+    Object cachedFetch(const Object &nf, StructCounts *c)
     {
         if (!nf.isRef()) {
             return nf.copy();
@@ -2738,6 +2836,9 @@ private:
             return it->second.copy();
         }
         const unsigned int before = xref->getSuppressedRepairs();
+        if (!admit(nf.getRef(), c)) {
+            return Object::null(); // not cached: the stop is the document's
+        }
         Object obj = xref->fetch(nf.getRef());
         if (cache.treeNodes.size() < 4096 && xref->getSuppressedRepairs() == before) {
             cache.treeNodes.emplace(nf.getRef(), obj.copy());
@@ -2749,7 +2850,7 @@ private:
     {
         std::set<Ref> visited;
         for (int depth = 0; depth < maxNumberTreeDepth && node.isDict(); ++depth) {
-            Object nums = cachedFetch(node.dictLookupNF("Nums"));
+            Object nums = cachedFetch(node.dictLookupNF("Nums"), c);
             if (nums.isArray()) {
                 // pairs sorted by key: binary search (keys are direct integers)
                 int lo = 0, hi = nums.arrayGetLength() / 2 - 1;
@@ -2769,7 +2870,7 @@ private:
                 }
                 return Object::null();
             }
-            Object kids = cachedFetch(node.dictLookupNF("Kids"));
+            Object kids = cachedFetch(node.dictLookupNF("Kids"), c);
             if (!kids.isArray()) {
                 return Object::null();
             }
@@ -2783,7 +2884,7 @@ private:
                 if (ref.isRef() && visited.count(ref.getRef())) {
                     return -1;
                 }
-                Object kid = cachedFetch(ref);
+                Object kid = cachedFetch(ref, c);
                 Object limits = kid.isDict() ? kid.dictLookup("Limits") : Object::null();
                 if (!limits.isArray() || limits.arrayGetLength() != 2) {
                     return -1;
@@ -2927,7 +3028,7 @@ private:
         if (!spend(c)) {
             return false;
         }
-        Object spec = specNF.isRef() ? xref->fetch(specNF.getRef()) : specNF.copy();
+        Object spec = specNF.isRef() ? fetch(specNF.getRef(), c) : specNF.copy();
         bool m = false, undecided = false;
         auto test = [&](Object &file) {
             if (!file.isStream() || !file.getStream()->getDict()) {
@@ -3015,6 +3116,9 @@ private:
         if (!spend(c) || !spendDoc(c)) {
             return { false, texNo };
         }
+        if (!admit(nf.getRef(), c)) {
+            return { false, texNo };
+        }
         Object v = xref->fetch(nf.getRef());
         const bool str = v.isString();
         const TexVerdict tex = str ? texLike(v.getString()) : texNo;
@@ -3037,6 +3141,10 @@ private:
             return out;
         }
         const unsigned int repairsBefore = xref->getSuppressedRepairs();
+        if (!admit(ref, c)) {
+            out.terminal = true; // not read (and not cached): the page is truncated
+            return out;
+        }
         Object e = xref->fetch(ref);
         if (!e.isDict() || e.isDict("StructTreeRoot")) {
             out.terminal = true;
@@ -3044,7 +3152,7 @@ private:
         } else {
             Object s = e.dictLookup("S");
             const Object &nsNF = e.dictLookupNF("NS");
-            Object ns = nsNF.isRef() ? (spend(c) ? xref->fetch(nsNF.getRef()) : Object::null()) : nsNF.copy();
+            Object ns = nsNF.isRef() ? (spend(c) ? fetch(nsNF.getRef(), c) : Object::null()) : nsNF.copy();
             uint8_t flags = mathmlNs(nsNF, ns) ? sfMathml : 0;
             const StructRole role = s.isName() ? roleOf(s.getNameString(), ns, &out.roleCapped) : roleOther;
             if (role == roleTD || role == roleTH) {
@@ -3073,7 +3181,7 @@ private:
             flags |= (alt ? sfAlt : 0) | (altTex == texYes ? sfAltTex : 0) | (actual ? sfActual : 0) | (actualTex == texYes ? sfActualTex : 0);
             flags |= (altTex == texUnknown || actualTex == texUnknown) ? sfTexUnknown : 0;
             const Object &afNF = e.dictLookupNF("AF");
-            Object af = afNF.isRef() ? (spend(c) ? xref->fetch(afNF.getRef()) : Object::null()) : afNF.copy();
+            Object af = afNF.isRef() ? (spend(c) ? fetch(afNF.getRef(), c) : Object::null()) : afNF.copy();
             out.mathmlFiles = static_cast<uint8_t>(std::min<uint64_t>(afMathml(af.isArray() ? af : afNF, c), 16));
             out.role = role;
             out.flags = flags;
