@@ -378,20 +378,10 @@ fn bar_scale(r: Bbox, vertical: bool, nums: &[Num], budget: &mut Budget) -> bool
             let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
             let keep = if vertical {
                 let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
-                along
-                    && if side == 0 {
-                        n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS
-                    } else {
-                        n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS
-                    }
+                along && if side == 0 { n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS } else { n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS }
             } else {
                 let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
-                along
-                    && if side == 0 {
-                        n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS
-                    } else {
-                        n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS
-                    }
+                along && if side == 0 { n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS } else { n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS }
             };
             if keep {
                 // up is a smaller y on the page
@@ -450,13 +440,7 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         .map(|r| (r.x0, r.y0, r.x1, r.y1))
         .filter(|b| {
             let (w, h) = (b.2 - b.0, b.3 - b.1);
-            w.is_finite()
-                && h.is_finite()
-                && w > 0.0
-                && h > 0.0
-                && w * h < 0.25 * page_area
-                && b.3 > band
-                && b.1 < page.height - band
+            w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 && w * h < 0.25 * page_area && b.3 > band && b.1 < page.height - band
         })
         .take(MAX_BAR_BOXES)
         .collect();

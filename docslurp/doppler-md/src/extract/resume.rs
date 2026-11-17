@@ -222,8 +222,7 @@ mod tests {
              \"format\":\"webp\",\"bytes\":0",
         )
         .unwrap();
-        w.image("\"id\":\"p3.1\",\"page\":3,\"status\":\"not-extracted\",\"reason\":\"min_side\",\"path\":null")
-            .unwrap();
+        w.image("\"id\":\"p3.1\",\"page\":3,\"status\":\"not-extracted\",\"reason\":\"min_side\",\"path\":null").unwrap();
         w.batch("\"pages\":[1,64],\"status\":\"budget\",\"cut_page\":2").unwrap();
         let out = w.finish("\"complete\":false,\"resumable\":true,\"totals\":{\"images\":3,\"batches\":1}").unwrap();
         String::from_utf8(out).unwrap()
@@ -245,8 +244,10 @@ mod tests {
         for b in batches {
             w.batch(b).unwrap();
         }
-        let end =
-            format!("\"complete\":false,\"resumable\":true,\"totals\":{{\"images\":3,\"batches\":{}}}", batches.len());
+        let end = format!(
+            "\"complete\":false,\"resumable\":true,\"totals\":{{\"images\":3,\"batches\":{}}}",
+            batches.len()
+        );
         String::from_utf8(w.finish(&end).unwrap()).unwrap()
     }
 
