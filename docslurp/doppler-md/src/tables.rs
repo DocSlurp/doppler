@@ -358,6 +358,70 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     }
 }
 
+/// The columns of a table whose header has a cell spanning several columns (`Headcount` over
+/// `2026 | 2027`): that cell crosses the gutter between the columns it spans, so the gutters of
+/// all rows join them. When the rows below the first one or two multi-cell rows (at least
+/// three) have gutters that refine the table's (every gutter of the table is still one of
+/// theirs) and each header word crossing a new gutter reaches into the columns on both sides
+/// of it, the finer columns are kept, widened to the header's extent. The spanning cell then
+/// sits in the first column it covers, with the others empty, as a colspan is written.
+fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<(f64, f64)> {
+    let multi: Vec<usize> = run.iter().enumerate().filter(|(_, r)| r.multi).map(|(i, _)| i).collect();
+    if multi.len() < 4 || cols.len() < 2 {
+        return cols;
+    }
+    let gaps = |c: &[(f64, f64)]| c.windows(2).map(|w| (w[0].1, w[1].0)).collect::<Vec<_>>();
+    let old = gaps(&cols);
+    for skip in 1..=2usize {
+        let body = &run[multi[skip - 1] + 1..];
+        if body.iter().filter(|r| r.multi).count() < 3 {
+            break;
+        }
+        let finer = gutter_columns(body, p);
+        if finer.len() <= cols.len() {
+            continue;
+        }
+        let new = gaps(&finer);
+        let meets = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 + 1.0 && b.0 < a.1 + 1.0;
+        if !old.iter().all(|&g| new.iter().any(|&h| meets(g, h))) {
+            continue;
+        }
+        let header = &run[..multi[skip - 1] + 1];
+        let words: Vec<&Word> = header.iter().flat_map(|r| r.all_words()).collect();
+        let mut ok = true;
+        for (k, &h) in new.iter().enumerate() {
+            if old.iter().any(|&g| meets(g, h)) {
+                continue;
+            }
+            // header words crossing the new gutter span the columns on both sides of it
+            let (left, right) = (finer[k], finer[k + 1]);
+            for w in words.iter().filter(|w| w.x0 < h.1 && w.x1 > h.0) {
+                if !(w.x0 < left.1 && w.x1 > right.0) {
+                    ok = false;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let mut out = finer;
+        // a spanning cell goes to the first column it covers: that column reaches across the
+        // new gutter (its words' midpoints fall there)
+        for (k, &h) in new.iter().enumerate() {
+            if !old.iter().any(|&g| meets(g, h)) {
+                out[k].1 = pmax(out[k].1, out[k + 1].0 - 1.5);
+            }
+        }
+        let x0 = words.iter().map(|w| w.x0).fold(out[0].0, pmin);
+        let x1 = words.iter().map(|w| w.x1).fold(out[out.len() - 1].1, pmax);
+        out[0].0 = x0;
+        let last = out.len() - 1;
+        out[last].1 = x1;
+        return out;
+    }
+    cols
+}
+
 /// Join two columns across a narrow gutter (under `narrow` slots, accepted because the rows'
 /// word edges line up on it) that the wrapped lines of more than `allowed` rows (and of two rows
 /// or more: one wrapped header line is not evidence) cross, or that
@@ -548,7 +612,9 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
         if let (Some(last), Some(pr)) = (grid.last_mut(), prev) {
             let close = pitch.is_some_and(|pt| pt != 0.0 && r.base - pr.last < p.wrap_pitch * pt);
             let fewer = filled < last.iter().filter(|x| !x.is_empty()).count();
-            if (close && fewer) || (filled == 1 && texts[0].is_empty() && !r.multi) {
+            // a number under a number starts a row (a label spanning rows leaves a cell empty)
+            let numbers = texts.iter().zip(last.iter()).any(|(t, l)| !t.is_empty() && numeric(t) && numeric(l));
+            if (close && fewer && !numbers) || (filled == 1 && texts[0].is_empty() && !r.multi) {
                 for (k, t) in texts.iter().enumerate() {
                     if !t.is_empty() {
                         last[k] = strip(&format!("{} {}", last[k], t)).to_string(); // wrapped cell continuation
@@ -709,7 +775,7 @@ pub fn find_tables_within(
             if !budget.spend(2 * row_words(run)) {
                 return false;
             }
-            let cols = gutter_columns(run, p);
+            let cols = under_spanning_header(run, gutter_columns(run, p), p);
             if cols.len() >= 2 {
                 let grid = build_grid(run, &cols, p);
                 if plausible(&grid.rows, p) {
@@ -889,6 +955,11 @@ fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Optio
             || ((c.x0 + c.x1) / 2.0 - (ax0 + ax1) / 2.0).abs() <= tol
             || (c.x0 > first && c.x0 - first <= 2.0 * size && (ax0 - first).abs() <= tol);
         if !(below > 0.0 && below <= reach) || !aligned || (c.size() - asize).abs() > 0.1 * pmax(asize, 1.0) {
+            return None;
+        }
+        // a number under a number is the next row's value, not a wrapped line (numbers do not
+        // wrap; a row under a label that spans rows has one cell fewer)
+        if numeric(c.text()) && numeric(row.cells[k].text()) {
             return None;
         }
         used[k] = true;
@@ -1394,15 +1465,53 @@ pub fn ruled_tables(
     // first match unchanged without rescanning every group for every rule.
     let mut open: Vec<usize> = Vec::new();
     let gap = p.rule_row_gap * body;
+    // the lines between two rules (middles strictly between, centres inside x0..x1) are table
+    // rows: some split into cells, none is a long line of prose
+    let body_rows = |a: f64, b: f64, x0: f64, x1: f64| {
+        let lo = by_mid.partition_point(|&(m, _)| m <= a);
+        let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+        if hi - lo > 400 {
+            return false;
+        }
+        let (mut cells, mut any) = (false, false);
+        for &(_, i) in &by_mid[lo..hi] {
+            let l = &lines[i];
+            let mx = (l.x0 + l.x1) / 2.0;
+            if mx < x0 - 2.0 || mx > x1 + 2.0 {
+                continue;
+            }
+            any = true;
+            if l.words.len() >= 6 && l.x1 - l.x0 > 0.6 * (x1 - x0) {
+                return false;
+            }
+            cells |= segment_count(l, p) >= 2;
+        }
+        // separate lines per cell share baselines with others
+        any && (cells || {
+            let mut bases: Vec<f64> = by_mid[lo..hi].iter().map(|&(_, i)| lines[i].base()).collect();
+            bases.sort_by(|a, b| fcmp(*a, *b));
+            bases.windows(2).any(|w| (w[1] - w[0]).abs() <= 1.0)
+        })
+    };
     for (x0, x1, y) in h {
         // the open groups (thousands when disjoint rules share a y)
         if !budget.scan(open.len()) {
             return None;
         }
         let mut hit = None;
+        // a horizontal-only (booktabs) table: its top, middle and bottom rules span the table
+        // and can be far apart around a tall body; a rule of the group's width takes a longer
+        // gap when the lines between are short table cells, never prose
+        let long_gap = |g: &Group, l: f64| {
+            let w = g.x1 - g.x0;
+            (x0 - g.x0).abs() <= 0.05 * w + 2.0
+                && (x1 - g.x1).abs() <= 0.05 * w + 2.0
+                && y - l <= 4.0 * gap
+                && body_rows(l, y, g.x0, g.x1)
+        };
         open.retain(|&gi| {
             let g = &groups[gi];
-            if !g.ys.last().is_some_and(|&l| y - l <= gap) {
+            if !g.ys.last().is_some_and(|&l| y - l <= gap || long_gap(g, l)) {
                 return false;
             }
             if hit.is_none() {
@@ -1474,7 +1583,9 @@ pub fn ruled_tables(
         let mut cur: Vec<f64> = ys.first().copied().into_iter().collect();
         for w in ys.windows(2) {
             let (a, b) = (w[0], w[1]);
-            if (b - a > limit && gaps.len() >= 3) || caption_band(a, b, budget)? {
+            // (a booktabs body between its middle and bottom rules is no jump)
+            let jump = b - a > limit && gaps.len() >= 3 && !(v.is_empty() && body_rows(a, b, g.x0, g.x1));
+            if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
             cur.push(b);
@@ -1530,6 +1641,13 @@ pub fn ruled_tables(
             return None;
         }
         let mut rows = visual_rows(page, &members, p);
+        // horizontal rules alone that do not separate the rows (booktabs: top, middle and
+        // bottom rules around a body of unruled rows) are left to the gutter-table pass, which
+        // reads the rows' columns, spanning header cells and wrapped cells as a whole
+        let crossing_v = v.iter().any(|&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && yb > y0 && ya < y1);
+        if !crossing_v && ys.len() >= 3 && ys.len() < rows.len() && !rows.is_empty() {
+            continue;
+        }
         let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
         if cols.len() < 2 {
             continue;
