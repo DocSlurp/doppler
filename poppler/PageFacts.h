@@ -203,6 +203,7 @@ private:
         uint8_t cls; // fonts.mathClasses (PageFacts.cc MathClass)
         bool fixedWidth; // the font descriptor's FixedPitch flag (code listings)
         bool extension; // a math extension font by name (CMEX, Symbol...): its bracket pieces map to U+F8E5-F8FE
+        bool type3; // a Type 3 font: its glyphs with no usable Unicode count as type3Bitmap
     };
     struct AnnotDraw
     {

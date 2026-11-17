@@ -638,14 +638,16 @@ with t.TempDir() as d:
     quiet = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", small, os.devnull], capture_output=True).stderr
     t.check(quiet == b"", "pdftotext -q: no messages")
 
-    # mathtables font classes: a shared program is read once; an honest compilation is classed
-    ls = bounded("6,000 font dictionaries sharing one 200 KB empty-deflate program", d.write("shared-program.pdf", shared_program()))
-    t.check(page(ls, 1)["mathBits"] >> 12 & 1, "a program that decodes to nothing is unknown (analysis-truncated)", repr(page(ls, 1)["mathFlags"]))
-    ls = bounded("1,200 pages, each embedding 4 programs of its own (67 MB)", d.write("compilation.pdf", font_compilation()))
-    pgs = [l for l in ls if l["type"] == "page"]
-    t.check(len(pgs) == 1200 and not any(p["mathBits"] >> 12 & 1 for p in pgs), "an honest compilation's fonts are all classed: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
-    ls = bounded("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", d.write("t3inflate.pdf", type3_inflate()), factor=100.0)
-    t.check(page(ls, 1)["mathBits"] >> 12 & 1, "inflating procedures: the font budget (charged decoded bytes) runs out: analysis-truncated", repr(page(ls, 1)["mathFlags"]))
+    # mathtables font classes come from names only (council #51 final-6): programs and glyph
+    # procedures are never read, so none of these costs anything or leaves a class unknown
+    for label, name, pdf in (
+        ("6,000 font dictionaries sharing one 200 KB empty-deflate program", "shared-program.pdf", shared_program),
+        ("1,200 pages, each embedding 4 programs of its own (67 MB)", "compilation.pdf", font_compilation),
+        ("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", "t3inflate.pdf", type3_inflate),
+    ):
+        ls = bounded(label, d.write(name, pdf()))
+        pgs = [l for l in ls if l["type"] == "page"]
+        t.check(not any(p["mathBits"] >> 12 & 1 for p in pgs), "%s: classed by name, nothing truncated" % label, repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
 
     # mathtables never reads the structure tree (council #51 final-4): documents whose parent
     # trees reach deep chains, many large object streams or decoy nodes cost the full level what
@@ -669,10 +671,10 @@ with t.TempDir() as d:
     p2 = page(ls, 2)
     t.check("error" not in p2 and p2["text"]["wordCount"] == 4, "a page whose objects sit in their own object stream is drawn", repr(p2.get("error") or p2["text"]))
 
-    # the font-class reads never parse an object stream (council #51 final-5): a procedure,
-    # program or /XObject dictionary in one (or a procedure whose /Length is) is not fetched,
-    # and that font's class is unknown (analysis-truncated); full costs what basic costs, and
-    # pdftotext with full facts still writes its XHTML under a 4 GiB address-space limit
+    # font classes fetch nothing (council #51 final-5/6): a procedure, program or /XObject
+    # dictionary in an object stream (or a procedure whose /Length is) is never reached by
+    # mathtables, so full costs what basic costs, and pdftotext with full facts still writes its
+    # XHTML under a 4 GiB address-space limit
     def limited_as():
         resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
     # (a TrueType program is fetched by drawing's font loading too, which parses each of these
@@ -683,7 +685,7 @@ with t.TempDir() as d:
         rc_f, pg_f, rss_f = max_rss("-level", "full", path)
         t.check(rc_b == rc_f == 0 and len(pg_f) == len(pg_b) == pages, "font objects in object streams (%s): every page's line written" % kind, repr((rc_b, rc_f, len(pg_b), len(pg_f))))
         t.check(rss_f <= 1.2 * rss_b + 16, "font objects in object streams (%s): peak RSS at most 1.2x the basic level + 16 MB" % kind, "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
-        t.check(all(p["mathBits"] >> 12 & 1 for p in pg_f), "font objects in object streams (%s): the class is unknown (analysis-truncated)" % kind, repr(pg_f[0]["mathFlags"]))
+        t.check(not any(p["mathBits"] >> 12 & 1 for p in pg_f), "font objects in object streams (%s): classed without a read, nothing truncated" % kind, repr(pg_f[0]["mathFlags"]))
         print("  font objects in object streams (%s): basic %.0f MB, full %.0f MB" % (kind, rss_b, rss_f))
         out = os.path.join(os.path.dirname(path), "fontobj.jsonl")
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

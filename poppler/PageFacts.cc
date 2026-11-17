@@ -40,7 +40,6 @@
 #include "Page.h"
 #include "PDFDoc.h"
 #include "PDFDocEncoding.h"
-#include "Lexer.h"
 #include "SecurityHandler.h"
 #include "Stream.h"
 #include "TextOutputDev.h"
@@ -613,16 +612,6 @@ private:
 };
 
 PageFacts *activeFacts = nullptr;
-// while above 0, errors poppler reports are not the page's: the font-class reads' cut copies
-// (a deflate stream ended early, say) must not add parse warnings a run without them lacks
-int quietReads = 0;
-struct QuietReads
-{
-    QuietReads() { ++quietReads; }
-    ~QuietReads() { --quietReads; }
-    QuietReads(const QuietReads &) = delete;
-    QuietReads &operator=(const QuietReads &) = delete;
-};
 
 // A ruled grid: the rule-only stage of pdftomarkdown's ruled-table search (doppler-md
 // tables::ruled_tables, with its default parameters), so the facts name the same grids its
@@ -1924,17 +1913,6 @@ inline bool isMathClass(uint8_t c)
     return c <= mcSymbol;
 }
 
-constexpr size_t maxFontProbeBytes = 4096; // decoded bytes of a font program read for its table directory
-constexpr size_t maxCharProcBytes = 65536; // decoded bytes of a Type 3 glyph procedure read (filled with no BI or Do: unknown)
-constexpr int maxCharProcsProbed = 8; // glyph procedures a Type 3 font is probed by
-constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checked for image masks
-// encoded bytes the font-class reads may consume (their own budget, never shared with another
-// family's): 64 MB, plus 4 MB for every page begun, so a compilation whose pages embed their
-// own programs never reaches it; hostile cost is bounded by the per-stream read caps, the
-// memo by reference and this allowance, which grows only with pages
-constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
-constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
-constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
 constexpr size_t maxTexScan = 4096; // code units of an ActualText string checked for TeX
 constexpr size_t maxMathGlyphs = 8192; // math-font glyph centres kept per page
 constexpr size_t maxMathWords = 4096; // math-font word boxes kept per page
@@ -1997,98 +1975,6 @@ bool mathWordInName(std::string_view n)
     return false;
 }
 
-// What the start of an embedded font program says about an OpenType MATH table.
-enum class SfntMath : uint8_t
-{
-    Unknown, // not an sfnt, or its table directory lies past the bytes read
-    Yes,
-    No
-};
-
-SfntMath sfntMath(const std::string &d)
-{
-    auto byte = [&](size_t o) { return static_cast<uint32_t>(static_cast<unsigned char>(d[o])); };
-    auto u32 = [&](size_t o) { return (byte(o) << 24) | (byte(o + 1) << 16) | (byte(o + 2) << 8) | byte(o + 3); };
-    if (d.size() < 12) {
-        return SfntMath::Unknown;
-    }
-    size_t base = 0;
-    if (u32(0) == 0x74746366) { // 'ttcf': the first font of the collection
-        if (d.size() < 16) {
-            return SfntMath::Unknown;
-        }
-        base = u32(12);
-        if (base > d.size() || d.size() - base < 12) {
-            return SfntMath::Unknown;
-        }
-    }
-    const uint32_t version = u32(base);
-    if (version != 0x00010000 && version != 0x4f54544f && version != 0x74727565) { // 1.0, 'OTTO', 'true'
-        return SfntMath::Unknown;
-    }
-    const size_t tables = (byte(base + 4) << 8) | byte(base + 5);
-    for (size_t i = 0; i < tables; ++i) {
-        const size_t o = base + 12 + 16 * i; // <= 4096 + 12 + 16 * 65535: no overflow
-        if (o > d.size() || d.size() - o < 16) {
-            return SfntMath::Unknown;
-        }
-        if (d.compare(o, 4, "MATH") == 0) {
-            return SfntMath::Yes;
-        }
-    }
-    return SfntMath::No;
-}
-
-bool pdfSpace(char c)
-{
-    return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\0';
-}
-
-// What a Type 3 glyph procedure paints: an inline image mask (BI with /IM true or /ImageMask
-// true before ID), and whether it runs Do (an XObject the caller checks).
-struct CharProcPaint
-{
-    bool inlineMask = false, doOp = false;
-    bool cut = false; // an inline image dictionary with no ID before the end of what was read
-};
-
-CharProcPaint charProcPaint(std::string_view p)
-{
-    CharProcPaint r;
-    auto token = [&](size_t i, std::string_view t) {
-        return p.compare(i, t.size(), t) == 0 && (i == 0 || pdfSpace(p[i - 1]) || p[i - 1] == ']' || p[i - 1] == '>' || p[i - 1] == ')') && (i + t.size() == p.size() || pdfSpace(p[i + t.size()]) || p[i + t.size()] == '/');
-    };
-    for (size_t i = 0; i + 1 < p.size(); ++i) {
-        if (token(i, "Do")) {
-            r.doOp = true;
-        } else if (token(i, "BI")) {
-            // the image dictionary: up to ID
-            size_t end = i + 2;
-            while (end + 1 < p.size() && !token(end, "ID")) {
-                ++end;
-            }
-            r.cut = r.cut || !(end + 1 < p.size());
-            const std::string_view dict = p.substr(i + 2, end - (i + 2));
-            for (std::string_view key : { std::string_view("/IM"), std::string_view("/ImageMask") }) {
-                for (size_t at = dict.find(key); at != std::string_view::npos; at = dict.find(key, at + 1)) {
-                    size_t k = at + key.size();
-                    if (k < dict.size() && !pdfSpace(dict[k]) && dict[k] != '/') {
-                        continue; // a longer name
-                    }
-                    while (k < dict.size() && pdfSpace(dict[k])) {
-                        ++k;
-                    }
-                    if (dict.compare(k, 4, "true") == 0) {
-                        r.inlineMask = true;
-                    }
-                }
-            }
-            i = end;
-        }
-    }
-    return r;
-}
-
 // A marked-content ActualText string that looks like TeX source: a backslash command (\ and two
 // letters) or ^{ or _{. The first maxTexScan code units (UTF-16BE after its byte order mark,
 // else bytes) are read: texYes, texNo, or texUnknown when none was found in them and the string
@@ -2143,424 +2029,32 @@ int unicodeMathBlock(Unicode c)
     return -1;
 }
 
-// per-document caches of the mathtables family (kept across pages, dropped when the
-// cross-reference table changes)
-struct MathDocCache
+// One font's class, from what the text pass already has: its name (BaseFont), never a read of
+// its own (no program, glyph procedure or resource is fetched). In order: web (KaTeX_, MathJax,
+// MJX), Office (Cambria Math, OpenSymbol), TeX math Type 1 names, a name holding the word Math
+// (OpenType math faces: STIX Two Math, Latin Modern Math...), Symbol faces, else text. A Type 3
+// font's glyphs with no usable Unicode count as type3Bitmap where they are drawn, not here.
+uint8_t classifyFont(const GfxFont *font)
 {
-    XRef *xref = nullptr;
-    unsigned generation = 0;
-    std::unordered_map<Ref, uint8_t> fontClasses;
-    size_t fontBytesLeft = maxFontProbeBytesRun; // over the run
-    std::unordered_map<Ref, bool> maskXObjects; // a Type 3 font's resource /XObject dictionary: has an image mask among its first entries
-    // read results by stream reference, so many fonts sharing one program or glyph procedure
-    // read it once: a glyph procedure's paint (bit 0 inline mask, 1 Do, 2 unknown, 3 empty), a
-    // program's MATH table (SfntMath, bit 7: unknown)
-    std::unordered_map<Ref, uint8_t> charProcs;
-    std::unordered_map<Ref, uint8_t> programs;
-    // a page was begun: its allowance (saturating)
-    void pageBegun() { fontBytesLeft = fontBytesLeft > SIZE_MAX - fontProbeBytesPerPage ? SIZE_MAX : fontBytesLeft + fontProbeBytesPerPage; }
-    void sync(XRef *x)
-    {
-        if (x != xref || (x && x->getGeneration() != generation)) {
-            fontClasses.clear();
-            maskXObjects.clear();
-            charProcs.clear();
-            programs.clear();
-            xref = x;
-            generation = x ? x->getGeneration() : 0;
-        }
-    }
-};
-
-// The first <decodedCap> decoded bytes of a stream with text filters only (textFiltersOnly),
-// reading at most <rawCap> of its encoded bytes: a filter that yields nothing (a deflate stream
-// of empty stored blocks) cannot make the read cost the whole stream. A stream longer than
-// rawCap is decoded from a copy of its first encoded bytes, taken in growing steps (4 KB, 16 KB,
-// rawCap) until enough decodes, so a typical head costs a few KB; in an encrypted document that
-// copy would skip decryption, so nothing is read (*unknown). *unknown is also set when the
-// stream cannot be read, when a non-empty stream decodes to nothing (corrupt), and when a cut
-// copy decodes to less than asked. *consumed: the encoded bytes read (the caller's budget).
-std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypted, bool *unknown, size_t *consumed)
-{
-    if (!obj.isStream() || !textFiltersOnly(obj.getStream())) {
-        *unknown = *unknown || obj.isStream();
-        return {};
-    }
-    Stream *str = obj.getStream();
-    BaseStream *base = str->getBaseStream();
-    const Goffset len = base ? base->getLength() : -1;
-    if (len >= 0 && static_cast<uint64_t>(len) <= rawCap) {
-        *consumed += static_cast<size_t>(len);
-        std::string out = readCapped(obj, decodedCap);
-        *unknown = *unknown || (out.empty() && len > 0);
-        return out;
-    }
-    Stream *raw = str->getUndecodedStream();
-    if (encrypted || !raw || !str->getDict()) {
-        *unknown = true;
-        return {};
-    }
-    std::string out;
-    for (size_t step : { std::min<size_t>(4096, rawCap), std::min<size_t>(16384, rawCap), rawCap }) {
-        if (!raw->rewind()) {
-            *unknown = true;
-            return {};
-        }
-        std::vector<char> head(step);
-        const int got = raw->doGetChars(static_cast<int>(step), reinterpret_cast<unsigned char *>(head.data()));
-        raw->close();
-        if (got <= 0) {
-            *unknown = true;
-            return {};
-        }
-        *consumed += static_cast<size_t>(got);
-        head.resize(static_cast<size_t>(got));
-        std::unique_ptr<Stream> decoded = Stream::addFilters(std::make_unique<AutoFreeMemStream>(std::move(head), Object::null()), str->getDict());
-        out.clear();
-        if (!decoded || !decoded->rewind()) {
-            *unknown = true;
-            return out;
-        }
-        unsigned char buf[4096];
-        while (out.size() < decodedCap) {
-            const int n = decoded->doGetChars(static_cast<int>(std::min(sizeof(buf), decodedCap - out.size())), buf);
-            if (n <= 0) {
-                break;
-            }
-            out.append(reinterpret_cast<const char *>(buf), n);
-        }
-        decoded->close();
-        if (out.size() >= decodedCap || static_cast<size_t>(got) < step) {
-            break;
-        }
-    }
-    // a cut copy that decoded to less than asked: what the rest holds is unknown
-    *unknown = *unknown || out.size() < decodedCap;
-    return out;
-}
-
-constexpr size_t maxCharProcRaw = 65536; // encoded bytes of a Type 3 glyph procedure read
-constexpr size_t maxFontProbeRaw = 65536; // encoded bytes of a font program's head read
-constexpr size_t classifyFetchCost = 4096; // charged for every classification fetch, whatever it yields
-constexpr Goffset maxStreamDictPeek = 65536; // bytes of a stream object's head lexed to vet its dictionary
-constexpr size_t maxStreamDictTokens = 4096;
-
-// an object in an object stream: the font-class reads never fetch it. Under their guard the
-// parse of its object stream would be kept for the run, and a font's procedures, program and
-// image-mask XObjects are streams, which never legally live in one. (An object the table does
-// not list fetches as null under the guard, without reading anything.)
-bool inObjectStream(XRef *xref, Ref r)
-{
-    if (r.num < 0 || r.num >= xref->getNumObjects()) {
-        return false;
-    }
-    const XRefEntry *e = xref->getEntry(r.num, false);
-    return e && e->type == xrefEntryCompressed;
-}
-
-// whether the font-class reads may fetch object <r>: listed, not in an object stream, and, when
-// it is a dictionary or stream, its dictionary (tokens read from the file, nothing resolved; for
-// an object that must be a stream at most maxStreamDictTokens in its first maxStreamDictPeek
-// bytes, for a dictionary all of it, as its fetch would) names its /Length directly or by an object that is not in an object
-// stream, and its filters and their parameters directly, so neither the fetch nor the decode can
-// reach an object stream. Anything else (a head that does not lex as an object) is refused: the
-// font's class is then unknown.
-bool classifyMayFetch(XRef *xref, Ref r, bool expectStream, size_t *lexed)
-{
-    if (inObjectStream(xref, r)) {
-        return false;
-    }
-    const XRefEntry *e = r.num >= 0 && r.num < xref->getNumObjects() ? xref->getEntry(r.num, false) : nullptr;
-    if (!e || e->type != xrefEntryUncompressed) {
-        return true; // unlisted or free: the fetch gives null without reading anything
-    }
-    BaseStream *base = xref->getBaseStream();
-    if (!base || e->offset < 0) {
-        return false;
-    }
-    Lexer lexer(nullptr, base->makeSubStream(e->offset, expectStream, expectStream ? maxStreamDictPeek : 0, Object::null()));
-    struct Lexed
-    {
-        Lexer &l;
-        Goffset start;
-        size_t *out;
-        ~Lexed() { *out += static_cast<size_t>(std::max<Goffset>(0, l.getPos() - start)); }
-    } account { lexer, e->offset, lexed };
-    Object num = lexer.getObj(), gen = lexer.getObj(), kw = lexer.getObj();
-    if (!num.isInt() || !gen.isInt() || !kw.isCmd("obj")) {
-        return false;
-    }
-    Object tok = lexer.getObj();
-    if (!tok.isCmd("<<")) {
-        return !tok.isError() && !tok.isEOF(); // not a dictionary, so not a stream: nothing more is fetched with it
-    }
-    // walk the dictionary's tokens (a reference is "int int R"), keeping the top-level key whose
-    // value is being read: a name at depth 1 is a key when a value has just ended
-    int depth = 1, intsPending = 0;
-    bool expectKey = true;
-    std::string key;
-    Object prev2, prev1;
-    for (size_t n = 0; !expectStream || n < maxStreamDictTokens; ++n) {
-        tok = lexer.getObj();
-        if (tok.isEOF() || tok.isError()) {
-            return false;
-        }
-        if (tok.isCmd("R")) {
-            if (!prev2.isInt() || !prev1.isInt()) {
-                return false;
-            }
-            if (key == "Length" && depth == 1) {
-                if (inObjectStream(xref, Ref { .num = prev2.getInt(), .gen = prev1.getInt() })) {
-                    return false;
-                }
-            } else if (key == "Filter" || key == "DecodeParms" || key == "F" || key == "DP" || key == "FFilter" || key == "FDecodeParms") {
-                return false; // resolved while filters are built: must be direct
-            }
-            if (depth == 1) {
-                expectKey = true;
-                intsPending = 0;
-            }
-        } else if (tok.isCmd("<<") || tok.isCmd("[")) {
-            ++depth;
-            intsPending = 0;
-        } else if (tok.isCmd(">>") || tok.isCmd("]")) {
-            if (--depth == 0) {
-                return true;
-            }
-            if (depth == 1) {
-                expectKey = true; // a container value ended
-            }
-        } else if (depth == 1) {
-            if (tok.isName() && (expectKey || intsPending > 0)) {
-                key = tok.getNameString();
-                expectKey = false;
-                intsPending = 0;
-            } else if (tok.isInt()) {
-                ++intsPending;
-            } else {
-                expectKey = true;
-                intsPending = 0;
-            }
-        }
-        prev2 = std::move(prev1);
-        prev1 = std::move(tok);
-    }
-    return false; // a dictionary longer than the tokens read: refused
-}
-
-// One font's class. Reads (under a RepairGuard, so they cannot rebuild the table drawing uses):
-// a Type 3 font's first maxCharProcsProbed glyph procedures (maxCharProcBytes each, text filters
-// only) and resource XObject dictionaries; an embedded program's first maxFontProbeBytes. Order:
-// Type 3 bitmap (most procedures it reads paint image masks), web (KaTeX_, MathJax, MJX),
-// Office (Cambria Math, OpenSymbol), an OpenType MATH table, TeX math Type 1 names, a name with
-// the word Math whose program has no readable table directory, Symbol faces, else text.
-// *limited: the run's read budget ran out (the class is then from names alone).
-uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool *limited)
-{
-    cache.sync(xref);
-    const Ref id = *font->getID();
-    // once per font object: a direct font dictionary has a content-hash id (GfxFontDict, gen >=
-    // 100000), so a form drawn thousands of times, each draw parsing its resources again, still
-    // classifies its inline fonts once (a hash collision can only misclass a hostile file's font)
-    const bool cacheable = true;
-    if (cacheable) {
-        const auto it = cache.fontClasses.find(id);
-        if (it != cache.fontClasses.end()) {
-            *limited = *limited || (it->second & 0x80); // bit 7: the class is from names alone
-            return it->second & 0x7f;
-        }
-    }
-    const QuietReads quiet;
-    std::optional<XRef::RepairGuard> guard;
-    if (xref) {
-        guard.emplace(xref, XRef::GuardKind::Facts);
-    }
-    bool budgetHit = false;
-    // reads are charged the encoded bytes they consume (an image-mask lookup 1 KB)
-    auto takeRead = [&]() {
-        if (!xref || cache.fontBytesLeft == 0) {
-            budgetHit = budgetHit || xref;
-            return false;
-        }
-        return true;
-    };
-    auto charge = [&](size_t bytes) { cache.fontBytesLeft -= std::min(cache.fontBytesLeft, bytes); };
-    // every fetch is charged classifyFetchCost first, whatever it yields; a refused one is unknown
-    auto vetted = [&](Ref r, bool stream) {
-        size_t lexed = 0;
-        const bool ok = classifyMayFetch(xref, r, stream, &lexed);
-        charge(classifyFetchCost + lexed);
-        if (ok) {
-            return true;
-        }
-        budgetHit = true;
-        return false;
-    };
     const std::optional<std::string> &fullName = font->getName();
     const std::string_view name = fullName ? fontBaseName(*fullName) : std::string_view();
-    uint8_t cls = mcCount;
-    if (font->getType() == fontType3) {
-        auto *f8 = static_cast<Gfx8BitFont *>(const_cast<GfxFont *>(font));
-        Dict *procs = f8->getCharProcs();
-        int examined = 0, masks = 0, doOps = 0;
-        if (procs) {
-            for (int i = 0; i < std::min(procs->getLength(), maxCharProcsProbed); ++i) {
-                if (!takeRead()) {
-                    break;
-                }
-                // a procedure's paint by its reference, read once however many fonts share it:
-                // bit 0 inline mask, 1 Do, 2 unknown, 3 nothing read
-                const Object &procNF = procs->getValNF(i);
-                uint8_t bits = 0;
-                const auto memo = procNF.isRef() ? cache.charProcs.find(procNF.getRef()) : cache.charProcs.end();
-                if (memo != cache.charProcs.end()) {
-                    bits = memo->second;
-                } else if (procNF.isRef() && !vetted(procNF.getRef(), true)) {
-                    bits = 8 | 4; // not read: unknown
-                } else {
-                    Object proc = procNF.isRef() ? xref->fetch(procNF.getRef()) : procNF.copy();
-                    bool unreadable = false;
-                    size_t used = 0;
-                    // 4 KB first; the rest (to 64 KB) only when that head filled up undecided. Both
-                    // the encoded and the decoded bytes are charged (a tiny stream can inflate to 64 KB)
-                    std::string text = readHead(proc, 4096, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
-                    charge(used + text.size());
-                    if (text.size() >= 4096 && !unreadable) {
-                        // only an inline mask in the head decides: a Do there (or in a comment)
-                        // may run a form, and a mask can still follow
-                        const CharProcPaint head = charProcPaint(text);
-                        if (!head.inlineMask) {
-                            if (takeRead()) {
-                                used = 0;
-                                text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
-                                charge(used + text.size());
-                            } else {
-                                unreadable = true; // the budget ran out: unknown
-                            }
-                        }
-                    }
-                    if (text.empty()) {
-                        bits = 8 | (unreadable ? 4 : 0);
-                    } else {
-                        const CharProcPaint p = charProcPaint(text);
-                        // an image dictionary cut before ID, or the decode cap filled with no BI or Do
-                        // found (a long comment, say): unknown, not a definite vector glyph
-                        // a copy cut at the read cap that decoded to less than asked is undecided too
-                        const bool undecided = p.cut || unreadable || (!p.inlineMask && !p.doOp && text.size() >= maxCharProcBytes);
-                        bits = (p.inlineMask ? 1 : 0) | (p.doOp ? 2 : 0) | (undecided ? 4 : 0);
-                    }
-                    if (procNF.isRef() && cache.charProcs.size() < maxFontClassCache) {
-                        cache.charProcs.emplace(procNF.getRef(), bits);
-                    }
-                }
-                budgetHit = budgetHit || (bits & 4); // unknown, not a definite vector font
-                if (bits & 8) {
-                    continue;
-                }
-                ++examined;
-                const CharProcPaint p { (bits & 1) != 0, (bits & 2) != 0, false };
-                masks += p.inlineMask;
-                doOps += !p.inlineMask && p.doOp;
-            }
-        }
-        if (doOps > 0) {
-            // a procedure that runs Do paints a mask when the font's XObjects are image masks
-            // memoized per /XObject dictionary object: thousands of fonts sharing one large
-            // dictionary fetch and parse it once; never copied, at most maxXObjectsProbed entries read
-            Dict *res = f8->getResources();
-            const Object xNF = res ? res->lookupNF("XObject").copy() : Object::null();
-            bool maskXObject = false, known = false;
-            if (xNF.isRef()) {
-                const auto it = cache.maskXObjects.find(xNF.getRef());
-                if (it != cache.maskXObjects.end()) {
-                    maskXObject = it->second;
-                    known = true;
-                }
-            }
-            if (!known && takeRead()) {
-                Object xobjects = xNF.isRef() ? (vetted(xNF.getRef(), false) ? xref->fetch(xNF.getRef()) : Object::null()) : xNF.copy();
-                if (xobjects.isDict()) {
-                    for (int i = 0; i < std::min(xobjects.dictGetLength(), maxXObjectsProbed) && !maskXObject; ++i) {
-                        const Object &xRef = xobjects.getDict()->getValNF(i);
-                        if (!xRef.isRef() || !vetted(xRef.getRef(), true)) {
-                            continue; // an XObject is a stream: a direct one is not one
-                        }
-                        Object x = xref->fetch(xRef.getRef());
-                        if (x.isStream() && x.getStream()->getDict()) {
-                            const Object &maskNF = x.getStream()->getDict()->lookupNF("ImageMask");
-                            Object mask = maskNF.isRef() ? (vetted(maskNF.getRef(), false) ? xref->fetch(maskNF.getRef()) : Object::null()) : maskNF.copy();
-                            maskXObject = mask.isBool() && mask.getBool();
-                        }
-                    }
-                }
-                if (xNF.isRef() && cache.maskXObjects.size() < maxFontClassCache) {
-                    cache.maskXObjects.emplace(xNF.getRef(), maskXObject);
-                }
-            }
-            masks += maskXObject ? doOps : 0;
-        }
-        if (examined > 0 && masks > 0 && 2 * masks >= examined) {
-            cls = mcType3Bitmap;
-        }
+    if (startsNoCase(name, "KaTeX_") || startsNoCase(name, "MathJax") || startsNoCase(name, "MJX")) {
+        return mcWebMath;
     }
-    if (cls == mcCount && (startsNoCase(name, "KaTeX_") || startsNoCase(name, "MathJax") || startsNoCase(name, "MJX"))) {
-        cls = mcWebMath;
+    if (startsNoCase(name, "CambriaMath") || startsNoCase(name, "Cambria Math") || startsNoCase(name, "Cambria-Math") || startsNoCase(name, "Cambria,Math") || startsNoCase(name, "OpenSymbol")) {
+        return mcOfficeMath;
     }
-    if (cls == mcCount && (startsNoCase(name, "CambriaMath") || startsNoCase(name, "Cambria Math") || startsNoCase(name, "Cambria-Math") || startsNoCase(name, "Cambria,Math") || startsNoCase(name, "OpenSymbol"))) {
-        cls = mcOfficeMath;
+    if (texMathName(name)) {
+        return mcTexType1;
     }
-    SfntMath table = SfntMath::Unknown;
-    Ref embedded;
-    const auto programMemo = cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) ? cache.programs.find(embedded) : cache.programs.end();
-    if (programMemo != cache.programs.end()) {
-        // a program many font dictionaries share is read once
-        table = static_cast<SfntMath>(programMemo->second);
-        if (table == SfntMath::Yes) {
-            cls = mcOtfMath;
-        }
-        const GfxFontType ft = font->getType();
-        const bool sfntExpected = ft == fontTrueType || ft == fontTrueTypeOT || ft == fontCIDType2 || ft == fontCIDType2OT || ft == fontType1COT || ft == fontCIDType0COT;
-        budgetHit = budgetHit || (sfntExpected && table == SfntMath::Unknown);
-    } else if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
-        Object program = vetted(embedded, true) ? xref->fetch(embedded) : Object::null();
-        bool unreadable = false;
-        size_t used = 0;
-        const std::string programHead = readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used);
-        charge(used + programHead.size());
-        table = sfntMath(programHead);
-        if (cache.programs.size() < maxFontClassCache) {
-            cache.programs.emplace(embedded, static_cast<uint8_t>(table));
-        }
-        if (table == SfntMath::Yes) {
-            cls = mcOtfMath;
-        }
-        // a program that must be OpenType/TrueType whose table directory could not be read
-        // (cut, corrupt, encrypted and long): its MATH table is unknown, not absent
-        const GfxFontType ft = font->getType();
-        const bool sfntExpected = ft == fontTrueType || ft == fontTrueTypeOT || ft == fontCIDType2 || ft == fontCIDType2OT || ft == fontType1COT || ft == fontCIDType0COT;
-        budgetHit = budgetHit || (sfntExpected && table == SfntMath::Unknown);
+    if (mathWordInName(name)) {
+        return mcOtfMath;
     }
-    if (cls == mcCount && texMathName(name)) {
-        cls = mcTexType1;
+    if (startsNoCase(name, "Symbol") || startsNoCase(name, "StandardSym") || startsNoCase(name, "MTSymbol") || startsNoCase(name, "MT Symbol") || startsNoCase(name, "MTExtra") || startsNoCase(name, "MT Extra")
+        || startsNoCase(name, "MT-Extra")) {
+        return mcSymbol;
     }
-    if (cls == mcCount && table != SfntMath::No && mathWordInName(name)) {
-        cls = mcOtfMath;
-    }
-    if (cls == mcCount
-        && (startsNoCase(name, "Symbol") || startsNoCase(name, "StandardSym") || startsNoCase(name, "MTSymbol") || startsNoCase(name, "MT Symbol") || startsNoCase(name, "MTExtra") || startsNoCase(name, "MT Extra")
-            || startsNoCase(name, "MT-Extra"))) {
-        cls = mcSymbol;
-    }
-    if (cls == mcCount) {
-        cls = mcText;
-    }
-    *limited = *limited || budgetHit;
-    // cached even when limited (once per font object: a font whose class is unknown stays so, and
-    // every page it is drawn on is analysis-truncated through fontClassLimited of the first)
-    if (cacheable && cache.fontClasses.size() < maxFontClassCache) {
-        cache.fontClasses.emplace(id, budgetHit ? static_cast<uint8_t>(cls | 0x80) : cls);
-    }
-    return cls;
+    return mcText;
 }
 
 // an axis-aligned box in page space (y down)
@@ -3523,14 +3017,12 @@ struct PageFacts::State
     uint64_t uniPlain = 0, uniPlainCore = 0, mathReadable = 0, mathUnreadable = 0; // core: scripts, operators, math alphanumerics
     std::array<uint64_t, mcCount> classGlyphs {};
     std::vector<MathGlyph> mathGlyphs; // upright math-font glyph centres, at most maxMathGlyphs
-    bool mathGlyphsTruncated = false, fontClassLimited = false;
+    bool mathGlyphsTruncated = false;
     std::unordered_map<const GfxFont *, MathFont> mathFonts; // mathtables' fonts of the page (PageFacts::mathFontOf)
     const TextFontInfo *mathLastInfo = nullptr;
     MathFont mathLast {};
     uint64_t markedActual = 0, markedActualTex = 0; // marked-content /ActualText spans
     bool markedTexUnknown = false; // a span longer than the scanned prefix with no TeX in it
-    // kept across pages
-    MathDocCache mathDoc;
 
     void reset(int num)
     {
@@ -3546,10 +3038,8 @@ struct PageFacts::State
         }
         FormCache formCache = std::move(formObjects);
         const unsigned formGeneration = formObjectsGeneration;
-        MathDocCache mathCache = std::move(mathDoc);
         std::vector<MathGlyph> glyphBuffer = std::move(mathGlyphs);
         *this = State();
-        mathDoc = std::move(mathCache);
         glyphBuffer.clear();
         mathGlyphs = std::move(glyphBuffer);
         formObjects = std::move(formCache);
@@ -3855,15 +3345,12 @@ void PageFacts::beginPage(int pageNum)
     st->reconstructionsAtBegin = docXref ? docXref->getReconstructionCount() : 0;
     tally.reset();
     activeFacts = this;
-    if (wants(MathTables)) {
-        st->mathDoc.pageBegun();
-    }
 }
 
 void PageFacts::noteError(ErrorCategory category, const char *format)
 {
     PageFacts *f = activeFacts;
-    if (!f || !f->st->begun || !format || quietReads > 0) {
+    if (!f || !f->st->begun || !format) {
         return;
     }
     unsigned &w = f->st->warnings;
@@ -3995,13 +3482,14 @@ PageFacts::MathFont PageFacts::mathFontOf(const TextFontInfo *info)
         return st->mathLast;
     }
     const GfxFont *font = info ? info->getGfxFont() : nullptr;
-    MathFont m { mcText, false, false };
+    MathFont m { mcText, false, false, false };
     if (font) {
         const auto it = st->mathFonts.find(font);
         if (it != st->mathFonts.end()) {
             m = it->second;
         } else {
-            m.cls = classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited);
+            m.cls = classifyFont(font);
+            m.type3 = font->getType() == fontType3;
             m.fixedWidth = font->isFixedWidth();
             if (font->getName()) {
                 // the fonts whose delimiter pieces glyph names map to the Adobe Symbol pieces
@@ -4024,7 +3512,8 @@ void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *
     add(st->glyphs, 1);
     add(st->unmapped, 1);
     if (wants(MathTables)) {
-        const uint8_t cls = mathFontOf(font).cls;
+        const MathFont mf = mathFontOf(font);
+        const uint8_t cls = mf.type3 ? uint8_t(mcType3Bitmap) : mf.cls; // no Unicode at all
         ++st->classGlyphs[cls];
         st->mathUnreadable += isMathClass(cls);
     }
@@ -4087,10 +3576,19 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
         s.smallestFont = fontSize;
     }
     if (fams & MathTables) {
-        // a font past the page's 256-font list is still classed (once per font object, from the
-        // document's cache): many honest fonts on a page do not make the page truncated
+        // every font is classed (by name, once a page), however many the page has
         const MathFont mf = mathFontOf(font);
-        const uint8_t cls = mf.cls;
+        uint8_t cls = mf.cls;
+        if (mf.type3) {
+            // a Type 3 glyph the text layer gives no usable Unicode (none, a control character,
+            // private use or U+FFFD): drawn, bitmap or vector, it needs vision (type3Bitmap)
+            bool usable = false;
+            for (int i = 0; i < uLen && !usable; ++i) {
+                const Unicode c = u[i];
+                usable = !(c < 0x20 || (c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd) || c == 0xfffd);
+            }
+            cls = usable ? cls : uint8_t(mcType3Bitmap);
+        }
         const bool mathFont = isMathClass(cls);
         ++s.classGlyphs[cls];
         for (int i = 0; i < uLen; ++i) {
@@ -4753,7 +4251,7 @@ void PageFacts::endPage(const TextPage &text)
             }
             whitespace += !matrix;
         }
-        const bool truncatedAnalysis = budget.hit || s.markedTexUnknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
+        const bool truncatedAnalysis = budget.hit || s.markedTexUnknown || s.mathGlyphsTruncated || rTablesTruncated || gridsTruncated;
         const uint64_t texSources = s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
