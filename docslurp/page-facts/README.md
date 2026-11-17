@@ -485,7 +485,7 @@ file) the math bits separate raster strips, glyph outlines, Type 3 bitmap fonts,
 math, ActualText/Alt TeX and Formula structure from each other and from no-math controls.
 
 **Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names). In
-order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures (4 KB, then to 64 KB only when that head is undecided; decoded bytes charged too), text
+order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures (4 KB, then to 64 KB unless that head already holds an inline image mask; decoded bytes charged too), text
 filters only, paint an inline image mask (`BI /IM true`) or run `Do` on an image-mask XObject
 of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math, OpenSymbol);
 `otfMath` (an embedded sfnt program whose table directory, in its first 4 KB, lists `MATH`);
@@ -511,7 +511,7 @@ of encoded bytes; a glyph procedure or font program many fonts share is read onc
 reference). The structure tree (its root, RoleMap and parent-tree root) is resolved once a
 document; a parent-tree entry is walked once however many pages name it (by key and by
 reference), duplicates in it cost nothing, an entry longer than a page's budget (65,536) is not
-walked (`structure.truncated`), and the document has one budget for every structure visit, cached or not, and every parent-tree node and entry read: 2^22, plus 2^7 for every page begun (12,000 pages of 400 elements each fit); a page's entry is read only while a page's whole budget (2^16) of it is left, so once a document has spent it, its pages are truncated without reading anything. A parent tree's /Kids are searched by their /Limits (binary search), and the cross-reference table keeps at most 8 object-stream parses for these reads (a document giving every page's entry its own object stream cannot make it keep them all); a structure tree whose catalog cannot be read is unknown, never cached. A RoleMap chain still mapping after 8 hops (or a cycle) sets
+walked (`structure.truncated`), and the document has one budget for every structure visit, cached or not, and every parent-tree node and entry read: 2^22, plus 2^11 for every page begun (6,000 pages of 1,000 elements and 12,000 of 400 fit); a page's entry is read only while a page's whole budget (2^16) of it is left, so once a document has spent it, its pages are truncated without reading anything. A parent tree's /Kids are searched by their /Limits (binary search; a miss, as with Kids out of key order, falls back to a bounded linear scan), and the cross-reference table keeps the object-stream parses made for these reads for the run, never parsing one twice, up to 64 MB of decoded bytes in all; past that a new one is refused (the structure reads unknown). These parses take object-stream members from a budget of their own, so they can never leave drawing without members for a later page; a structure tree whose catalog cannot be read is unknown, never cached. A RoleMap chain still mapping after 8 hops (or a cycle) sets
 `structure.truncated`. A glyph procedure cut inside an inline image dictionary, a non-empty
 stream that decodes to nothing, a glyph procedure that fills its 64 KB read with no `BI` or
 `Do`, and an OpenType or TrueType program whose table directory cannot be read are unknown. What cannot be read is reported: `structure.unknown`, and a

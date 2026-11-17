@@ -1432,7 +1432,9 @@ def math_matrix_pdf():
     7 the same pieces from a font that is not a math extension font (CMSY10): unreadable;
     8 a Type 3 font whose glyph procedure is a stored deflate block, 100 KB of empty stored
       blocks, then BI /IM true (the read is cut before BI): unknown, not a vector font;
-    9 a Type 3 font whose glyph procedures are 6 KB of path operators: a vector font, decided."""
+    9 a Type 3 font whose glyph procedures are 6 KB of path operators: a vector font, decided;
+    10 a Type 3 font whose procedure runs Do (a form) in its first 4 KB and paints an inline image
+       mask after it: a bitmap font (a Do in the head decides nothing)."""
     prose = _prose(740, 2)
     paren = lambda x, y: _row(y, ((x, "\\("),), "X")
     rparen = lambda x, y: _row(y, ((x, "\\)"),), "X")
@@ -1456,9 +1458,12 @@ def math_matrix_pdf():
     t3 = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {%d} 0 R /b {%d} 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>"
     cut3 = prose + _row(600, ((100, "abab"),), "C")
     vec3 = prose + _row(600, ((100, "abab"),), "V")
-    res = "<< /Font << /F1 3 0 R /M {0} 0 R /X {1} 0 R /P {2} 0 R /Q {3} 0 R /N {6} 0 R /C {8} 0 R /V {10} 0 R >> >>"
+    doproc = "1000 0 0 0 1000 1000 d1\nq /X1 Do Q\n" + ("% " + "x" * 76 + "\n") * 60 + "q 1000 0 0 1000 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID \xff\x81\x81\x81\x81\x81\x81\xff EI\nQ\n"
+    t3do = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {11} 0 R /b {11} 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [1000 1000] /Resources << /XObject << /X1 {12} 0 R >> >> >>"
+    do3 = prose + _row(600, ((100, "abab"),), "D")
+    res = "<< /Font << /F1 3 0 R /M {0} 0 R /X {1} 0 R /P {2} 0 R /Q {3} 0 R /N {6} 0 R /C {8} 0 R /V {10} 0 R /D {13} 0 R >> >>"
     return doc(
-        [{"content": c, "resources": res} for c in (matrix, fractions, aligned, limits, pua, pieces, nonext, cut3, vec3)],
+        [{"content": c, "resources": res} for c in (matrix, fractions, aligned, limits, pua, pieces, nonext, cut3, vec3, do3)],
         extras=[
             "<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",  # 0
             "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 >>",  # 1
@@ -1471,8 +1476,23 @@ def math_matrix_pdf():
             t3 % (7, 7),  # 8
             stream("", vecproc),  # 9
             t3 % (9, 9),  # 10
+            stream("", doproc),  # 11
+            stream("/Type /XObject /Subtype /Form /BBox [0 0 1000 1000]", "0 0 100 100 re f"),  # 12
+            t3do,  # 13
         ],
     )
+
+
+def unsorted_kids_pdf():
+    """A parent tree whose root /Kids are out of key order ([10-19, 0-9, 20-29], each kid's
+    /Limits true): every page's entry (one Formula) is still found."""
+    pages = [{"content": "/P << /MCID 0 >> BDC " + words(5) + " EMC\n", "extra": "/StructParents %d" % i} for i in range(30)]
+    # extras: 0 root, 1 Document, 2-31 Formula elements, 32-34 kids, 35 tree
+    extras = ["<< /Type /StructTreeRoot /K {1} 0 R /ParentTree {35} 0 R >>", "<< /Type /StructElem /S /Document /P {0} 0 R >>"]
+    extras += ["<< /Type /StructElem /S /Formula /P {1} 0 R /K 0 >>"] * 30
+    kid = lambda a, b: "<< /Limits [%d %d] /Nums [%s] >>" % (a, b, " ".join("%d {%d} 0 R" % (k, 2 + k) for k in range(a, b + 1)))
+    extras += [kid(10, 19), kid(0, 9), kid(20, 29), "<< /Kids [{32} 0 R {33} 0 R {34} 0 R] >>"]
+    return doc(pages, extras=extras, catalog_extra="/StructTreeRoot {0} 0 R /MarkInfo << /Marked true >>")
 
 
 ALL = {
@@ -1520,4 +1540,5 @@ ALL = {
     "math_tables_council": math_tables_council_pdf,
     "math_tables_round2": math_tables_round2_pdf,
     "math_matrix": math_matrix_pdf,
+    "unsorted_kids": unsorted_kids_pdf,
 }

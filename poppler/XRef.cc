@@ -149,9 +149,12 @@ class ObjectStream
 public:
     // Create an object stream, using object number <objStrNum>,
     // generation 0.
-    ObjectStream(XRef *xref, int objStrNumA, int recursion = 0);
+    // <guarded>: a parse under a RepairGuard, which takes its members from the guarded budget
+    ObjectStream(XRef *xref, int objStrNumA, int recursion = 0, bool guarded = false);
 
     bool isOk() const { return ok; }
+    // the decoded bytes the parse read (the header and the members)
+    long long decodedBytes() const { return decoded; }
 
     ~ObjectStream();
 
@@ -171,9 +174,10 @@ private:
     Object *objs; // the objects (length = nObjects)
     int *objNums; // the object numbers (length = nObjects)
     bool ok;
+    long long decoded = 0;
 };
 
-ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
+ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion, bool guarded)
 {
     Parser *parser;
     Goffset *offsets;
@@ -227,7 +231,7 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
         error(errSyntaxError, -1, "Too many objects in an object stream");
         return;
     }
-    if (!xref->takeObjectStreamMembers(nObjects)) {
+    if (!(guarded ? xref->takeGuardedObjectStreamMembers(nObjects) : xref->takeObjectStreamMembers(nObjects))) {
         error(errSyntaxError, -1, "Too many objects in the object streams of this file");
         return;
     }
@@ -308,6 +312,7 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     }
 
     gfree(offsets);
+    decoded = maxObjectStreamDecoded - std::max<long long>(decodeLeft, 0);
     ok = true;
 }
 
@@ -701,7 +706,6 @@ XRef::RepairGuard::~RepairGuard()
 {
     if (--xref->repairSuppressed == 0) {
         xref->objStrsGuarded.clear();
-        xref->keptOrder[3].clear();
         xref->shapedByKind[static_cast<int>(GuardKind::Scope)].clear();
         xref->repairedByKind[static_cast<int>(GuardKind::Scope)].clear();
         xref->failedByKind[static_cast<int>(GuardKind::Scope)].clear();
@@ -1160,9 +1164,7 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     for (auto &kept : objStrsByKind) {
         kept.clear();
     }
-    for (auto &order : keptOrder) {
-        order.clear();
-    }
+    guardedObjStrBytes = 0;
     for (auto &shaped : shapedByKind) {
         shaped.clear();
     }
@@ -1753,7 +1755,14 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             const unsigned int repairsBefore = suppressedRepairs, blockedBefore = blockedFetches, shapedBefore = shapedRefusals;
             const unsigned long depthBefore = Parser::depthLimitHits();
             const Goffset at = e->offset;
-            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(at), recursion + 1));
+            if (guardKind != GuardKind::Scope && guardedObjStrBytes >= maxGuardedObjStrBytes) {
+                // the run's guarded parses are at their bound: refused, never an eviction and a
+                // second parse (a reader marks what it read unknown)
+                ++suppressedRepairs;
+                error(errSyntaxError, -1, "Object stream parses for read-only lookups at their bound; not used");
+                return Object::null();
+            }
+            std::unique_ptr<ObjectStream> once(new ObjectStream(this, static_cast<int>(at), recursion + 1, true));
             if (blockedFetches != blockedBefore || Parser::depthLimitHits() != depthBefore) {
                 shapedByKind[kind].insert(at);
                 return refuse();
@@ -1772,17 +1781,10 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             if (suppressedRepairs != repairsBefore) {
                 repairedByKind[kind][at] = shapedRefusals != shapedBefore;
             }
-            // at most maxKeptGuardedObjStrs a kind: past it the oldest parse is dropped (a later
-            // read parses it again; returned objects share their data, so nothing dangles), so
-            // reads reaching one object stream after another (a document giving every page's
-            // structure entry its own stream) cannot hold every stream they ever parsed
-            auto &order = keptOrder[guardKind == GuardKind::Scope ? 3 : kind - 1];
-            while (kept->size() >= maxKeptGuardedObjStrs && !order.empty()) {
-                kept->erase(order.front());
-                order.pop_front();
+            if (guardKind != GuardKind::Scope) {
+                guardedObjStrBytes += once->decodedBytes();
             }
             kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
-            order.push_back(at);
             return result;
         } else {
             // an object stream that failed to read is not decoded again for each object that lives in it

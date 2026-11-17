@@ -733,6 +733,9 @@ with t.TempDir() as d:
     t.check(bit(mm[7], 8), "math-font-no-unicode: bracket pieces from a font that is not a math extension font are not exempt", repr(mm[7]["mathFlags"]))
     t.check(bit(mm[8], 12) and mm[8]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "Type 3: a procedure whose read is cut before BI is unknown (analysis-truncated), not a vector font", repr((mm[8]["mathFlags"], mm[8]["fonts"]["mathClasses"])))
     t.check(not bit(mm[9], 12) and mm[9]["fonts"]["mathClasses"]["text"] > 0, "Type 3: 6 KB vector procedures are read and decided (no truncation)", repr((mm[9]["mathFlags"], mm[9]["fonts"]["mathClasses"])))
+    t.check(mm[10]["fonts"]["mathClasses"]["type3Bitmap"] == 4 and bit(mm[10], 7), "Type 3: a Do in the first 4 KB decides nothing; the mask after it makes a bitmap font", repr((mm[10]["mathFlags"], mm[10]["fonts"]["mathClasses"])))
+    uk = [l for l in lines(facts(paths["unsorted_kids"], "-include", "mathtables,structure")[1]) if l["type"] == "page"]
+    t.check(len(uk) == 30 and all(l["structure"]["formulas"] == 1 and not l["structure"]["unknown"] for l in uk), "a parent tree with Kids out of key order: every page's entry found", repr([l["page"] for l in uk if l["structure"]["formulas"] != 1]))
     here = os.path.join(HERE, "fixtures", "encoding-tables-math.pdf")
     ls = {l["page"]: l for l in lines(facts(here, "-include", "mathtables")[1]) if l["type"] == "page"}
     t.check([ls[n]["mathBits"] for n in (1, 2, 3, 4)] == [0, 3, 2049, 0] and [ls[n]["tableBits"] for n in (1, 2, 3, 4)] == [4, 8, 256, 0], "pdflatex display math: no math-font-no-unicode or math-matrix; the pmatrix page is math-matrix (not whitespace), the booktabs page booktabs; the aligned display math is a whitespace block, as doppler-md writes it", repr([(ls[n]["mathBits"], ls[n]["tableBits"]) for n in (1, 2, 3, 4)]))
