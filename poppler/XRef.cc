@@ -1231,7 +1231,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
                 ++p;
             }
             if (!strncmp(p, "stream", 6)) {
-                if (lastObjNum >= 0) {
+                // once per object: a dictionary followed by thousands of "stream" tokens would otherwise be fetched, and
+                // parsed in full, once for each
+                if (lastObjNum >= 0 && (streamObjNumsLen == 0 || streamObjNums[streamObjNumsLen - 1] != lastObjNum)) {
                     if (streamObjNumsLen == streamObjNumsSize) {
                         streamObjNumsSize += 64;
                         streamObjNums = static_cast<int *>(greallocn(streamObjNums, streamObjNumsSize, sizeof(int)));
