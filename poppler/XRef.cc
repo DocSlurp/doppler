@@ -89,6 +89,61 @@ constexpr int defPermFlags = 0xfffc;
 // ObjectStream
 //------------------------------------------------------------------------
 
+// Filters a stream the xref machinery reads at open (an older xref stream in readPrevChain, an object stream in
+// a rebuild or an ordinary fetch) may use: the ones whose work is bounded by the bytes they are asked for.
+// Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and clear their whole bitmap before yielding a byte, so a
+// few hundred bytes per stream would cost seconds each. ASCIIHex and ASCII85 skip any amount of whitespace
+// inside the filter, before it yields a byte: harmless as the first filter (what they skip is the file's own
+// bytes, which the parse budget counts), but behind a Flate or LZW stream it is inflated whitespace that
+// nothing counts. Real xref and object streams use Flate (LZW, or ASCII85 or ASCIIHex wrapping Flate, at most).
+static bool filterAllowed(const char *name, bool first)
+{
+    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW" };
+    static const char *const ascii[] = { "ASCIIHexDecode", "AHx", "ASCII85Decode", "A85" };
+    for (const char *a : allowed) {
+        if (strcmp(name, a) == 0) {
+            return true;
+        }
+    }
+    if (first) {
+        for (const char *a : ascii) {
+            if (strcmp(name, a) == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool streamFiltersOk(Dict *dict)
+{
+    // as Stream::addFilters reads it: /Filter, and /F when that is absent or null
+    Object f = dict->lookup("Filter");
+    if (f.isNone() || f.isNull()) {
+        f = dict->lookup("F");
+    }
+    if (f.isNone() || f.isNull()) {
+        return true;
+    }
+    if (f.isName()) {
+        return filterAllowed(f.getName(), true);
+    }
+    if (!f.isArray() || f.arrayGetLength() > 4) {
+        return false;
+    }
+    for (int i = 0; i < f.arrayGetLength(); ++i) {
+        Object n = f.arrayGet(i);
+        if (!n.isName() || !filterAllowed(n.getName(), i == 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The most an object stream may decode: its header, its members and the rest the reader drains. Real object
+// streams hold a few hundred objects (well under a megabyte); this bounds a Flate stream of whitespace.
+static constexpr long long maxObjectStreamDecoded = 4LL << 20;
+
 class ObjectStream
 {
 public:
@@ -138,6 +193,10 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     }
     Stream *objStrStream = objStr.getStream();
     Dict *objStrStreamDict = objStrStream->getDict();
+    if (!streamFiltersOk(objStrStreamDict)) {
+        error(errSyntaxError, -1, "Object stream behind a filter whose work cannot be bounded; stream refused");
+        return;
+    }
 
     obj1 = objStrStreamDict->lookup("N", recursion);
     if (!obj1.isInt()) {
@@ -157,7 +216,7 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     } else {
         first = obj1.getInt64();
     }
-    if (first < 0) {
+    if (first < 0 || first > maxObjectStreamDecoded) {
         return;
     }
 
@@ -166,6 +225,10 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     // object streams to 100-200 objects)
     if (nObjects > 1000000) {
         error(errSyntaxError, -1, "Too many objects in an object stream");
+        return;
+    }
+    if (!xref->takeObjectStreamMembers(nObjects)) {
+        error(errSyntaxError, -1, "Too many objects in the object streams of this file");
         return;
     }
     if (!objStrStream->rewind()) {
@@ -206,6 +269,14 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     }
     delete parser;
 
+    // what is left of the decode budget after the header; each member below is read through a stream cut to it
+    long long decodeLeft = maxObjectStreamDecoded - first;
+    if (offsets[0] - first > decodeLeft) {
+        gfree(offsets);
+        return;
+    }
+    decodeLeft -= std::max<Goffset>(offsets[0] - first, 0);
+
     // skip to the first object - this shouldn't be necessary because
     // the First key is supposed to be equal to offsets[0], but just in
     // case...
@@ -216,10 +287,16 @@ ObjectStream::ObjectStream(XRef *xref, int objStrNumA, int recursion)
     // parse the objects
     for (i = 0; i < nObjects; ++i) {
         std::unique_ptr<Stream> strPtr;
+        if (decodeLeft <= 0 && i != nObjects - 1 && offsets[i + 1] > offsets[i]) {
+            gfree(offsets);
+            return;
+        }
         if (i == nObjects - 1) {
-            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), false, 0);
+            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, std::max<long long>(decodeLeft, 0));
         } else {
-            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, offsets[i + 1] - offsets[i]);
+            const long long len = std::min<long long>(offsets[i + 1] - offsets[i], decodeLeft);
+            decodeLeft -= len;
+            strPtr = std::make_unique<EmbedStream>(objStr.getStream(), Object::null(), true, len);
         }
         parser = new Parser(xref, std::move(strPtr), false);
         objs[i] = parser->getObj();
@@ -539,7 +616,9 @@ bool XRef::readXRef(Goffset *pos, std::vector<Goffset> *followedXRefStm, std::ve
         ok = false;
         return false;
     }
-    if (parsePos < 0) {
+    if (parsePos < 0 || parsePos > str->getStart() + str->getLength()) {
+        // An offset past the end of the file reads nothing; refusing it here also keeps a
+        // /Prev near 2^63 out of the file stream's offset arithmetic.
         ok = false;
         return false;
     }
@@ -834,6 +913,11 @@ err0:
     return false;
 }
 
+bool XRef::chainStreamFiltersOk(Dict *dict)
+{
+    return streamFiltersOk(dict);
+}
+
 bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
 {
     int w[3];
@@ -841,6 +925,13 @@ bool XRef::readXRefStream(Stream *xrefStr, Goffset *pos)
     Object obj;
 
     ok = false;
+
+    if (chainDecodeLeft >= 0 && !chainStreamFiltersOk(xrefStr->getDict())) {
+        // an older section behind a filter whose cost the budgets cannot see is not read; like a
+        // refused predictor row, the first missing entry rebuilds
+        noteChainBudget("filter");
+        return false;
+    }
 
     Dict *dict = xrefStr->getDict();
     obj = dict->lookupNF("Size").copy();
@@ -1034,6 +1125,7 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
 // Attempt to construct an xref table for a damaged file.
 bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
 {
+    rebuildMembersLeft = 1000000; // object-stream members this rebuild reads the headers of (a file may rebuild a few times)
     ++generation;
     int *streamObjNums = nullptr;
     int streamObjNumsLen = 0;
@@ -1059,6 +1151,7 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     prevXRefOffset = 0;
     chainResumeOffset = 0;
     objStrs.clear();
+    objStrsFailed.clear();
     objStrsGuarded.clear();
     for (auto &kept : objStrsByKind) {
         kept.clear();
@@ -1138,7 +1231,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
                 ++p;
             }
             if (!strncmp(p, "stream", 6)) {
-                if (lastObjNum >= 0) {
+                // once per object: a dictionary followed by thousands of "stream" tokens would otherwise be fetched, and
+                // parsed in full, once for each
+                if (lastObjNum >= 0 && (streamObjNumsLen == 0 || streamObjNums[streamObjNumsLen - 1] != lastObjNum)) {
                     if (streamObjNumsLen == streamObjNumsSize) {
                         streamObjNumsSize += 64;
                         streamObjNums = static_cast<int *>(greallocn(streamObjNums, streamObjNumsSize, sizeof(int)));
@@ -1294,6 +1389,10 @@ char *XRef::constructObjectEntry(char *p, Goffset pos, int *objNum)
 // of its objects.
 void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
 {
+    if (!streamFiltersOk(objStr->getStream()->getDict())) {
+        // the rebuild reads every object stream's header: not behind a filter whose work it cannot bound
+        return;
+    }
     Object objN = objStr->getStream()->getDict()->lookup("N");
 
     // get the object count
@@ -1301,15 +1400,24 @@ void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
         return;
     }
     int nObjects = objN.getInt();
-    if (nObjects <= 0 || nObjects > 1000000) {
+    if (nObjects <= 0 || nObjects > 1000000 || nObjects > rebuildMembersLeft) {
         return;
     }
+    rebuildMembersLeft -= nObjects;
 
-    // parse the header: object numbers and offsets
-    Parser parser { nullptr, objStr, false };
+    // parse the header: object numbers and offsets, within what a header of nObjects entries needs
+    // (a Flate stream of whitespace would otherwise be skipped to its end)
+    Stream *objStrStream = objStr->getStream();
+    if (!objStrStream->rewind()) {
+        return;
+    }
+    Parser parser { nullptr, std::make_unique<EmbedStream>(objStrStream, Object::null(), true, std::min<long long>(64LL * nObjects + 4096, maxObjectStreamDecoded)), false };
     for (int i = 0; i < nObjects; ++i) {
         auto obj1 = parser.getObj(true);
         auto obj2 = parser.getObj(true);
+        if (obj1.isEOF() || obj2.isEOF()) {
+            break; // a header the stream cannot fill: N tokens' worth of EOF reads cost CPU for nothing
+        }
         if (obj1.isInt() && obj2.isInt()) {
             int num = obj1.getInt();
             if (num >= 0 && num < 1000000) {
@@ -1660,10 +1768,16 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
             return result;
         } else {
+            // an object stream that failed to read is not decoded again for each object that lives in it
+            const Goffset failedAt = e->offset;
+            if (objStrsFailed.count(failedAt)) {
+                goto err;
+            }
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);
             if (!objStr->isOk()) {
                 delete objStr;
                 objStr = nullptr;
+                objStrsFailed.insert(failedAt);
                 goto err;
             } else {
                 // XRef could be reconstructed in constructor of ObjectStream:

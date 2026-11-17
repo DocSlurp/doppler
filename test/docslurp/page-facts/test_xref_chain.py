@@ -110,9 +110,28 @@ with t.TempDir() as d:
         "dp_reuse": ("dp_reuse.py", ["249"]),
         "notokbomb": ("notokbomb.py", ["200", "20000000"]),
         "failpred": ("failpred.py", ["249"]),
+        # council round 2 of the release after 4578a65: image-filtered older xref streams, the
+        # rebuild's predictor rows, and a /Prev near 2^63
+        "jbig2chain": ("jbig2chain.py", ["999", "60000", "60000"]),
+        "jbig2chain_f": ("jbig2chain.py", ["999", "60000", "60000", "F"]),
+        "jbig2chain_nullf": ("jbig2chain.py", ["999", "60000", "60000", "FilterNullF"]),
+        "prevbig": ("prevbig.py", []),
+        "wsbomb": ("wsbomb.py", ["3", "1024"]),
+        "objstm_jbig2": ("objstm_jbig2.py", ["100", "60000", "60000"]),
+        # object streams of a valid file: image filters are refused, decoded bytes are capped
+        "objstm_valid_jbig2": ("objstm_filters.py", ["100", "60000", "jbig2"]),
+        "objstm_valid_wshex": ("objstm_filters.py", ["3", "500", "wsflate"]),
+        "objstm_valid_wsflate": ("objstm_filters.py", ["3", "500", "wsflateonly"]),
+        "objstm_valid_a85flate": ("objstm_filters.py", ["3", "1", "a85flate"]),
+        "objstm_members": ("objstm_members.py", ["100", "1000000"]),
+        "objstm_members_rebuild": ("objstm_members.py", ["100", "1000000", "members", "damaged"]),
+        "objstm_ws_rebuild2": ("objstm_ws_rebuild2.py", ["20", "64"]),
+        "streamdup": ("streamdup.py", ["2000"]),
+        "objstm_failing": ("objstm_failing.py", ["1000", "4194304"]),
+        "objstm_rebuild_wsflate": ("objstm_ws_rebuild.py", ["3", "500"]),
     }
     # argument order of each generator: "out" first or last
-    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py"} - {"manysec.py"}
+    OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py", "jbig2chain.py", "prevbig.py", "wsbomb.py", "objstm_jbig2.py", "objstm_filters.py", "objstm_ws_rebuild.py", "objstm_members.py", "objstm_failing.py", "objstm_ws_rebuild2.py", "streamdup.py"} - {"manysec.py"}
     OUT_SECOND = {"manysec.py", "widepred_old.py"}
     paths = {}
     for name, gen in cases.items():
@@ -153,6 +172,9 @@ with t.TempDir() as d:
                 t.check(facts == pf, "%s %s: pdftotext -page-facts-fd == pdfpagefacts" % (name, " ".join(flags[:-2])), "%r\n%r" % (facts[:300], pf[:300]))
         # files upstream read without a rebuild, and that stay within the bounds or have nothing
         # missing: not repaired, no page flagged, the text drawn
+        if name == "objstm_valid_a85flate":
+            # a legitimate (Distiller-style) ASCII85+Flate object stream is still read: its pages are drawn
+            t.check(outs[0].count(b"<page ") == 3, "objstm_valid_a85flate: the pages in ASCII85+Flate object streams are read", repr(outs[0][:200]))
         if name == "deepoc":
             # an intact file whose object stream holds a member nested past the parser's limit:
             # not refused (the cut is the stream's own, not the route's), the hidden image stays out
