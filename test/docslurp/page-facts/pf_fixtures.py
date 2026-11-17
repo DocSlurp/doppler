@@ -1304,7 +1304,13 @@ def math_tables_round2_pdf():
     5-20 4,000 Type 3 fonts (250 a page) sharing one 20,000-entry /XObject dictionary through
       procedures that run Do: the dictionary is read once;
     21 300 one-character /ActualText spans (ligatures): not truncated;
-    22 a RoleMap chain of 12 hops and a two-type cycle: structure truncated, not 0."""
+    22 a RoleMap chain of 12 hops and a two-type cycle: structure truncated, not 0;
+    23 a Type 3 font whose glyph procedures put a 5 KB comment before BI /IM true (past the
+       4 KB read): unknown, never a definite text font;
+    24 a Formula whose Alt is 5,000 characters with no TeX in them (past the 4,096 scanned): TeX
+       unknown (truncated);
+    25 a parent-tree entry of 65,000 duplicate references to one Formula: counted once, not
+       truncated."""
     import zlib
 
     objs = {}
@@ -1384,6 +1390,19 @@ def math_tables_round2_pdf():
     page("".join("/Span << /ActualText (fi) >> BDC BT /F1 10 Tf %d %d Td (x) Tj ET EMC\n" % (40 + (k % 30) * 18, 760 - (k // 30) * 14) for k in range(300)))
     # 22: the RoleMap page (parent-tree key 1)
     page("/P << /MCID 0 >> BDC " + words(5) + " EMC /P << /MCID 1 >> BDC " + words(5, 600) + " EMC\n", extra="/StructParents 1")
+    # 23 a 5 KB comment before the image mask
+    padproc = new(t.stream("", b"1000 0 0 0 750 750 d1\n%" + b"x" * 5000 + b"\nq 750 0 0 750 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID " + b"\xff" * 8 + b" EI Q", compress=True).decode("latin-1"))
+    t3pad = new("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [1000] /Resources << >> >>" % padproc)
+    page("BT /P3 10 Tf 72 700 Td (aaaa) Tj ET\n" + words(10, 600), res="/Font << /F1 %d 0 R /P3 %d 0 R >>" % (helv, t3pad))
+    # 24, 25 (parent-tree keys 2 and 3)
+    longalt = new(None)
+    objs[longalt] = "<< /Type /StructElem /S /Formula /P %d 0 R /K 0 /Alt (%s) >>" % (docel, "plain words " * 420)
+    dup = new(None)
+    objs[dup] = "<< /Type /StructElem /S /Formula /P %d 0 R /K 0 >>" % docel
+    dups = new("[%s]" % " ".join(["%d 0 R" % dup] * 65000))
+    objs[ptree] = objs[ptree].replace("]] >>", "] 2 [%d 0 R] 3 %d 0 R] >>" % (longalt, dups))
+    page("/P << /MCID 0 >> BDC " + words(5) + " EMC\n", extra="/StructParents 2")
+    page("/P << /MCID 0 >> BDC " + words(5) + " EMC\n", extra="/StructParents 3")
 
     kids = []
     out = {1: "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % root}

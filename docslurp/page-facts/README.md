@@ -51,7 +51,9 @@ dropped (`0.5`, `612`).
 
 ## Levels and families
 
-`-level basic` (the default) computes the basic fields; `-level full` adds every family;
+`-level basic` (the default) computes the basic fields; `-level full` adds every family,
+`mathtables` included (its structure, font-class and table analysis costs about 7% more CPU
+than `full` without it, measured on textbook pages);
 `-include LIST` adds the named families to basic (`pdfpagefacts -include`,
 `pdftotext -page-facts-include`, `pdftomarkdown --page-facts-include`):
 
@@ -469,10 +471,10 @@ nibble i at bits `4i..4i+3`, so 52 bits, exact in a JSON reader's double):
 | 6 | TeX sources (`altTextTexLike` + `actualTextTexLike`) |
 | 7 | MathML (`structure.mathml` + `mathmlFiles`) |
 | 8 | ruled grids (`tableLayout.ruledGrids`) |
-| 9 | `vectors.ruleTables` (before the 64 cap) |
-| 10 | whitespace tables |
+| 9 | `vectors.ruleTables` (at most 64) |
+| 10 | whitespace tables (at most 64) |
 | 11 | `structure.tables` |
-| 12 | math regions (before the 64 cap) |
+| 12 | math regions (all of them, before the 64-item list cap) |
 
 **Validation** (in-sample: rules were revised after the first look). A table-encoding
 development corpus (56 PDFs: the same three tables through 16 encodings, plus controls): full-grid 24/24, booktabs 3/3, whitespace 6/6, shaded
@@ -483,7 +485,7 @@ file) the math bits separate raster strips, glyph outlines, Type 3 bitmap fonts,
 math, ActualText/Alt TeX and Formula structure from each other and from no-math controls.
 
 **Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names). In
-order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures, 1 KB each, text
+order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures, 4 KB each, text
 filters only, paint an inline image mask (`BI /IM true`) or run `Do` on an image-mask XObject
 of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math, OpenSymbol);
 `otfMath` (an embedded sfnt program whose table directory, in its first 4 KB, lists `MATH`);
@@ -491,7 +493,7 @@ of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math,
 mathptmx, mathpazo); `otfMath` again by a name holding the word Math when the program has no
 readable directory (bare CFF, not embedded); `symbol`; `text`. A font's class is cached per
 document by reference; reads are made under a RepairGuard (they cannot rebuild the
-cross-reference table) and charged the encoded bytes they consume, at most 512 MB a run, a
+cross-reference table) and charged the encoded bytes they consume, at most 64 MB a run, a
 budget of their own (past it, names alone: `analysis-truncated`). A font past the page's
 256-font list is still classed from the document's cache. A Type 3 font's resource `/XObject`
 dictionary is read once per object, however many fonts share it.
@@ -500,17 +502,24 @@ dictionary is read once per object, however many fonts share it.
 object (a direct font dictionary by its content hash, so a form drawn thousands of times
 classifies its inline fonts once). Every stream read for classification (Type 3 glyph
 procedures, a font program's head, an untyped associated file) caps the encoded bytes read
-(16 KB, 64 KB, 16 KB) as well as the decoded bytes (1 KB, 4 KB, 2 KB): a longer stream is decoded
+(16 KB, 64 KB, 16 KB) as well as the decoded bytes (4 KB, 4 KB, 2 KB): a longer stream is decoded
 from a copy of its first encoded bytes (an encrypted document's is not read), so a deflate
 stream of empty stored blocks costs at most the cap. Structure elements and indirect Alt and
 ActualText strings are read once a document (a string thousands of elements share is parsed
-once; its first 4,096 code units are tested); associated files once each, under a document
-budget of 4 MB of encoded bytes. A RoleMap chain still mapping after 8 hops (or a cycle) sets
+once; its first 4,096 code units are tested, and a longer string with no TeX in them is TeX
+unknown: `structure.truncated`); associated files once each, under a document budget of 4 MB
+of encoded bytes; a glyph procedure or font program many fonts share is read once (by
+reference). The structure tree (its root, RoleMap and parent-tree root) is resolved once a
+document; a parent-tree entry is walked once however many pages name it (by key and by
+reference), duplicates in it cost nothing, an entry longer than a page's budget (65,536) is not
+walked (`structure.truncated`), and the document has a budget of 2^22 structure objects. A RoleMap chain still mapping after 8 hops (or a cycle) sets
 `structure.truncated`. A glyph procedure cut inside an inline image dictionary, a non-empty
-stream that decodes to nothing, and an OpenType or TrueType program whose table directory
-cannot be read are unknown. What cannot be read is reported: `structure.unknown`, and a
-font whose procedures or program could not be read, or a font past the 256-font cap, makes
-the page `analysis-truncated` rather than a definite class.
+stream that decodes to nothing, a glyph procedure that fills its 4 KB read with no `BI` or
+`Do`, and an OpenType or TrueType program whose table directory cannot be read are unknown. What cannot be read is reported: `structure.unknown`, and a
+font whose procedures or program could not be read makes the page `analysis-truncated`
+rather than a definite class. A font past the page's 256-font list is still classed (from the
+document's cache) and its glyphs counted in `fonts.mathClasses`; only the fonts family's own
+`fonts.truncated` and `limit-hit` say the list was cut.
 
 **Bounds.** Math glyph centres (8,192), math words (4,096), regions (64 listed), rule tables
 (64), rules (4,096 a direction), a page's comparisons (2^21: `analysis-truncated`), structure

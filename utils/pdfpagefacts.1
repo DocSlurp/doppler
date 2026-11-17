@@ -67,7 +67,8 @@ Last page (default the last page).
 .TP
 .BI \-level " basic|full"
 basic (the default): geometry, text counts, layer and coverage, image totals and scan
-detection, parse warnings and features; full: every family.
+detection, parse warnings and features; full: every family, mathtables included (about 7%
+more CPU than full without it on textbook pages).
 .TP
 .BI \-include " list"
 Families added to basic, comma-separated: fonts, oddtext, images-detail (per-image items,
@@ -166,7 +167,7 @@ vectors.ruleTables (horizontal-rule tables, booktabs or open, at most 64), the p
 structure object (Formula, Table, TR, TD/TH, spanned cells, MathML, Alt and ActualText, TeX-like
 counts), mathRegions (text, outline and raster boxes, at most 64), mathLayout, tableLayout,
 mathFlags and tableFlags (the bits as names). docslurp/page-facts/README.md has the exact
-rules and bounds. These facts read a Type 3 font's first 8 glyph procedures (1 KB each), the
+rules and bounds. These facts read a Type 3 font's first 8 glyph procedures (4 KB each), the
 first 4 KB of an embedded font program, the page's structure (at most 65,536 objects) and
 2 KB of an associated file without a type, all without rebuilding the cross-reference table.
 .SH EXIT CODES

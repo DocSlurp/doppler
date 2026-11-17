@@ -1915,12 +1915,12 @@ inline bool isMathClass(uint8_t c)
 }
 
 constexpr size_t maxFontProbeBytes = 4096; // decoded bytes of a font program read for its table directory
-constexpr size_t maxCharProcBytes = 1024; // decoded bytes of a Type 3 glyph procedure read
+constexpr size_t maxCharProcBytes = 4096; // decoded bytes of a Type 3 glyph procedure read (filled with no BI or Do: unknown)
 constexpr int maxCharProcsProbed = 8; // glyph procedures a Type 3 font is probed by
 constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checked for image masks
 // encoded bytes the font-class reads may consume over a run (their own budget, never shared with
 // another family's): a typical head costs a few KB, so an honest document's fonts never reach it
-constexpr size_t maxFontProbeBytesRun = size_t(512) << 20;
+constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
 constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
 constexpr size_t maxStructWork = size_t(1) << 16; // structure objects visited for one page
 constexpr int maxStructDepth = 64; // parent links followed up from one element
@@ -2081,24 +2081,32 @@ CharProcPaint charProcPaint(std::string_view p)
 
 // An Alt or ActualText string that looks like TeX source: a backslash command (\ and two
 // letters) or ^{ or _{. The first maxTexScan code units (UTF-16BE after its byte order mark,
-// else bytes) are read.
-bool texLike(const std::string &raw)
+// else bytes) are read: texYes, texNo, or texUnknown when none was found in them and the string
+// is longer (never a definite "not TeX" from a prefix).
+enum TexVerdict : uint8_t
+{
+    texNo,
+    texYes,
+    texUnknown
+};
+TexVerdict texLike(const std::string &raw)
 {
     const auto *b = reinterpret_cast<const unsigned char *>(raw.data());
     const bool utf16 = raw.size() >= 2 && b[0] == 0xfe && b[1] == 0xff;
-    const size_t n = std::min(utf16 ? (raw.size() - 2) / 2 : raw.size(), maxTexScan);
+    const size_t units = utf16 ? (raw.size() - 2) / 2 : raw.size();
+    const size_t n = std::min(units, maxTexScan);
     auto at = [&](size_t i) -> unsigned { return utf16 ? (unsigned(b[2 + 2 * i]) << 8) | b[3 + 2 * i] : b[i]; };
     auto letter = [](unsigned c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     for (size_t i = 0; i + 1 < n; ++i) {
         const unsigned c = at(i);
         if (c == '\\' && i + 2 < n && letter(at(i + 1)) && letter(at(i + 2))) {
-            return true;
+            return texYes;
         }
         if ((c == '^' || c == '_') && at(i + 1) == '{') {
-            return true;
+            return texYes;
         }
     }
-    return false;
+    return units > n ? texUnknown : texNo;
 }
 
 // Unicode math blocks for text.unicodeMath (index into State::uni), or -1
@@ -2124,6 +2132,16 @@ int unicodeMathBlock(Unicode c)
     }
     return -1;
 }
+
+// structure facts of one page
+struct StructCounts
+{
+    uint64_t formulas = 0, tables = 0, tableRows = 0, tableCells = 0, spannedCells = 0, mathml = 0, mathmlFiles = 0, altText = 0, altTextTexLike = 0, actualText = 0, actualTextTexLike = 0;
+    bool truncated = false; // a cap or budget was hit: the counts are lower bounds
+    bool roleCapped = false; // a RoleMap chain past 8 hops (or a cycle): an element's role is unknown
+    bool texUnknown = false; // an Alt or ActualText longer than the scanned prefix held no TeX in it: TeX-likeness unknown
+    bool unknown = false; // the page's structure could not be read (a missing parent-tree entry, a broken element): counts are not a definite 0
+};
 
 // per-document caches of the mathtables family (kept across pages, dropped when the
 // cross-reference table changes)
@@ -2156,10 +2174,37 @@ struct MathDocCache
     size_t sniffBytesLeft = size_t(4) << 20; // encoded bytes of untyped associated files sniffed a document
     size_t fontBytesLeft = maxFontProbeBytesRun; // over the run
     std::unordered_map<Ref, bool> maskXObjects; // a Type 3 font's resource /XObject dictionary: has an image mask among its first entries
+    // read results by stream reference, so many fonts sharing one program or glyph procedure
+    // read it once: a glyph procedure's paint (bit 0 inline mask, 1 Do, 2 unknown, 3 empty), a
+    // program's MATH table (SfntMath, bit 7: unknown)
+    std::unordered_map<Ref, uint8_t> charProcs;
+    std::unordered_map<Ref, uint8_t> programs;
+    // the document's structure tree, resolved once (per cross-reference generation)
+    bool structResolved = false;
+    bool structTagged = false; // the catalog names a /StructTreeRoot
+    Object structRoot; // the /StructTreeRoot dictionary (null: none, or unreadable when tagged)
+    Object structRoleMap;
+    Object structParentTree; // the parent tree's root node
+    // a parent-tree entry's counts by /StructParents key and by the entry's reference: pages
+    // sharing an entry walk it once
+    std::unordered_map<int, StructCounts> entryByKey;
+    std::unordered_map<Ref, StructCounts> entryByRef;
+    size_t structWorkLeft = size_t(1) << 22; // structure objects visited over the document
     void sync(XRef *x)
     {
         if (x != xref || (x && x->getGeneration() != generation)) {
             fontClasses.clear();
+            maskXObjects.clear();
+            charProcs.clear();
+            programs.clear();
+            structResolved = false;
+            structTagged = false;
+            structRoot = Object::null();
+            structRoleMap = Object::null();
+            structParentTree = Object::null();
+            entryByKey.clear();
+            entryByRef.clear();
+            structWorkLeft = size_t(1) << 22;
             roles.clear();
             mathmlNamespaces.clear();
             mathmlFiles.clear();
@@ -2292,19 +2337,38 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                 if (!takeRead()) {
                     break;
                 }
-                Object proc = procs->getVal(i);
-                bool unreadable = false;
-                size_t used = 0;
-                const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
-                charge(used);
-                if (text.empty()) {
-                    budgetHit = budgetHit || unreadable; // unknown, not a definite vector font
+                // a procedure's paint by its reference, read once however many fonts share it:
+                // bit 0 inline mask, 1 Do, 2 unknown, 3 nothing read
+                const Object &procNF = procs->getValNF(i);
+                uint8_t bits = 0;
+                const auto memo = procNF.isRef() ? cache.charProcs.find(procNF.getRef()) : cache.charProcs.end();
+                if (memo != cache.charProcs.end()) {
+                    bits = memo->second;
+                } else {
+                    Object proc = procs->getVal(i);
+                    bool unreadable = false;
+                    size_t used = 0;
+                    const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
+                    charge(used);
+                    if (text.empty()) {
+                        bits = 8 | (unreadable ? 4 : 0);
+                    } else {
+                        const CharProcPaint p = charProcPaint(text);
+                        // an image dictionary cut before ID, or the decode cap filled with no BI or Do
+                        // found (a long comment, say): unknown, not a definite vector glyph
+                        const bool undecided = p.cut || (!p.inlineMask && !p.doOp && text.size() >= maxCharProcBytes);
+                        bits = (p.inlineMask ? 1 : 0) | (p.doOp ? 2 : 0) | (undecided ? 4 : 0);
+                    }
+                    if (procNF.isRef() && cache.charProcs.size() < maxFontClassCache) {
+                        cache.charProcs.emplace(procNF.getRef(), bits);
+                    }
+                }
+                budgetHit = budgetHit || (bits & 4); // unknown, not a definite vector font
+                if (bits & 8) {
                     continue;
                 }
                 ++examined;
-                const CharProcPaint p = charProcPaint(text);
-                // an image dictionary cut before ID (a truncated or corrupt head): unknown
-                budgetHit = budgetHit || p.cut;
+                const CharProcPaint p { (bits & 1) != 0, (bits & 2) != 0, false };
                 masks += p.inlineMask;
                 doOps += !p.inlineMask && p.doOp;
             }
@@ -2353,12 +2417,25 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
     }
     SfntMath table = SfntMath::Unknown;
     Ref embedded;
-    if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
+    const auto programMemo = cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) ? cache.programs.find(embedded) : cache.programs.end();
+    if (programMemo != cache.programs.end()) {
+        // a program many font dictionaries share is read once
+        table = static_cast<SfntMath>(programMemo->second);
+        if (table == SfntMath::Yes) {
+            cls = mcOtfMath;
+        }
+        const GfxFontType ft = font->getType();
+        const bool sfntExpected = ft == fontTrueType || ft == fontTrueTypeOT || ft == fontCIDType2 || ft == fontCIDType2OT || ft == fontType1COT || ft == fontCIDType0COT;
+        budgetHit = budgetHit || (sfntExpected && table == SfntMath::Unknown);
+    } else if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
         Object program = xref->fetch(embedded);
         bool unreadable = false;
         size_t used = 0;
         table = sfntMath(readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used));
         charge(used);
+        if (cache.programs.size() < maxFontClassCache) {
+            cache.programs.emplace(embedded, static_cast<uint8_t>(table));
+        }
         if (table == SfntMath::Yes) {
             cls = mcOtfMath;
         }
@@ -2391,14 +2468,6 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
     return cls;
 }
 
-// structure facts of one page
-struct StructCounts
-{
-    uint64_t formulas = 0, tables = 0, tableRows = 0, tableCells = 0, spannedCells = 0, mathml = 0, mathmlFiles = 0, altText = 0, altTextTexLike = 0, actualText = 0, actualTextTexLike = 0;
-    bool truncated = false; // a cap or budget was hit: the counts are lower bounds
-    bool roleCapped = false; // a RoleMap chain past 8 hops (or a cycle): an element's role is unknown
-    bool unknown = false; // the page's structure could not be read (a missing parent-tree entry, a broken element): counts are not a definite 0
-};
 
 enum StructFlag : uint8_t
 {
@@ -2407,7 +2476,8 @@ enum StructFlag : uint8_t
     sfAltTex = 4,
     sfActual = 8,
     sfActualTex = 16,
-    sfSpanned = 32
+    sfSpanned = 32,
+    sfTexUnknown = 64 // an Alt or ActualText whose scanned prefix held no TeX: unknown, not "not TeX"
 };
 constexpr size_t maxStructElementCache = size_t(1) << 18;
 
@@ -2462,40 +2532,90 @@ public:
             Object af = pageObj.dictLookup("AF");
             c.mathmlFiles += afMathml(af.isArray() ? af : pageObj.dictLookupNF("AF"), &c);
         }
-        Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
-        const bool tagged = catalog.isDict() && !catalog.dictLookupNF("StructTreeRoot").isNull();
-        Object root = catalog.isDict() ? catalog.dictLookup("StructTreeRoot") : Object::null();
-        Object sp = pageObj.isDict() ? pageObj.dictLookup("StructParents") : Object::null();
-        if (!root.isDict()) {
-            c.unknown = tagged; // a /StructTreeRoot that is not a readable dictionary
+        resolve();
+        if (!cache.structRoot.isDict()) {
+            c.unknown = c.unknown || cache.structTagged; // a /StructTreeRoot that is not a readable dictionary
             return c;
         }
+        Object sp = pageObj.isDict() ? pageObj.dictLookup("StructParents") : Object::null();
         if (!sp.isInt()) {
             return c; // a page with no marked structure: a definite 0
         }
-        roleMap = root.dictLookup("RoleMap");
-        Object entry = numberTreeGet(cachedFetch(root.dictLookupNF("ParentTree")), sp.getInt(), &c);
-        if (entry.isNull() && !c.truncated) {
-            c.unknown = true; // the page names a parent-tree entry the tree does not give
+        const auto it = cache.entryByKey.find(sp.getInt());
+        if (it != cache.entryByKey.end()) {
+            merge(it->second, &c);
+            return c;
         }
-        std::vector<Object> leaves;
-        if (entry.isArray()) {
-            for (int i = 0; i < entry.arrayGetLength(); ++i) {
-                if (!spend(&c)) {
-                    break;
-                }
-                leaves.push_back(entry.getArray()->getNF(i).copy());
+        roleMap = cache.structRoleMap.copy();
+        const StructCounts e = entry(sp.getInt());
+        if (cache.entryByKey.size() < maxStructElementCache) {
+            cache.entryByKey.emplace(sp.getInt(), e);
+        }
+        merge(e, &c);
+        return c;
+    }
+
+    // the document's tagged flag, structure tree root, RoleMap and parent-tree root, read once
+    void resolve()
+    {
+        if (cache.structResolved) {
+            return;
+        }
+        cache.structResolved = true;
+        Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
+        cache.structTagged = catalog.isDict() && !catalog.dictLookupNF("StructTreeRoot").isNull();
+        Object root = catalog.isDict() ? catalog.dictLookup("StructTreeRoot") : Object::null();
+        if (root.isDict()) {
+            cache.structRoleMap = root.dictLookup("RoleMap");
+            cache.structParentTree = cachedFetch(root.dictLookupNF("ParentTree"));
+            cache.structRoot = std::move(root);
+        }
+    }
+
+    static void merge(const StructCounts &e, StructCounts *c)
+    {
+        c->formulas += e.formulas;
+        c->tables += e.tables;
+        c->tableRows += e.tableRows;
+        c->tableCells += e.tableCells;
+        c->spannedCells += e.spannedCells;
+        c->mathml += e.mathml;
+        c->mathmlFiles += e.mathmlFiles;
+        c->altText += e.altText;
+        c->altTextTexLike += e.altTextTexLike;
+        c->actualText += e.actualText;
+        c->actualTextTexLike += e.actualTextTexLike;
+        c->truncated = c->truncated || e.truncated;
+        c->roleCapped = c->roleCapped || e.roleCapped;
+        c->texUnknown = c->texUnknown || e.texUnknown;
+        c->unknown = c->unknown || e.unknown;
+    }
+
+    // one parent-tree entry: its elements and their ancestors, each counted once, walked as the
+    // leaves are read (duplicates skipped before any budget is spent); an entry array longer
+    // than the page's budget is not walked (truncated)
+    StructCounts entry(int key)
+    {
+        StructCounts c;
+        Object valueNF = numberTreeGet(cache.structParentTree.copy(), key, &c);
+        if (valueNF.isNull()) {
+            c.unknown = !c.truncated; // the page names a parent-tree entry the tree does not give
+            return c;
+        }
+        if (valueNF.isRef()) {
+            const auto it = cache.entryByRef.find(valueNF.getRef());
+            if (it != cache.entryByRef.end()) {
+                return it->second;
             }
-        } else if (!entry.isNull()) {
-            leaves.push_back(entry.copy());
         }
-        for (const Object &leaf : leaves) {
+        Object value = valueNF.isRef() ? xref->fetch(valueNF.getRef()) : valueNF.copy();
+        auto walk = [&](const Object &leaf) {
             if (leaf.isNull() || leaf.isInt()) {
-                continue; // an MCID with no element (allowed)
+                return; // an MCID with no element (allowed)
             }
             if (!leaf.isRef()) {
                 c.unknown = true; // elements are indirect
-                continue;
+                return;
             }
             Ref cur = leaf.getRef();
             for (int depth = 0; depth < maxStructDepth && !c.truncated && cur != Ref::INVALID(); ++depth) {
@@ -2513,21 +2633,39 @@ public:
                 add(e, &c);
                 cur = e.parent;
             }
-            if (c.truncated) {
-                break;
+        };
+        if (value.isArray()) {
+            const int n = value.arrayGetLength();
+            if (n < 0 || static_cast<size_t>(n) > maxStructWork) {
+                c.truncated = true; // longer than a page's whole budget: not walked
+            } else {
+                for (int i = 0; i < n && !c.truncated; ++i) {
+                    const Object &leaf = value.getArray()->getNF(i);
+                    if (leaf.isRef() && seen.count(leaf.getRef())) {
+                        continue; // a duplicate costs nothing
+                    }
+                    walk(leaf);
+                }
             }
+        } else {
+            walk(valueNF);
+        }
+        if (valueNF.isRef() && cache.entryByRef.size() < maxStructElementCache) {
+            cache.entryByRef.emplace(valueNF.getRef(), c);
         }
         return c;
     }
 
 private:
+    // a page's budget (maxStructWork) and the document's (MathDocCache::structWorkLeft)
     bool spend(StructCounts *c)
     {
-        if (work >= maxStructWork) {
+        if (work >= maxStructWork || cache.structWorkLeft == 0) {
             c->truncated = true;
             return false;
         }
         ++work;
+        --cache.structWorkLeft;
         return true;
     }
 
@@ -2566,7 +2704,7 @@ private:
                         return Object::null();
                     }
                     if (k.getInt() == key) {
-                        return nums.arrayGet(2 * mid + 1);
+                        return nums.getArray()->getNF(2 * mid + 1).copy(); // unresolved: the caller memoizes by reference
                     }
                     (k.getInt() < key ? lo : hi) = k.getInt() < key ? mid + 1 : mid - 1;
                 }
@@ -2761,31 +2899,34 @@ private:
         c->altTextTexLike += (e.flags & sfAltTex) != 0;
         c->actualText += (e.flags & sfActual) != 0;
         c->actualTextTexLike += (e.flags & sfActualTex) != 0;
+        c->texUnknown = c->texUnknown || (e.flags & sfTexUnknown) != 0;
         c->mathmlFiles += e.mathmlFiles;
     }
 
     // an /Alt or /ActualText value: (is a string, is TeX-like). An indirect string is read once a
     // document (a large string many elements share); its first maxTexScan code units are tested.
-    std::pair<bool, bool> textValue(const Object &dict, const char *key, StructCounts *c)
+    // (is a string, TeX verdict)
+    std::pair<bool, TexVerdict> textValue(const Object &dict, const char *key, StructCounts *c)
     {
         const Object &nf = dict.dictLookupNF(key);
         if (nf.isString()) {
             return { true, texLike(nf.getString()) };
         }
         if (!nf.isRef()) {
-            return { false, false };
+            return { false, texNo };
         }
         const auto it = cache.strings.find(nf.getRef());
         if (it != cache.strings.end()) {
-            return { (it->second & 1) != 0, (it->second & 2) != 0 };
+            return { (it->second & 1) != 0, static_cast<TexVerdict>(it->second >> 1) };
         }
         if (!spend(c)) {
-            return { false, false };
+            return { false, texNo };
         }
         Object v = xref->fetch(nf.getRef());
-        const bool str = v.isString(), tex = str && texLike(v.getString());
+        const bool str = v.isString();
+        const TexVerdict tex = str ? texLike(v.getString()) : texNo;
         if (cache.strings.size() < maxStructElementCache) {
-            cache.strings.emplace(nf.getRef(), uint8_t((str ? 1 : 0) | (tex ? 2 : 0)));
+            cache.strings.emplace(nf.getRef(), uint8_t((str ? 1 : 0) | (tex << 1)));
         }
         return { str, tex };
     }
@@ -2832,7 +2973,8 @@ private:
             }
             const auto [alt, altTex] = textValue(e, "Alt", c);
             const auto [actual, actualTex] = textValue(e, "ActualText", c);
-            flags |= (alt ? sfAlt : 0) | (altTex ? sfAltTex : 0) | (actual ? sfActual : 0) | (actualTex ? sfActualTex : 0);
+            flags |= (alt ? sfAlt : 0) | (altTex == texYes ? sfAltTex : 0) | (actual ? sfActual : 0) | (actualTex == texYes ? sfActualTex : 0);
+            flags |= (altTex == texUnknown || actualTex == texUnknown) ? sfTexUnknown : 0;
             const Object &afNF = e.dictLookupNF("AF");
             Object af = afNF.isRef() ? (spend(c) ? xref->fetch(afNF.getRef()) : Object::null()) : afNF.copy();
             out.mathmlFiles = static_cast<uint8_t>(std::min<uint64_t>(afMathml(af.isArray() ? af : afNF, c), 16));
@@ -3737,6 +3879,7 @@ struct PageFacts::State
     std::vector<MathGlyph> mathGlyphs; // upright math-font glyph centres, at most maxMathGlyphs
     bool mathGlyphsTruncated = false, fontClassLimited = false;
     uint64_t markedActual = 0, markedActualTex = 0; // marked-content /ActualText spans
+    bool markedTexUnknown = false; // a span longer than the scanned prefix with no TeX in it
     // kept across pages
     MathDocCache mathDoc;
 
@@ -4411,7 +4554,9 @@ void PageFacts::onActualText(const std::string &text)
 {
     if (wants(MathTables) && st->begun) {
         ++st->markedActual;
-        st->markedActualTex += texLike(text);
+        const TexVerdict v = texLike(text);
+        st->markedActualTex += v == texYes;
+        st->markedTexUnknown = st->markedTexUnknown || v == texUnknown;
     }
 }
 
@@ -4762,7 +4907,8 @@ void PageFacts::endPage(const TextPage &text)
             const double cover = area > 0 ? w * h / area : 0;
             const double px = double(std::max(im.pixelWidth, 0)) * double(std::max(im.pixelHeight, 0));
             const bool lossless = im.info.filter != ImageFilter::DCT && im.info.filter != ImageFilter::JPX;
-            const bool tableLike = hasText && h >= 60 && cover >= 0.02 && cover <= 0.6 && w >= h && lossless && !im.info.inlineImg && im.info.encodedBytes >= 0 && px > 0 && double(im.info.encodedBytes) / px <= 1.5;
+            const bool tableLike =
+                    scan.kind == ScanVerdict::None && hasText && h >= 60 && cover >= 0.02 && cover <= 0.6 && w >= h && lossless && !im.info.inlineImg && im.info.encodedBytes >= 0 && px > 0 && double(im.info.encodedBytes) / px <= 1.5;
             rasterTableLike += tableLike;
             // a table-like image is not also counted as a formula strip
             if (imgStrip[i] && imgFlow[i] && hasText && !tableLike) {
@@ -4933,7 +5079,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         matrixRegions += delimitedMatrices(aw, budget);
         mathGrids += matrixRegions;
-        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
+        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
         const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
@@ -5551,7 +5697,7 @@ void PageFacts::endPage(const TextPage &text)
         j.kint("actualTextTexLike", sc.actualTextTexLike + s.markedActualTex);
         j.kint("markedActualText", s.markedActual);
         j.kint("markedActualTextTexLike", s.markedActualTex);
-        j.kbool("truncated", sc.truncated || sc.roleCapped);
+        j.kbool("truncated", sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown);
         j.kbool("unknown", sc.unknown);
         j.close();
     }
