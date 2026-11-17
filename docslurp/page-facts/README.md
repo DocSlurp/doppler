@@ -510,9 +510,13 @@ no font to the fonts list, and an analysis cap sets `analysis-truncated` only (n
 `limit-hit`). A marked-content `/ActualText` string has its first 4,096 code units tested; a
 longer one with no TeX in them is TeX unknown (`structure.truncated`, `analysis-truncated`).
 
-**Bounds.** Math glyph centres (8,192), math words (4,096), regions (64 listed), rule tables
-(64), rules (4,096 a direction), a page's comparisons (2^21: `analysis-truncated`), ActualText code
-units tested (4,096).
+**Bounds.** Math glyph centres (8,192), math words (4,096), outlined-text clusters (512), rules
+(4,096 a direction, for fraction bars, grids and vertical rules), shaded row boxes, rule tables
+(64), regions (64 listed), a page's comparisons (2^21), ActualText code units tested (4,096).
+Every cap that drops input a bit reads fails closed: the page says `analysis-truncated`, and so
+does a page whose text-pass lists were cut (2,000 images, the page's rules) or whose drawing
+clusters ran out of the graphics budget. Caps on what is listed, not read (64 rule tables or
+regions), do not change a bit. On the corpus (494 files, 7,994 pages) no honest page trips one.
 
 ### `forms` (`forms`)
 
