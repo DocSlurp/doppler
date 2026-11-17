@@ -835,79 +835,12 @@ fn caption_line(t: &str) -> bool {
     let mut it = strip(t).split_whitespace();
     let (Some(a), Some(b)) = (it.next(), it.next()) else { return false };
     let word = matches!(a.trim_end_matches('.'), "Table" | "TABLE" | "Tab" | "Figure" | "FIGURE" | "Fig");
+    // a caption puts a mark after its number ("Table 3." "Table 3:" "TABLE 3 |"); prose that
+    // mentions a table ("Table 6 presents ...") does not
     let num = b.trim_end_matches(['.', ':', '|']);
     word && !num.is_empty()
         && num.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         && (num.chars().any(|c| c.is_ascii_digit()) || num.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L')))
-}
-
-/// The distinct baselines of lines `ids` (lines within half a body size are one).
-fn distinct_bases(lines: &[Rc<Line>], ids: &[usize], body: f64) -> usize {
-    let mut b: Vec<f64> = ids.iter().map(|&i| lines[i].base()).collect();
-    b.sort_by(|x, y| fcmp(*x, *y));
-    let tol = 0.5 * pmax(body, 1.0);
-    let mut n = 0;
-    let mut last = f64::NEG_INFINITY;
-    for y in b {
-        if y - last > tol {
-            n += 1;
-            last = y;
-        }
-    }
-    n
-}
-
-/// Content-free faults of a table reading (lower is better): cells holding several numbers
-/// where their column's other cells hold one (rows fused into one), a number with far more
-/// digits than the table's numbers have (digits of several cells glued), far fewer rows than
-/// the lines have baselines, and a caption line read as a cell.
-pub(crate) fn table_penalty(t: &Table, bases: usize) -> usize {
-    let rows = &t.rows;
-    if rows.is_empty() {
-        return 0;
-    }
-    let number = |w: &str| {
-        w.chars().any(|c| c.is_ascii_digit()) && w.chars().all(|c| c.is_ascii_digit() || ",.%()-+$€£−".contains(c))
-    };
-    let mut pen = 0;
-    let ncols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut digits: Vec<usize> = Vec::new();
-    for row in rows {
-        for cell in row {
-            for w in cell.split_whitespace().filter(|w| number(w)) {
-                digits.push(w.chars().filter(|c| c.is_ascii_digit()).count());
-            }
-        }
-    }
-    digits.sort_unstable();
-    let med = digits.get(digits.len() / 2).copied().unwrap_or(0);
-    for k in 0..ncols {
-        let counts: Vec<usize> = rows
-            .iter()
-            .filter_map(|r| r.get(k))
-            .filter(|c| !strip(c).is_empty())
-            .map(|c| c.split_whitespace().filter(|w| number(w)).count())
-            .collect();
-        let single = counts.iter().filter(|&&c| c == 1).count();
-        if single * 2 >= counts.len() {
-            pen += counts.iter().filter(|&&c| c >= 2).count();
-        }
-    }
-    for row in rows {
-        for cell in row {
-            pen += cell
-                .split_whitespace()
-                .filter(|w| number(w) && w.chars().filter(|c| c.is_ascii_digit()).count() > (2 * med).max(6))
-                .count();
-            if caption_line(cell) {
-                pen += 2;
-            }
-        }
-    }
-    if bases >= 4 && rows.len() * 2 < bases {
-        pen += 2;
-    }
-    pen
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -1208,11 +1141,6 @@ fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Optio
             || ((c.x0 + c.x1) / 2.0 - (ax0 + ax1) / 2.0).abs() <= tol
             || (c.x0 > first && c.x0 - first <= 2.0 * size && (ax0 - first).abs() <= tol);
         if !(below > 0.0 && below <= reach) || !aligned || (c.size() - asize).abs() > 0.1 * pmax(asize, 1.0) {
-            return None;
-        }
-        // a number under a number is the next row's value, not a wrapped line (numbers do not
-        // wrap; a row under a label that spans rows has one cell fewer)
-        if numeric(c.text()) && numeric(row.cells[k].text()) {
             return None;
         }
         used[k] = true;
@@ -1681,6 +1609,8 @@ pub fn ruled_tables(
     by_mid.sort_by(|a, b| fcmp(a.0, b.0));
     let ids_ascending = ids.windows(2).all(|w| w[0] < w[1]);
     let mut h: Vec<(f64, f64, f64)> = Vec::new();
+    // the edges of rules drawn as filled bars
+    let mut bar_ys: Vec<f64> = Vec::new();
     let mut v: Vec<VRule> = Vec::new();
     for r in &page.rules {
         let (w, hh) = (r.x1 - r.x0, r.y1 - r.y0);
@@ -1689,6 +1619,8 @@ pub fn ruled_tables(
             if w >= 0.5 * body && w < 0.95 * page.width && hh < 0.5 * page.height {
                 h.push((r.x0, r.x1, r.y0));
                 h.push((r.x0, r.x1, r.y1));
+                bar_ys.push(r.y0);
+                bar_ys.push(r.y1);
             }
         } else if luminance(&r.color) > p.rule_max_lum {
             continue;
@@ -1747,8 +1679,11 @@ pub fn ruled_tables(
             bases.windows(2).any(|w| (w[1] - w[0]).abs() <= 1.0)
         })
     };
-    // the joined horizontal rules, kept for the booktabs test below
-    let hs: Vec<(f64, f64, f64)> = h.clone();
+    bar_ys.sort_by(|a, b| fcmp(*a, *b));
+    let bar_edge = |y: f64| near_any(&bar_ys, y, 1.0);
+    // the joined horizontal rules, kept for the booktabs test below (thin stroked rules only:
+    // a rule drawn as a filled bar gives two edges, and such groups split as they always did)
+    let hs: Vec<(f64, f64, f64)> = h.iter().copied().filter(|r| !bar_edge(r.2)).collect();
     for (x0, x1, y) in h {
         // the open groups (thousands when disjoint rules share a y)
         if !budget.scan(open.len()) {
@@ -1825,9 +1760,20 @@ pub fn ruled_tables(
                 if hi - lo > 400 || !budget.spend(hi - lo) {
                     return Some(false);
                 }
-                return Some(by_mid[lo..hi].iter().any(|&(_, i)| {
+                // the caption stands alone across the band: no other line of the band shares its
+                // baseline (prose beside a table's cells that mentions "Table 6" is not one)
+                let inside = |i: usize| {
                     let mx = (lines[i].x0 + lines[i].x1) / 2.0;
-                    g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0 && caption_line(lines[i].text())
+                    g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0
+                };
+                return Some(by_mid[lo..hi].iter().any(|&(_, i)| {
+                    inside(i)
+                        && caption_line(lines[i].text())
+                        && !by_mid[lo..hi].iter().any(|&(_, j)| {
+                            j != i
+                                && inside(j)
+                                && (lines[j].base() - lines[i].base()).abs() <= 0.5 * pmax(lines[i].size(), 1.0)
+                        })
                 }));
             }
             let mut any = false;
@@ -2068,21 +2014,6 @@ pub fn ruled_tables(
             }
             g
         };
-        // horizontal rules only: the gutter pass may read the same lines better (rules drawn
-        // as filled bars, a body with no rule between its rows); keep whichever reading the
-        // content-free quality checks prefer, and leave the lines to the gutter pass if it wins
-        if !crossing_v && members.len() <= 2000 {
-            let bases = distinct_bases(lines, &members, body);
-            let ruled_pen = table_penalty(&grid, bases);
-            if ruled_pen > 0 {
-                let alt = find_tables(page, &members, p, body);
-                let covered: usize = alt.iter().map(|(m, _)| m.len()).sum();
-                let alt_pen: usize = alt.iter().map(|(m, t)| table_penalty(t, distinct_bases(lines, m, body))).sum();
-                if !alt.is_empty() && covered * 2 >= members.len() && alt_pen < ruled_pen {
-                    continue;
-                }
-            }
-        }
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
