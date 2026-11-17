@@ -139,7 +139,7 @@ fn list_mark(t: &str) -> bool {
 }
 
 /// `(1)`, `(2.3)`, `(4a)`, `[5]`: an equation number at the end of a display.
-fn equation_label(t: &str) -> bool {
+pub(crate) fn equation_label(t: &str) -> bool {
     let inner = t
         .strip_prefix('(')
         .and_then(|r| r.strip_suffix(')'))

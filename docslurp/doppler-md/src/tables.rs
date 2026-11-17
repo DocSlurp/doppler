@@ -712,6 +712,69 @@ fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) 
     true
 }
 
+/// Aligned content that is not a table even though its cells line up:
+/// - a bulleted list with amounts set flush right (every first-column cell a bullet);
+/// - a form: most filled cells are labels ending in a colon, with blanks to fill in;
+/// - typeset math (a matrix, a determinant, equations with numbers): most cells that are not
+///   numbers or equation numbers are math symbols, single variables, delimiter pieces or
+///   operators, and at least one holds a math symbol or a relation.
+pub(crate) fn not_table_content(grid: &Grid) -> bool {
+    let cells: Vec<&str> = grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).collect();
+    if cells.len() < 2 {
+        return false;
+    }
+    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
+    if keys.len() >= 2 && keys.iter().all(|k| bullet(k)) {
+        return true;
+    }
+    let colons = cells.iter().filter(|c| c.ends_with(':')).count();
+    if colons >= 3 && colons * 5 >= cells.len() * 4 {
+        return true;
+    }
+    let (mut mathy, mut text, mut strong) = (0usize, 0usize, false);
+    for c in &cells {
+        if c.contains('$') || crate::math::equation_label(c) || c.split_whitespace().all(numeric) {
+            continue;
+        }
+        let symbol = c.chars().any(math_char);
+        let operators = c.chars().all(|ch| ch.is_whitespace() || "()[]{}|=+-−,.;:<>/*·×".contains(ch) || math_char(ch));
+        let variable = {
+            let mut it = c.chars();
+            matches!((it.next(), it.next()), (Some(ch), None) if ch.is_lowercase())
+        };
+        if symbol || operators || variable {
+            mathy += 1;
+            strong |= symbol || c.contains('=');
+        } else if c
+            .split_whitespace()
+            .any(|w| w.chars().filter(|ch| ch.is_alphabetic()).count() >= 2 && !w.chars().any(math_char))
+        {
+            // a word: text, unless the cell is a formula with a function name (det A =)
+            if c.chars().any(|ch| ch == '=' || math_char(ch)) {
+                mathy += 1;
+                strong = true;
+            } else {
+                text += 1;
+            }
+        } else {
+            // indexed variables and short formulas (a11, A = ()
+            mathy += 1;
+            strong |= c.contains('=');
+        }
+    }
+    strong && mathy >= 2 && mathy >= 2 * text
+}
+
+/// Math symbols, letters and delimiter pieces: arrows and operators, technical brackets and
+/// their extension pieces, math alphanumerics, combining marks over symbols and the variation
+/// selectors that mark sized delimiters.
+fn math_char(c: char) -> bool {
+    matches!(c,
+        '\u{2190}'..='\u{22ff}' | '\u{2308}'..='\u{230b}' | '\u{239b}'..='\u{23b3}' | '\u{27c0}'..='\u{27ff}'
+        | '\u{2980}'..='\u{2aff}' | '\u{1d400}'..='\u{1d7ff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe00}'..='\u{fe0f}'
+        | '±' | '×' | '÷')
+}
+
 /// Two columns: list numbers on the left, prose on the right.
 pub fn numbered_list(grid: &Grid, p: &Params) -> bool {
     if grid.first().is_none_or(|r| r.len() != 2) {
@@ -725,7 +788,7 @@ pub fn numbered_list(grid: &Grid, p: &Params) -> bool {
 }
 
 pub fn plausible(grid: &Grid, p: &Params) -> bool {
-    if grid.len() < 2 || grid[0].len() < 2 || numbered_list(grid, p) {
+    if grid.len() < 2 || grid[0].len() < 2 || numbered_list(grid, p) || not_table_content(grid) {
         return false;
     }
     let full = grid.iter().filter(|row| row.iter().filter(|x| !x.is_empty()).count() >= 2).count();
@@ -2217,5 +2280,47 @@ mod tests {
             let mid = next(800) as f64 / 8.0;
             assert_eq!(lookup.column(mid), reference(&rev, mid));
         }
+    }
+}
+
+#[cfg(test)]
+mod not_table_tests {
+    use super::not_table_content;
+
+    fn g(rows: &[&[&str]]) -> super::Grid {
+        rows.iter().map(|r| r.iter().map(|c| c.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn matrices_forms_and_bullet_lists_are_not_tables() {
+        // a determinant, a matrix with its name, equations with numbers
+        assert!(not_table_content(&g(&[&["𝑎", "𝑏", "𝑐"], &["det 𝐴 = |𝑑", "𝑒", "𝑓 |"], &["𝑔", "ℎ", "𝑖"]])));
+        assert!(not_table_content(&g(&[&["a11", "a12"], &["A = (", ")"], &["a21", "a22"]])));
+        assert!(not_table_content(&g(&[&["∇· E = ε0", "(1)"], &["∇· B = 0", "(2)"], &["∇× E = −∂B", "(3)"]])));
+        assert!(not_table_content(&g(&[&["[︃", "]︃"], &["1.2", "0.1 40"], &["=", ","]])));
+        // a form and a bulleted list with amounts
+        assert!(not_table_content(&g(&[&["Name:", "Team:"], &["Destination:", ""], &["Departure:", "Return:"]])));
+        assert!(not_table_content(&g(&[
+            &["•", "Flights", "$3,240"],
+            &["•", "Hotel", "$2,180"],
+            &["•", "Passes", "$1,650"]
+        ])));
+    }
+
+    #[test]
+    fn real_tables_with_symbols_and_numbers_stay() {
+        assert!(!not_table_content(&g(&[
+            &["Region", "Q1", "Q2"],
+            &["EMEA", "1,204", "1,390"],
+            &["APAC", "880", "941"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Symbol", "Meaning", "Value"],
+            &["𝜇", "population mean", "12.5"],
+            &["𝜎", "standard deviation", "2.1"],
+            &["𝜒2", "test statistic", "3.84"],
+        ])));
+        assert!(!not_table_content(&g(&[&["x", "f(x)"], &["0", "1"], &["1", "2"], &["2", "5"]])));
+        assert!(!not_table_content(&g(&[&["Item", "Change"], &["Revenue", "+12.4%"], &["Margin", "−0.3%"]])));
     }
 }

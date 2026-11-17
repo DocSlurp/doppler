@@ -120,12 +120,13 @@ impl PageLayout {
             })
             .collect();
         if p.rules && p.tables {
-            let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
-                |(members, table, (x0, y0, x1, y1))| {
+            let tables = ruled_tables(page, &ids, body, p, format, budget)?
+                .into_iter()
+                .filter(|(_, t, _)| !crate::tables::not_table_content(&t.rows))
+                .map(|(members, table, (x0, y0, x1, y1))| {
                     let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None };
                     (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
-                },
-            );
+                });
             elements = replace_members(elements, tables);
         }
         elements.extend(rendered);
