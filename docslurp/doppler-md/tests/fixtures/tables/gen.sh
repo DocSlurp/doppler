@@ -28,3 +28,6 @@ rm -rf "$T/chr-$$"
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w texlive/texlive:latest-medium \
   sh -c 'for f in *.tex; do pdflatex -interaction=nonstopmode $f >/dev/null; done'
 rm -f ./*.aux ./*.log
+# segrules2.pdf: a rules-only table whose three rules are thick filled bars, one per column
+# (Word style), written directly as PDF operators
+python3 gen_segrules.py segrules2.pdf 1

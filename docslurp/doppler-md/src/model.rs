@@ -228,14 +228,15 @@ impl Line {
     fn compute_text(&self) -> String {
         let words = &self.words;
         let n = words.len();
-        // a word that starts left of the previous word's start begins a new line of a cell
-        // (lines of a wrapped cell joined into one): a space, never glued
+        // a word on another baseline (more than 0.6 of the size away: not a script) begins a
+        // new line of a cell (lines of a wrapped cell or a stacked header joined into one): a
+        // space, never glued
         let glue: Vec<bool> = words
             .windows(2)
             .map(|p| {
                 p[0].space
                     || p[1].x0 - p[0].x1 > 0.15 * pmax(p[0].size, 1.0)
-                    || (p[1].x0 < p[0].x0 && (p[1].base - p[0].base).abs() > 0.5 * pmax(p[0].size, 1.0))
+                    || (p[1].base - p[0].base).abs() > 0.6 * pmax(pmax(p[0].size, p[1].size), 1.0)
             })
             .collect();
         let rtl = self.rtl();

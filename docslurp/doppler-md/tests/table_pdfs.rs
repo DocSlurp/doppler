@@ -211,7 +211,10 @@ fn cell_text_never_vetoes_a_table() {
 fn every_repro_keeps_its_tables() {
     let Some(exe) = pdftotext() else { return };
     // (fixture under data/, at least this many tables by default, at least this many with --math)
-    let cases: [(&str, usize, usize); 30] = [
+    let cases: [(&str, usize, usize); 33] = [
+        ("rmw_2", 1, 1),
+        ("segrules2", 1, 1),
+        ("captions3", 3, 3),
         ("absfrac", 1, 1),
         ("absfrac2", 1, 1),
         ("adjmatrix", 1, 1),
@@ -274,4 +277,27 @@ fn tables_with_math_cells_keep_their_rows() {
     }
     let md = convert(&exe, "data/sidebyside2.pdf", &[]);
     assert!(table(&md).iter().any(|l| l.starts_with("| From | Sunny | Rainy | Total |")), "{md}");
+}
+
+/// Tables bracketed by thick rules (2 pt booktabs rules, and rules drawn as filled bars per
+/// column) keep one row per line with their numbers apart, in both modes; and three ruled
+/// tables, each under its "Table N." caption, stay three tables with the captions outside.
+#[test]
+fn thick_rules_and_captioned_tables() {
+    let Some(exe) = pdftotext() else { return };
+    for args in [&[][..], &["--math"][..]] {
+        let md = convert(&exe, "data/rmw_2.pdf", args);
+        assert!(table(&md).contains(&"| Total | 39695 | 100.0 | 100.0 |"), "{md}");
+        assert!(table(&md).contains(&"| Home examined | 493 | 1.2 | 0.8 |"), "{md}");
+        let md = convert(&exe, "data/segrules2.pdf", args);
+        assert!(
+            table(&md).iter().any(|l| l.starts_with("| Total |") && l.contains("| 39695 | 100.0 | 100.0 |")),
+            "{md}"
+        );
+        assert!(table(&md).iter().any(|l| l.contains("Sample size")), "{md}");
+        let md = convert(&exe, "data/captions3.pdf", args);
+        assert_eq!(md.lines().filter(|l| l.starts_with("| ---")).count(), 3, "{md}");
+        assert!(table(&md).iter().all(|l| !l.contains("Table ")), "{md}");
+        assert!(table(&md).contains(&"| Plan | Q1 | Q2 | Q3 |"), "{md}");
+    }
 }

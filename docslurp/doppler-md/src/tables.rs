@@ -514,6 +514,19 @@ fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<
             if !crossed {
                 ok = false;
             }
+            // a range cut in two ("16 -" | "19"): most of the left column's body cells end with
+            // a dash or "to", so the gutter is inside one value
+            let (mut ends, mut cells) = (0usize, 0usize);
+            for r in &body_rows {
+                if let Some(w) = r.all_words().filter(|w| w.x1 > left.0 && w.x0 < left.1).last() {
+                    cells += 1;
+                    let t = strip(&w.text);
+                    ends += (t.ends_with(['-', '–', '—', '~']) || t == "to") as usize;
+                }
+            }
+            if cells > 0 && ends * 2 >= cells {
+                ok = false;
+            }
             if !ok {
                 break;
             }
@@ -815,6 +828,86 @@ pub(crate) fn not_table_content(grid: &Grid) -> bool {
     }
     let colons = cells.iter().filter(|c| c.ends_with(':')).count();
     colons >= 3 && colons * 5 >= cells.len() * 4
+}
+
+/// A caption line: "Table 3", "TABLE II", "Tab. 2" or "Figure 1" (with a number) opening it.
+fn caption_line(t: &str) -> bool {
+    let mut it = strip(t).split_whitespace();
+    let (Some(a), Some(b)) = (it.next(), it.next()) else { return false };
+    let word = matches!(a.trim_end_matches('.'), "Table" | "TABLE" | "Tab" | "Figure" | "FIGURE" | "Fig");
+    let num = b.trim_end_matches(['.', ':', '|']);
+    word && !num.is_empty()
+        && num.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && (num.chars().any(|c| c.is_ascii_digit()) || num.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L')))
+}
+
+/// The distinct baselines of lines `ids` (lines within half a body size are one).
+fn distinct_bases(lines: &[Rc<Line>], ids: &[usize], body: f64) -> usize {
+    let mut b: Vec<f64> = ids.iter().map(|&i| lines[i].base()).collect();
+    b.sort_by(|x, y| fcmp(*x, *y));
+    let tol = 0.5 * pmax(body, 1.0);
+    let mut n = 0;
+    let mut last = f64::NEG_INFINITY;
+    for y in b {
+        if y - last > tol {
+            n += 1;
+            last = y;
+        }
+    }
+    n
+}
+
+/// Content-free faults of a table reading (lower is better): cells holding several numbers
+/// where their column's other cells hold one (rows fused into one), a number with far more
+/// digits than the table's numbers have (digits of several cells glued), far fewer rows than
+/// the lines have baselines, and a caption line read as a cell.
+pub(crate) fn table_penalty(t: &Table, bases: usize) -> usize {
+    let rows = &t.rows;
+    if rows.is_empty() {
+        return 0;
+    }
+    let number = |w: &str| {
+        w.chars().any(|c| c.is_ascii_digit()) && w.chars().all(|c| c.is_ascii_digit() || ",.%()-+$€£−".contains(c))
+    };
+    let mut pen = 0;
+    let ncols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut digits: Vec<usize> = Vec::new();
+    for row in rows {
+        for cell in row {
+            for w in cell.split_whitespace().filter(|w| number(w)) {
+                digits.push(w.chars().filter(|c| c.is_ascii_digit()).count());
+            }
+        }
+    }
+    digits.sort_unstable();
+    let med = digits.get(digits.len() / 2).copied().unwrap_or(0);
+    for k in 0..ncols {
+        let counts: Vec<usize> = rows
+            .iter()
+            .filter_map(|r| r.get(k))
+            .filter(|c| !strip(c).is_empty())
+            .map(|c| c.split_whitespace().filter(|w| number(w)).count())
+            .collect();
+        let single = counts.iter().filter(|&&c| c == 1).count();
+        if single * 2 >= counts.len() {
+            pen += counts.iter().filter(|&&c| c >= 2).count();
+        }
+    }
+    for row in rows {
+        for cell in row {
+            pen += cell
+                .split_whitespace()
+                .filter(|w| number(w) && w.chars().filter(|c| c.is_ascii_digit()).count() > (2 * med).max(6))
+                .count();
+            if caption_line(cell) {
+                pen += 2;
+            }
+        }
+    }
+    if bases >= 4 && rows.len() * 2 < bases {
+        pen += 2;
+    }
+    pen
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -1721,8 +1814,21 @@ pub fn ruled_tables(
             if !budget.scan(crossing.map_or(near.len(), |k| k + 1)) {
                 return None;
             }
-            if crossing.is_some() || v.is_empty() {
+            if crossing.is_some() {
                 return Some(false);
+            }
+            if v.is_empty() {
+                // horizontal rules only: a caption line ("Table 3 ...") between two rules starts
+                // the next table
+                let lo = by_mid.partition_point(|&(m, _)| m <= a);
+                let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+                if hi - lo > 400 || !budget.spend(hi - lo) {
+                    return Some(false);
+                }
+                return Some(by_mid[lo..hi].iter().any(|&(_, i)| {
+                    let mx = (lines[i].x0 + lines[i].x1) / 2.0;
+                    g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0 && caption_line(lines[i].text())
+                }));
             }
             let mut any = false;
             // the result does not depend on the order lines are visited in
@@ -1962,6 +2068,21 @@ pub fn ruled_tables(
             }
             g
         };
+        // horizontal rules only: the gutter pass may read the same lines better (rules drawn
+        // as filled bars, a body with no rule between its rows); keep whichever reading the
+        // content-free quality checks prefer, and leave the lines to the gutter pass if it wins
+        if !crossing_v && members.len() <= 2000 {
+            let bases = distinct_bases(lines, &members, body);
+            let ruled_pen = table_penalty(&grid, bases);
+            if ruled_pen > 0 {
+                let alt = find_tables(page, &members, p, body);
+                let covered: usize = alt.iter().map(|(m, _)| m.len()).sum();
+                let alt_pen: usize = alt.iter().map(|(m, t)| table_penalty(t, distinct_bases(lines, m, body))).sum();
+                if !alt.is_empty() && covered * 2 >= members.len() && alt_pen < ruled_pen {
+                    continue;
+                }
+            }
+        }
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }

@@ -1756,21 +1756,22 @@ fn table_lines(page: &Page, lines: &[LineMath], facts: &FontFacts, p: &crate::pa
     // the body size is not known yet: the page's median line size stands in for it
     let body = em;
     let mut budget = crate::layout::Budget::new(p.max_page_work);
-    let mut found: Vec<Vec<usize>> = Vec::new();
+    // (member lines, column count)
+    let mut found: Vec<(Vec<usize>, usize)> = Vec::new();
     if p.rules && p.tables {
         if let Some(ruled) = crate::tables::ruled_tables(page, &ids, body, p, crate::TableFormat::Gfm, &mut budget) {
-            found.extend(ruled.into_iter().map(|(m, _, _)| m));
+            found.extend(ruled.into_iter().map(|(m, t, _)| (m, t.rows.first().map_or(0, Vec::len))));
         }
     }
     if p.tables {
-        let taken: std::collections::HashSet<usize> = found.iter().flatten().copied().collect();
+        let taken: std::collections::HashSet<usize> = found.iter().flat_map(|(m, _)| m.iter().copied()).collect();
         let rest: Vec<usize> = ids.iter().copied().filter(|i| !taken.contains(i)).collect();
         if let Some(gutter) = crate::tables::find_tables_within(page, &rest, p, body, &mut budget) {
-            found.extend(gutter.into_iter().map(|(m, _)| m));
+            found.extend(gutter.into_iter().map(|(m, t)| (m, t.rows.first().map_or(0, Vec::len))));
         }
     }
     let mut out = Vec::new();
-    for members in found {
+    for (members, cols) in found {
         // a candidate with a cell of eight words or more is prose set in columns (a two-column
         // page read as a table), not a table whose cells need protecting
         let prose =
@@ -1778,18 +1779,18 @@ fn table_lines(page: &Page, lines: &[LineMath], facts: &FontFacts, p: &crate::pa
         if members.is_empty() || prose {
             continue;
         }
-        if !typeset_math(page, lines, facts, &members, em) {
+        if !typeset_math(page, lines, facts, &members, cols, em) {
             out.extend(members);
         }
     }
     out
 }
 
-/// Whether a table candidate is typeset math: a system of equations (a math relation in at
-/// least half its rows, and a third of its letters and symbols math; digits and punctuation do
-/// not count), or a matrix (big delimiters on its left and right, both spanning most of its
+/// Whether a table candidate is typeset math: a system of equations (at most three columns:
+/// left side, relation and right side, equation number; a math relation in at least half its
+/// rows, and a third of its letters and symbols math; digits and punctuation do not count), or a matrix (big delimiters on its left and right, both spanning most of its
 /// rows). A grid of math-italic symbols with neither is a table.
-fn typeset_math(page: &Page, lines: &[LineMath], facts: &FontFacts, members: &[usize], em: f64) -> bool {
+fn typeset_math(page: &Page, lines: &[LineMath], facts: &FontFacts, members: &[usize], cols: usize, em: f64) -> bool {
     let mut bases: Vec<f64> = members.iter().map(|&i| page.lines[i].base()).collect();
     bases.sort_by(f64::total_cmp);
     let mut rows: Vec<f64> = Vec::new();
@@ -1836,13 +1837,11 @@ fn typeset_math(page: &Page, lines: &[LineMath], facts: &FontFacts, members: &[u
                 tall.push(((g.atom.x0 + g.atom.x1) / 2.0, t, b));
             }
             if g.ev == Ev::Strong && g.atom.sym.class == Class::Rel {
-                let k = rows
-                    .iter()
-                    .enumerate()
-                    .min_by(|a, b| (a.1 - g.atom.base).abs().total_cmp(&(b.1 - g.atom.base).abs()));
-                if let Some((k, _)) = k {
-                    rel_rows[k] = true;
-                }
+                // rows are sorted: the nearest is at the partition point or just before it
+                let b = g.atom.base;
+                let j = rows.partition_point(|&r| r < b);
+                let k = if j > 0 && (j == rows.len() || b - rows[j - 1] <= rows[j] - b) { j - 1 } else { j };
+                rel_rows[k] = true;
             }
         }
     }
@@ -1861,7 +1860,7 @@ fn typeset_math(page: &Page, lines: &[LineMath], facts: &FontFacts, members: &[u
     // a system of equations: relations in at least half the rows, a third of the letters and
     // symbols math (a table of math-italic symbols with no relations stays a table)
     let rels = rel_rows.iter().filter(|&&r| r).count();
-    if glyphs > 0 && rels * 2 >= rows.len() && strong * 3 >= glyphs {
+    if cols <= 3 && glyphs > 0 && rels * 2 >= rows.len() && strong * 3 >= glyphs {
         return true;
     }
     let mid = (x0 + x1) / 2.0;
