@@ -301,3 +301,21 @@ fn thick_rules_and_captioned_tables() {
         assert!(table(&md).contains(&"| Plan | Q1 | Q2 | Q3 |"), "{md}");
     }
 }
+
+/// A rule under every row and a first-column cell that wraps to three lines: the taller band
+/// is that row, not a gap between two tables, so the header and the first row stay in the
+/// table (they once fell into the caption's paragraph), in both modes.
+#[test]
+fn rule_under_every_row_with_a_wrapped_label() {
+    let Some(exe) = pdftotext() else { return };
+    for args in [&[][..], &["--math"][..]] {
+        let md = convert(&exe, "data/allrules_label.pdf", args);
+        assert_eq!(md.lines().filter(|l| l.starts_with("| ---")).count(), 1, "{md}");
+        assert!(table(&md).contains(&"| Item | 2025 | 2024 |"), "{md}");
+        assert!(
+            table(&md).iter().any(|l| l.starts_with("| Cost of revenue") && l.ends_with("| 1,204 | 1,033 |")),
+            "{md}"
+        );
+        assert!(table(&md).contains(&"| Total operating expenses | 2,972 | 2,562 |"), "{md}");
+    }
+}

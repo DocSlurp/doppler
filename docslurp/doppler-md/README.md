@@ -73,6 +73,11 @@ byte-identical.
   from the surviving glyphs alone.
 - Caps: pages over 5,000 lines, 5,000 rules or 60,000 glyphs are not read for math (listed in
   `math.skippedPages`); a formula has at most 1,500 glyphs, 200 bars and 200,000 work units.
+- Known limitation: rules drawn as image masks are reported only with `-glyphs`, which
+  `--math` uses. A booktabs table whose rules are masks is then read through the ruled-table
+  path, where the rows of one band between two rules (a body with no rule between its rows)
+  can come out as one row with their numbers joined; without `--math` the same table is read
+  through the whitespace-table pass with its rows apart (seen on an arXiv results table).
 
 The report gains `math` (`inline`, `display`, `actualText`, `uncertain`, `mathGlyphs`,
 `glyphsLeft`, `skippedPages`, `glyphsSkipped`, `glyphsTruncatedPages`),
