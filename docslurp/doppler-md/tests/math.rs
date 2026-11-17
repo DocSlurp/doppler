@@ -198,6 +198,15 @@ fn unknown_glyph_stays_text_and_is_reported() {
     let (md, report) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
     assert!(!md.contains('$'), "{md}");
     assert!(report.to_json().contains("\"mathUncertainPages\":[1]"), "{}", report.to_json());
+    // the region to crop for a vision model: the formula's box on page 1, padded, with its reason
+    let v: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    let regions = v["mathUncertainRegions"].as_array().unwrap();
+    assert_eq!(regions.len(), 1, "{v}");
+    assert_eq!(regions[0]["page"], 1);
+    assert_eq!(regions[0]["reason"], "unknownGlyph");
+    let b: Vec<f64> = regions[0]["bbox"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    assert!(b[0] <= 280.0 && b[2] >= 295.0 && b[1] < 200.0 && b[3] > 200.0 && b[2] < 320.0 && b[3] < 215.0, "{b:?}");
+    assert_eq!(v["mathUncertainRegionsDropped"], 0);
 }
 
 #[test]

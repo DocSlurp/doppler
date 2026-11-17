@@ -50,7 +50,8 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
-                 $$...$$ display; doubtful formulas stay text (report: mathUncertainPages)
+                 $$...$$ display; doubtful formulas stay text (report: mathUncertainPages, and
+                 mathUncertainRegions: page, bbox and reason of each, to crop for a vision model)
   --markers      mark where pictures sit in the text: ![image](images/page-0012/image-003.webp)
                  between paragraphs or inside a line, and charts and diagrams drawn with paths:
                  ![image](images/page-0012/figure-001.svg) (pdftotext -images); report: images.

@@ -366,8 +366,9 @@ fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
     if t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
         return;
     }
-    let mut k = 0;
-    while k + 1 < t.cols.len() {
+    // a few joins per table (each moves the cells after it)
+    let (mut k, mut joins) = (0, 0);
+    while k + 1 < t.cols.len() && joins < 16 {
         let only_header = |c: usize| !t.rows[0][c].is_empty() && t.rows[1..].iter().all(|r| r[c].is_empty());
         let gap = t.cols[k + 1].0 - t.cols[k].1;
         let both = !t.rows[0][k].is_empty() && !t.rows[0][k + 1].is_empty();
@@ -383,6 +384,7 @@ fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
             t.rows[0].remove(k + 1);
             t.cols[k].1 = t.cols[k + 1].1;
             t.cols.remove(k + 1);
+            joins += 1;
             continue;
         }
         k += 1;
@@ -396,7 +398,12 @@ fn join_spanning_header_cells(t: &mut Table, run: &[Row]) {
     if t.cols.len() < 2 || t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
         return;
     }
-    let column = |x: f64| t.cols.iter().position(|&(a, b)| a - 1.0 <= x && x <= b + 1.0);
+    // columns are ordered and disjoint: the first whose end (plus slack) reaches x
+    let cols = t.cols.clone();
+    let column = |x: f64| {
+        let k = cols.partition_point(|&(_, b)| b + 1.0 < x);
+        cols.get(k).filter(|&&(a, b)| a - 1.0 <= x && x <= b + 1.0).map(|_| k)
+    };
     for (ri, r) in run.iter().take(2).enumerate() {
         if ri >= t.rows.len() || r.cells.len() > t.cols.len() {
             break;

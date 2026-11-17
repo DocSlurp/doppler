@@ -86,6 +86,40 @@ pub struct PageMath {
     /// most of the page's characters are controls, U+FFFD, private-use values or glyphs that
     /// decode to nothing: the text layer cannot be read
     pub unreadable: bool,
+    /// regions a vision model should read instead, at most [`MAX_PAGE_REGIONS`] (the rest are
+    /// counted in `regions_dropped`): a formula left as text or written with a placeholder,
+    /// or the whole page when it was not read (box x0, y0, x1, y1 in points, top-left
+    /// origin, as the page's words; reason)
+    pub uncertain_regions: Vec<UncertainRegion>,
+    pub regions_dropped: usize,
+}
+
+/// One region of a page whose math is uncertain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UncertainRegion {
+    pub bbox: (f64, f64, f64, f64),
+    /// unknownGlyph, doubt, limit, mixedActualText, partial (written with a placeholder),
+    /// ocrLayer, unreadable, glyphsTruncated
+    pub reason: &'static str,
+}
+
+/// The most uncertain regions listed for one page.
+pub const MAX_PAGE_REGIONS: usize = 32;
+
+impl PageMath {
+    fn region(&mut self, bbox: (f64, f64, f64, f64), reason: &'static str) {
+        if self.uncertain_regions.len() < MAX_PAGE_REGIONS {
+            self.uncertain_regions.push(UncertainRegion { bbox, reason });
+        } else {
+            self.regions_dropped += 1;
+        }
+    }
+
+    fn whole_page(&mut self, page: &Page, reason: &'static str) {
+        self.uncertain_regions.clear();
+        self.regions_dropped = 0;
+        self.region((0.0, 0.0, page.width.max(0.0), page.height.max(0.0)), reason);
+    }
 }
 
 /// How strongly a glyph says "math".
@@ -892,6 +926,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         stats.skipped = true;
         stats.uncertain = 1;
         stats.uncertain_limit = 1;
+        stats.whole_page(page, "glyphsTruncated");
         return (escape_dollars(&page.lines), stats);
     }
     if page.glyphs.is_empty()
@@ -908,6 +943,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     let invisible = words.iter().filter(|w| w.invisible).count();
     if !words.is_empty() && invisible * 2 > words.len() {
         stats.ocr_layer = true;
+        stats.whole_page(page, "ocrLayer");
         return (escape_dollars(&page.lines), stats);
     }
     let (mut chars, mut bad) = (0usize, 0usize);
@@ -929,6 +965,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     bad += page.extra_glyphs.iter().filter(|g| g.name.is_none()).count();
     if chars >= 20 && bad * 100 > chars * 25 {
         stats.unreadable = true;
+        stats.whole_page(page, "unreadable");
     }
     let facts = font_facts(page);
     let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l, &facts)).collect();
@@ -1205,6 +1242,29 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         f.label_lines.retain(|&li| !std::mem::replace(&mut label_taken[li], true));
     }
 
+    // a formula's box for a vision model: its parts' boxes (tall symbols reach further),
+    // padded by a quarter of its size and clamped to the page
+    let formula_box = |f: &Formula| {
+        let (mut x0, mut y0, mut x1, mut y1, mut s) =
+            (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, 1.0f64);
+        for &(li, a, b) in &f.parts {
+            if a < b && b <= lines[li].gs.len() {
+                let (bx0, bx1, top, bot, size) = bbox(&lines[li], a, b);
+                x0 = x0.min(bx0);
+                x1 = x1.max(bx1);
+                y0 = y0.min(top);
+                y1 = y1.max(bot);
+                s = s.max(size);
+            }
+        }
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
+            return (0.0, 0.0, page.width.max(0.0), page.height.max(0.0));
+        }
+        let pad = 0.25 * s;
+        let w = if page.width > 0.0 { page.width } else { f64::INFINITY };
+        let h = if page.height > 0.0 { page.height } else { f64::INFINITY };
+        ((x0 - pad).clamp(0.0, w), (y0 - pad).clamp(0.0, h), (x1 + pad).clamp(0.0, w), (y1 + pad).clamp(0.0, h))
+    };
     // read every formula
     let debug = std::env::var_os("DOPPLER_MATH_DEBUG").is_some();
     let mut extra_used = vec![false; page.extra_glyphs.len()];
@@ -1394,16 +1454,34 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 }
                 if unknown > 0 {
                     stats.partial += 1;
+                    if !stats.unreadable {
+                        stats.region(formula_box(f), "partial");
+                    }
                 }
             }
             None if numbers_only || linear => {}
             None => {
                 stats.uncertain += 1;
-                match reason {
-                    1 => stats.uncertain_unknown += 1,
-                    2 => stats.uncertain_doubt += 1,
-                    4 => stats.uncertain_mixed += 1,
-                    _ => stats.uncertain_limit += 1,
+                let why = match reason {
+                    1 => {
+                        stats.uncertain_unknown += 1;
+                        "unknownGlyph"
+                    }
+                    2 => {
+                        stats.uncertain_doubt += 1;
+                        "doubt"
+                    }
+                    4 => {
+                        stats.uncertain_mixed += 1;
+                        "mixedActualText"
+                    }
+                    _ => {
+                        stats.uncertain_limit += 1;
+                        "limit"
+                    }
+                };
+                if !stats.unreadable {
+                    stats.region(formula_box(f), why);
                 }
             }
         }
@@ -1444,6 +1522,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             stats.actual_text = 0;
             stats.partial = 0;
             stats.math_glyphs_left = stats.math_glyphs;
+            stats.whole_page(page, "limit");
             return (escaped, stats);
         }
         if let Some(l) = rebuild(line, &lines[li].gs, &cut[li]) {

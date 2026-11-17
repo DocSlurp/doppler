@@ -57,7 +57,17 @@ byte-identical.
 - A formula with an unknown glyph (U+FFFD, private use, a raw-code guess or a Latin letter in a
   math font), too much doubt, or over a work cap keeps its words. Its page is listed in the
   report's `mathUncertainPages` (one-based), so a caller can send only those pages to a vision
-  model. A formula never gets a symbol that no glyph drew.
+  model, and its box in `mathUncertainRegions` (`{page, bbox: [x0, y0, x1, y1], reason}`, points
+  from the top left, padded by a quarter em; reasons `unknownGlyph`, `doubt`, `limit`,
+  `mixedActualText`, `partial` for a formula written with a placeholder, and the whole page for
+  `ocrLayer`, `unreadable` or `glyphsTruncated`), so a caller can crop just those regions. At
+  most 32 per page and 1,000 per document (the rest counted in `mathUncertainRegionsDropped`).
+  A formula never gets a symbol that no glyph drew.
+- Linear math in an ordinary text font (`x = (−b ± √(b²−4ac)) / (2a)`, `∑ᵢ₌₁ⁿ xᵢ²`: every
+  glyph text-font, on one baseline, one size, no bar) has no 2D layout to read and stays as
+  written. The lines of one formula are never joined across a prose line between them, and a
+  cluster of plain numbers (a table's number columns) is never a formula; rules that repeat at
+  a row's pitch with the same extent are table borders, not fraction bars.
 - Incomplete glyph evidence (producer truncation, consumer caps, or rejected glyph records)
   preserves the page’s original words and marks it uncertain. Partial words are never rewritten
   from the surviving glyphs alone.
@@ -65,8 +75,8 @@ byte-identical.
   `math.skippedPages`); a formula has at most 1,500 glyphs, 200 bars and 200,000 work units.
 
 The report gains `math` (`inline`, `display`, `actualText`, `uncertain`, `mathGlyphs`,
-`glyphsLeft`, `skippedPages`, `glyphsSkipped`, `glyphsTruncatedPages`) and
-`mathUncertainPages`. `scripts/math_eval.py` and `scripts/math_compile.py` measure robustness
+`glyphsLeft`, `skippedPages`, `glyphsSkipped`, `glyphsTruncatedPages`),
+`mathUncertainPages` and `mathUncertainRegions`. `scripts/math_eval.py` and `scripts/math_compile.py` measure robustness
 and LaTeX validity on real PDFs; `DOPPLER_MATH_DEBUG=1` (or `2`, `3`) traces formulas to stderr.
 
 ## Restitching markers (`--markers`)
