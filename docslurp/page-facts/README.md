@@ -509,7 +509,18 @@ procedures, a font program's head) caps the encoded bytes read
 (64 KB, 64 KB) as well as the decoded bytes (64 KB, 4 KB): a longer stream is decoded
 from a copy of its first encoded bytes (an encrypted document's is not read), so a deflate
 stream of empty stored blocks costs at most the cap. A glyph procedure or font program many
-fonts share is read once (by reference). A marked-content `/ActualText` string has its first
+fonts share is read once (by reference). These reads never parse an object stream: before each
+fetch (a procedure, a program, a Type 3 font's `/XObject` dictionary, its entries and their
+`/ImageMask`) the object's cross-reference entry is looked up, and an object in an object stream
+is not fetched (procedures, programs and XObjects are streams, which cannot legally live in one);
+a stream is fetched only when its dictionary, lexed from the file without resolving anything (at
+most 4,096 tokens in its first 64 KB), names its `/Length` directly or by an object outside any
+object stream and its filters and their parameters directly. A refused read makes the font's
+class unknown (`analysis-truncated`). Every fetch is charged 4 KB plus the bytes lexed to vet it
+against the font budget, whatever it yields. The reads are side-effect free for the other
+families: errors they meet are not the page's `parseWarnings`, the fonts list and its counts are
+the same with or without `mathtables`, and an analysis cap sets `analysis-truncated` only (never
+`limit-hit`). A marked-content `/ActualText` string has its first
 4,096 code units tested; a longer one with no TeX in them is TeX unknown (`structure.truncated`,
 `analysis-truncated`). A glyph procedure cut inside an inline image dictionary, a non-empty
 stream that decodes to nothing, a glyph procedure that fills its 64 KB read with no `BI` or

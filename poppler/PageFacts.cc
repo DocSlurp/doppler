@@ -40,6 +40,7 @@
 #include "Page.h"
 #include "PDFDoc.h"
 #include "PDFDocEncoding.h"
+#include "Lexer.h"
 #include "SecurityHandler.h"
 #include "Stream.h"
 #include "TextOutputDev.h"
@@ -612,6 +613,16 @@ private:
 };
 
 PageFacts *activeFacts = nullptr;
+// while above 0, errors poppler reports are not the page's: the font-class reads' cut copies
+// (a deflate stream ended early, say) must not add parse warnings a run without them lacks
+int quietReads = 0;
+struct QuietReads
+{
+    QuietReads() { ++quietReads; }
+    ~QuietReads() { --quietReads; }
+    QuietReads(const QuietReads &) = delete;
+    QuietReads &operator=(const QuietReads &) = delete;
+};
 
 // A ruled grid: the rule-only stage of pdftomarkdown's ruled-table search (doppler-md
 // tables::ruled_tables, with its default parameters), so the facts name the same grids its
@@ -2230,6 +2241,112 @@ std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypt
 
 constexpr size_t maxCharProcRaw = 65536; // encoded bytes of a Type 3 glyph procedure read
 constexpr size_t maxFontProbeRaw = 65536; // encoded bytes of a font program's head read
+constexpr size_t classifyFetchCost = 4096; // charged for every classification fetch, whatever it yields
+constexpr Goffset maxStreamDictPeek = 65536; // bytes of a stream object's head lexed to vet its dictionary
+constexpr size_t maxStreamDictTokens = 4096;
+
+// an object in an object stream: the font-class reads never fetch it. Under their guard the
+// parse of its object stream would be kept for the run, and a font's procedures, program and
+// image-mask XObjects are streams, which never legally live in one. (An object the table does
+// not list fetches as null under the guard, without reading anything.)
+bool inObjectStream(XRef *xref, Ref r)
+{
+    if (r.num < 0 || r.num >= xref->getNumObjects()) {
+        return false;
+    }
+    const XRefEntry *e = xref->getEntry(r.num, false);
+    return e && e->type == xrefEntryCompressed;
+}
+
+// whether the font-class reads may fetch object <r>: listed, not in an object stream, and, when
+// it is a dictionary or stream, its dictionary (tokens read from the file, nothing resolved; for
+// an object that must be a stream at most maxStreamDictTokens in its first maxStreamDictPeek
+// bytes, for a dictionary all of it, as its fetch would) names its /Length directly or by an object that is not in an object
+// stream, and its filters and their parameters directly, so neither the fetch nor the decode can
+// reach an object stream. Anything else (a head that does not lex as an object) is refused: the
+// font's class is then unknown.
+bool classifyMayFetch(XRef *xref, Ref r, bool expectStream, size_t *lexed)
+{
+    if (inObjectStream(xref, r)) {
+        return false;
+    }
+    const XRefEntry *e = r.num >= 0 && r.num < xref->getNumObjects() ? xref->getEntry(r.num, false) : nullptr;
+    if (!e || e->type != xrefEntryUncompressed) {
+        return true; // unlisted or free: the fetch gives null without reading anything
+    }
+    BaseStream *base = xref->getBaseStream();
+    if (!base || e->offset < 0) {
+        return false;
+    }
+    Lexer lexer(nullptr, base->makeSubStream(e->offset, expectStream, expectStream ? maxStreamDictPeek : 0, Object::null()));
+    struct Lexed
+    {
+        Lexer &l;
+        Goffset start;
+        size_t *out;
+        ~Lexed() { *out += static_cast<size_t>(std::max<Goffset>(0, l.getPos() - start)); }
+    } account { lexer, e->offset, lexed };
+    Object num = lexer.getObj(), gen = lexer.getObj(), kw = lexer.getObj();
+    if (!num.isInt() || !gen.isInt() || !kw.isCmd("obj")) {
+        return false;
+    }
+    Object tok = lexer.getObj();
+    if (!tok.isCmd("<<")) {
+        return !tok.isError() && !tok.isEOF(); // not a dictionary, so not a stream: nothing more is fetched with it
+    }
+    // walk the dictionary's tokens (a reference is "int int R"), keeping the top-level key whose
+    // value is being read: a name at depth 1 is a key when a value has just ended
+    int depth = 1, intsPending = 0;
+    bool expectKey = true;
+    std::string key;
+    Object prev2, prev1;
+    for (size_t n = 0; !expectStream || n < maxStreamDictTokens; ++n) {
+        tok = lexer.getObj();
+        if (tok.isEOF() || tok.isError()) {
+            return false;
+        }
+        if (tok.isCmd("R")) {
+            if (!prev2.isInt() || !prev1.isInt()) {
+                return false;
+            }
+            if (key == "Length" && depth == 1) {
+                if (inObjectStream(xref, Ref { .num = prev2.getInt(), .gen = prev1.getInt() })) {
+                    return false;
+                }
+            } else if (key == "Filter" || key == "DecodeParms" || key == "F" || key == "DP" || key == "FFilter" || key == "FDecodeParms") {
+                return false; // resolved while filters are built: must be direct
+            }
+            if (depth == 1) {
+                expectKey = true;
+                intsPending = 0;
+            }
+        } else if (tok.isCmd("<<") || tok.isCmd("[")) {
+            ++depth;
+            intsPending = 0;
+        } else if (tok.isCmd(">>") || tok.isCmd("]")) {
+            if (--depth == 0) {
+                return true;
+            }
+            if (depth == 1) {
+                expectKey = true; // a container value ended
+            }
+        } else if (depth == 1) {
+            if (tok.isName() && (expectKey || intsPending > 0)) {
+                key = tok.getNameString();
+                expectKey = false;
+                intsPending = 0;
+            } else if (tok.isInt()) {
+                ++intsPending;
+            } else {
+                expectKey = true;
+                intsPending = 0;
+            }
+        }
+        prev2 = std::move(prev1);
+        prev1 = std::move(tok);
+    }
+    return false; // a dictionary longer than the tokens read: refused
+}
 
 // One font's class. Reads (under a RepairGuard, so they cannot rebuild the table drawing uses):
 // a Type 3 font's first maxCharProcsProbed glyph procedures (maxCharProcBytes each, text filters
@@ -2253,6 +2370,7 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
             return it->second & 0x7f;
         }
     }
+    const QuietReads quiet;
     std::optional<XRef::RepairGuard> guard;
     if (xref) {
         guard.emplace(xref, XRef::GuardKind::Facts);
@@ -2267,6 +2385,17 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
         return true;
     };
     auto charge = [&](size_t bytes) { cache.fontBytesLeft -= std::min(cache.fontBytesLeft, bytes); };
+    // every fetch is charged classifyFetchCost first, whatever it yields; a refused one is unknown
+    auto vetted = [&](Ref r, bool stream) {
+        size_t lexed = 0;
+        const bool ok = classifyMayFetch(xref, r, stream, &lexed);
+        charge(classifyFetchCost + lexed);
+        if (ok) {
+            return true;
+        }
+        budgetHit = true;
+        return false;
+    };
     const std::optional<std::string> &fullName = font->getName();
     const std::string_view name = fullName ? fontBaseName(*fullName) : std::string_view();
     uint8_t cls = mcCount;
@@ -2286,8 +2415,10 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                 const auto memo = procNF.isRef() ? cache.charProcs.find(procNF.getRef()) : cache.charProcs.end();
                 if (memo != cache.charProcs.end()) {
                     bits = memo->second;
+                } else if (procNF.isRef() && !vetted(procNF.getRef(), true)) {
+                    bits = 8 | 4; // not read: unknown
                 } else {
-                    Object proc = procs->getVal(i);
+                    Object proc = procNF.isRef() ? xref->fetch(procNF.getRef()) : procNF.copy();
                     bool unreadable = false;
                     size_t used = 0;
                     // 4 KB first; the rest (to 64 KB) only when that head filled up undecided. Both
@@ -2347,13 +2478,17 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                 }
             }
             if (!known && takeRead()) {
-                charge(1024);
-                Object xobjects = xNF.isRef() ? xref->fetch(xNF.getRef()) : xNF.copy();
+                Object xobjects = xNF.isRef() ? (vetted(xNF.getRef(), false) ? xref->fetch(xNF.getRef()) : Object::null()) : xNF.copy();
                 if (xobjects.isDict()) {
                     for (int i = 0; i < std::min(xobjects.dictGetLength(), maxXObjectsProbed) && !maskXObject; ++i) {
-                        Object x = xobjects.dictGetVal(i);
+                        const Object &xRef = xobjects.getDict()->getValNF(i);
+                        if (!xRef.isRef() || !vetted(xRef.getRef(), true)) {
+                            continue; // an XObject is a stream: a direct one is not one
+                        }
+                        Object x = xref->fetch(xRef.getRef());
                         if (x.isStream() && x.getStream()->getDict()) {
-                            Object mask = x.getStream()->getDict()->lookup("ImageMask");
+                            const Object &maskNF = x.getStream()->getDict()->lookupNF("ImageMask");
+                            Object mask = maskNF.isRef() ? (vetted(maskNF.getRef(), false) ? xref->fetch(maskNF.getRef()) : Object::null()) : maskNF.copy();
                             maskXObject = mask.isBool() && mask.getBool();
                         }
                     }
@@ -2387,7 +2522,7 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
         const bool sfntExpected = ft == fontTrueType || ft == fontTrueTypeOT || ft == fontCIDType2 || ft == fontCIDType2OT || ft == fontType1COT || ft == fontCIDType0COT;
         budgetHit = budgetHit || (sfntExpected && table == SfntMath::Unknown);
     } else if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
-        Object program = xref->fetch(embedded);
+        Object program = vetted(embedded, true) ? xref->fetch(embedded) : Object::null();
         bool unreadable = false;
         size_t used = 0;
         const std::string programHead = readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used);
@@ -3389,6 +3524,9 @@ struct PageFacts::State
     std::array<uint64_t, mcCount> classGlyphs {};
     std::vector<MathGlyph> mathGlyphs; // upright math-font glyph centres, at most maxMathGlyphs
     bool mathGlyphsTruncated = false, fontClassLimited = false;
+    std::unordered_map<const GfxFont *, MathFont> mathFonts; // mathtables' fonts of the page (PageFacts::mathFontOf)
+    const TextFontInfo *mathLastInfo = nullptr;
+    MathFont mathLast {};
     uint64_t markedActual = 0, markedActualTex = 0; // marked-content /ActualText spans
     bool markedTexUnknown = false; // a span longer than the scanned prefix with no TeX in it
     // kept across pages
@@ -3725,7 +3863,7 @@ void PageFacts::beginPage(int pageNum)
 void PageFacts::noteError(ErrorCategory category, const char *format)
 {
     PageFacts *f = activeFacts;
-    if (!f || !f->st->begun || !format) {
+    if (!f || !f->st->begun || !format || quietReads > 0) {
         return;
     }
     unsigned &w = f->st->warnings;
@@ -3844,29 +3982,41 @@ const PageFacts::FontSeen *PageFacts::fontOf(const TextFontInfo *info)
             f.math = f.math || n.find(m) != std::string::npos;
         }
     }
-    f.mathClass = mcText;
-    f.fixedWidth = font->isFixedWidth();
-    f.extension = false;
-    if (wants(MathTables) && font->getName()) {
-        // the fonts whose delimiter pieces glyph names map to the Adobe Symbol pieces
-        // (U+F8E5-F8FE): TeX's extension fonts, Symbol, MathType's Extra
-        const std::string_view base = fontBaseName(*font->getName());
-        for (std::string_view p : { "CMEX", "LMMathExtension", "EUEX", "esint", "txex", "pxex", "ntxex", "NewTXEX", "Symbol", "StandardSym", "MTExtra", "MT Extra", "MT-Extra" }) {
-            f.extension = f.extension || startsNoCase(base, p);
-        }
-    }
-    if (wants(MathTables)) {
-        f.mathClass = classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited);
-    }
     st->fonts.push_back(f);
     st->lastFont = &st->fonts.back();
     return st->lastFont;
 }
 
-uint8_t PageFacts::untrackedClass(const TextFontInfo *info)
+// mathtables' view of a font: kept apart from the fonts family's list, which it never adds to
+// (so the fonts facts are the same with or without mathtables), once per font a page
+PageFacts::MathFont PageFacts::mathFontOf(const TextFontInfo *info)
 {
+    if (info == st->mathLastInfo) {
+        return st->mathLast;
+    }
     const GfxFont *font = info ? info->getGfxFont() : nullptr;
-    return font ? classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited) : uint8_t(mcText);
+    MathFont m { mcText, false, false };
+    if (font) {
+        const auto it = st->mathFonts.find(font);
+        if (it != st->mathFonts.end()) {
+            m = it->second;
+        } else {
+            m.cls = classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited);
+            m.fixedWidth = font->isFixedWidth();
+            if (font->getName()) {
+                // the fonts whose delimiter pieces glyph names map to the Adobe Symbol pieces
+                // (U+F8E5-F8FE): TeX's extension fonts, Symbol, MathType's Extra
+                const std::string_view base = fontBaseName(*font->getName());
+                for (std::string_view p : { "CMEX", "LMMathExtension", "EUEX", "esint", "txex", "pxex", "ntxex", "NewTXEX", "Symbol", "StandardSym", "MTExtra", "MT Extra", "MT-Extra" }) {
+                    m.extension = m.extension || startsNoCase(base, p);
+                }
+            }
+            st->mathFonts.emplace(font, m);
+        }
+    }
+    st->mathLastInfo = info;
+    st->mathLast = m;
+    return m;
 }
 
 void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *font, double fontSize)
@@ -3874,8 +4024,7 @@ void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *
     add(st->glyphs, 1);
     add(st->unmapped, 1);
     if (wants(MathTables)) {
-        const FontSeen *f = fontOf(font);
-        const uint8_t cls = f ? f->mathClass : untrackedClass(font);
+        const uint8_t cls = mathFontOf(font).cls;
         ++st->classGlyphs[cls];
         st->mathUnreadable += isMathClass(cls);
     }
@@ -3931,14 +4080,17 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
     if (!(fams & (Fonts | OddText | MathTables))) {
         return;
     }
-    const FontSeen *f = fontOf(font);
-    if (fontSize > 0 && fontSize < s.smallestFont) {
+    // the fonts list and smallest size as without mathtables (only the fonts and oddtext families)
+    const bool listed = fams & (Fonts | OddText);
+    const FontSeen *f = listed ? fontOf(font) : nullptr;
+    if (listed && fontSize > 0 && fontSize < s.smallestFont) {
         s.smallestFont = fontSize;
     }
     if (fams & MathTables) {
         // a font past the page's 256-font list is still classed (once per font object, from the
         // document's cache): many honest fonts on a page do not make the page truncated
-        const uint8_t cls = f ? f->mathClass : untrackedClass(font);
+        const MathFont mf = mathFontOf(font);
+        const uint8_t cls = mf.cls;
         const bool mathFont = isMathClass(cls);
         ++s.classGlyphs[cls];
         for (int i = 0; i < uLen; ++i) {
@@ -3946,7 +4098,7 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
             // U+F8E5-F8FE: the Adobe Symbol extension pieces (bracket and brace tops, middles,
             // bottoms, extenders) that glyph names map to: delimiters, not unreadable math
             // (only from a math extension font: any other font mapping there is not trusted)
-            const bool piece = f && f->extension && c >= 0xf8e5 && c <= 0xf8fe;
+            const bool piece = mf.extension && c >= 0xf8e5 && c <= 0xf8fe;
             const bool unreadable = !piece && (c < 0x20 || (c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd) || c == 0xfffd);
             if (mathFont) {
                 ++(unreadable ? s.mathUnreadable : s.mathReadable);
@@ -4020,9 +4172,9 @@ void PageFacts::onWord(const TextWord *word)
             int mathChars = 0, monoChars = 0, pieces = 0, fulls = 0, bars = 0;
             const int n = word->getLength();
             for (int i = 0; i < n; ++i) {
-                const FontSeen *f = fontOf(word->getFontInfo(i));
-                mathChars += f ? isMathClass(f->mathClass) : isMathClass(untrackedClass(word->getFontInfo(i)));
-                monoChars += f && f->fixedWidth;
+                const MathFont mf = mathFontOf(word->getFontInfo(i));
+                mathChars += isMathClass(mf.cls);
+                monoChars += mf.fixedWidth;
                 const int kind = delimiterKind(*word->getChar(i));
                 pieces += kind == 2;
                 fulls += kind == 1;
@@ -4630,9 +4782,6 @@ void PageFacts::endPage(const TextPage &text)
         static_assert(sizeof(counts) / sizeof(counts[0]) == 13); // 52 bits: exact in a JSON reader's double
         for (size_t i = 0; i < 13; ++i) {
             encodingCounts |= log2Bucket(counts[i]) << (4 * i);
-        }
-        if (truncatedAnalysis) {
-            s.warnings |= 1u << wLimit;
         }
     }
 

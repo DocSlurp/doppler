@@ -492,6 +492,44 @@ def objstm_rounds(streams=9, members=300, leaves=2000, pages=1, pad=True, drain=
     return d.write_objstm(cat, groups)
 
 
+def font_objects(kind, size=4000000, pages=30):
+    """Each page draws one font whose class read would reach an object stream: with <kind>
+    "charproc" a Type 3 font's procedure is a non-stream member of its own object stream; "xobj"
+    its /Resources /XObject is; "ttf" a TrueType font's /FontFile2 is; "length" its procedure is
+    a stream whose /Length is. Beside that member each object stream holds a <size>-byte array of
+    empty names (it parses to about <size> objects). The class reads must not parse any of them
+    (council #51 final-5: 30 pages ran out of a 4 GB address space)."""
+    d = Doc()
+    cat, ptree = d.reserve(), d.reserve()
+    helv = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    bomb = "[" + "/" * (size - 2) + "]"
+    groups, kids = [], []
+    for i in range(pages):
+        x = d.add("<< /Note (quarterly) >>")
+        if kind == "length":
+            data = b"500 0 d0 0 0 m 400 0 l 400 600 l h f"
+            x = d.add("%d" % len(data))
+            proc = d.add(b"<< /Length %d 0 R >>\nstream\n" % x + data + b"\nendstream")
+        groups.append([x, d.add(bomb)])
+        if kind == "ttf":
+            fd = d.add("<< /Type /FontDescriptor /FontName /GrowthSans%d /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % (i, x))
+            font = d.add("<< /Type /Font /Subtype /TrueType /BaseFont /GrowthSans%d /FirstChar 97 /LastChar 98 /Widths [500 500] /FontDescriptor %d 0 R /Encoding /WinAnsiEncoding >>" % (i, fd))
+        else:
+            if kind == "charproc":
+                procs, res = "/a %d 0 R /b %d 0 R" % (x, d.stream("500 0 d0 0 0 m 400 0 l 400 600 l h f")), "<< >>"
+            elif kind == "xobj":
+                do = d.stream("500 0 d0 /Im0 Do")
+                procs, res = "/a %d 0 R /b %d 0 R" % (do, do), "<< /XObject %d 0 R >>" % x
+            else:
+                procs, res = "/a %d 0 R /b %d 0 R" % (proc, proc), "<< >>"
+            font = d.add("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << %s >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [500 500] /Resources %s >>" % (procs, res))
+        content = d.stream("BT /H 11 Tf 72 740 Td (Revenue beat the plan in every region.) Tj ET BT /T 10 Tf 72 700 Td (ab) Tj ET")
+        kids.append(d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /H %d 0 R /T %d 0 R >> >> /Contents %d 0 R >>" % (ptree, helv, font, content)))
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), ptree)
+    d.add("<< /Type /Catalog /Pages %d 0 R >>" % ptree, cat)
+    return d.write_objstm(cat, groups)
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -630,6 +668,31 @@ with t.TempDir() as d:
         print("  %s: basic %.0f MB, full %.0f MB" % (label, rss_b, rss_f))
     p2 = page(ls, 2)
     t.check("error" not in p2 and p2["text"]["wordCount"] == 4, "a page whose objects sit in their own object stream is drawn", repr(p2.get("error") or p2["text"]))
+
+    # the font-class reads never parse an object stream (council #51 final-5): a procedure,
+    # program or /XObject dictionary in one (or a procedure whose /Length is) is not fetched,
+    # and that font's class is unknown (analysis-truncated); full costs what basic costs, and
+    # pdftotext with full facts still writes its XHTML under a 4 GiB address-space limit
+    def limited_as():
+        resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
+    # (a TrueType program is fetched by drawing's font loading too, which parses each of these
+    # streams as master does: 6 pages of 1 MB arrays keep that within the address space)
+    for kind, size, pages in (("charproc", 4000000, 30), ("xobj", 4000000, 30), ("ttf", 1000000, 6), ("length", 4000000, 30)):
+        path = d.write("fontobj-%s.pdf" % kind, font_objects(kind, size, pages))
+        rc_b, pg_b, rss_b = max_rss("-level", "basic", path)
+        rc_f, pg_f, rss_f = max_rss("-level", "full", path)
+        t.check(rc_b == rc_f == 0 and len(pg_f) == len(pg_b) == pages, "font objects in object streams (%s): every page's line written" % kind, repr((rc_b, rc_f, len(pg_b), len(pg_f))))
+        t.check(rss_f <= 1.2 * rss_b + 16, "font objects in object streams (%s): peak RSS at most 1.2x the basic level + 16 MB" % kind, "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
+        t.check(all(p["mathBits"] >> 12 & 1 for p in pg_f), "font objects in object streams (%s): the class is unknown (analysis-truncated)" % kind, repr(pg_f[0]["mathFlags"]))
+        print("  font objects in object streams (%s): basic %.0f MB, full %.0f MB" % (kind, rss_b, rss_f))
+        out = os.path.join(os.path.dirname(path), "fontobj.jsonl")
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            r = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-page-facts-fd", str(fd), "-page-facts-level", "full", path, "-"], capture_output=True, pass_fds=(fd,), preexec_fn=limited_as, timeout=300)
+        finally:
+            os.close(fd)
+        plain = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, "-"], capture_output=True, timeout=300)
+        t.check(r.returncode == 0 and r.stdout == plain.stdout, "font objects in object streams (%s): pdftotext with full facts under 4 GiB writes the XHTML it writes without them" % kind, repr(r.returncode))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))
