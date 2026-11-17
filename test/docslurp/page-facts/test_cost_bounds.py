@@ -49,6 +49,24 @@ class Doc:
             extra += " /Filter /FlateDecode"
         return self.add(b"<< " + extra.encode("latin-1") + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
 
+    def pages_tagged(self, contents, font, root):
+        """One tagged page per content stream, page i naming parent-tree key i."""
+        pages = self.reserve()
+        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (pages, c, font, i)) for i, c in enumerate(contents)]
+        self.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), pages)
+        cat = self.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (pages, root))
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        offs = {}
+        for num in sorted(self.objs):
+            offs[num] = len(out)
+            out += b"%d 0 obj\n" % num + self.objs[num] + b"\nendobj\n"
+        xref = len(out)
+        out += b"xref\n0 %d\n0000000000 65535 f \n" % (self.n + 1)
+        for i in range(1, self.n + 1):
+            out += b"%010d 00000 n \n" % offs[i] if i in offs else b"0000000000 65535 f \n"
+        out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (self.n + 1, cat, xref)
+        return bytes(out)
+
     def pages(self, contents, resources="", catalog_extra="", page_extra=""):
         """One page per content stream object number (repeats allowed); returns the PDF bytes."""
         pages = self.reserve()
@@ -411,6 +429,46 @@ def font_compilation(pages=1200, fonts=4, size=14000):
     return d.pages(contents, resources=res)
 
 
+def struct_tree(pages, entry_leaves=0, depth=1, decoys=0):
+    """Tagged pages, each with its own parent-tree entry; the entries list <entry_leaves> leaves
+    whose parent chains are <depth> deep (shared by every page), or, with <decoys>, the parent
+    tree's root /Kids holds <decoys> nodes whose Limits lie below every key, then one node per
+    page (a linear Kids scan reads every decoy on every page)."""
+    d = Doc()
+    root = d.reserve()
+    docel = d.add("<< /Type /StructElem /S /Document /P %d 0 R >>" % root)
+    leaves = []
+    for i in range(max(entry_leaves, 1)):
+        par = docel
+        for _ in range(depth - 1):
+            par = d.add("<< /S /Div /P %d 0 R >>" % par)
+        leaves.append(d.add("<< /S /%s /P %d 0 R >>" % ("Formula" if i == 0 else "P", par)))
+    if decoys:
+        dec = [d.add("<< /Limits [-2 -1] /Nums [-2 null] >>") for _ in range(decoys)]
+        nodes = [d.add("<< /Limits [%d %d] /Nums [%d [%d 0 R]] >>" % (i, i, i, leaves[0])) for i in range(pages)]
+        tree = d.add("<< /Kids [%s] >>" % " ".join("%d 0 R" % k for k in dec + nodes))
+    else:
+        arr = "[%s]" % " ".join("%d 0 R" % e for e in leaves)
+        entries = [d.add(arr) for _ in range(pages)]
+        tree = d.add("<< /Nums [%s] >>" % " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries)))
+    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % tree, root)
+    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    return d.pages_tagged([content] * pages, font, root)
+
+
+def type3_inflate(fonts=2000):
+    """<fonts> Type 3 fonts, each with 8 distinct tiny deflate glyph procedures that inflate to
+    64 KB of spaces (no BI, no Do), all on one page (was 9.9 s against 0.83 s)."""
+    d = Doc()
+    names = []
+    for f in range(fonts):
+        procs = [d.stream(b"600 0 0 0 500 500 d1 %d " % (f * 8 + g) + b" " * 65536 + b" 0 0 500 500 re f", compress=True) for g in range(8)]
+        names.append("/T%d %d 0 R" % (f, d.add("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << %s >> /Encoding << /Type /Encoding /Differences [97 %s] >> /FirstChar 97 /LastChar 104 /Widths [%s] /Resources << >> >>" % (" ".join("/g%d %d 0 R" % (g, procs[g]) for g in range(8)), " ".join("/g%d" % g for g in range(8)), " ".join(["600"] * 8)))))
+    content = d.stream("".join("BT /T%d 6 Tf %d %d Td (abcdefgh) Tj ET\n" % (k, 20 + (k % 20) * 28, 780 - (k // 20) * 7) for k in range(fonts)))
+    return d.pages([content], resources="/Font << %s >>" % " ".join(names))
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -525,6 +583,19 @@ with t.TempDir() as d:
     ls = bounded("1,200 pages, each embedding 4 programs of its own (67 MB)", d.write("compilation.pdf", font_compilation()))
     pgs = [l for l in ls if l["type"] == "page"]
     t.check(len(pgs) == 1200 and not any(p["mathBits"] >> 12 & 1 for p in pgs), "an honest compilation's fonts are all classed: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
+
+    # hostile structure (council #51 final): every visit, cached or not, and every number-tree
+    # node read is charged to one document budget, so these stay near the plain pass (they took
+    # minutes, a gigabyte, or timed out) and their later pages say truncated
+    ls = bounded("2,000 pages, each walking 1,024 leaves of 64-deep chains", d.write("chain.pdf", struct_tree(2000, entry_leaves=1024, depth=64)), factor=100.0)
+    pgs = [l for l in ls if l["type"] == "page"]
+    t.check(pgs[-1]["mathBits"] >> 12 & 1 and pgs[-1]["structure"]["truncated"], "deep chains: the document budget runs out, later pages are truncated", repr(pgs[-1]["structure"]))
+    ls = bounded("2,000 pages behind 60,000 decoy parent-tree nodes", d.write("decoys.pdf", struct_tree(2000, decoys=60000)), factor=100.0)
+    pgs = [l for l in ls if l["type"] == "page"]
+    t.check(all(p["structure"]["formulas"] == 1 for p in pgs), "decoy number-tree nodes: a binary search finds every page's node", repr(pgs[-1]["structure"]))
+    ls = bounded("300 pages walking 4,224 chains of 64 elements (past the element cache)", d.write("elcache.pdf", struct_tree(300, entry_leaves=4224, depth=64)), factor=100.0)
+    ls = bounded("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", d.write("t3inflate.pdf", type3_inflate()), factor=100.0)
+    t.check(page(ls, 1)["mathBits"] >> 12 & 1, "inflating procedures: the font budget (charged decoded bytes) runs out: analysis-truncated", repr(page(ls, 1)["mathFlags"]))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))

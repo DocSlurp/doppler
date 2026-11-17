@@ -27,6 +27,9 @@
 #ifndef _WIN32
 #    include <sys/resource.h>
 #endif
+#ifdef __GLIBC__
+#    include <malloc.h>
+#endif
 
 #include "Annot.h"
 #include "Catalog.h"
@@ -1924,10 +1927,16 @@ constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checke
 // memo by reference and this allowance, which grows only with pages
 constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
 constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
-// structure objects read for the first time over a document: 2^22, plus 2^13 for every page
-// begun (an honest document's elements are read once each; cached visits are not charged)
+// structure visits over a document, every one charged (cached or not: element visits, parent-tree
+// node and entry reads): 2^22, plus 2^7 for every page begun. An honest document visits a few
+// hundred elements a page (12,000 pages x 400 elements fit); a document making every page walk
+// the per-page maximum runs it out, and its later pages are truncated.
 constexpr size_t structWorkDoc = size_t(1) << 22;
-constexpr size_t structWorkPerPage = size_t(1) << 13;
+constexpr size_t structWorkPerPage = size_t(1) << 7;
+// a page's parent-tree entry is read only while at least this much of the document's budget is
+// left: past it a page is truncated without fetching (an entry array in an object stream costs
+// a parse of that stream, and a hostile document can give every page its own)
+constexpr size_t structWorkToStart = size_t(1) << 16;
 constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
 constexpr size_t maxStructWork = size_t(1) << 16; // structure objects visited for one page
 constexpr int maxStructDepth = 64; // parent links followed up from one element
@@ -2361,8 +2370,22 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                     Object proc = procs->getVal(i);
                     bool unreadable = false;
                     size_t used = 0;
-                    const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
-                    charge(used);
+                    // 4 KB first; the rest (to 64 KB) only when that head filled up undecided. Both
+                    // the encoded and the decoded bytes are charged (a tiny stream can inflate to 64 KB)
+                    std::string text = readHead(proc, 4096, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
+                    charge(used + text.size());
+                    if (text.size() >= 4096 && !unreadable) {
+                        const CharProcPaint head = charProcPaint(text);
+                        if (!head.inlineMask && !head.doOp) {
+                            if (takeRead()) {
+                                used = 0;
+                                text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
+                                charge(used + text.size());
+                            } else {
+                                unreadable = true; // the budget ran out: unknown
+                            }
+                        }
+                    }
                     if (text.empty()) {
                         bits = 8 | (unreadable ? 4 : 0);
                     } else {
@@ -2445,8 +2468,9 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
         Object program = xref->fetch(embedded);
         bool unreadable = false;
         size_t used = 0;
-        table = sfntMath(readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used));
-        charge(used);
+        const std::string programHead = readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used);
+        charge(used + programHead.size());
+        table = sfntMath(programHead);
         if (cache.programs.size() < maxFontClassCache) {
             cache.programs.emplace(embedded, static_cast<uint8_t>(table));
         }
@@ -2627,6 +2651,10 @@ public:
     StructCounts entry(int key)
     {
         StructCounts c;
+        if (cache.structWorkLeft < structWorkToStart) {
+            c.truncated = true; // the document's budget is (nearly) spent: not read at all
+            return c;
+        }
         Object valueNF = numberTreeGet(cache.structParentTree.copy(), key, &c);
         if (valueNF.isNull()) {
             c.unknown = !c.truncated; // the page names a parent-tree entry the tree does not give
@@ -2688,27 +2716,22 @@ public:
 
 private:
     // a page's budget (maxStructWork) and the document's (MathDocCache::structWorkLeft)
-    // a page's budget (maxStructWork), every visit
+public:
+    size_t visits() const { return work; }
+
+private:
+    // every visit: the page's budget (maxStructWork) and the document's (structWorkLeft)
     bool spend(StructCounts *c)
     {
-        if (work >= maxStructWork) {
+        if (work >= maxStructWork || cache.structWorkLeft == 0) {
             c->truncated = true;
             return false;
         }
         ++work;
-        return true;
-    }
-    // the document's budget (MathDocCache::structWorkLeft), only reads of objects not yet cached:
-    // a cached element many pages reach costs the document nothing more
-    bool spendDoc(StructCounts *c)
-    {
-        if (cache.structWorkLeft == 0) {
-            c->truncated = true;
-            return false;
-        }
         --cache.structWorkLeft;
         return true;
     }
+    bool spendDoc(StructCounts *c) { return spend(c); }
 
     Object cachedFetch(const Object &nf)
     {
@@ -2755,27 +2778,59 @@ private:
             if (!kids.isArray()) {
                 return Object::null();
             }
+            // kids sorted by /Limits: a binary search (every node read charged); a node whose
+            // Limits do not read as two integers ends the search, which then scans linearly
             Object next = Object::null();
-            for (int i = 0; i < kids.arrayGetLength(); ++i) {
-                if (!spend(c)) {
-                    return Object::null();
-                }
+            const int n = kids.arrayGetLength();
+            // 1: the key is in it, 0: below it, 2: above it, -1: unreadable or already visited
+            auto probe = [&](int i, Object *kidOut) {
                 const Object &ref = kids.getArray()->getNF(i);
                 if (ref.isRef() && visited.count(ref.getRef())) {
-                    continue;
+                    return -1;
                 }
                 Object kid = cachedFetch(ref);
                 Object limits = kid.isDict() ? kid.dictLookup("Limits") : Object::null();
-                if (limits.isArray() && limits.arrayGetLength() == 2) {
-                    Object a = limits.arrayGet(0), b = limits.arrayGet(1);
-                    if (a.isInt() && b.isInt() && a.getInt() <= key && key <= b.getInt()) {
-                        if (ref.isRef()) {
-                            visited.insert(ref.getRef());
-                        }
-                        next = std::move(kid);
-                        break;
-                    }
+                if (!limits.isArray() || limits.arrayGetLength() != 2) {
+                    return -1;
                 }
+                Object a = limits.arrayGet(0), b = limits.arrayGet(1);
+                if (!a.isInt() || !b.isInt()) {
+                    return -1;
+                }
+                if (key < a.getInt()) {
+                    return 0;
+                }
+                if (key > b.getInt()) {
+                    return 2;
+                }
+                if (ref.isRef()) {
+                    visited.insert(ref.getRef());
+                }
+                *kidOut = std::move(kid);
+                return 1;
+            };
+            int lo = 0, hi = n - 1;
+            bool linear = false;
+            while (lo <= hi && next.isNull()) {
+                if (!spend(c)) {
+                    return Object::null();
+                }
+                const int mid = lo + (hi - lo) / 2;
+                const int r = probe(mid, &next);
+                if (r == -1) {
+                    linear = true;
+                    break;
+                }
+                (r == 0 ? hi : lo) = r == 0 ? mid - 1 : mid + 1;
+                if (r == 1) {
+                    break;
+                }
+            }
+            for (int i = 0; linear && next.isNull() && i < n; ++i) {
+                if (!spend(c)) {
+                    return Object::null();
+                }
+                probe(i, &next);
             }
             node = std::move(next);
         }
@@ -5200,7 +5255,16 @@ void PageFacts::endPage(const TextPage &text)
         ruled.insert(ruled.end(), shadedSpans.begin(), shadedSpans.end());
         wTables = whitespaceTables(aw, body, ruled, budget);
         if (docXref && s.page) {
-            sc = StructWalk(docXref, s.mathDoc).page(s.page);
+            StructWalk walk(docXref, s.mathDoc);
+            sc = walk.page(s.page);
+#ifdef __GLIBC__
+            // a large walk churns big transient allocations (an object stream parsed for the
+            // page's entry, the visited set) between long-lived memo entries: give the freed
+            // pages back, or the arena keeps growing page after page
+            if (walk.visits() >= structWorkToStart) {
+                malloc_trim(0);
+            }
+#endif
         }
         std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
         for (const TextRule &r : text.getRules()) {

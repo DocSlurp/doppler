@@ -39,6 +39,7 @@
 #define XREF_H
 
 #include <array>
+#include <deque>
 #include <unordered_set>
 #include <functional>
 #include <unordered_map>
@@ -337,6 +338,11 @@ private:
     std::unordered_set<Goffset> objStrsFailed; // object streams (by offset) the unguarded reads failed to parse; constructXRef clears it
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
+    // parses objStrsGuarded and each objStrsByKind keep: past it the oldest is dropped (a later
+    // read parses it again), so reads reaching one object stream after another cannot hold every
+    // stream they parsed; keptOrder: insertion order (index 3: objStrsGuarded)
+    static constexpr size_t maxKeptGuardedObjStrs = 8;
+    std::array<std::deque<Goffset>, 4> keptOrder;
     GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
     // object streams whose guarded parse depended on where it was reached from (an object being
     // fetched up the stack, or the parser's depth limit): refused, per kind, without re-parsing
