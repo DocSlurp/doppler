@@ -358,6 +358,37 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     }
 }
 
+/// A header cell of several words wider than its column (`Temp (C)` over `18.4`) leaves a
+/// word space that no row crosses, and the gutters split it into two columns that only the
+/// header fills. A column whose only text is in the first row, a word space or less from the
+/// header text of the column beside it, is that header cell's other half: join them.
+fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
+    if t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
+        return;
+    }
+    let mut k = 0;
+    while k + 1 < t.cols.len() {
+        let only_header = |c: usize| !t.rows[0][c].is_empty() && t.rows[1..].iter().all(|r| r[c].is_empty());
+        let gap = t.cols[k + 1].0 - t.cols[k].1;
+        let both = !t.rows[0][k].is_empty() && !t.rows[0][k + 1].is_empty();
+        if both && gap < p.min_gutter * pmax(size, 1.0) && (only_header(k) || only_header(k + 1)) {
+            let right = std::mem::take(&mut t.rows[0][k + 1]);
+            t.rows[0][k] = format!("{} {}", t.rows[0][k], right);
+            for r in t.rows[1..].iter_mut() {
+                if r[k].is_empty() {
+                    r[k] = std::mem::take(&mut r[k + 1]);
+                }
+                r.remove(k + 1);
+            }
+            t.rows[0].remove(k + 1);
+            t.cols[k].1 = t.cols[k + 1].1;
+            t.cols.remove(k + 1);
+            continue;
+        }
+        k += 1;
+    }
+}
+
 /// The columns of a table whose header has a cell spanning several columns (`Headcount` over
 /// `2026 | 2027`): that cell crosses the gutter between the columns it spans, so the gutters of
 /// all rows join them. When the rows below the first one or two multi-cell rows (at least
@@ -777,7 +808,9 @@ pub fn find_tables_within(
             }
             let cols = under_spanning_header(run, gutter_columns(run, p), p);
             if cols.len() >= 2 {
-                let grid = build_grid(run, &cols, p);
+                let mut grid = build_grid(run, &cols, p);
+                let size = median(run.iter().filter(|r| r.multi).map(|r| r.size).collect());
+                join_split_header_words(&mut grid, size, p);
                 if plausible(&grid.rows, p) {
                     found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
                 }
@@ -1770,9 +1803,13 @@ pub fn ruled_tables(
                     for c in &r.cells {
                         for w in &c.words {
                             let mid = (w.x0 + w.x1) / 2.0;
+                            // a word across an inner rule (a header cell spanning columns) goes
+                            // to the first column holding a quarter of it, as a colspan is written
+                            let quarter = 0.25 * (w.x1 - w.x0);
                             let k = cols
                                 .iter()
-                                .position(|&(ca, cb)| ca - 1.0 <= mid && mid <= cb + 1.0)
+                                .position(|&(ca, cb)| quarter > 1.0 && pmin(w.x1, cb) - pmax(w.x0, ca) >= quarter)
+                                .or_else(|| cols.iter().position(|&(ca, cb)| ca - 1.0 <= mid && mid <= cb + 1.0))
                                 .unwrap_or(cols.len() - 1);
                             cells[k].push(w.clone());
                         }
