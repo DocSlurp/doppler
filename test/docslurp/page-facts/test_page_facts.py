@@ -739,6 +739,9 @@ with t.TempDir() as d:
     t.check(all(r2[n]["fonts"]["mathClasses"]["type3Bitmap"] == 250 and not trunc(r2[n]) for n in range(5, 21)), "round 2: 4,000 Type 3 fonts sharing one 20,000-entry /XObject dictionary are classed (read once)")
     t.check(not trunc(r2[21]) and r2[21]["structure"]["actualText"] == 300 and "limit-hit" not in r2[21]["parseWarnings"], "round 2: 300 one-character ActualText spans are not truncated", repr(r2[21]["structure"]))
     t.check(r2[22]["structure"]["truncated"] and trunc(r2[22]) and r2[22]["structure"]["tables"] == 0, "round 2: a RoleMap chain past 8 hops or a cycle is truncated, not 0", repr(r2[22]["structure"]))
+    t.check(trunc(r2[23]) and r2[23]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "council #51: a glyph procedure that fills the 4 KB read with no BI or Do is unknown, not a text font", repr(r2[23]["mathFlags"]))
+    t.check(r2[24]["structure"]["altText"] == 1 and r2[24]["structure"]["altTextTexLike"] == 0 and r2[24]["structure"]["truncated"] and trunc(r2[24]), "council #51: an Alt past the 4,096 scanned code units with no TeX is unknown (truncated), not 'not TeX'", repr(r2[24]["structure"]))
+    t.check(r2[25]["structure"]["formulas"] == 1 and not r2[25]["structure"]["truncated"] and not trunc(r2[25]), "council #51: 65,000 duplicate leaves cost nothing: one Formula, not truncated", repr(r2[25]["structure"]))
     t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
 
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------

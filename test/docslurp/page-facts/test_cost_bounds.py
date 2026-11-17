@@ -49,10 +49,11 @@ class Doc:
             extra += " /Filter /FlateDecode"
         return self.add(b"<< " + extra.encode("latin-1") + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
 
-    def pages(self, contents, resources="", catalog_extra=""):
+    def pages(self, contents, resources="", catalog_extra="", page_extra=""):
         """One page per content stream object number (repeats allowed); returns the PDF bytes."""
         pages = self.reserve()
-        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << %s >> >>" % (pages, c, resources)) for c in contents]
+        res = resources if isinstance(resources, list) else [resources] * len(contents)
+        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << %s >> %s >>" % (pages, c, r, page_extra)) for c, r in zip(contents, res)]
         self.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), pages)
         root = self.add("<< /Type /Catalog /Pages %d 0 R %s >>" % (pages, catalog_extra))
         out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
@@ -318,6 +319,48 @@ def hex_chain(n):
 # --- measuring ------------------------------------------------------------------------------
 
 
+def struct_shared(elements=20000, pages=1000, direct_entry=False, direct_root=False, nums=0):
+    """Tagged pages that all name parent-tree entry 0: an array of <elements> Formula element
+    references (indirect, or written directly inside /Nums); with <direct_root> the
+    StructTreeRoot and its ParentTree are direct in the catalog and /Nums also holds <nums>
+    integer entries. The structure must be resolved and the shared entry walked once per
+    document, not once per page (was 44 s for 3,600 pages of a 20,000-element entry)."""
+    d = Doc()
+    root = d.reserve()
+    els = [d.add("<< /Type /StructElem /S /Formula /P %d 0 R /K 0 >>" % root) for _ in range(elements)]
+    arr = " ".join("%d 0 R" % e for e in els)
+    entry = "[%s]" % arr if direct_entry else "%d 0 R" % d.add("[%s]" % arr)
+    extra_nums = " ".join("%d %d" % (k, k) for k in range(1, nums + 1))
+    tree = "<< /Nums [0 %s %s] >>" % (entry, extra_nums)
+    content = d.stream("/P << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (Revenue rose again) Tj ET EMC")
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    if direct_root:
+        cat = "/StructTreeRoot << /Type /StructTreeRoot /ParentTree %s >> /MarkInfo << /Marked true >>" % tree
+        d.objs.pop(root, None)
+    else:
+        d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % d.add(tree), root)
+        cat = "/StructTreeRoot %d 0 R /MarkInfo << /Marked true >>" % root
+    return d.pages([content] * pages, resources="/Font << /F1 %d 0 R >>" % font, catalog_extra=cat, page_extra="/StructParents 0")
+
+
+def shared_program(fonts=6000, pages=30):
+    """<fonts> TrueType font dictionaries sharing one FontFile2 that is 200 KB of empty stored
+    deflate blocks (decodes to nothing): the program is read once, not once a font (was +3 s)."""
+    d = Doc()
+    bomb = b"\x78\x01" + b"\x00\x00\x00\xff\xff" * 40000 + b"\x01\x00\x00\xff\xff\x00\x00\x00\x01"
+    prog = d.add(b"<< /Filter /FlateDecode /Length %d >>\nstream\n" % len(bomb) + bomb + b"\nendstream")
+    per = fonts // pages
+    contents, res = [], []
+    for pg in range(pages):
+        names = []
+        for k in range(per):
+            desc = d.add("<< /Type /FontDescriptor /FontName /Bomb%d /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % (k, prog))
+            names.append("/T%d %d 0 R" % (pg * per + k, d.add("<< /Type /Font /Subtype /TrueType /BaseFont /Bomb%d /FirstChar 32 /LastChar 126 /FontDescriptor %d 0 R >>" % (k, desc))))
+        contents.append(d.stream("".join("BT /T%d 6 Tf %d %d Td (x) Tj ET\n" % (pg * per + k, 30 + (k % 25) * 22, 760 - (k // 25) * 12) for k in range(per))))
+        res.append("/Font << %s >>" % " ".join(names))
+    return d.pages(contents, resources=res)
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -406,6 +449,22 @@ with t.TempDir() as d:
     t.check(plain and plain == withf, "pdftotext with facts: stderr unchanged", repr((plain[:200], withf[:200])))
     quiet = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", small, os.devnull], capture_output=True).stderr
     t.check(quiet == b"", "pdftotext -q: no messages")
+
+    # mathtables structure: resolved once a document, a shared parent-tree entry walked once,
+    # a direct entry longer than a page's budget not walked, a document-wide budget
+    ls = bounded("1,000 pages sharing a 20,000-element parent-tree entry", d.write("struct-shared.pdf", struct_shared()))
+    st = page(ls, 1000)["structure"]
+    t.check(st["formulas"] == 20000 and not st["truncated"], "shared parent-tree entry: every element counted on every page", repr(st))
+    ls = bounded("300 pages sharing a 300,000-reference entry", d.write("struct-big.pdf", struct_shared(elements=300000, pages=300)))
+    st = page(ls, 300)["structure"]
+    t.check(st["truncated"] and page(ls, 300)["mathBits"] >> 12 & 1, "an entry longer than a page's budget is truncated, not walked", repr(st))
+    ls = bounded("300 pages sharing a direct 20,000-element entry in a direct /Nums", d.write("struct-direct.pdf", struct_shared(pages=300, direct_entry=True)))
+    t.check(page(ls, 300)["structure"]["formulas"] == 20000, "direct parent-tree entry: counted", repr(page(ls, 300)["structure"]))
+    ls = bounded("300 pages of a direct StructTreeRoot with a 50,000-entry direct /Nums", d.write("struct-catalog.pdf", struct_shared(elements=10, pages=300, direct_entry=True, direct_root=True, nums=50000)))
+    t.check(page(ls, 300)["structure"]["formulas"] == 10, "direct StructTreeRoot and ParentTree: resolved once", repr(page(ls, 300)["structure"]))
+
+    ls = bounded("6,000 font dictionaries sharing one 200 KB empty-deflate program", d.write("shared-program.pdf", shared_program()))
+    t.check(page(ls, 1)["mathBits"] >> 12 & 1, "a program that decodes to nothing is unknown (analysis-truncated)", repr(page(ls, 1)["mathFlags"]))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))
