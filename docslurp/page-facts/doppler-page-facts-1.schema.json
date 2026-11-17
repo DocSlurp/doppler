@@ -13,7 +13,15 @@
     "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
     "points": { "type": "number", "minimum": -1000000000, "maximum": 1000000000 },
     "box": { "type": "array", "items": { "$ref": "#/$defs/points" }, "minItems": 4, "maxItems": 4 },
-    "family": { "enum": ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure"] },
+    "family": { "enum": ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure", "mathtables"] },
+    "mathFlag": {
+      "description": "mathFlags vocabulary, in mathBits bit order (bit 0 first). The order is an API: names are appended, never moved.",
+      "enum": ["text-math", "stacked-math", "actualtext-tex", "alt-tex", "mathml", "raster-strips", "glyph-outlines", "type3-bitmap-font", "math-font-no-unicode", "plain-unicode-math", "formula-struct", "math-matrix", "analysis-truncated"]
+    },
+    "tableFlag": {
+      "description": "tableFlags vocabulary, in tableBits bit order (bit 0 first). The order is an API: names are appended, never moved.",
+      "enum": ["rule-grid", "hrule-open", "booktabs", "whitespace", "shaded-rows", "tagged-table", "raster-table-like", "outlined-text-grid", "math-grid", "analysis-truncated"]
+    },
     "untrustedString": {
       "description": "A string from the document (producer, creator): untrusted and informational only, at most 128 code points, control characters dropped, never used to derive another field. ASCII on the wire (\\uXXXX escapes, < > & always escaped).",
       "type": "string",
@@ -51,7 +59,7 @@
         "schema": { "const": "doppler-page-facts/1" },
         "type": { "const": "doc" },
         "level": { "enum": ["basic", "full"] },
-        "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 8, "uniqueItems": true },
+        "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 9, "uniqueItems": true },
         "scanThresholds": {
           "description": "Present only when a scan threshold is not its default (minCoverage 0.85, maxVisibleWords 20, layerOverlap 0.5): the thresholds every page's scan verdict used.",
           "type": "object",
@@ -81,6 +89,7 @@
         "markedContent": { "type": "boolean" },
         "lang": { "type": "string", "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8}){0,4}$" },
         "outlineCount": { "$ref": "#/$defs/count" },
+        "mathmlFiles": { "$ref": "#/$defs/count", "description": "structure and mathtables: files the catalog's /AF associates with the whole document that are MathML (an embedded file whose /Subtype is application/mathml+xml, or without a /Subtype whose first 2 KB name the MathML namespace; at most 16 entries read). Added within /1." },
         "pageLabels": { "type": "boolean" },
         "embeddedFiles": { "$ref": "#/$defs/count" },
         "javascript": { "type": "boolean" },
@@ -138,7 +147,16 @@
             "verticalCharRatio": { "$ref": "#/$defs/ratio" },
             "rotatedTextRatio": { "$ref": "#/$defs/ratio" },
             "textOverImageRatio": { "$ref": "#/$defs/ratio" },
-            "invisibleOverFullPageImage": { "type": "boolean" }
+            "invisibleOverFullPageImage": { "type": "boolean" },
+            "unicodeMath": {
+              "description": "oddtext and mathtables: characters by Unicode math block (greek U+0370-03FF, 1F00-1FFF; scripts U+00B2, 00B3, 00B9, 2070-209F; operators U+2200-22FF, 2A00-2AFF, 27C0-27EF, 2980-29FF; mathAlphanumeric U+1D400-1D7FF; arrows U+2190-21FF, 27F0-27FF, 2900-297F; letterlike U+2100-214F), and plainRatio: those drawn by fonts not classed math (fonts.mathClasses text or type3Bitmap excepted: text only) over all characters. Added within /1.",
+              "type": "object",
+              "required": ["greek", "scripts", "operators", "mathAlphanumeric", "arrows", "letterlike", "plainRatio"],
+              "properties": {
+                "greek": { "$ref": "#/$defs/count" }, "scripts": { "$ref": "#/$defs/count" }, "operators": { "$ref": "#/$defs/count" }, "mathAlphanumeric": { "$ref": "#/$defs/count" },
+                "arrows": { "$ref": "#/$defs/count" }, "letterlike": { "$ref": "#/$defs/count" }, "plainRatio": { "$ref": "#/$defs/ratio" }
+              }
+            }
           }
         },
         "fonts": {
@@ -154,7 +172,16 @@
             "glyphCount": { "$ref": "#/$defs/count" },
             "unmappedGlyphRatio": { "$ref": "#/$defs/ratio" },
             "ocrFontHint": { "type": "boolean" },
-            "truncated": { "type": "boolean" }
+            "truncated": { "type": "boolean" },
+            "mathClasses": {
+              "description": "fonts and mathtables: glyphs drawn (mapped or not) by font class, a fixed vocabulary (never a font name): texType1 (TeX math Type 1 families: CM and LM math, AMS, Euler, RSFS, newtx, txfonts, pxfonts, mathptmx, mathpazo), otfMath (an embedded OpenType program whose table directory lists MATH, or a name with the word Math when the program has no readable directory), officeMath (Cambria Math, OpenSymbol), webMath (KaTeX_, MathJax, MJX), symbol (Symbol, StandardSymbol, MathType's), type3Bitmap (a Type 3 font most of whose first 8 glyph procedures paint image masks), text (everything else, TeX text faces included). Glyphs of fonts past the 256-font cap are not counted. Added within /1.",
+              "type": "object",
+              "required": ["texType1", "otfMath", "officeMath", "webMath", "symbol", "type3Bitmap", "text"],
+              "properties": {
+                "texType1": { "$ref": "#/$defs/count" }, "otfMath": { "$ref": "#/$defs/count" }, "officeMath": { "$ref": "#/$defs/count" }, "webMath": { "$ref": "#/$defs/count" },
+                "symbol": { "$ref": "#/$defs/count" }, "type3Bitmap": { "$ref": "#/$defs/count" }, "text": { "$ref": "#/$defs/count" }
+              }
+            }
           }
         },
         "images": {
@@ -195,11 +222,14 @@
                   "invisibleWordsInside": { "$ref": "#/$defs/count", "description": "Invisible words (render mode 3, or clipped) inside this image's box: an OCR layer over a scan. Added within /1: absent from earlier builds." },
                   "visibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Visible text-layer words whose box centre lies inside this image's box (within 1 point): a caption line straddling the image's edge counts when its centre is inside. Added within /1 (issue 43): absent from earlier builds." },
                   "invisibleWordsCentredInside": { "$ref": "#/$defs/count", "description": "Invisible words whose box centre lies inside this image's box (within 1 point), as visibleWordsCentredInside. Added within /1 (issue 43): absent from earlier builds." },
-                  "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's declared /Length over px width x height, only when that /Length is the file's own non-negative integer and ends at endstream; never decoded. Absent otherwise, for inline images, external (/F) data and earlier builds." }
+                  "bytesPerPixel": { "type": "number", "minimum": 0, "maximum": 1000000000, "description": "The stream's declared /Length over px width x height, only when that /Length is the file's own non-negative integer and ends at endstream; never decoded. Absent otherwise, for inline images, external (/F) data and earlier builds." },
+                  "stripLike": { "type": "boolean", "description": "mathtables: a formula-strip shape: 8 to 100 points tall, at least 1.6 times as wide as tall, under 6% of the page and at most 85% of its width. Added within /1." },
+                  "inTextFlow": { "type": "boolean", "description": "mathtables: a visible word's vertical extent overlaps the image's grown by 1.5 body sizes above and below (true on a page with no visible words). Added within /1." }
                 }
               }
             },
             "itemsTruncated": { "type": "boolean" },
+            "mathStrips": { "$ref": "#/$defs/count", "description": "mathtables: images (all, not only the 32 listed) that are stripLike and inTextFlow on a page with at least 10 visible characters, except table-like images (tableBits raster-table-like: at least 60 points tall, lossless, few bytes a pixel). Added within /1." },
             "truncated": { "type": "boolean" }
           }
         },
@@ -250,9 +280,64 @@
             },
             "gridsTruncated": { "type": "boolean", "description": "The list may be incomplete: more than 64 grids, the search's rule (4,096 a direction) or work cap, the page's rule cap, a word size outside the body-size bins, or (with every grid's hRules, vRules, outerSides and connected, and unlistedRuledGrids, then absent) more than 5,000 non-box rules on the page, a non-box rule past the run's rule budget, a cross-reference table rebuilt after open, a thin rule not finite or centred past 10^9 points, more than 4,096 thin rules a direction or 2^20 thin-rule visits." },
             "unlistedRuledGrids": { "$ref": "#/$defs/count", "description": "Connected sets of thin rules with at least 2 distinct horizontal and 3 vertical lines (the layout walker's ruled grids) that no counted grid (connected true) stands for: a ruled table the grid list misses or splits. A reader that wants the walker's grids has them only when gridsTruncated is false, this is 0 and every grid has hRules. Added within /1 (issue 43): absent from earlier builds and when the thin-rule search is incomplete." },
+            "glyphOutlineClusters": { "$ref": "#/$defs/count", "description": "mathtables: drawing clusters (all, not only the 32 listed) at most 120 points a side with at least 6 curves and 4 curves a path, in the text flow (as images' inTextFlow): formulas drawn as glyph outlines. Added within /1." },
+            "ruleTables": {
+              "description": "mathtables: tables ruled only horizontally, at most 64, top to bottom. A run of at least two horizontal rules (dark, at most 3 points thick, at least 3 body sizes long) of one span (ends within max(2 points, 2% of the width)) with words between each pair; the words share at least one column gutter (at least 0.8 body sizes wide, words on both sides in two rows), make at least two text rows, are not prose (at most 5 words a cell on average, at most 20% of cells over 6 words) and no vertical rule crosses the run. A band whose words close every shared gutter ends the run; a failing run is tried once without its first band. style booktabs: two rules, or three or more whose first and last are at least 1.25 times as thick as the thickest inner one; open otherwise. Lined paper, form lines, a rule under a heading and footnote rules are not tables (one column, no words between, or one rule). Added within /1.",
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "required": ["bbox", "rows", "columns", "hRules", "style"],
+                "properties": {
+                  "bbox": { "$ref": "#/$defs/box" }, "rows": { "type": "integer", "minimum": 2 }, "columns": { "type": "integer", "minimum": 2 }, "hRules": { "type": "integer", "minimum": 2 },
+                  "style": { "enum": ["booktabs", "open"] }
+                }
+              }
+            },
+            "ruleTablesTruncated": { "type": "boolean", "description": "mathtables: more than 64 rule tables, more than 4,096 rules a direction, or the page's analysis budget ran out. Added within /1." },
             "limitHit": { "type": "boolean" }
           }
         },
+        "structure": {
+          "description": "structure and mathtables: the page's tagged structure: the elements its marked content belongs to (the parent tree's entry for the page's /StructParents) and all their ancestors, each counted once, RoleMap (8 hops) and a namespace's RoleMapNS applied; at most 65,536 objects visited a page (truncated). Added within /1.",
+          "type": "object",
+          "required": ["formulas", "tables", "tableRows", "tableCells", "spannedCells", "mathml", "mathmlFiles", "altText", "altTextTexLike", "actualText", "actualTextTexLike", "markedActualText", "markedActualTextTexLike", "truncated", "unknown"],
+          "properties": {
+            "formulas": { "$ref": "#/$defs/count" }, "tables": { "$ref": "#/$defs/count" }, "tableRows": { "$ref": "#/$defs/count" }, "tableCells": { "$ref": "#/$defs/count", "description": "TD and TH" },
+            "spannedCells": { "$ref": "#/$defs/count", "description": "cells whose attributes set RowSpan or ColSpan above 1" },
+            "mathml": { "$ref": "#/$defs/count", "description": "elements in the MathML namespace" },
+            "mathmlFiles": { "$ref": "#/$defs/count", "description": "MathML files the elements' /AF and the page's /AF associate (as the doc line's mathmlFiles)" },
+            "altText": { "$ref": "#/$defs/count" }, "altTextTexLike": { "$ref": "#/$defs/count", "description": "Alt holding a backslash command or ^{ / _{ in its first 4,096 code units" },
+            "actualText": { "$ref": "#/$defs/count", "description": "elements with /ActualText plus marked-content /ActualText spans on the page" },
+            "actualTextTexLike": { "$ref": "#/$defs/count" },
+            "markedActualText": { "$ref": "#/$defs/count", "description": "marked-content /ActualText spans alone" },
+            "markedActualTextTexLike": { "$ref": "#/$defs/count" },
+            "truncated": { "type": "boolean", "description": "a cap or budget was hit: the counts are lower bounds" },
+            "unknown": { "type": "boolean", "description": "part of the page's structure could not be read (a parent-tree entry the page names is missing, an element is not a dictionary, an associated file cannot be read or the document's 4 MB sniff budget is spent): the counts are not a definite 0" }
+          }
+        },
+        "mathRegions": {
+          "description": "full: math regions, top to bottom, at most 64: text (math-font words merged while within 1.5 heights across and 0.35 down), outline (glyphOutlineClusters) and raster (mathStrips). Added within /1.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "object", "required": ["kind", "bbox"], "properties": { "kind": { "enum": ["text", "outline", "raster"] }, "bbox": { "$ref": "#/$defs/box" } } }
+        },
+        "mathRegionsTruncated": { "type": "boolean" },
+        "mathLayout": {
+          "description": "full: readableGlyphs (math-font characters with a Unicode value), unreadableGlyphs (math-font glyphs unmapped or private use), stackedRegions (text regions with a fraction bar or two math glyph pairs 0.3-1.6 em apart vertically within 0.35 em across), fractionBars, matrixRegions (two rows with the same number, at least 2, of aligned cells). Added within /1.",
+          "type": "object",
+          "properties": { "readableGlyphs": { "$ref": "#/$defs/count" }, "unreadableGlyphs": { "$ref": "#/$defs/count" }, "stackedRegions": { "$ref": "#/$defs/count" }, "fractionBars": { "$ref": "#/$defs/count" }, "matrixRegions": { "$ref": "#/$defs/count" } }
+        },
+        "tableLayout": {
+          "description": "full: ruledGrids (grids with rows of words in cells and column lines), whitespaceTables, shadedRowTables, rasterTableLike, outlinedTextGrids, mathGrids (grids and tables whose words are mostly math-font words, plus matrixRegions). Added within /1.",
+          "type": "object",
+          "properties": { "ruledGrids": { "$ref": "#/$defs/count" }, "whitespaceTables": { "$ref": "#/$defs/count" }, "shadedRowTables": { "$ref": "#/$defs/count" }, "rasterTableLike": { "$ref": "#/$defs/count" }, "outlinedTextGrids": { "$ref": "#/$defs/count" }, "mathGrids": { "$ref": "#/$defs/count" } }
+        },
+        "mathFlags": { "type": "array", "items": { "$ref": "#/$defs/mathFlag" }, "uniqueItems": true, "maxItems": 32, "description": "full: mathBits as names, in bit order" },
+        "tableFlags": { "type": "array", "items": { "$ref": "#/$defs/tableFlag" }, "uniqueItems": true, "maxItems": 32, "description": "full: tableBits as names, in bit order" },
+        "mathBits": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "mathtables (any level): one bit per math encoding the router tells apart; bit i is the i-th mathFlag name (README, bit layout). Added within /1." },
+        "tableBits": { "type": "integer", "minimum": 0, "maximum": 4294967295, "description": "mathtables (any level): one bit per table encoding; bit i is the i-th tableFlag name. Added within /1." },
+        "encodingCounts": { "type": "integer", "minimum": 0, "maximum": 4503599627370495, "description": "mathtables (any level): 13 four-bit log2 buckets (0 for 0, else floor(log2 n) + 1, at most 15), nibble i at bits 4i..4i+3, 52 bits so a double holds it exactly. README, bit layout. Added within /1." },
         "forms": {
           "type": "object",
           "required": ["fields", "text", "checkbox", "radio", "choice", "signature", "pushButton", "filled", "empty", "valueAppearanceMismatch", "signed", "unsigned", "truncated"],

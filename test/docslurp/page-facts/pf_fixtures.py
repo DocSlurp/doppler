@@ -1078,6 +1078,326 @@ def facts_only_read_pdf():
     return _classic(objs, [1, 2, 3, 4, 5, 6, 10, 11], 12, tail_objs=[(11, _content(b"Bravo"))])
 
 
+# --- mathtables: math and table encodings -------------------------------------------
+
+
+def _row(y, cells, font="F1", size=10):
+    return "".join("BT /%s %d Tf %d %d Td (%s) Tj ET\n" % (font, size, x, y, t) for x, t in cells)
+
+
+def _prose(y, lines=3):
+    return "".join("BT /F1 10 Tf 72 %d Td (The quarterly report shows revenue rising across every region again.) Tj ET\n" % (y - 12 * k) for k in range(lines))
+
+
+def math_tables_pdf():
+    """One encoding a page (mathtables family):
+    1 booktabs table (heavier top and bottom rules), a heading rule and a footnote rule;
+    2 an open table (equal rules between every row);
+    3 lined paper and form lines (no table);
+    4 a whitespace-aligned table (no rules) under prose;
+    5 shaded rows without rules;
+    6 a raster formula strip in the text flow, a photo, a lossless low-bytes table-like image;
+    7 a Type 3 font whose glyph procedures paint inline image masks;
+    8 tagged structure: Formula (TeX alt, MathML file), role-mapped Table/TR/TD with ColSpan 2,
+      MathML-namespace elements, marked-content ActualText holding TeX;
+    9 math-font classes, plain Unicode math in Helvetica, a fraction and a 2x2 matrix in CMMI10;
+    10 a glyph-outline formula (a small curve-dense path) in the text flow."""
+    cols = (80, 200, 320)
+    booktabs = (
+        _prose(740)
+        + "BT /F1 12 Tf 72 690 Td (Results) Tj ET\n0.5 w 72 684 m 300 684 l S\n"
+        + "0.8 w 72 650 m 400 650 l S\n"
+        + _row(638, zip(cols, ("Method", "Score", "Time")))
+        + "0.5 w 72 630 m 400 630 l S\n"
+        + "".join(_row(618 - 14 * k, zip(cols, (name, "91.%d" % k, "1%d" % k))) for k, name in enumerate(("Alpha", "Bravo", "Charlie")))
+        + "0.8 w 72 572 m 400 572 l S\n"
+        + "0.4 w 72 120 m 160 120 l S\nBT /F1 8 Tf 72 110 Td (1 Footnote text under a short rule.) Tj ET\n"
+    )
+    open_table = _prose(740) + "".join("0.5 w 72 %d m 400 %d l S\n" % (y, y) for y in (660, 646, 632, 618, 604)) + "".join(_row(650 - 14 * k, zip(cols, ("Row%d" % k, "%d.5" % k, "x%d" % k))) for k in range(4))
+    lined = "".join("0.5 w 72 %d m 540 %d l S\n" % (y, y) for y in range(700, 412, -24))
+    lined += "".join("BT /F1 10 Tf 76 %d Td (Notes written on this line today about the plan) Tj ET\n" % (y + 4) for y in range(700, 412, -48))
+    lined += "".join("BT /F1 10 Tf 72 %d Td (Name) Tj ET 0.5 w 120 %d m 300 %d l S BT /F1 10 Tf 320 %d Td (Date) Tj ET 360 %d m 500 %d l S\n" % (y, y, y, y, y, y) for y in (300, 276, 252))
+    whitespace = _prose(740) + "".join(_row(660 - 14 * k, zip(cols, (name, "%d.%d" % (k, k), "Yes" if k % 2 else "No"))) for k, name in enumerate(("Lisbon", "Oslo", "Vienna", "Dublin", "Prague")))
+    shaded = _prose(740) + "".join("0.85 g 72 %d 400 14 re f 0 g\n" % (y - 3) + _row(y, zip(cols, ("Item%d" % k, "%d" % (10 * k), "ok"))) for k, y in enumerate((660, 632, 604, 576)))
+    raster = (
+        _prose(700, 2)
+        + "q 200 0 0 30 150 640 cm /Im1 Do Q\n"
+        + _prose(628, 2)
+        + "q 150 0 0 150 72 380 cm /Im2 Do Q\n"
+        + _prose(370, 2)
+        + "q 300 0 0 200 72 120 cm /Im3 Do Q\n"
+        + _prose(110, 1)
+    )
+    type3 = "BT /T3 12 Tf 72 700 Td (abab abba baba) Tj ET\n" + _prose(680)
+    tagged = (
+        "/Formula << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (a/b) Tj ET EMC\n"
+        "/TD << /MCID 1 >> BDC BT /F1 12 Tf 72 680 Td (cell) Tj ET EMC\n"
+        "/Span << /MCID 2 >> BDC BT /F1 12 Tf 72 660 Td (x) Tj ET EMC\n"
+        "/Span << /ActualText (x^{n}) >> BDC BT /F1 12 Tf 72 640 Td (xn) Tj ET EMC\n"
+    )
+    fonts = (
+        _prose(740)
+        + _row(700, ((72, "a"),), "M1")
+        + _row(700, ((100, "x"),), "M2")
+        + _row(700, ((130, "x"),), "M3")
+        + _row(700, ((160, "a"),), "M4")
+        + _row(700, ((190, "x"),), "M5")
+        + "BT /U1 10 Tf 72 660 Td <010203040506> Tj ET\n"
+        # a fraction: a over a bar over b
+        + _row(620, ((300, "a"),), "M1")
+        + "0.5 w 299 616 m 309 616 l S\n"
+        + _row(606, ((301, "b"),), "M1")
+        # a 2x2 matrix
+        + _row(560, ((300, "a"), (315, "b")), "M1")
+        + _row(548, ((300, "c"), (315, "d")), "M1")
+    )
+    outline = _prose(700, 2) + "q 300 676 m 302 684 304 684 306 676 c 308 668 310 668 312 676 c 314 684 316 684 318 676 c 320 668 322 668 324 676 c 326 684 328 684 330 676 c 332 668 334 668 336 676 c 338 684 340 684 342 676 c 344 668 346 668 348 676 c f Q\n" + _prose(664, 2)
+    mask_proc = "600 0 0 0 500 500 d1 q 500 0 0 500 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID \x00\x18\x3c\x7e\x7e\x3c\x18\x00 EI Q"
+    t3 = (
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {0} 0 R /b {1} 0 R >>"
+        " /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>"
+    )
+    # a TrueType program that is only a table directory with a MATH entry (never drawn: page facts read the directory)
+    sfnt = b"\x00\x01\x00\x00\x00\x02\x00\x20\x00\x01\x00\x00" + b"MATH" + b"\x00" * 12 + b"cmap" + b"\x00" * 12
+    extras = [
+        stream("", mask_proc),  # 0
+        stream("", mask_proc.replace("a", "a")),  # 1
+        t3,  # 2
+        image(None, 800, 120, "/DeviceGray", 8),  # 3 strip
+        image("/DCTDecode", 1200, 1200),  # 4 photo
+        stream("/Type /XObject /Subtype /Image /Width 1200 /Height 800 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode", b"x" * 400),  # 5 table-like
+        "<< /Type /StructTreeRoot /K {7} 0 R /ParentTree {16} 0 R /RoleMap << /MyTable /Table >> >>",  # 6
+        "<< /Type /StructElem /S /Document /P {6} 0 R /K [{8} 0 R {9} 0 R {14} 0 R] >>",  # 7
+        "<< /Type /StructElem /S /Formula /P {7} 0 R /Pg {P7} 0 R /K 0 /Alt (\\\\frac{a}{b}) /AF [{17} 0 R] >>",  # 8
+        "<< /Type /StructElem /S /MyTable /P {7} 0 R /K {10} 0 R >>",  # 9
+        "<< /Type /StructElem /S /TR /P {9} 0 R /K {11} 0 R >>",  # 10
+        "<< /Type /StructElem /S /TD /P {10} 0 R /Pg {P7} 0 R /K 1 /A << /O /Table /ColSpan 2 >> >>",  # 11
+        "<< /Type /Namespace /NS (http://www.w3.org/1998/Math/MathML) >>",  # 12
+        "<< /Type /StructElem /S /mi /NS {12} 0 R /P {14} 0 R /Pg {P7} 0 R /K 2 >>",  # 13
+        "<< /Type /StructElem /S /math /NS {12} 0 R /P {7} 0 R /K {13} 0 R >>",  # 14
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /Differences [1 /alpha /summation /twosuperior /minus /arrowright /integral] >> >>",  # 15
+        "<< /Nums [0 [{8} 0 R {11} 0 R {13} 0 R]] >>",  # 16
+        "<< /Type /Filespec /F (f.mml) /UF (f.mml) /EF << /F {18} 0 R >> /AFRelationship /Supplement >>",  # 17
+        stream("/Type /EmbeddedFile /Subtype /application#2Fmathml+xml", "<math/>"),  # 18
+        "<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",  # 19
+        "<< /Type /Font /Subtype /Type1 /BaseFont /KaTeX_Math-Italic >>",  # 20
+        "<< /Type /Font /Subtype /TrueType /BaseFont /CambriaMath >>",  # 21
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>",  # 22
+        "<< /Type /Font /Subtype /TrueType /BaseFont /ABCDEF+PlainFace /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor {24} 0 R >>" % " ".join(["500"] * 95),  # 23
+        "<< /Type /FontDescriptor /FontName /ABCDEF+PlainFace /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 {25} 0 R >>",  # 24
+        t.stream("", sfnt).decode("latin-1"),  # 25
+        "<< /Type /Font /Subtype /Type1 /BaseFont /STIXTwoMath-Regular >>",  # 26
+    ]
+    font_res = "<< /Font << /F1 3 0 R /M1 {19} 0 R /M2 {20} 0 R /M3 {21} 0 R /M4 {22} 0 R /M5 {26} 0 R /M6 {23} 0 R /U1 {15} 0 R >> >>"
+    fonts += _row(700, ((220, "x"),), "M6")
+    return doc(
+        [
+            {"content": booktabs},
+            {"content": open_table},
+            {"content": lined},
+            {"content": whitespace},
+            {"content": shaded},
+            {"content": raster, "resources": "<< /Font << /F1 3 0 R >> /XObject << /Im1 {3} 0 R /Im2 {4} 0 R /Im3 {5} 0 R >> >>"},
+            {"content": type3, "resources": "<< /Font << /F1 3 0 R /T3 {2} 0 R >> >>"},
+            {"content": tagged, "extra": "/StructParents 0"},
+            {"content": fonts, "resources": font_res},
+            {"content": outline},
+        ],
+        extras=extras,
+        catalog_extra="/StructTreeRoot {6} 0 R /MarkInfo << /Marked true >>",
+    )
+
+
+def math_tables_hostile_pdf():
+    """Hostile inputs for the mathtables reads, each bounded: a parent tree whose Kids name
+    themselves and an element whose /P chain is a cycle (page 1); a flat parent tree of 200,000
+    pairs (page 2, key 199,999); a Type 3 font with 20,000 glyph procedures, an embedded program
+    whose table directory claims 65,535 tables, and 3,000 thin rules with words (page 3); 4,000
+    math-font glyphs stacked in one column, every pair a stacked candidate (page 4: the analysis
+    budget runs out, analysis-truncated)."""
+    nums = " ".join("%d [{3} 0 R]" % k for k in range(200000))
+    procs = " ".join("/g%d {6} 0 R" % k for k in range(20000))
+    rules = "".join("0.5 w 72 %d m 540 %d l S\n" % (100 + k % 600, 100 + k % 600) for k in range(3000))
+    sfnt = b"\x00\x01\x00\x00\xff\xff\x00\x20\x00\x01\x00\x00" + b"cmap" + b"\x00" * 12
+    extras = [
+        "<< /Type /StructTreeRoot /K {2} 0 R /ParentTree {1} 0 R >>",  # 0
+        "<< /Kids [{1} 0 R {4} 0 R {5} 0 R] /Limits [0 199999] >>",  # 1: names itself
+        "<< /Type /StructElem /S /Formula /P {3} 0 R /K 0 >>",  # 2
+        "<< /Type /StructElem /S /Table /P {2} 0 R /K 0 >>",  # 3: P cycle with 2
+        "<< /Kids [{1} 0 R] /Limits [0 5] >>",  # 4: back to 1
+        "<< /Limits [0 199999] /Nums [%s] >>" % nums,  # 5
+        stream("", "600 0 0 0 500 500 d1 0 0 500 500 re f"),  # 6
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << %s >> /Encoding << /Type /Encoding /Differences [97 /g0 /g1] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>" % procs,  # 7
+        "<< /Type /Font /Subtype /TrueType /BaseFont /HostileMath /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor {9} 0 R >>" % " ".join(["500"] * 95),  # 8
+        "<< /Type /FontDescriptor /FontName /HostileMath /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 {10} 0 R >>",  # 9
+        t.stream("", sfnt).decode("latin-1"),  # 10
+        "<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",  # 11
+    ]
+    column = "".join("BT /M1 2 Tf 300 %.1f Td (a) Tj ET\n" % (60 + 0.17 * k) for k in range(4000))
+    return doc(
+        [
+            {"content": "/P << /MCID 0 >> BDC " + words(10) + " EMC\n", "extra": "/StructParents 0"},
+            {"content": words(10), "extra": "/StructParents 199999"},
+            {"content": rules + words(400, 700) + "BT /T3 10 Tf 72 60 Td (abab) Tj ET BT /H1 10 Tf 72 40 Td (xyz) Tj ET\n", "resources": "<< /Font << /F1 3 0 R /T3 {7} 0 R /H1 {8} 0 R >> >>"},
+            {"content": column, "resources": "<< /Font << /F1 3 0 R /M1 {11} 0 R >> >>"},
+        ],
+        extras=extras,
+        catalog_extra="/StructTreeRoot {0} 0 R",
+    )
+
+
+def _empty_deflate(n_blocks):
+    """A zlib stream of empty stored blocks: decodes to nothing, costs a full inflate."""
+    return b"\x78\x01" + b"\x00\x00\x00\xff\xff" * n_blocks + b"\x01\x00\x00\xff\xff" + b"\x00\x00\x00\x01"
+
+
+def math_tables_council_pdf():
+    """Council negative cases for the mathtables reads (each must stay bounded):
+    1 50,000 Formula elements sharing one 1 MB Alt string and one /AF array whose file is an
+      untyped stream of empty stored deflate blocks (2 MB encoded, decodes to nothing);
+    2 3,000 Tf of an inline (direct) Type 3 font whose glyph procedures are such streams, a form
+      with its own inline Type 3 font drawn 2,000 times, and a TrueType program that is one.
+    Objects are numbered directly (doc()'s placeholders would be quadratic in 50,000 objects)."""
+    big = _empty_deflate(400000)
+    elems = 50000
+    # 1 catalog, 2 pages, 3 Helvetica, 4/5 page 1, 6/7 page 2, then:
+    root, docel, ptree, leaves, alt, afarr, spec, efile, empty, form = range(8, 18)
+    first = 18
+    t3 = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R /b %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>" % (empty, empty)
+    tt = "<< /Type /Font /Subtype /TrueType /BaseFont /EmptyBlocks /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor << /Type /FontDescriptor /FontName /EmptyBlocks /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >> >>" % (" ".join(["500"] * 95), empty)
+    page2 = "".join("BT /T3 10 Tf %d %d Td (ab) Tj ET\n" % (72 + (k % 40) * 12, 700 - (k // 40) * 8) for k in range(3000))
+    page2 += "q /Fm Do Q\n" * 2000 + "BT /TT 10 Tf 72 40 Td (xyz) Tj ET\n"
+    page1 = "/P << /MCID 0 >> BDC " + words(10) + " EMC\n"
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot %d 0 R >>" % root,
+        "<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>",
+        HELV,
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R /StructParents 0 >>",
+        t.stream("", page1),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /T3 %s /TT %s >> /XObject << /Fm %d 0 R >> >> /Contents 7 0 R >>" % (t3, tt, form),
+        t.stream("", page2),
+        "<< /Type /StructTreeRoot /K %d 0 R /ParentTree %d 0 R >>" % (docel, ptree),
+        "<< /Type /StructElem /S /Document /P %d 0 R >>" % root,
+        "<< /Nums [0 %d 0 R] >>" % leaves,
+        "[%s]" % " ".join("%d 0 R" % (first + k) for k in range(elems)),
+        "(\\\\frac{a}{b} %s)" % ("x" * (1 << 20)),
+        "[%d 0 R]" % spec,
+        "<< /Type /Filespec /F (f.bin) /EF << /F %d 0 R >> >>" % efile,
+        t.stream("/Type /EmbeddedFile /Filter /FlateDecode", big),
+        t.stream("/Filter /FlateDecode", big),
+        t.stream("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /Font << /T4 << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [600] /Resources << >> >> >> >>" % empty, "BT /T4 10 Tf 0 0 Td (a) Tj ET"),
+    ]
+    assert len(objs) == first - 1
+    objs += ["<< /Type /StructElem /S /Formula /P %d 0 R /K 0 /Alt %d 0 R /AF %d 0 R >>" % (docel, alt, afarr)] * elems
+    return t.build_pdf(objs)
+
+def math_tables_round2_pdf():
+    """Council round 2 negative cases for the mathtables reads, one a page (objects numbered
+    directly; doc()'s placeholders are quadratic in thousands of objects):
+    1 Formula elements whose /AF file specification's /EF /F is the specification itself, a
+      30,000-long chain of specifications, and /AF nested 30,000 arrays deep (no recursion);
+    2 a form drawn with CMMI10 and q/Q around a CMMI10 run, then Helvetica body text: the class
+      follows the graphics state (the body is text);
+    3 300 embedded TrueType fonts (honest heads): no font-class budget is hit;
+    4 a Type 3 font whose glyph procedure's deflate stream is cut inside BI, and a TrueType
+      program that is corrupt deflate: unknown (analysis-truncated), never a definite class;
+    5-20 4,000 Type 3 fonts (250 a page) sharing one 20,000-entry /XObject dictionary through
+      procedures that run Do: the dictionary is read once;
+    21 300 one-character /ActualText spans (ligatures): not truncated;
+    22 a RoleMap chain of 12 hops and a two-type cycle: structure truncated, not 0."""
+    import zlib
+
+    objs = {}
+    nxt = [100]
+
+    def new(body):
+        n = nxt[0]
+        nxt[0] += 1
+        objs[n] = body
+        return n
+
+    helv = new(HELV)
+    pages = []
+
+    def page(content, res="", extra=""):
+        c = new(t.stream("", content).decode("latin-1"))
+        pages.append((c, res, extra))
+
+    # 1 /AF self-cycle, long chain, deep nesting
+    selfspec = nxt[0]
+    new("<< /Type /Filespec /EF << /F %d 0 R >> >>" % selfspec)
+    chain0 = nxt[0]
+    for k in range(30000):
+        new("<< /Type /Filespec /EF << /F %d 0 R >> >>" % (chain0 + k + 1))
+    new("<< >>")
+    deep = "[" * 30000 + "]" * 30000
+    root = new(None)
+    docel = new(None)
+    ptree = new(None)
+    f1 = new(None)
+    f2 = new(None)
+    f3 = new(None)
+    objs[f1] = "<< /Type /StructElem /S /Formula /P %d 0 R /K 0 /AF [%d 0 R] >>" % (docel, selfspec)
+    objs[f2] = "<< /Type /StructElem /S /Formula /P %d 0 R /K 1 /AF [%d 0 R] >>" % (docel, chain0)
+    objs[f3] = "<< /Type /StructElem /S /Formula /P %d 0 R /K 2 /AF %s >>" % (docel, deep)
+    # 22: RoleMap chains
+    r1 = new(None)
+    r2 = new(None)
+    objs[r1] = "<< /Type /StructElem /S /A0 /P %d 0 R /K 0 >>" % docel
+    objs[r2] = "<< /Type /StructElem /S /X /P %d 0 R /K 1 >>" % docel
+    rolemap = " ".join("/A%d /A%d" % (k, k + 1) for k in range(12)) + " /A12 /Table /X /Y /Y /X"
+    objs[root] = "<< /Type /StructTreeRoot /K %d 0 R /ParentTree %d 0 R /RoleMap << %s >> >>" % (docel, ptree, rolemap)
+    objs[docel] = "<< /Type /StructElem /S /Document /P %d 0 R >>" % root
+    objs[ptree] = "<< /Nums [0 [%d 0 R %d 0 R %d 0 R] 1 [%d 0 R %d 0 R]] >>" % (f1, f2, f3, r1, r2)
+    page("/P << /MCID 0 >> BDC " + words(10) + " EMC\n", extra="/StructParents 0")
+    # 2 form and q/Q
+    cmmi = new("<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>")
+    form = new(t.stream("/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /Font << /M1 %d 0 R >> >>" % cmmi, "BT /M1 10 Tf 72 700 Td (abc) Tj ET").decode("latin-1"))
+    page("q /Fm Do Q\nBT /F1 10 Tf ET q BT /M1 10 Tf 72 650 Td (xy) Tj ET Q\nBT /F1 10 Tf 72 600 Td (body) Tj ET\n", res="/XObject << /Fm %d 0 R >> /Font << /F1 %d 0 R /M1 %d 0 R >>" % (form, helv, cmmi))
+    # 3 300 honest embedded TrueType fonts
+    sfnt = b"\x00\x01\x00\x00\x00\x02\x00\x20\x00\x01\x00\x00" + b"cmap" + b"\x00" * 12 + b"glyf" + b"\x00" * 12 + b"\x00" * 3000
+    prog = new(t.stream("", sfnt, compress=True).decode("latin-1"))
+    fonts = []
+    for k in range(300):
+        desc = new("<< /Type /FontDescriptor /FontName /Face%d /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % (k, prog))
+        fonts.append(new("<< /Type /Font /Subtype /TrueType /BaseFont /Face%d /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor %d 0 R >>" % (k, " ".join(["500"] * 95), desc)))
+    page("".join("BT /T%d 8 Tf %d %d Td (ok) Tj ET\n" % (k, 40 + (k % 20) * 27, 760 - (k // 20) * 20) for k in range(300)), res="/Font << %s >>" % " ".join("/T%d %d 0 R" % (k, f) for k, f in enumerate(fonts)))
+    # 4 cut and corrupt deflate heads
+    proc = b"600 0 0 0 500 500 d1 q 500 0 0 500 0 0 cm BI /W 8 /H 8 /BPC 1 /IM true ID " + b"\x00" * 8 + b" EI Q" + b" % pad" * 400
+    cut = zlib.compress(proc)[:30]
+    cutproc = new(("<< /Filter /FlateDecode /Length %d >>\nstream\n" % len(cut)).encode("latin-1").decode("latin-1") + cut.decode("latin-1") + "\nendstream")
+    t3cut = new("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [600] /Resources << >> >>" % cutproc)
+    junk = bytes((k * 37 + 11) % 256 for k in range(5000))
+    badprog = new(("<< /Filter /FlateDecode /Length %d >>\nstream\n" % len(junk)) + junk.decode("latin-1") + "\nendstream")
+    baddesc = new("<< /Type /FontDescriptor /FontName /Corrupt /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % badprog)
+    badtt = new("<< /Type /Font /Subtype /TrueType /BaseFont /Corrupt /FirstChar 32 /LastChar 126 /Widths [%s] /FontDescriptor %d 0 R >>" % (" ".join(["500"] * 95), baddesc))
+    page("BT /C3 10 Tf 72 700 Td (aaaa) Tj ET BT /CT 10 Tf 72 680 Td (xyz) Tj ET\n" + words(10, 600), res="/Font << /F1 %d 0 R /C3 %d 0 R /CT %d 0 R >>" % (helv, t3cut, badtt))
+    # 5-20 4,000 Type 3 fonts sharing one 20,000-entry /XObject dictionary
+    mask = new(t.stream("/Type /XObject /Subtype /Image /Width 8 /Height 8 /ImageMask true /BitsPerComponent 1", b"\x00" * 8).decode("latin-1"))
+    shared = new("<< %s >>" % " ".join("/Im%d %d 0 R" % (k, mask) for k in range(20000)))
+    doproc = new(t.stream("", "600 0 0 0 500 500 d1 q 500 0 0 500 0 0 cm /Im0 Do Q").decode("latin-1"))
+    t3s = [new("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [600] /Resources << /XObject %d 0 R >> >>" % (doproc, shared)) for _ in range(4000)]
+    for pg in range(16):
+        ks = range(250 * pg, 250 * (pg + 1))
+        page("".join("BT /G%d 6 Tf %d %d Td (a) Tj ET\n" % (k, 40 + (k % 25) * 20, 760 - ((k % 250) // 25) * 20) for k in ks), res="/Font << %s >>" % " ".join("/G%d %d 0 R" % (k, t3s[k]) for k in ks))
+    # 21 300 one-character ActualText spans
+    page("".join("/Span << /ActualText (fi) >> BDC BT /F1 10 Tf %d %d Td (x) Tj ET EMC\n" % (40 + (k % 30) * 18, 760 - (k // 30) * 14) for k in range(300)))
+    # 22: the RoleMap page (parent-tree key 1)
+    page("/P << /MCID 0 >> BDC " + words(5) + " EMC /P << /MCID 1 >> BDC " + words(5, 600) + " EMC\n", extra="/StructParents 1")
+
+    kids = []
+    out = {1: "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % root}
+    for i, (c, res, extra) in enumerate(pages):
+        pnum = 3 + i
+        kids.append(pnum)
+        r = res if "/Font" in res else res + " /Font << /F1 %d 0 R >>" % helv
+        out[pnum] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << %s >> /Contents %d 0 R %s >>" % (r, c, extra)
+    out[2] = "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids))
+    out.update(objs)
+    top = max(out)
+    return t.build_pdf([out.get(n, "null") for n in range(1, top + 1)])
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -1118,4 +1438,8 @@ ALL = {
     "prev_unlisted": prev_unlisted_pdf,
     "prev_broken": prev_broken_pdf,
     "facts_only_read": facts_only_read_pdf,
+    "math_tables": math_tables_pdf,
+    "math_tables_hostile": math_tables_hostile_pdf,
+    "math_tables_council": math_tables_council_pdf,
+    "math_tables_round2": math_tables_round2_pdf,
 }

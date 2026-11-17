@@ -201,7 +201,7 @@ docslurp/page-facts/README.md):
   pdftotext's time limit (--text-timeout) applies with or without them.
   --page-facts-level L        basic (default) or full
   --page-facts-include LIST   families added to basic: fonts,oddtext,images-detail,vectors,
-                              forms,annots,ocg,structure
+                              forms,annots,ocg,structure,mathtables
   --page-facts-timing         add factsMs, totalMs and peakRssKiB (not deterministic)
 
 scan test (pdftotext's: changes which pages are scans in the Markdown, the images and the facts;
@@ -358,8 +358,17 @@ fn main() -> ExitCode {
                 _ => return usage_error("--page-facts-level needs basic or full"),
             },
             "--page-facts-include" => {
-                const FAMILIES: [&str; 8] =
-                    ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure"];
+                const FAMILIES: [&str; 9] = [
+                    "fonts",
+                    "oddtext",
+                    "images-detail",
+                    "vectors",
+                    "forms",
+                    "annots",
+                    "ocg",
+                    "structure",
+                    "mathtables",
+                ];
                 match args.next().and_then(|l| l.into_string().ok()) {
                     Some(l) if l.len() < 128 && l.split(',').all(|f| f.is_empty() || FAMILIES.contains(&f)) => {
                         facts_opts.extend(["-page-facts-include".into(), l.into()])
