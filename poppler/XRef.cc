@@ -836,12 +836,14 @@ err0:
     return false;
 }
 
-// Filters an older xref stream may use (readPrevChain): the ones whose work is bounded by the bytes
-// they are asked for. Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and clear their whole
-// bitmap before yielding a byte, so a few hundred bytes per section would cost seconds each.
+// Filters an older xref stream (readPrevChain) or an object stream the rebuild reads may use: the ones whose
+// work is bounded by the bytes they are asked for. Image codecs (JBIG2, CCITT, DCT, JPX, ...) allocate and
+// clear their whole bitmap before yielding a byte, so a few hundred bytes per section would cost seconds
+// each; ASCIIHex and ASCII85 skip any amount of whitespace a Flate or LZW stream feeds them, unseen by the
+// budgets. Real xref and object streams use Flate (LZW at most).
 static bool chainFilterAllowed(const char *name)
 {
-    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW", "ASCIIHexDecode", "AHx", "ASCII85Decode", "A85" };
+    static const char *const allowed[] = { "FlateDecode", "Fl", "LZWDecode", "LZW" };
     for (const char *a : allowed) {
         if (strcmp(name, a) == 0) {
             return true;
@@ -852,7 +854,11 @@ static bool chainFilterAllowed(const char *name)
 
 bool XRef::chainStreamFiltersOk(Dict *dict)
 {
+    // as Stream::addFilters reads it: /Filter, and /F when that is absent or null
     Object f = dict->lookup("Filter");
+    if (f.isNone() || f.isNull()) {
+        f = dict->lookup("F");
+    }
     if (f.isNone() || f.isNull()) {
         return true;
     }
@@ -1338,6 +1344,10 @@ char *XRef::constructObjectEntry(char *p, Goffset pos, int *objNum)
 // of its objects.
 void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
 {
+    if (!chainStreamFiltersOk(objStr->getStream()->getDict())) {
+        // the rebuild reads every object stream's header: not behind a filter whose work it cannot bound
+        return;
+    }
     Object objN = objStr->getStream()->getDict()->lookup("N");
 
     // get the object count
@@ -1354,6 +1364,9 @@ void XRef::constructObjectStreamEntries(Object *objStr, int objStrObjNum)
     for (int i = 0; i < nObjects; ++i) {
         auto obj1 = parser.getObj(true);
         auto obj2 = parser.getObj(true);
+        if (obj1.isEOF() || obj2.isEOF()) {
+            break; // a header the stream cannot fill: N tokens' worth of EOF reads cost CPU for nothing
+        }
         if (obj1.isInt() && obj2.isInt()) {
             int num = obj1.getInt();
             if (num >= 0 && num < 1000000) {
