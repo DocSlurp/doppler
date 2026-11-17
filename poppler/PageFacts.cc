@@ -3009,7 +3009,42 @@ struct AWord
     double x0, y0, x1, y1;
     bool math; // most of its characters are drawn by math-class fonts
     bool mono = false; // most of its characters are drawn by fixed-pitch fonts
+    uint8_t delim = 0; // delimiterKind of its characters (1 full, 2 piece, 3 bar), in a math-class font
+    double fontSize = 0;
 };
+
+// A delimiter character: 1 a full one (parentheses, brackets, braces, bars, angles, floors and
+// ceilings, and U+0020, which the text layer gives a size variant of a TeX extension font with
+// no Unicode name), 2 a piece of a built-up one (U+239B-23B3, the Adobe Symbol pieces
+// U+F8E5-F8FE), 3 a bar (|, U+2016, U+2223, U+2225, and the bar pieces U+20D3, U+23D0), 0
+// anything else.
+int delimiterKind(Unicode c)
+{
+    if ((c >= 0x239b && c <= 0x23b3) || (c >= 0xf8e5 && c <= 0xf8fe)) {
+        return 2;
+    }
+    if (c == '|' || c == 0x2016 || c == 0x2223 || c == 0x2225 || c == 0x20d3 || c == 0x23d0) {
+        return 3; // a bar: only a contiguous built-up column of them delimits (|x| per line does not)
+    }
+    switch (c) {
+    case 0x20:
+    case '(':
+    case ')':
+    case '[':
+    case ']':
+    case '{':
+    case '}':
+    case 0x27e8:
+    case 0x27e9:
+    case 0x2308:
+    case 0x2309:
+    case 0x230a:
+    case 0x230b:
+        return 1;
+    default:
+        return 0;
+    }
+}
 
 // Whether a box lies in the text flow: some visible word's vertical extent overlaps the box's,
 // grown by <pad> above and below. Spans sorted by top, with a running maximum of bottoms.
@@ -3638,113 +3673,98 @@ size_t stackedPairs(const std::vector<MathGlyph> &byX, const FlowBox &r, Budget 
     return pairs;
 }
 
-// A matrix of math glyphs in a region: rows (centres more than 0.6 em apart down) split into
-// cells (centres more than 1.0 em apart across); at least two rows with the same number (>= 2)
-// of cells whose centres line up within 1 em.
-bool mathMatrix(const std::vector<MathGlyph> &byX, const FlowBox &r, Budget &budget)
+// Matrices: a grid of at least 2 rows x 2 columns of cells at about the text size (font sizes
+// 0.8 to 1.6 times the page's median, so script-size limits of sums and integrals are not
+// cells), rows at most 1.8 heights apart, cells short (at most 2.5 heights wide) and centred
+// within half a height of each other across the rows, neighbouring columns 0.8 to 4 heights
+// apart; and on BOTH sides, within 2.5 heights, a delimiter in a math-class font spanning both
+// rows: one tall glyph, or pieces lined up within 2 points and chained at most 1.2 em apart
+// (extension pieces; an em is taken as 1.125 median word heights). A cell pair with a fraction
+// bar (<bars>: thin short horizontal rules) between its two cells is a fraction, not a column. Aligned "=" columns, stacked fractions and limits lack one or the other.
+size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<FlowBox> &bars, Budget &budget)
 {
-    std::vector<MathGlyph> g;
-    auto lo = std::ranges::lower_bound(byX, r.x0, {}, &MathGlyph::cx);
-    for (auto a = lo; a != byX.end() && a->cx <= r.x1; ++a) {
-        if (!budget.spend(1)) {
-            return false;
-        }
-        if (a->cy >= r.y0 && a->cy <= r.y1) {
-            g.push_back(*a);
-        }
+    if (words.size() < 6 || !budget.spend(words.size() * 4)) {
+        return 0;
     }
-    if (g.size() < 4 || !budget.spend(g.size() * 4)) {
-        return false;
-    }
-    std::ranges::sort(g, {}, &MathGlyph::cy);
-    std::vector<std::vector<MathGlyph>> rows;
-    for (const MathGlyph &m : g) {
-        if (rows.empty() || m.cy - rows.back().front().cy > 0.6 * m.size) {
-            rows.push_back({});
-        }
-        rows.back().push_back(m);
-    }
-    std::vector<std::vector<double>> cells; // per row, cell centres
-    for (auto &row : rows) {
-        std::ranges::sort(row, {}, &MathGlyph::cx);
-        std::vector<double> centres;
-        double first = row.front().cx, last = row.front().cx;
-        for (size_t k = 1; k <= row.size(); ++k) {
-            if (k == row.size() || row[k].cx - last > 1.0 * row[k].size) {
-                centres.push_back(0.5 * (first + last));
-                if (k < row.size()) {
-                    first = last = row[k].cx;
-                }
-            } else {
-                last = row[k].cx;
-            }
-        }
-        cells.push_back(std::move(centres));
-    }
-    const double em = g.front().size > 0 ? g.front().size : 10;
-    for (size_t a = 0; a < cells.size(); ++a) {
-        for (size_t b = a + 1; b < cells.size() && b <= a + 4; ++b) {
-            if (cells[a].size() >= 2 && cells[a].size() == cells[b].size()) {
-                bool aligned = true;
-                for (size_t k = 0; k < cells[a].size(); ++k) {
-                    aligned = aligned && std::fabs(cells[a][k] - cells[b][k]) <= 1.0 * em;
-                }
-                if (aligned) {
-                    return true;
-                }
-            }
+    std::vector<double> heights, sizes;
+    for (const AWord &w : words) {
+        heights.push_back(w.y1 - w.y0);
+        if (std::isfinite(w.fontSize) && w.fontSize > 0) {
+            sizes.push_back(w.fontSize);
         }
     }
-    return false;
-}
-
-// Matrices typeset with text-font entries between math delimiters: two consecutive text rows
-// (at most 1.8 word heights apart) with at least two pairs of short words (at most 2.5 heights
-// wide) centred within half a height of each other across the rows, neighbouring pairs 0.8 to 4
-// heights apart, and narrow math-font glyphs (delimiter pieces, bars) within 2.5 heights left
-// and right of that grid, overlapping it vertically.
-size_t delimitedMatrices(const std::vector<AWord> &words, Budget &budget)
-{
+    std::ranges::nth_element(heights, heights.begin() + heights.size() / 2);
+    const double hText = std::max(heights[heights.size() / 2], 1.0);
+    double sizeText = 0; // the page's median font size: cells are 0.8 to 1.6 of it (script-size limits are not)
+    if (!sizes.empty()) {
+        std::ranges::nth_element(sizes, sizes.begin() + sizes.size() / 2);
+        sizeText = sizes[sizes.size() / 2];
+    }
     std::vector<const AWord *> ws, delims;
     for (const AWord &w : words) {
         const double wd = w.x1 - w.x0, ht = w.y1 - w.y0;
-        if (w.math && wd <= 1.5 * ht && wd <= 12) {
+        if (w.delim && wd <= 1.5 * std::max(ht, hText) && wd <= 12) {
             delims.push_back(&w);
-        } else {
+        } else if (sizeText > 0 ? (w.fontSize >= 0.8 * sizeText && w.fontSize <= 1.6 * sizeText) : (ht >= 0.8 * hText && ht <= 1.6 * hText)) {
             ws.push_back(&w);
         }
     }
-    if (delims.size() < 2 || ws.size() < 4 || !budget.spend(ws.size() * 4)) {
+    if (delims.size() < 2 || ws.size() < 4) {
         return 0;
     }
+    std::ranges::sort(delims, {}, &AWord::y0);
     std::ranges::sort(ws, {}, [](const AWord *w) { return 0.5 * (w->y0 + w->y1); });
     std::vector<std::vector<const AWord *>> rows;
     double rowCy = 0;
     for (const AWord *w : ws) {
-        const double cy = 0.5 * (w->y0 + w->y1), hh = std::max(w->y1 - w->y0, 1.0);
-        if (rows.empty() || cy > rowCy + 0.5 * hh) {
+        const double cy = 0.5 * (w->y0 + w->y1);
+        if (rows.empty() || cy > rowCy + 0.5 * hText) {
             rows.push_back({});
             rowCy = cy;
         }
         rows.back().push_back(w);
     }
+    const double h = hText;
+    const double em = 1.125 * hText; // a word box's height is about 0.89 of its font size
     size_t found = 0;
     auto cx = [](const AWord *w) { return 0.5 * (w->x0 + w->x1); };
-    for (size_t r = 0; r + 1 < rows.size() && found < maxRegions; ++r) {
-        auto &a = rows[r], &b = rows[r + 1];
-        const double h = std::max(a.front()->y1 - a.front()->y0, 1.0);
+    auto rowY = [](const std::vector<const AWord *> &row, bool top) {
+        double v = top ? INFINITY : -INFINITY;
+        for (const AWord *w : row) {
+            v = top ? std::min(v, w->y0) : std::max(v, w->y1);
+        }
+        return v;
+    };
+    // each row against the next two (text on the math axis, "= ad - bc", can lie between two
+    // matrix rows), when within 1.8 heights
+    for (size_t pr = 0; pr + 1 < 2 * rows.size() && found < maxRegions; ++pr) {
+        const size_t r = pr / 2, r2 = r + 1 + pr % 2;
+        if (r2 >= rows.size()) {
+            continue;
+        }
+        auto &a = rows[r], &b = rows[r2];
         if (0.5 * (b.front()->y0 + b.front()->y1) - 0.5 * (a.front()->y0 + a.front()->y1) > 1.8 * h || !budget.spend(a.size() + b.size() + delims.size() + 1)) {
             continue;
         }
         std::ranges::sort(a, {}, cx);
         std::ranges::sort(b, {}, cx);
-        // aligned pairs of short words, by a merge of the two rows
+        // aligned pairs of short cells, by a merge of the two rows
         std::vector<FlowBox> pairs;
         for (size_t i = 0, j = 0; i < a.size() && j < b.size();) {
             const double d = cx(a[i]) - cx(b[j]);
             if (std::fabs(d) <= 0.5 * h) {
-                if (a[i]->x1 - a[i]->x0 <= 2.5 * h && b[j]->x1 - b[j]->x0 <= 2.5 * h) {
-                    pairs.push_back({ std::min(a[i]->x0, b[j]->x0), a[i]->y0, std::max(a[i]->x1, b[j]->x1), b[j]->y1 });
+                const double px0 = std::min(a[i]->x0, b[j]->x0), px1 = std::max(a[i]->x1, b[j]->x1);
+                const double ya = 0.5 * (a[i]->y0 + a[i]->y1), yb = 0.5 * (b[j]->y0 + b[j]->y1);
+                bool fraction = false;
+                for (const FlowBox &bar : bars) {
+                    const double by = 0.5 * (bar.y0 + bar.y1);
+                    fraction = fraction || (by > ya && by < yb && bar.x0 < px1 && bar.x1 > px0);
+                }
+                if (!budget.spend(bars.size() + 1)) {
+                    return found;
+                }
+                if (!fraction && a[i]->x1 - a[i]->x0 <= 2.5 * h && b[j]->x1 - b[j]->x0 <= 2.5 * h) {
+                    pairs.push_back({ px0, a[i]->y0, px1, b[j]->y1 });
                 }
                 ++i;
                 ++j;
@@ -3754,34 +3774,88 @@ size_t delimitedMatrices(const std::vector<AWord> &words, Budget &budget)
                 ++j;
             }
         }
-        // runs of at least two pairs, neighbours 0.8 to 4 heights apart
+        const double ay0 = rowY(a, true), ay1 = rowY(a, false), by0 = rowY(b, true), by1 = rowY(b, false);
+        const double cyA = 0.5 * (ay0 + ay1), cyB = 0.5 * (by0 + by1);
+        // a delimiter on one side (within 2.5 heights): pieces of a built-up delimiter in one
+        // column (x within 2 points) chained at most 1.2 em apart from row a into row b; or one
+        // full delimiter glyph (word boxes are font-size tall, so a large glyph cannot show its
+        // height) centred within the grid's rows and alone in its column there: a delimiter for
+        // each row is aligned equations, not a matrix
+        auto side = [&](const FlowBox &g, bool isLeft) {
+            auto near = [&](const AWord *d) { return isLeft ? (d->x1 <= g.x0 + 1 && d->x1 >= g.x0 - 2.5 * h) : (d->x0 >= g.x1 - 1 && d->x0 <= g.x1 + 2.5 * h); };
+            for (size_t k = 0; k < delims.size(); ++k) {
+                const AWord *d = delims[k];
+                if (!near(d)) {
+                    continue;
+                }
+                if (d->delim >= 2) {
+                    if (!(std::min(d->y1, ay1) > std::max(d->y0, ay0))) {
+                        continue;
+                    }
+                    // pieces chain up to 1.2 em apart; bars only when they touch (0.3 heights)
+                    const double gap = d->delim == 2 ? 1.2 * em : 0.3 * h;
+                    double reach = d->y1;
+                    for (size_t m = k; m < delims.size() && delims[m]->y0 <= reach + gap; ++m) {
+                        if (!budget.spend(1)) {
+                            return false;
+                        }
+                        if (delims[m]->delim == d->delim && std::fabs(delims[m]->x0 - d->x0) <= 2) {
+                            reach = std::max(reach, delims[m]->y1);
+                        }
+                    }
+                    if (std::min(reach, by1) > by0) {
+                        return true;
+                    }
+                    continue;
+                }
+                const double c = 0.5 * (d->y0 + d->y1);
+                if (c < cyA - 0.25 * h || c > cyB + 0.25 * h) {
+                    continue;
+                }
+                bool alone = true;
+                for (const AWord *e : delims) {
+                    if (!budget.spend(1)) {
+                        return false;
+                    }
+                    const double ce = 0.5 * (e->y0 + e->y1);
+                    if (e != d && e->delim == 1 && std::fabs(e->x0 - d->x0) <= 2 && ce >= cyA - 0.5 * h && ce <= cyB + 0.5 * h && std::fabs(ce - c) >= 0.5 * h) {
+                        alone = false;
+                        break;
+                    }
+                }
+                if (alone) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // a delimiter between two pairs closes one group and opens another (adjacent binomials)
+        auto delimBetween = [&](double x0, double x1) {
+            for (const AWord *d : delims) {
+                const double c = 0.5 * (d->x0 + d->x1);
+                if (c > x0 && c < x1 && std::min(d->y1, by1) > std::max(d->y0, ay0)) {
+                    return true;
+                }
+            }
+            return false;
+        };
         for (size_t i = 0; i < pairs.size();) {
             size_t k = i + 1;
-            while (k < pairs.size() && pairs[k].x0 - pairs[k - 1].x1 >= 0.8 * h - 6 && 0.5 * (pairs[k].x0 + pairs[k].x1) - 0.5 * (pairs[k - 1].x0 + pairs[k - 1].x1) <= 4 * h) {
+            while (k < pairs.size() && pairs[k].x0 - pairs[k - 1].x1 >= 0.8 * h - 6 && 0.5 * (pairs[k].x0 + pairs[k].x1) - 0.5 * (pairs[k - 1].x0 + pairs[k - 1].x1) <= 4 * h && budget.spend(delims.size() + 1)
+                   && !delimBetween(pairs[k - 1].x1, pairs[k].x0)) {
                 ++k;
             }
             if (k - i >= 2) {
                 const FlowBox g { pairs[i].x0, pairs[i].y0, pairs[k - 1].x1, pairs[k - 1].y1 };
-                // each side: delimiter glyphs (one tall one, or stacked pieces lined up within 2
-                // points) overlapping both rows' heights
-                const double ay0 = a.front()->y0, ay1 = a.front()->y1, by0 = b.front()->y0, by1 = b.front()->y1;
-                auto side = [&](bool isLeft) {
-                    for (const AWord *d : delims) {
-                        const bool near = isLeft ? (d->x1 <= g.x0 + 1 && d->x1 >= g.x0 - 2.5 * h) : (d->x0 >= g.x1 - 1 && d->x0 <= g.x1 + 2.5 * h);
-                        if (!near || !(std::min(d->y1, ay1) > std::max(d->y0, ay0))) {
-                            continue;
-                        }
-                        for (const AWord *e : delims) {
-                            if (std::fabs(e->x0 - d->x0) <= 2 && std::min(e->y1, by1) > std::max(e->y0, by0)) {
-                                return true;
-                            }
-                        }
+                // across a skipped row only when that row has nothing inside the grid's columns
+                bool clear = true;
+                if (r2 == r + 2) {
+                    for (const AWord *w : rows[r + 1]) {
+                        const double c = 0.5 * (w->x0 + w->x1);
+                        clear = clear && !(c >= g.x0 && c <= g.x1);
                     }
-                    return false;
-                };
-                if (budget.spend(2 * delims.size() * delims.size() + 1)) {
-                    found += side(true) && side(false);
                 }
+                found += clear && side(g, true) && side(g, false);
             }
             i = k;
         }
@@ -3839,6 +3913,8 @@ struct PageFacts::State
         bool visible;
         bool math = false; // mathtables: most of its characters drawn by math-class fonts
         bool mono = false; // mathtables: most of its characters drawn by fixed-pitch fonts
+        uint8_t delim = 0; // mathtables: 1 a full delimiter, 2 a delimiter piece, 3 a bar, in a math-class font
+        double fontSize = 0; // mathtables: the word's font size
     };
     std::vector<WordBox> wordBoxes;
     // word centres (vectors: bar charts hold few words; at most kMaxBarWords a page) and the page's numbers (bar scales)
@@ -4428,7 +4504,10 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
         ++s.classGlyphs[cls];
         for (int i = 0; i < uLen; ++i) {
             const Unicode c = u[i];
-            const bool unreadable = c < 0x20 || (c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd) || c == 0xfffd;
+            // U+F8E5-F8FE: the Adobe Symbol extension pieces (bracket and brace tops, middles,
+            // bottoms, extenders) that glyph names map to: delimiters, not unreadable math
+            const bool piece = c >= 0xf8e5 && c <= 0xf8fe;
+            const bool unreadable = !piece && (c < 0x20 || (c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd) || c == 0xfffd);
             if (mathFont) {
                 ++(unreadable ? s.mathUnreadable : s.mathReadable);
             }
@@ -4496,18 +4575,27 @@ void PageFacts::onWord(const TextWord *word)
     if (wants(ImagesDetail | MathTables)) {
         // visible as TextPage counts it (getInvisibleWordCount)
         bool math = false, mono = false;
+        uint8_t delim = 0;
         if (wants(MathTables)) {
-            int mathChars = 0, monoChars = 0;
+            int mathChars = 0, monoChars = 0, pieces = 0, fulls = 0, bars = 0;
             const int n = word->getLength();
             for (int i = 0; i < n; ++i) {
                 const FontSeen *f = fontOf(word->getFontInfo(i));
                 mathChars += f ? isMathClass(f->mathClass) : isMathClass(untrackedClass(word->getFontInfo(i)));
                 monoChars += f && f->fixedWidth;
+                const int kind = delimiterKind(*word->getChar(i));
+                pieces += kind == 2;
+                fulls += kind == 1;
+                bars += kind == 3;
             }
             math = n > 0 && 2 * mathChars > n;
             mono = n > 0 && 2 * monoChars > n;
+            // a delimiter word: every character a delimiter, drawn by a math-class font
+            if (n > 0 && mathChars == n && pieces + fulls + bars == n) {
+                delim = bars > 0 ? 3 : pieces > 0 ? 2 : 1;
+            }
         }
-        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), math, mono });
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), math, mono, delim, word->getFontSize() });
     }
     if (wants(Vectors | MathTables) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
         if (s.wordCentres.size() < kMaxBarWords) {
@@ -4886,7 +4974,7 @@ void PageFacts::endPage(const TextPage &text)
     if (mt) {
         for (const State::WordBox &w : s.wordBoxes) {
             if (w.visible && std::isfinite(w.x0 + w.x1 + w.y0 + w.y1)) {
-                aw.push_back({ w.x0, w.y0, w.x1, w.y1, w.math, w.mono });
+                aw.push_back({ w.x0, w.y0, w.x1, w.y1, w.math, w.mono, w.delim, w.fontSize });
             }
         }
         const FlowSpans flow(aw);
@@ -5002,22 +5090,10 @@ void PageFacts::endPage(const TextPage &text)
         for (size_t k = 0; k < runs.size(); ++k) {
             runStacked[k] = runStacked[k] || stackedPairs(byX, runs[k], budget) >= 2;
             stackedRegions += runStacked[k];
-            matrixRegions += mathMatrix(byX, runs[k], budget);
             regions.push_back({ runs[k], 0 });
         }
         std::ranges::sort(regions, [](const Region &a, const Region &b) { return a.box.y0 < b.box.y0 || (a.box.y0 == b.box.y0 && (a.box.x0 < b.box.x0 || (a.box.x0 == b.box.x0 && a.kind < b.kind))); });
         // tables
-        auto mathShareIn = [&](const FlowBox &b) {
-            size_t n = 0, m = 0;
-            for (const AWord &w : aw) {
-                const double cx = 0.5 * (w.x0 + w.x1), cy = 0.5 * (w.y0 + w.y1);
-                if (cx >= b.x0 && cx <= b.x1 && cy >= b.y0 && cy <= b.y1) {
-                    ++n;
-                    m += w.math;
-                }
-            }
-            return n ? double(m) / double(n) : 0.0;
-        };
         std::vector<FlowBox> ruled;
         std::vector<double> vxs; // centres of vertical non-box rules, sorted
         for (const TextRule &r : text.getRules()) {
@@ -5048,7 +5124,7 @@ void PageFacts::endPage(const TextPage &text)
                 }
                 const ColumnStats cs = columnStats(inside, std::max(0.5 * body, 2.0), 2, budget);
                 if (cs.rows >= 2 && cs.gutters >= 1 && !proseLike(cs)) {
-                    ++(mathShareIn({ g.x0, g.y0, g.x1, g.y1 }) >= 0.5 ? mathGrids : ruledGrids);
+                    ++ruledGrids; // a ruled grid of math is still a table
                     ruled.push_back({ g.x0, g.y0, g.x1, g.y1 });
                 }
             }
@@ -5068,16 +5144,19 @@ void PageFacts::endPage(const TextPage &text)
         // the packed words (bit order: mathBitNames, tableBitNames)
         uint64_t open = 0, booktabs = 0, whitespace = 0;
         for (const RuleTable &t : rTables) {
-            if (t.mathShare >= 0.5) {
-                ++mathGrids;
-            } else {
-                ++(t.booktabs ? booktabs : open);
-            }
+            ++(t.booktabs ? booktabs : open);
         }
         for (const RuleTable &t : wTables) {
-            ++(t.mathShare >= 0.5 ? mathGrids : whitespace);
+            whitespace += t.mathShare < 0.5; // mostly math words lined up: aligned display math, not a table
         }
-        matrixRegions += delimitedMatrices(aw, budget);
+        std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
+        for (const TextRule &r : text.getRules()) {
+            const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
+            if (!r.box && !r.imageMask && std::isfinite(w) && std::isfinite(hh) && w >= hh && hh <= 2.0 && w <= 15 * body && bars.size() < maxGridRules) {
+                bars.push_back({ r.xMin, r.yMin, r.xMax, r.yMax });
+            }
+        }
+        matrixRegions += delimitedMatrices(aw, bars, budget);
         mathGrids += matrixRegions;
         const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
         const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
@@ -5089,7 +5168,7 @@ void PageFacts::endPage(const TextPage &text)
                            mathStrips > 0,
                            outlineClusters > 0,
                            s.classGlyphs[mcType3Bitmap] > 0,
-                           s.mathUnreadable >= 2,
+                           s.mathUnreadable >= 2 && 4 * s.mathUnreadable >= s.mathReadable + s.mathUnreadable,
                            s.uniPlainCore >= 3,
                            sc.formulas > 0,
                            mathGrids > 0,

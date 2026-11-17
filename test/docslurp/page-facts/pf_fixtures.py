@@ -1147,9 +1147,10 @@ def math_tables_pdf():
         + _row(620, ((300, "a"),), "M1")
         + "0.5 w 299 616 m 309 616 l S\n"
         + _row(606, ((301, "b"),), "M1")
-        # a 2x2 matrix
+        # a 2x2 matrix between CMEX10 parentheses centred on its rows
         + _row(560, ((300, "a"), (315, "b")), "M1")
         + _row(548, ((300, "c"), (315, "d")), "M1")
+        + _row(551, ((290, "\\("), (326, "\\)")), "M7")
     )
     outline = _prose(700, 2) + "q 300 676 m 302 684 304 684 306 676 c 308 668 310 668 312 676 c 314 684 316 684 318 676 c 320 668 322 668 324 676 c 326 684 328 684 330 676 c 332 668 334 668 336 676 c 338 684 340 684 342 676 c 344 668 346 668 348 676 c f Q\n" + _prose(664, 2)
     mask_proc = "600 0 0 0 500 500 d1 q 500 0 0 500 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID \x00\x18\x3c\x7e\x7e\x3c\x18\x00 EI Q"
@@ -1187,8 +1188,9 @@ def math_tables_pdf():
         "<< /Type /FontDescriptor /FontName /ABCDEF+PlainFace /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 {25} 0 R >>",  # 24
         t.stream("", sfnt).decode("latin-1"),  # 25
         "<< /Type /Font /Subtype /Type1 /BaseFont /STIXTwoMath-Regular >>",  # 26
+        "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 >>",  # 27
     ]
-    font_res = "<< /Font << /F1 3 0 R /M1 {19} 0 R /M2 {20} 0 R /M3 {21} 0 R /M4 {22} 0 R /M5 {26} 0 R /M6 {23} 0 R /U1 {15} 0 R >> >>"
+    font_res = "<< /Font << /F1 3 0 R /M1 {19} 0 R /M2 {20} 0 R /M3 {21} 0 R /M4 {22} 0 R /M5 {26} 0 R /M6 {23} 0 R /U1 {15} 0 R /M7 {27} 0 R >> >>"
     fonts += _row(700, ((220, "x"),), "M6")
     return doc(
         [
@@ -1417,6 +1419,40 @@ def math_tables_round2_pdf():
     return t.build_pdf([out.get(n, "null") for n in range(1, top + 1)])
 
 
+def math_matrix_pdf():
+    """math-matrix and math-font-no-unicode precision (DocSlurp integration, 2026-11-16), a page each:
+    1 a 2x2 matrix of text-size CMMI10 cells between CMEX10 parentheses: math-matrix;
+    2 two fractions side by side inside CMEX10 parentheses (numerators over bars over
+      denominators): no matrix;
+    3 aligned equations, one CMEX10 parenthesis pair per row: no matrix;
+    4 two sums side by side whose script-size limits line up, between parentheses: no matrix;
+    5 math glyphs whose ToUnicode gives private-use code points: math-font-no-unicode;
+    6 math glyphs whose ToUnicode gives the Adobe Symbol bracket pieces (U+F8EB...) beside
+      readable math: delimiters, not unreadable."""
+    prose = _prose(740, 2)
+    paren = lambda x, y: _row(y, ((x, "\\("),), "X")
+    rparen = lambda x, y: _row(y, ((x, "\\)"),), "X")
+    matrix = prose + _row(560, ((300, "a"), (318, "b")), "M") + _row(546, ((300, "c"), (318, "d")), "M") + paren(288, 551) + rparen(330, 551)
+    fractions = prose + paren(288, 551) + _row(560, ((300, "a"), (318, "b")), "M") + "0.5 w 298 555 m 308 555 l S 316 555 m 326 555 l S\n" + _row(546, ((300, "c"), (318, "d")), "M") + rparen(330, 551)
+    aligned = prose + "".join(paren(288, y) + _row(y, ((300, "x"), (318, "y")), "M") + rparen(330, y) for y in (560, 546))
+    limits = prose + paren(288, 551) + "".join(_row(562, ((x, "n"),), "M", 7) + _row(548, ((x - 2, "S"),), "X") + _row(538, ((x, "k"),), "M", 7) for x in (300, 318)) + rparen(330, 551)
+    cmap = lambda pairs: stream("", "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def 1 begincodespacerange <00> <FF> endcodespacerange %d beginbfchar %s endbfchar endcmap CMapName currentdict /CMap defineresource pop end end" % (len(pairs), " ".join("<%02X> <%04X>" % p for p in pairs)))
+    pua = prose + _row(600, ((100, "abab abab"),), "P")
+    pieces = prose + _row(600, ((100, "abab"),), "Q") + _row(600, ((200, "xyz w"),), "M")
+    res = "<< /Font << /F1 3 0 R /M {0} 0 R /X {1} 0 R /P {2} 0 R /Q {3} 0 R >> >>"
+    return doc(
+        [{"content": c, "resources": res} for c in (matrix, fractions, aligned, limits, pua, pieces)],
+        extras=[
+            "<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",  # 0
+            "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 >>",  # 1
+            "<< /Type /Font /Subtype /Type1 /BaseFont /CMSY10 /ToUnicode {4} 0 R >>",  # 2
+            "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 /ToUnicode {5} 0 R >>",  # 3
+            cmap([(0x61, 0xE001), (0x62, 0xE002)]),  # 4
+            cmap([(0x61, 0xF8EB), (0x62, 0xF8ED)]),  # 5
+        ],
+    )
+
+
 ALL = {
     "geometry": geometry_pdf,
     "scans": scans_pdf,
@@ -1461,4 +1497,5 @@ ALL = {
     "math_tables_hostile": math_tables_hostile_pdf,
     "math_tables_council": math_tables_council_pdf,
     "math_tables_round2": math_tables_round2_pdf,
+    "math_matrix": math_matrix_pdf,
 }

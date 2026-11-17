@@ -436,10 +436,10 @@ arrays):
 | 5 | `raster-strips` | `images.mathStrips` > 0 | vision (region crops) |
 | 6 | `glyph-outlines` | `vectors.glyphOutlineClusters` > 0 | vision (region crops) |
 | 7 | `type3-bitmap-font` | glyphs drawn by a Type 3 bitmap font | vision |
-| 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs without a Unicode value (unmapped, control, private use, U+FFFD) | vision |
+| 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs, and at least a quarter of them, for which the text layer gives no Unicode: unmapped, a control character, private use or U+FFFD. The Adobe Symbol bracket and brace pieces (U+F8E5-F8FE) that glyph names map to are delimiters, not unreadable | vision |
 | 9 | `plain-unicode-math` | at least 3 scripts, operators or math alphanumerics drawn by text fonts (Greek and arrows alone do not count: units and prose use them) | keep the text |
 | 10 | `formula-struct` | `structure.formulas` > 0 | structure |
-| 11 | `math-matrix` | a text math region with two rows of the same number (at least 2) of aligned cells; or two text rows (1.8 heights apart at most) of at least two aligned short words (at most 2.5 heights wide, centres within half a height, neighbours 0.8 to 4 heights apart) with narrow math-font glyphs (delimiter pieces, bars) left and right that overlap both rows and line up within 2 points; or a ruled grid or table whose words are mostly math-font words | not a table |
+| 11 | `math-matrix` | a matrix: a grid of at least 2 rows x 2 columns of cells at about the text size (font sizes 0.8 to 1.6 of the page's median: script-size limits are not cells; rows at most 1.8 heights apart, or across one row that has nothing inside the grid's columns), cells short and centred within half a height across the rows, no fraction bar between the two cells of a column and no delimiter between columns, and on both sides a delimiter in a math-class font spanning the rows: built-up pieces (U+239B-23B3, U+F8E5-F8FE) chained at most 1.2 em apart, bars (U+007C, 2016, 2223, 2225, 20D3, 23D0) only as a touching column, or one full delimiter glyph (parenthesis, bracket, brace, angle, floor, ceiling, or the U+0020 the text layer gives a TeX extension font's size variant) centred within the rows and alone in its column there. Integral and sum limits, aligned equations and stacked fractions do not count | not a table |
 | 12 | `analysis-truncated` | a cap or budget of this analysis was hit (the bits may be incomplete) | |
 
 `tableBits`:
@@ -454,7 +454,7 @@ arrays):
 | 5 | `tagged-table` | `structure.tables` > 0 |
 | 6 | `raster-table-like` | an image on a page with at least 10 visible characters, not a scan, 2-60% of the page, at least 60 points tall (formula strips are shorter) and at least as wide as tall, not DCT or JPX, at most 1.5 encoded bytes a pixel (never decoded: line art and text compress well, photos do not; a chart matches too). Such an image is not also counted in `mathStrips` |
 | 7 | `outlined-text-grid` | glyph-like drawing clusters (at least 20 curves and 4 a path, at most 60% of the width and half the height of the page): an interior one (side-by-side clusters left and right in its row) whose left or right edge lines up within 2 points with an interior one of another row, both rows holding 3 to 12 clusters |
-| 8 | `math-grid` | as `math-matrix`: a grid of math glyphs, which must not take a table route |
+| 8 | `math-grid` | as `math-matrix` (a matrix of math, which must not take a table route). A ruled grid or rule table whose words are mostly math is still a table; a whitespace-aligned block of mostly math words (aligned display equations) is no table at all |
 | 9 | `analysis-truncated` | as above |
 
 `encodingCounts`: 13 four-bit log2 buckets (`0` for 0, else `floor(log2 n) + 1`, at most 15;
