@@ -491,7 +491,10 @@ of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math,
 mathptmx, mathpazo); `otfMath` again by a name holding the word Math when the program has no
 readable directory (bare CFF, not embedded); `symbol`; `text`. A font's class is cached per
 document by reference; reads are made under a RepairGuard (they cannot rebuild the
-cross-reference table) and at most 65,536 a run (past it, names alone: `analysis-truncated`).
+cross-reference table) and charged the encoded bytes they consume, at most 512 MB a run, a
+budget of their own (past it, names alone: `analysis-truncated`). A font past the page's
+256-font list is still classed from the document's cache. A Type 3 font's resource `/XObject`
+dictionary is read once per object, however many fonts share it.
 
 **Reads stay bounded and say when they are partial.** A font's class is computed once per font
 object (a direct font dictionary by its content hash, so a form drawn thousands of times
@@ -502,7 +505,10 @@ from a copy of its first encoded bytes (an encrypted document's is not read), so
 stream of empty stored blocks costs at most the cap. Structure elements and indirect Alt and
 ActualText strings are read once a document (a string thousands of elements share is parsed
 once; its first 4,096 code units are tested); associated files once each, under a document
-budget of 4 MB of encoded bytes. What cannot be read is reported: `structure.unknown`, and a
+budget of 4 MB of encoded bytes. A RoleMap chain still mapping after 8 hops (or a cycle) sets
+`structure.truncated`. A glyph procedure cut inside an inline image dictionary, a non-empty
+stream that decodes to nothing, and an OpenType or TrueType program whose table directory
+cannot be read are unknown. What cannot be read is reported: `structure.unknown`, and a
 font whose procedures or program could not be read, or a font past the 256-font cap, makes
 the page `analysis-truncated` rather than a definite class.
 
