@@ -1957,7 +1957,13 @@ pub fn ruled_tables(
             _ => cols,
         };
         let bands: Vec<(f64, f64)> = ys.windows(2).map(|w| (w[0], w[1])).collect();
-        let mut grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
+        // rows between rules: one band per row. With horizontal rules only, a band holding
+        // several rows of cells (a booktabs body, rules from image masks) would fuse them, so
+        // such a band's rows stay rows
+        let band_holds_rows = !crossing_v
+            && bands.iter().any(|&(a, b)| rows.iter().filter(|r| r.multi && r.base > a && r.base < b).count() >= 2);
+        let mut grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 && !band_holds_rows
+        {
             let mut grid: Grid = Vec::new();
             // rows outside the ruled span (a header above, unruled rows below) are rows of their own
             let head = rows.iter().filter(|r| r.base < ys[0] - 1.0).map(|r| (r.base - 0.5, r.base + 0.5));
