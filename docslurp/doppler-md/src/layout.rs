@@ -118,6 +118,7 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
     // cells, and the right side is itself rows of several cells (not prose or margin notes
     // beside a column of labels)
     left.len() >= 3
+        && right.len() <= 400
         && words(&left) <= p.table_cell_words
         && words(&right) <= p.table_cell_words
         && aligned_count(&right, &left, p) == left.len()
@@ -136,7 +137,7 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
                             }))
                 })
                 .count();
-            right.len() <= 400 && 2 * shared >= right.len()
+            2 * shared >= right.len()
         }
 }
 

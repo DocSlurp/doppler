@@ -2,8 +2,9 @@
 //! its `gen.sh`): a booktabs table with a spanning header, a label column spanning rows and
 //! wrapped cells; a fully ruled LaTeX grid; a whitespace-only LaTeX table whose headers are
 //! wider than their columns; bordered and borderless Chromium tables; a LibreOffice Writer
-//! table; and a page of matrices that must not become a table. Each is read by the real
-//! pdftotext, with and without `--math`: the tables must come out the same either way.
+//! table; data tables with ±, ≥, = and letter labels; and a page of matrices that must not
+//! become a table. Each is read by the real pdftotext, with and without `--math`: the tables
+//! must come out the same either way.
 //! Skipped without `$PDFTOTEXT`, unless `DOPPLER_REQUIRE_INTEGRATION` is set (tests/toolchain).
 
 mod toolchain;
@@ -13,12 +14,8 @@ use std::process::Command;
 
 fn convert(exe: &Path, pdf: &str, args: &[&str]) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tables").join(pdf);
-    let out = Command::new(env!("CARGO_BIN_EXE_pdftomarkdown"))
-        .args(args)
-        .arg(&path)
-        .env("PDFTOTEXT", exe)
-        .output()
-        .unwrap();
+    let out =
+        Command::new(env!("CARGO_BIN_EXE_pdftomarkdown")).args(args).arg(&path).env("PDFTOTEXT", exe).output().unwrap();
     assert_eq!(out.status.code(), Some(0), "{pdf}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8(out.stdout).unwrap()
 }
@@ -130,4 +127,33 @@ fn matrices_are_not_tables() {
     let md = convert(&exe, "matrix.pdf", &["--math"]);
     assert!(table(&md).is_empty(), "{md}");
     assert!(md.contains("\\begin{pmatrix}") && md.contains("\\begin{vmatrix}"), "{md}");
+}
+
+/// Data tables whose cells hold signs that also occur in math (`±`, `≥`, `=`) and short
+/// letter labels stay tables, borderless and ruled: only real math evidence (math-font
+/// letters, big-delimiter pieces, operators of analysis, delimiters cut by a gutter) makes a
+/// grid read as math.
+#[test]
+fn signs_and_letter_labels_are_data() {
+    let expected = [
+        "| Sample | Mean ± SD | n |",
+        "| --- | --- | --- |",
+        "| A | 12.3 ± 0.4 | 5 |",
+        "| B | 11.1 ± 0.6 | 6 |",
+        "| C | 9.8 ± 0.2 | 4 |",
+        "| D | 10.4 ± 0.3 | 7 |",
+        "| Grade | Score |",
+        "| --- | --- |",
+        "| A | ≥ 90 |",
+        "| B | 80-89 |",
+        "| C | 70-79 |",
+        "| D | < 70 |",
+        "| Parameter | Setting |",
+        "| --- | --- |",
+        "| x | = 5 |",
+        "| y | = 10 |",
+        "| z | = 2 |",
+    ];
+    check("signs.pdf", &expected);
+    check("signs-ruled.pdf", &expected);
 }

@@ -363,7 +363,8 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
 /// header fills. A column whose only text is in the first row, a word space or less from the
 /// header text of the column beside it, is that header cell's other half: join them.
 fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
-    if t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
+    // only a rectangular grid with one interval per column
+    if t.rows.len() < 3 || t.rows.iter().any(|r| r.len() != t.cols.len()) {
         return;
     }
     // a few joins per table (each moves the cells after it)
@@ -395,7 +396,7 @@ fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
 /// is cut by the column gutter under it: its words land in both columns. In the first two
 /// rows, the words of one cell that fall in several columns go back together, in the first.
 fn join_spanning_header_cells(t: &mut Table, run: &[Row]) {
-    if t.cols.len() < 2 || t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
+    if t.cols.len() < 2 || t.rows.len() < 3 || t.rows.iter().any(|r| r.len() != t.cols.len()) {
         return;
     }
     // columns are ordered and disjoint: the first whose end (plus slack) reaches x
@@ -418,7 +419,9 @@ fn join_spanning_header_cells(t: &mut Table, run: &[Row]) {
             }
             let row = &mut t.rows[ri];
             // only when those columns hold nothing but this cell's words
-            if !strip(&row[j1]).starts_with(strip(&last.text)) {
+            // the grid row must be this visual row (rows merged above it shift the mapping):
+            // the cell's first word starts column j0's text and its last word column j1's
+            if !strip(&row[j1]).starts_with(strip(&last.text)) || !strip(&row[j0]).contains(strip(&first.text)) {
                 continue;
             }
             let text: Vec<String> = (j0..=j1).map(|j| std::mem::take(&mut row[j])).filter(|x| !x.is_empty()).collect();
@@ -456,19 +459,42 @@ fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<
             continue;
         }
         let header = &run[..multi[skip - 1] + 1];
+        let size = pmax(median(body.iter().filter(|r| r.multi).map(|r| r.size).collect()), 1.0);
         let words: Vec<&Word> = header.iter().flat_map(|r| r.all_words()).collect();
         let mut ok = true;
         for (k, &h) in new.iter().enumerate() {
             if old.iter().any(|&g| meets(g, h)) {
                 continue;
             }
-            // header words crossing the new gutter span the columns on both sides of it
+            // a new gutter is a full one (word-space gutters accepted for their aligned edges,
+            // such as `=` before a number, are not column breaks a header can span), and the
+            // header words crossing it span the columns on both sides of it
+            if h.1 - h.0 < p.min_gutter * size {
+                ok = false;
+                break;
+            }
             let (left, right) = (finer[k], finer[k + 1]);
-            for w in words.iter().filter(|w| w.x0 < h.1 && w.x1 > h.0) {
-                if !(w.x0 < left.1 && w.x1 > right.0) {
+            // both columns it separates are filled in most body rows (a word set apart in one
+            // row is not a column under a spanning header)
+            let rows: Vec<&Row> = body.iter().filter(|r| r.multi).collect();
+            let filled = |(a, b): (f64, f64)| {
+                rows.iter().filter(|r| r.all_words().any(|w| w.x1 > a && w.x0 < b)).count() * 2 >= rows.len()
+            };
+            if !filled(left) || !filled(right) {
+                ok = false;
+                break;
+            }
+            // each header cell crossing it reaches past the middle of both columns (a cell
+            // spanning them, not a long first-row cell running into the next column)
+            let mid = |(a, b): (f64, f64)| (a + b) / 2.0;
+            let mut crossed = false;
+            for c in header.iter().flat_map(|r| r.cells.iter()).filter(|c| c.x0 < h.1 && c.x1 > h.0) {
+                crossed = true;
+                if !(c.x0 < mid(left) && c.x1 > mid(right)) {
                     ok = false;
                 }
             }
+            ok &= crossed;
         }
         if !ok {
             continue;
@@ -753,15 +779,23 @@ fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) 
 /// Aligned content that is not a table even though its cells line up:
 /// - a bulleted list with amounts set flush right (every first-column cell a bullet);
 /// - a form: most filled cells are labels ending in a colon, with blanks to fill in;
-/// - typeset math (a matrix, a determinant, equations with numbers): most cells that are not
-///   numbers or equation numbers are math symbols, single variables, delimiter pieces or
-///   operators, and at least one holds a math symbol or a relation.
+/// - typeset math (a matrix, a determinant, a system of equations): at least two cells carry
+///   real math evidence and they outnumber the cells of words at least two to one.
+///
+/// Math evidence is what typesetting leaves and data tables do not: math alphanumerics
+/// (glyphs of a math font, U+1D400 on), the pieces and size variants of big delimiters,
+/// operators of analysis (nabla, partial, integrals, sums, products, roots), or a delimiter
+/// cut by the column gutter (a matrix row split into cells: `det A = |d`, `f |`, `A = (`).
+/// Comparison and arithmetic signs (`±`, `≥`, `=`, `→`), Greek letters, numbers and short
+/// letter labels are not evidence: `12.3 ± 0.4`, `≥ 90`, `= 5` and a `Grade | A` column are
+/// data, and those cells count for neither side.
 pub(crate) fn not_table_content(grid: &Grid) -> bool {
-    let cells: Vec<&str> = grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).collect();
+    let cells: Vec<&str> =
+        grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).take(100_000).collect();
     if cells.len() < 2 {
         return false;
     }
-    let keys: Vec<&str> = grid.iter().map(|r| strip(&r[0])).filter(|k| !k.is_empty()).collect();
+    let keys: Vec<&str> = grid.iter().filter_map(|r| r.first()).map(|k| strip(k)).filter(|k| !k.is_empty()).collect();
     if keys.len() >= 2 && keys.iter().all(|k| bullet(k)) {
         return true;
     }
@@ -769,48 +803,45 @@ pub(crate) fn not_table_content(grid: &Grid) -> bool {
     if colons >= 3 && colons * 5 >= cells.len() * 4 {
         return true;
     }
-    let (mut mathy, mut text, mut strong) = (0usize, 0usize, false);
+    let (mut evidence, mut text) = (0usize, 0usize);
     for c in &cells {
-        if c.contains('$') || crate::math::equation_label(c) || c.split_whitespace().all(numeric) {
+        if c.contains('$') {
             continue;
         }
-        let symbol = c.chars().any(math_char);
-        let operators = c.chars().all(|ch| ch.is_whitespace() || "()[]{}|=+-−,.;:<>/*·×".contains(ch) || math_char(ch));
-        let variable = {
-            let mut it = c.chars();
-            matches!((it.next(), it.next()), (Some(ch), None) if ch.is_lowercase())
-        };
-        if symbol || operators || variable {
-            mathy += 1;
-            strong |= symbol || c.contains('=');
-        } else if c
-            .split_whitespace()
-            .any(|w| w.chars().filter(|ch| ch.is_alphabetic()).count() >= 2 && !w.chars().any(math_char))
-        {
-            // a word: text, unless the cell is a formula with a function name (det A =)
-            if c.chars().any(|ch| ch == '=' || math_char(ch)) {
-                mathy += 1;
-                strong = true;
-            } else {
-                text += 1;
-            }
-        } else {
-            // indexed variables and short formulas (a11, A = ()
-            mathy += 1;
-            strong |= c.contains('=');
+        if c.chars().any(math_evidence_char) || cut_delimiter(c) {
+            evidence += 1;
+        } else if c.split_whitespace().any(|w| w.chars().filter(|ch| ch.is_alphabetic()).count() >= 2) {
+            text += 1;
         }
     }
-    strong && mathy >= 2 && mathy >= 2 * text
+    evidence >= 2 && evidence >= 2 * text
 }
 
-/// Math symbols, letters and delimiter pieces: arrows and operators, technical brackets and
-/// their extension pieces, math alphanumerics, combining marks over symbols and the variation
-/// selectors that mark sized delimiters.
-fn math_char(c: char) -> bool {
+/// Characters only typeset math draws: math alphanumerics, big-delimiter pieces and the
+/// combining marks and variation selectors of sized delimiters, and the operators of analysis.
+fn math_evidence_char(c: char) -> bool {
     matches!(c,
-        '\u{2190}'..='\u{22ff}' | '\u{2308}'..='\u{230b}' | '\u{239b}'..='\u{23b3}' | '\u{27c0}'..='\u{27ff}'
-        | '\u{2980}'..='\u{2aff}' | '\u{1d400}'..='\u{1d7ff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe00}'..='\u{fe0f}'
-        | '±' | '×' | '÷')
+        '\u{1d400}'..='\u{1d7ff}' | '\u{239b}'..='\u{23b3}' | '\u{20d0}'..='\u{20ff}' | '\u{fe00}'..='\u{fe0f}'
+        | '∇' | '∂' | '∫' | '∬' | '∭' | '∮' | '∑' | '∏' | '∐' | '√' | '∛' | '∜' | '⟨' | '⟩' | '‖')
+}
+
+/// A cell whose delimiters do not balance: an odd number of bars, or parentheses or brackets
+/// opened and not closed (or closed and not opened) in it. A matrix or determinant split into
+/// cells leaves its delimiters in the first and last cells of its rows; a data cell
+/// (`(n = 5)`, `[2]`, `12 (4%)`) closes what it opens.
+fn cut_delimiter(c: &str) -> bool {
+    let bars = c.chars().filter(|&ch| ch == '|' || ch == '∣').count();
+    let (mut paren, mut bracket) = (0i32, 0i32);
+    for ch in c.chars() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            _ => {}
+        }
+    }
+    bars % 2 == 1 || paren != 0 || bracket != 0
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -2361,5 +2392,20 @@ mod not_table_tests {
         ])));
         assert!(!not_table_content(&g(&[&["x", "f(x)"], &["0", "1"], &["1", "2"], &["2", "5"]])));
         assert!(!not_table_content(&g(&[&["Item", "Change"], &["Revenue", "+12.4%"], &["Margin", "−0.3%"]])));
+        // comparison and arithmetic signs, Greek letters and letter labels are data
+        assert!(!not_table_content(&g(&[
+            &["Sample", "Mean ± SD", "n"],
+            &["A", "12.3 ± 0.4", "5"],
+            &["B", "11.1 ± 0.6", "6"],
+            &["C", "9.8 ± 0.2", "4"],
+        ])));
+        assert!(!not_table_content(&g(&[&["Grade", "Score"], &["A", "≥ 90"], &["B", "80-89"], &["C", "< 70"]])));
+        assert!(!not_table_content(&g(&[&["Parameter", "Setting"], &["x", "= 5"], &["y", "= 10"], &["z", "= 2"]])));
+        assert!(!not_table_content(&g(&[&["Route", "Time"], &["A → B", "2 h"], &["B → C", "3 h"], &["σ", "0.4"]])));
+        assert!(!not_table_content(&g(&[
+            &["Group", "Count"],
+            &["Treated (n = 5)", "12 (40%)"],
+            &["Control [2]", "9 (31%)"]
+        ])));
     }
 }

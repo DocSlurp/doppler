@@ -9,7 +9,7 @@ T=${TMPDIR:-/tmp}
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w texlive/texlive:latest-medium \
   sh -c 'for f in booktabs grid norules matrix; do pdflatex -interaction=nonstopmode $f.tex >/dev/null; done'
 rm -f ./*.aux ./*.log
-for f in bordered borderless; do
+for f in bordered borderless signs signs-ruled; do
   chromium --headless=new --no-sandbox --disable-gpu --no-pdf-header-footer --user-data-dir="$T/chr-$$" \
     --print-to-pdf="$PWD/$f.pdf" "file://$PWD/$f.html"
 done
