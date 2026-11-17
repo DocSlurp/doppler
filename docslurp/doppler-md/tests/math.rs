@@ -1278,3 +1278,24 @@ fn numbers_set_apart_are_never_fused() {
     let v: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
     assert_eq!(v["mathUncertainRegions"][0]["reason"], "doubt", "{v}");
 }
+
+#[test]
+fn equations_with_sums_and_rows_below_their_delimiters_are_formulas() {
+    // a display with a big summation and big parentheses, and two more full-size rows under
+    // the parentheses' reach: an equation, not rows of a table grouped by a delimiter
+    let big =
+        |x: f64, t: &'static str, n: &'static str, b: f64| G { x, w: 7.0, f: 3, t, n: Some(n), src: 't', b: Some(b) };
+    let main = vec![
+        w(vec![g(250.0, 6.0, 1, "x")], 200.0, 10.0),
+        w(vec![g(258.0, 6.0, 2, "=")], 200.0, 10.0),
+        w(vec![G { x: 266.0, w: 10.0, f: 3, t: "X", n: Some("summationdisplay"), src: 'c', b: None }], 190.0, 10.0),
+        w(vec![big(278.0, "(", "parenleftbig", 192.0)], 192.0, 10.0),
+        w(vec![g(286.0, 6.0, 1, "a")], 200.0, 10.0),
+        w(vec![big(294.0, ")", "parenrightbig", 192.0)], 192.0, 10.0),
+    ];
+    let below1 = vec![w(vec![g(266.0, 6.0, 1, "b"), g(274.0, 6.0, 2, "+"), g(282.0, 6.0, 1, "c")], 214.0, 10.0)];
+    let below2 = vec![w(vec![g(266.0, 6.0, 1, "d"), g(274.0, 6.0, 2, "+"), g(282.0, 6.0, 1, "e")], 224.0, 10.0)];
+    let (md, report) = convert(&page(&[prose(150.0), main, below1, below2, prose(300.0)], &[]), &MATH);
+    assert!(md.contains("\\sum"), "{md}");
+    assert!(report.math.iter().map(|m| m.display + m.inline).sum::<usize>() >= 1, "{md}");
+}

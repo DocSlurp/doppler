@@ -53,8 +53,9 @@ fn adjacent_ruled_tables_own_their_titles_without_changing_an_earlier_heading() 
         )]
     );
     assert!(report.degraded.is_empty());
-    // 5 region units, 7 lines and 11 words laid out (324), and the ruled-table search (148)
-    assert_eq!((report.doc_work, report.page_work_max), (484, 477));
+    // 5 region units, 7 lines and 11 words laid out (324), and the ruled-table search (148,
+    // plus 16 for reading each rule group's bands once)
+    assert_eq!((report.doc_work, report.page_work_max), (500, 493));
 }
 
 #[test]

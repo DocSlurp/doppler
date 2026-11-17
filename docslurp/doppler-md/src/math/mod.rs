@@ -1715,6 +1715,10 @@ fn rows_beyond_delims(lines: &[LineMath], c: &[usize], body_end: &dyn Fn(&LineMa
     if atoms.len() > 4000 {
         return false;
     }
+    // an equation's operators (sums, integrals, radicals) make it a formula, whatever its rows
+    if atoms.iter().any(|a| matches!(a.sym.class, Class::LargeOp | Class::Radical)) {
+        return false;
+    }
     let tall = |a: &Atom| a.tex_ext || a.sym.big || a.sym.piece.is_some() || a.sym.class == Class::Piece;
     let spans: Vec<(f64, f64)> = atoms
         .iter()

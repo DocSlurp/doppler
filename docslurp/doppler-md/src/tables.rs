@@ -1698,8 +1698,16 @@ pub fn ruled_tables(
                 x0 - 2.0 <= mx && mx <= x1 + 2.0
             })
             .collect();
-        let mut bases: Vec<f64> = ids.iter().map(|&i| lines[i].base()).collect();
-        bases.sort_by(|x, y| fcmp(*x, *y));
+        // (base, several cells) of each line, by base: each test below is a binary search
+        let mut by_base: Vec<(f64, bool)> =
+            ids.iter().map(|&i| (lines[i].base(), segment_count(&lines[i], p) >= 2)).collect();
+        by_base.sort_by(|x, y| fcmp(x.0, y.0));
+        let near = |y: f64| {
+            let lo = by_base.partition_point(|e| e.0 < y - 1.0);
+            let hi = by_base.partition_point(|e| e.0 <= y + 1.0).max(lo);
+            &by_base[lo..hi]
+        };
+        let bases: Vec<f64> = by_base.iter().map(|e| e.0).collect();
         let mut rows = 0;
         let mut k = 0;
         while k < bases.len() {
@@ -1707,16 +1715,12 @@ pub fn ruled_tables(
             while j < bases.len() && bases[j] - bases[k] <= 1.0 {
                 j += 1;
             }
-            let multi = j - k >= 2
-                || ids.iter().any(|&i| (lines[i].base() - bases[k]).abs() <= 1.0 && segment_count(&lines[i], p) >= 2);
+            let multi = j - k >= 2 || near(bases[k]).iter().any(|e| e.1);
             rows += multi as usize;
             k = j;
         }
         // the other lines continue the row's first cell: they start where it starts
-        let in_row = |i: usize| {
-            segment_count(&lines[i], p) >= 2
-                || ids.iter().filter(|&&j| (lines[j].base() - lines[i].base()).abs() <= 1.0).count() >= 2
-        };
+        let in_row = |i: usize| segment_count(&lines[i], p) >= 2 || near(lines[i].base()).len() >= 2;
         let first_x = ids.iter().filter(|&&i| in_row(i)).map(|&i| lines[i].x0).fold(f64::INFINITY, pmin);
         let wraps_first = ids.iter().all(|&i| in_row(i) || (lines[i].x0 - first_x).abs() <= 2.0);
         // the row fills its band: wrapped lines under it, and no empty space above or below
@@ -1842,34 +1846,41 @@ pub fn ruled_tables(
             }
             Some(any)
         };
+        // each band's reading, once per group (one row whose first cell wraps; its rows of
+        // cells), charged by the lines it visits
+        let bands: Vec<(bool, usize)> = if ys.len() <= 200 {
+            let lo = by_mid.partition_point(|&(m, _)| m <= ys[0]);
+            let hi = by_mid.partition_point(|&(m, _)| m < ys[ys.len() - 1]).max(lo);
+            if !budget.spend(ys.len() + 2 * (hi - lo)) {
+                return None;
+            }
+            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1)).collect()
+        } else {
+            Vec::new()
+        };
+        let multi_bands = bands.iter().filter(|b| b.1 > 1).count();
         // a rule under every row: no band between two rules holds two rows of cells
         // (thin stroked rules across the whole group, no vertical rule, each band one row)
         let full_rule = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
         let every_row_ruled = v.is_empty()
             && ys.len() >= 4
-            && ys.len() <= 200
+            && !bands.is_empty()
             && ys.iter().all(|&y| full_rule(y))
-            && ys.windows(2).all(|w| one_row_band(w[0], w[1], g.x0, g.x1).1 == 1);
+            && bands.iter().all(|b| b.1 == 1);
         let mut cur: Vec<f64> = ys.first().copied().into_iter().collect();
-        for w in ys.windows(2) {
+        for (k, w) in ys.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
             // (a booktabs body between a middle and a bottom rule that both span the table is
             // no jump; column underlines of an accounting table are not such rules)
             let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
-            // (a booktabs table has a few rules: top, middle, partial and bottom; a group of
-            // more rules is ruled row by row, and a tall band there is a gap between tables)
             // (not in a group ruled row by row: when every other band holds one row at most,
             // a tall band of several rows is the gap between two stacked tables)
-            let row_ruled = ys.len() >= 5
-                && ys.len() <= 200
-                && ys.windows(2).filter(|w| w[0] != a).all(|w| one_row_band(w[0], w[1], g.x0, g.x1).1 <= 1);
+            let band = bands.get(k).copied().unwrap_or((false, usize::MAX));
+            let row_ruled = ys.len() >= 5 && !bands.is_empty() && multi_bands - (band.1 > 1) as usize == 0;
             let booktabs_body = v.is_empty() && !row_ruled && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
             // (nor is a band that holds one row whose cell wraps to several lines: a rule after
             // every row, one row taller than the rest)
-            let jump = b - a > limit
-                && gaps.len() >= 3
-                && !booktabs_body
-                && !(one_row_band(a, b, g.x0, g.x1).0 && every_row_ruled);
+            let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body && !(band.0 && every_row_ruled);
             if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }

@@ -338,3 +338,68 @@ fn stacked_row_ruled_tables_stay_apart() {
         assert!(table(&md).iter().all(|l| !l.contains("Cash flow highlights")), "{md}");
     }
 }
+
+/// Ten pages of 200 thin full-width rules with 95 tiny one-word lines between each pair, beside
+/// a block of large prose: each band between two rules is read once per rule group (reading
+/// every other band again for each band made the ten pages take about 9 s, against 2.7 s).
+#[test]
+fn many_rule_bands_are_read_once() {
+    let Some(exe) = pdftotext() else { return };
+    let (rules, per, pitch) = (200usize, 95usize, 1.3f64);
+    let band = (per + 1) as f64 * pitch;
+    let h = (rules as f64 * band + 100.0).max(300.0 * 24.0 + 100.0);
+    let mut ops = String::from("0.3 w\n");
+    let mut y = h - 50.0;
+    for r in 0..rules {
+        ops += &format!("50 {y:.3} m 550 {y:.3} l S\n");
+        if r + 1 < rules {
+            ops += &format!("BT /F1 {:.2} Tf\n", pitch * 0.8);
+            for j in 0..per {
+                ops += &format!("1 0 0 1 60 {:.3} Tm (w) Tj\n", y - (j + 1) as f64 * pitch);
+            }
+            ops += "ET\n";
+        }
+        y -= band;
+    }
+    ops += "BT /F1 20 Tf\n";
+    let words = "the quarterly results beat every estimate and the team flew to london to open a new office ".repeat(3);
+    for j in 0..300 {
+        ops += &format!("1 0 0 1 700 {} Tm ({}) Tj\n", h - 50.0 - j as f64 * 24.0, &words[..200]);
+    }
+    ops += "ET\n";
+    // ten pages sharing one content stream (objects 3 and 4), the pages from object 5
+    let pages = 10;
+    let kids: Vec<String> = (0..pages).map(|k| format!("{} 0 R", 5 + k)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {pages} >>", kids.join(" ")),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{ops}endstream", ops.len()),
+    ];
+    for _ in 0..pages {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 3400 {h:.0}] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>"
+        ));
+    }
+    let mut pdf = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    let mut tail = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for o in offsets {
+        tail += &format!("{o:010} 00000 n \n");
+    }
+    tail += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+    pdf.extend_from_slice(tail.as_bytes());
+    let path = std::env::temp_dir().join(format!("rule-bands-{}.pdf", std::process::id()));
+    std::fs::write(&path, pdf).unwrap();
+    let t = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_pdftomarkdown")).arg(&path).env("PDFTOTEXT", &exe).output().unwrap();
+    let took = t.elapsed();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
