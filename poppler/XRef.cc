@@ -701,6 +701,7 @@ XRef::RepairGuard::~RepairGuard()
 {
     if (--xref->repairSuppressed == 0) {
         xref->objStrsGuarded.clear();
+        xref->keptOrder[3].clear();
         xref->shapedByKind[static_cast<int>(GuardKind::Scope)].clear();
         xref->repairedByKind[static_cast<int>(GuardKind::Scope)].clear();
         xref->failedByKind[static_cast<int>(GuardKind::Scope)].clear();
@@ -1158,6 +1159,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     objStrsGuarded.clear();
     for (auto &kept : objStrsByKind) {
         kept.clear();
+    }
+    for (auto &order : keptOrder) {
+        order.clear();
     }
     for (auto &shaped : shapedByKind) {
         shaped.clear();
@@ -1768,7 +1772,17 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             if (suppressedRepairs != repairsBefore) {
                 repairedByKind[kind][at] = shapedRefusals != shapedBefore;
             }
+            // at most maxKeptGuardedObjStrs a kind: past it the oldest parse is dropped (a later
+            // read parses it again; returned objects share their data, so nothing dangles), so
+            // reads reaching one object stream after another (a document giving every page's
+            // structure entry its own stream) cannot hold every stream they ever parsed
+            auto &order = keptOrder[guardKind == GuardKind::Scope ? 3 : kind - 1];
+            while (kept->size() >= maxKeptGuardedObjStrs && !order.empty()) {
+                kept->erase(order.front());
+                order.pop_front();
+            }
             kept->emplace(at, std::unique_ptr<ObjectStream>(once.release()));
+            order.push_back(at);
             return result;
         } else {
             // an object stream that failed to read is not decoded again for each object that lives in it
