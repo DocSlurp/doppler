@@ -106,6 +106,46 @@ fn make_pdf() -> Vec<u8> {
     pdf
 }
 
+/// One page: prose, a booktabs table (heavier top and bottom rules, three columns, a header and
+/// three rows) and a footnote rule.
+fn make_booktabs_pdf() -> Vec<u8> {
+    let row = |y: i32, cells: [&str; 3]| -> String {
+        [80, 200, 320].iter().zip(cells).map(|(x, t)| format!("BT /F1 10 Tf {x} {y} Td ({t}) Tj ET\n")).collect()
+    };
+    let mut c = String::new();
+    for k in 0..3 {
+        c += &format!("BT /F1 10 Tf 72 {} Td (Revenue rose in every region again this quarter.) Tj ET\n", 740 - 12 * k);
+    }
+    c += "0.8 w 72 650 m 400 650 l S\n";
+    c += &row(638, ["Region", "Growth", "Margin"]);
+    c += "0.5 w 72 630 m 400 630 l S\n";
+    c += &row(618, ["North", "12.5", "31"]);
+    c += &row(604, ["South", "9.1", "28"]);
+    c += &row(590, ["West", "14.2", "35"]);
+    c += "0.8 w 72 582 m 400 582 l S\n0.4 w 72 120 m 160 120 l S\n";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        format!("<< /Length {} >>\nstream\n{c}endstream", c.len()),
+    ];
+    let mut pdf: Vec<u8> = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend(format!("{} 0 obj\n{o}\nendobj\n", i + 1).bytes());
+    }
+    let xref = pdf.len();
+    let mut tail = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
+    for o in offsets {
+        tail += &format!("{o:010} 00000 n \n");
+    }
+    tail += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
+    pdf.extend(tail.bytes());
+    pdf
+}
+
 fn md(pdftotext: &Path, args: &[&str], pdf: &Path) -> Output {
     Command::new(PDFTOMARKDOWN).args(args).arg(pdf).env("PDFTOTEXT", pdftotext).output().unwrap()
 }
@@ -122,12 +162,16 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
     let s = Scratch::new("file");
     let pdf = s.0.join("doc.pdf");
     std::fs::write(&pdf, make_pdf()).unwrap();
-    for (level, extra) in
-        [("basic", vec![]), ("full", vec![]), ("basic", vec!["--page-facts-include", "vectors,forms"])]
-    {
+    for (level, extra) in [
+        ("basic", vec![]),
+        ("full", vec![]),
+        ("basic", vec!["--page-facts-include", "vectors,forms"]),
+        ("basic", vec!["--page-facts-include", "mathtables"]),
+    ] {
         for range in [vec![], vec!["-f", "2", "-l", "3"]] {
             for mode in [vec!["--stream", "--markers"], vec![]] {
-                let f = s.0.join(format!("facts-{level}-{}-{}-{}.jsonl", extra.len(), range.len(), mode.len()));
+                let tag = extra.last().map_or(String::new(), |e| e.replace(',', "_"));
+                let f = s.0.join(format!("facts-{level}-{tag}-{}-{}.jsonl", range.len(), mode.len()));
                 let fs = f.to_str().unwrap();
                 let mut args: Vec<&str> = mode.clone();
                 args.extend(&range);
@@ -504,4 +548,39 @@ fn an_unterminated_last_facts_line_is_dropped() {
             .count(),
         0
     );
+}
+
+/// The mathtables family reaches the facts file: at full a booktabs table (vectors.ruleTables,
+/// tableBits bit 2 `booktabs`); with `--page-facts-include mathtables` at basic only the three
+/// packed words are added, the same as pdfpagefacts writes, and the Markdown does not change.
+#[test]
+fn math_table_facts_reach_the_page_lines() {
+    let Some((pdftotext, facts_exe)) = tools() else { return };
+    let s = Scratch::new("mathtables");
+    let pdf = s.0.join("booktabs.pdf");
+    std::fs::write(&pdf, make_booktabs_pdf()).unwrap();
+    let full = String::from_utf8(pdfpagefacts(&facts_exe, &["-level", "full"], &pdf)).unwrap();
+    let page: serde_json::Value = serde_json::from_str(full.lines().nth(1).unwrap()).unwrap();
+    let tables = page["vectors"]["ruleTables"].as_array().unwrap();
+    assert_eq!(tables.len(), 1, "{tables:?}");
+    assert_eq!(tables[0]["style"], "booktabs");
+    assert_eq!(
+        (tables[0]["rows"].as_u64(), tables[0]["columns"].as_u64(), tables[0]["hRules"].as_u64()),
+        (Some(4), Some(3), Some(3))
+    );
+    assert_eq!(page["tableBits"].as_u64(), Some(1 << 2));
+    assert_eq!(page["tableFlags"], serde_json::json!(["booktabs"]));
+    assert_eq!(page["mathBits"].as_u64(), Some(0));
+
+    let f = s.0.join("packed.jsonl");
+    let with = md(&pdftotext, &["--page-facts", f.to_str().unwrap(), "--page-facts-include", "mathtables"], &pdf);
+    assert_eq!(with.status.code(), Some(0), "{}", String::from_utf8_lossy(&with.stderr));
+    assert_eq!(with.stdout, md(&pdftotext, &[], &pdf).stdout, "Markdown changed by mathtables facts");
+    let got = std::fs::read(&f).unwrap();
+    assert_eq!(got, pdfpagefacts(&facts_exe, &["-include", "mathtables"], &pdf));
+    let packed: serde_json::Value =
+        serde_json::from_str(String::from_utf8(got).unwrap().lines().nth(1).unwrap()).unwrap();
+    assert_eq!(packed["tableBits"], page["tableBits"]);
+    assert_eq!(packed["encodingCounts"], page["encodingCounts"]);
+    assert!(packed.get("vectors").is_none() && packed.get("tableFlags").is_none(), "{packed}");
 }

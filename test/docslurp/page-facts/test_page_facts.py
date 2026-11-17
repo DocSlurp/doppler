@@ -664,6 +664,55 @@ with t.TempDir() as d:
     t.check(rc == 0 and facts(paths["geometry"], "-confine", "require")[1] == out, "default -confine is require (confined here)", repr((rc, err)))
     t.check(facts(paths["geometry"], "-timeout", "x")[0] == 99 and facts(paths["geometry"], "-timeout", "30")[0] == 0, "-timeout is checked")
 
+    # --- mathtables: math and table encodings -----------------------------------------------------------------------------------------------
+    # The bit order is an API (README, Math and table encodings): pinned here, appended only.
+    MATH_BITS = ["text-math", "stacked-math", "actualtext-tex", "alt-tex", "mathml", "raster-strips", "glyph-outlines", "type3-bitmap-font", "math-font-no-unicode", "plain-unicode-math", "formula-struct", "math-matrix", "analysis-truncated"]
+    TABLE_BITS = ["rule-grid", "hrule-open", "booktabs", "whitespace", "shaded-rows", "tagged-table", "raster-table-like", "outlined-text-grid", "math-grid", "analysis-truncated"]
+    t.check(SCHEMA["$defs"]["mathFlag"]["enum"] == MATH_BITS and SCHEMA["$defs"]["tableFlag"]["enum"] == TABLE_BITS, "mathtables: schema vocabularies in bit order")
+    ls = lines(facts(paths["math_tables"], "-level", "full")[1])
+    pages = {l["page"]: l for l in ls if l["type"] == "page"}
+    for n, pg in pages.items():
+        t.check(pg["mathFlags"] == [b for i, b in enumerate(MATH_BITS) if pg["mathBits"] >> i & 1] and pg["tableFlags"] == [b for i, b in enumerate(TABLE_BITS) if pg["tableBits"] >> i & 1], "mathtables p%d: flags are the bits by position" % n, repr(pg["mathFlags"]))
+    want_tables = {1: 1 << 2, 2: 1 << 1, 3: 0, 4: 1 << 3, 5: 1 << 4, 6: 1 << 6, 7: 0, 8: 1 << 5, 9: 1 << 8, 10: 0}
+    want_math = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 1 << 5, 7: 1 << 7, 8: (1 << 2) | (1 << 3) | (1 << 4) | (1 << 10), 9: (1 << 0) | (1 << 1) | (1 << 9) | (1 << 11), 10: 1 << 6}
+    for n in range(1, 11):
+        t.check(pages[n]["tableBits"] == want_tables[n] and pages[n]["mathBits"] == want_math[n], "mathtables p%d: mathBits %d tableBits %d" % (n, want_math[n], want_tables[n]), repr((pages[n]["mathFlags"], pages[n]["tableFlags"])))
+    p1, p2 = pages[1]["vectors"]["ruleTables"], pages[2]["vectors"]["ruleTables"]
+    t.check(len(p1) == 1 and p1[0]["style"] == "booktabs" and p1[0]["rows"] == 4 and p1[0]["columns"] == 3 and p1[0]["hRules"] == 3, "ruleTables: booktabs (heavier top and bottom), not the heading or footnote rule", repr(p1))
+    t.check(len(p2) == 1 and p2[0]["style"] == "open" and p2[0]["rows"] == 4 and p2[0]["hRules"] == 5, "ruleTables: open style", repr(p2))
+    t.check(pages[3]["vectors"]["ruleTables"] == [] and pages[3]["tableBits"] == 0, "ruleTables: lined paper and form lines are no table")
+    items = pages[6]["images"]["items"]
+    t.check([(i["stripLike"], i["inTextFlow"]) for i in items] == [(True, True), (False, True), (False, True)] and pages[6]["images"]["mathStrips"] == 1, "images: one formula strip in the flow", repr(items))
+    t.check(pages[7]["fonts"]["mathClasses"]["type3Bitmap"] == 12, "fonts: Type 3 image-mask glyphs are type3Bitmap", repr(pages[7]["fonts"]["mathClasses"]))
+    t.check(pages[9]["fonts"]["mathClasses"] == {"texType1": 7, "otfMath": 2, "officeMath": 1, "webMath": 1, "symbol": 1, "type3Bitmap": 0, "text": 183}, "fonts: CMMI, STIX Math (name), MATH table (embedded), Cambria Math, KaTeX, Symbol", repr(pages[9]["fonts"]["mathClasses"]))
+    t.check(pages[9]["text"]["unicodeMath"]["operators"] == 3 and pages[9]["text"]["unicodeMath"]["greek"] >= 1 and pages[9]["text"]["unicodeMath"]["scripts"] == 1, "text: unicodeMath blocks", repr(pages[9]["text"]["unicodeMath"]))
+    t.check(pages[9]["mathLayout"]["fractionBars"] == 1 and pages[9]["mathLayout"]["matrixRegions"] == 1, "mathLayout: a fraction bar and a 2x2 matrix", repr(pages[9]["mathLayout"]))
+    st = pages[8]["structure"]
+    t.check(
+        st == {"formulas": 1, "tables": 1, "tableRows": 1, "tableCells": 1, "spannedCells": 1, "mathml": 2, "mathmlFiles": 1, "altText": 1, "altTextTexLike": 1, "actualText": 1, "actualTextTexLike": 1, "markedActualText": 1, "markedActualTextTexLike": 1, "truncated": False},
+        "structure: Formula, role-mapped Table, spanned cell, MathML elements and file, TeX Alt and ActualText", repr(st))
+    t.check(pages[10]["vectors"]["glyphOutlineClusters"] == 1 and [r["kind"] for r in pages[10]["mathRegions"]] == ["outline"], "vectors: a glyph-outline formula, an outline region", repr(pages[10].get("mathRegions")))
+    t.check(all(b"PlainFace" not in l and b"CMMI" not in l and b"\\\\frac" not in l and b"KaTeX" not in l for l in facts(paths["math_tables"], "-level", "full")[1].splitlines()), "mathtables: no font name or Alt text in the output")
+    # the cheap router form: basic plus three integers; basic alone unchanged
+    packed = lines(facts(paths["math_tables"], "-include", "mathtables")[1])
+    basic = lines(facts(paths["math_tables"])[1])
+    for a, b in zip([l for l in packed if l["type"] == "page"], [l for l in basic if l["type"] == "page"]):
+        extra = {k: v for k, v in a.items() if k not in b}
+        t.check(set(extra) == {"mathBits", "tableBits", "encodingCounts"} and {k: a[k] for k in b} == b, "-include mathtables p%d: basic plus the packed words" % a["page"], repr(sorted(extra)))
+        full = pages[a["page"]]
+        t.check((a["mathBits"], a["tableBits"], a["encodingCounts"]) == (full["mathBits"], full["tableBits"], full["encodingCounts"]), "-include mathtables p%d: the same words as full" % a["page"])
+    enc = pages[1]["encodingCounts"]
+    t.check(enc >> 36 & 15 == 1 and enc < 1 << 52, "encodingCounts: rule tables in nibble 9 as log2 buckets, 52 bits", repr(enc))
+    # hostile: cycles in the parent tree and the /P chain, a 200,000-pair parent tree, 20,000
+    # glyph procedures, a table directory claiming 65,535 tables, 3,000 rules: bounded and quick
+    start = time.monotonic()
+    rc, out, err = facts(paths["math_tables_hostile"], "-level", "full")
+    t.check(rc == 0 and time.monotonic() - start < 20, "mathtables hostile: exit 0, bounded time", "%r %.1fs" % (rc, time.monotonic() - start))
+    hs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
+    t.check(hs[2]["structure"]["formulas"] == 1 and hs[2]["structure"]["tables"] == 1, "mathtables hostile: a cyclic /P chain counts each element once", repr(hs[2]["structure"]))
+    t.check(hs[4]["mathBits"] >> 12 & 1 and hs[4]["tableBits"] >> 9 & 1 and "limit-hit" in hs[4]["parseWarnings"], "mathtables hostile: the page's analysis budget runs out: analysis-truncated, limit-hit", repr(hs[4]["mathFlags"]))
+    t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
+
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------
     td = os.path.join(args.testdata, "unittestcases") if args.testdata else ""
     if td and os.path.isdir(td):

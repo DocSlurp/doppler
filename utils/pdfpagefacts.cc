@@ -83,7 +83,7 @@ static bool printHelp = false;
 static const ArgDesc argDesc[] = { { .arg = "-f", .kind = argInt, .val = &firstPage, .size = 0, .usage = "first page" },
                                    { .arg = "-l", .kind = argInt, .val = &lastPage, .size = 0, .usage = "last page" },
                                    { .arg = "-level", .kind = argString, .val = levelArg, .size = sizeof(levelArg), .usage = "basic or full (default basic)" },
-                                   { .arg = "-include", .kind = argString, .val = includeArg, .size = sizeof(includeArg), .usage = "families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure" },
+                                   { .arg = "-include", .kind = argString, .val = includeArg, .size = sizeof(includeArg), .usage = "families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure,mathtables" },
                                    { .arg = "-opw", .kind = argString, .val = ownerPassword, .size = sizeof(ownerPassword), .usage = "owner password (for encrypted files)" },
                                    { .arg = "-upw", .kind = argString, .val = userPassword, .size = sizeof(userPassword), .usage = "user password (for encrypted files)" },
                                    { .arg = "-max-pages", .kind = argString, .val = maxPagesArg, .size = sizeof(maxPagesArg), .usage = "stop with exit code 3 after this many pages (default 100000)" },

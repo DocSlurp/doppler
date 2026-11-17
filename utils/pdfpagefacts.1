@@ -1,5 +1,5 @@
 .\" Copyright 2026 DocSlurp
-.TH pdfpagefacts 1 "13 November 2026"
+.TH pdfpagefacts 1 "16 November 2026"
 .SH NAME
 pdfpagefacts \- page facts of a PDF as JSON lines, for routing pages
 .SH SYNOPSIS
@@ -23,7 +23,9 @@ and by word centre) and its encoded bytes per pixel, from the stream's declared 
 decoded), fonts, odd characters, vector drawing (paths, rules, a grid score, the ruled grids pdftomarkdown's table
 search starts from with their boxes, rows and columns and, per grid, its distinct thin
 horizontal and vertical rule lines and how many of its four sides carry one, shadings, patterns, clips, figure
-clusters), form fields, annotations
+clusters), math and table encodings (the
+.B mathtables
+family, below), form fields, annotations
 and optional content, plus document-level facts (version, encryption, xref state,
 structure, forms, layers) and a stable vocabulary of
 .I unusualFeatures
@@ -71,7 +73,10 @@ detection, parse warnings and features; full: every family.
 Families added to basic, comma-separated: fonts, oddtext, images-detail (per-image items,
 words inside and centred inside, bytes per pixel), vectors (including ruled grids and their
 thin-rule counts), forms, annots, ocg,
-structure.
+structure, mathtables (the packed math and table words below; with the other families, their
+readable fields). Basic alone does not include mathtables;
+.B "\-include mathtables"
+at basic adds only three integers a page.
 .TP
 .BI \-opw " password"
 Owner password.
@@ -126,6 +131,44 @@ Print usage information.
 and
 .B \-\-help
 are equivalent.)
+.SH MATH AND TABLE ENCODINGS
+With the
+.B mathtables
+family each page line carries three integers, one fact per route the router tells apart
+(never one score); the bit order is an API and bits are only appended.
+.PP
+.I mathBits
+(bit 0 first): text-math (math-font characters with Unicode), stacked-math (fraction bars or
+vertically stacked math glyphs), actualtext-tex, alt-tex, mathml (MathML structure elements or
+an associated MathML file), raster-strips (short wide images in the text flow),
+glyph-outlines (small curve-dense drawing in the text flow), type3-bitmap-font,
+math-font-no-unicode, plain-unicode-math (scripts, operators or math alphanumerics in text
+fonts), formula-struct, math-matrix (a grid of math glyphs), analysis-truncated.
+.PP
+.I tableBits
+(bit 0 first): rule-grid, hrule-open, booktabs, whitespace (gutter-aligned rows, no rules),
+shaded-rows, tagged-table, raster-table-like (an image shape and codec, never decoded),
+outlined-text-grid, math-grid (a grid of math glyphs: not a table route),
+analysis-truncated.
+.PP
+.I encodingCounts
+packs 13 four-bit log2 buckets (0 for 0, else floor(log2 n)+1, at most 15; nibble i at bits
+4i to 4i+3): math-font characters with Unicode, plain Unicode math characters, unreadable math
+glyphs, math strips, glyph-outline clusters, Formula elements, TeX sources (Alt and
+ActualText), MathML, ruled grids, rule tables, whitespace tables, Table elements, math regions.
+.PP
+At
+.B full
+the readable fields come too: text.unicodeMath, fonts.mathClasses (glyphs by a fixed font-class
+vocabulary: texType1, otfMath, officeMath, webMath, symbol, type3Bitmap, text; never a name),
+images.items[].stripLike and inTextFlow, images.mathStrips, vectors.glyphOutlineClusters,
+vectors.ruleTables (horizontal-rule tables, booktabs or open, at most 64), the page's
+structure object (Formula, Table, TR, TD/TH, spanned cells, MathML, Alt and ActualText, TeX-like
+counts), mathRegions (text, outline and raster boxes, at most 64), mathLayout, tableLayout,
+mathFlags and tableFlags (the bits as names). docslurp/page-facts/README.md has the exact
+rules and bounds. These facts read a Type 3 font's first 8 glyph procedures (1 KB each), the
+first 4 KB of an embedded font program, the page's structure (at most 65,536 objects) and
+2 KB of an associated file without a type, all without rebuilding the cross-reference table.
 .SH EXIT CODES
 .TP
 0
