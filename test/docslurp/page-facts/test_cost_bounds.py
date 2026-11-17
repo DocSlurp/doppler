@@ -98,11 +98,11 @@ class Doc:
         out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (self.n + 1, cat, xref)
         return bytes(out)
 
-    def pages(self, contents, resources="", catalog_extra="", page_extra=""):
+    def pages(self, contents, resources="", catalog_extra="", page_extra="", media="0 0 612 792"):
         """One page per content stream object number (repeats allowed); returns the PDF bytes."""
         pages = self.reserve()
         res = resources if isinstance(resources, list) else [resources] * len(contents)
-        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << %s >> %s >>" % (pages, c, r, page_extra)) for c, r in zip(contents, res)]
+        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [%s] /Contents %d 0 R /Resources << %s >> %s >>" % (pages, media, c, r, page_extra)) for c, r in zip(contents, res)]
         self.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), pages)
         root = self.add("<< /Type /Catalog /Pages %d 0 R %s >>" % (pages, catalog_extra))
         out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
@@ -530,6 +530,35 @@ def font_objects(kind, size=4000000, pages=30):
     return d.write_objstm(cat, groups)
 
 
+def fail_open(case, n):
+    """One 1200 x 1600 page whose mathtables signal sits past a list cap (council #51 final-7):
+    "words": <n> single-glyph CMMI10 words in staggered rows (never stacked), then a CMMI fraction
+    a/b with its bar at the bottom (past 4,096 math words its words are not looked at); "imgs":
+    <n> table-ish images, then one formula strip beside prose (past the text pass's 2,000
+    images it is not seen). Either way the page must say analysis-truncated."""
+    d = Doc()
+    fh = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    fm = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>")
+    data = zlib.compress(bytes(200 * 20))
+    strip = d.add(b"<< /Type /XObject /Subtype /Image /Width 200 /Height 20 /BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /FlateDecode /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
+    prose = ["BT /H 10 Tf 40 %d Td (Revenue grew in every region this quarter and the team beat the plan again.) Tj ET" % y for y in range(60, 300, 14)]
+    ops = []
+    if case == "words":
+        for i in range(n):
+            r, c = divmod(i, 58)
+            ops.append("BT /M 8 Tf %.2f %.2f Td (x) Tj ET" % (20 + c * 20 + (r * 3.1) % 20, 1600 - 20 - r * 14))
+        ops += prose
+        ops.append("BT /M 8 Tf 600 110 Td (a) Tj ET 598 106 8 0.4 re f BT /M 8 Tf 600 99 Td (b) Tj ET")
+    else:
+        for i in range(n):
+            r, c = divmod(i, 40)
+            ops.append("q 20 0 0 20 %.2f %.2f cm /S Do Q" % (20 + c * 29, 1600 - 40 - r * 22 % 1200))
+        ops += prose
+        ops.append("q 150 0 0 15 600 170 cm /S Do Q")
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content], resources="/Font << /H %d 0 R /M %d 0 R >> /XObject << /S %d 0 R >>" % (fh, fm, strip), media="0 0 1200 1600")
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -670,6 +699,15 @@ with t.TempDir() as d:
         print("  %s: basic %.0f MB, full %.0f MB" % (label, rss_b, rss_f))
     p2 = page(ls, 2)
     t.check("error" not in p2 and p2["text"]["wordCount"] == 4, "a page whose objects sit in their own object stream is drawn", repr(p2.get("error") or p2["text"]))
+
+    # a list cap that drops input a mathtables bit reads makes the page analysis-truncated
+    # (council #51 final-7): fail closed, never a silent "no stacked math" or "no strips"
+    for case, small, big in (("words", 100, 4500), ("imgs", 10, 2000)):
+        ok = [l for l in json.loads("[" + ",".join(cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "mathtables", d.write("fo-%s-%d.pdf" % (case, small), fail_open(case, small))])[1].decode().splitlines()) + "]") if l["type"] == "page"][0]
+        cut = [l for l in json.loads("[" + ",".join(cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "mathtables", d.write("fo-%s-%d.pdf" % (case, big), fail_open(case, big))])[1].decode().splitlines()) + "]") if l["type"] == "page"][0]
+        bit = 1 if case == "words" else 5  # stacked-math, raster-strips
+        t.check(ok["mathBits"] >> bit & 1 and not ok["mathBits"] >> 12 & 1, "%s below the cap: the signal is seen, nothing truncated" % case, repr(ok["mathBits"]))
+        t.check(cut["mathBits"] >> 12 & 1 and cut["tableBits"] >> 9 & 1, "%s past the cap: analysis-truncated" % case, repr(cut["mathBits"]))
 
     # font classes fetch nothing (council #51 final-5/6): a procedure, program or /XObject
     # dictionary in an object stream (or a procedure whose /Length is) is never reached by

@@ -2591,6 +2591,7 @@ size_t shadedRowTables(const std::vector<TextRule> &rules, const std::vector<AWo
             continue;
         }
         if (boxes.size() >= kMaxBarBoxes) {
+            budget.hit = true; // boxes past the cap are not looked at: analysis-truncated
             break;
         }
         boxes.push_back({ r.xMin, r.yMin, r.xMax, r.yMax });
@@ -4060,6 +4061,7 @@ void PageFacts::endPage(const TextPage &text)
     bool rTablesTruncated = false;
     size_t shadedTables = 0;
     uint64_t mathBits = 0, tableBits = 0, encodingCounts = 0;
+    bool inputCapped = false; // a list cap below dropped input a mathtables bit reads
     if (mt) {
         for (const State::WordBox &w : s.wordBoxes) {
             if (w.visible && std::isfinite(w.x0 + w.x1 + w.y0 + w.y1)) {
@@ -4102,8 +4104,12 @@ void PageFacts::endPage(const TextPage &text)
                 regions.push_back({ { g.xMin, g.yMin, g.xMax, g.yMax }, 1 });
             }
             // glyph-like drawing (outlined text): curve-dense, not a page-sized block
-            if (g.curves >= 20 && g.curves >= 4 * std::max<size_t>(g.paths, 1) && w <= 0.6 * pageW && h <= 0.5 * pageH && outlined.size() < 512) {
-                outlined.push_back(&g);
+            if (g.curves >= 20 && g.curves >= 4 * std::max<size_t>(g.paths, 1) && w <= 0.6 * pageW && h <= 0.5 * pageH) {
+                if (outlined.size() < 512) {
+                    outlined.push_back(&g);
+                } else {
+                    inputCapped = true;
+                }
             }
         }
         // a table of outlined text: an interior column (a cluster with side-by-side clusters
@@ -4144,8 +4150,12 @@ void PageFacts::endPage(const TextPage &text)
         // text math regions: math-font words merged into runs
         std::vector<FlowBox> mathWords;
         for (const AWord &w : aw) {
-            if (w.math && mathWords.size() < maxMathWords) {
-                mathWords.push_back({ w.x0, w.y0, w.x1, w.y1 });
+            if (w.math) {
+                if (mathWords.size() < maxMathWords) {
+                    mathWords.push_back({ w.x0, w.y0, w.x1, w.y1 });
+                } else {
+                    inputCapped = true;
+                }
             }
         }
         std::vector<MathGlyph> byX = s.mathGlyphs;
@@ -4186,8 +4196,12 @@ void PageFacts::endPage(const TextPage &text)
         std::vector<FlowBox> ruled;
         std::vector<double> vxs; // centres of vertical non-box rules, sorted
         for (const TextRule &r : text.getRules()) {
-            if (!r.box && !r.imageMask && r.yMax - r.yMin > r.xMax - r.xMin && std::isfinite(r.xMin + r.xMax) && vxs.size() < maxGridRules) {
-                vxs.push_back(0.5 * (r.xMin + r.xMax));
+            if (!r.box && !r.imageMask && r.yMax - r.yMin > r.xMax - r.xMin && std::isfinite(r.xMin + r.xMax)) {
+                if (vxs.size() < maxGridRules) {
+                    vxs.push_back(0.5 * (r.xMin + r.xMax));
+                } else {
+                    inputCapped = true;
+                }
             }
         }
         std::ranges::sort(vxs);
@@ -4230,8 +4244,12 @@ void PageFacts::endPage(const TextPage &text)
         std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
         for (const TextRule &r : text.getRules()) {
             const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
-            if (!r.box && !r.imageMask && std::isfinite(w) && std::isfinite(hh) && w >= hh && hh <= 2.0 && w <= 15 * body && bars.size() < maxGridRules) {
-                bars.push_back({ r.xMin, r.yMin, r.xMax, r.yMax });
+            if (!r.box && !r.imageMask && std::isfinite(w) && std::isfinite(hh) && w >= hh && hh <= 2.0 && w <= 15 * body) {
+                if (bars.size() < maxGridRules) {
+                    bars.push_back({ r.xMin, r.yMin, r.xMax, r.yMax });
+                } else {
+                    inputCapped = true;
+                }
             }
         }
         std::vector<FlowBox> matrices;
@@ -4251,7 +4269,10 @@ void PageFacts::endPage(const TextPage &text)
             }
             whitespace += !matrix;
         }
-        const bool truncatedAnalysis = budget.hit || s.markedTexUnknown || s.mathGlyphsTruncated || rTablesTruncated || gridsTruncated;
+        // every cap that dropped input a bit reads: the analysis budget, the lists above, the
+        // text pass's page image (2,000) and rule caps, and the drawing-cluster budget. (The
+        // vectors family's own path count is not input here: it differs by level.)
+        const bool truncatedAnalysis = budget.hit || s.markedTexUnknown || s.mathGlyphsTruncated || rTablesTruncated || gridsTruncated || inputCapped || text.getImagesPageTruncated() || text.getRulesPageTruncated() || graphicsLimit;
         const uint64_t texSources = s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
