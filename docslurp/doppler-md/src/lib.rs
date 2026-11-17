@@ -1053,7 +1053,7 @@ impl<'p> Converter<'p> {
             }
         }
         if self.o.math {
-            let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
+            let (lines, stats) = math::rewrite_page_with(&page, &math::MathOptions::default(), Some(self.p));
             page.lines = lines;
             if emitted {
                 let pi = local - self.win.skip;

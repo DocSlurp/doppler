@@ -1,0 +1,26 @@
+\documentclass{article}
+\usepackage{amsmath}
+\pagestyle{empty}
+\newcommand{\blockb}[2]{$\left[\begin{array}{c}\text{1$\times$1, #1}\\ \text{3$\times$3, #1}\\ \text{1$\times$1, #1}\end{array}\right]$$\times$#2}
+\begin{document}
+Table 1 lists the architectures. Building blocks are shown in brackets.
+
+\begin{center}
+\begin{tabular}{c|c|c|c}
+\hline
+layer name & output size & 18-layer & 34-layer \\
+\hline
+conv1 & 112$\times$112 & \multicolumn{2}{c}{7$\times$7, 64, stride 2} \\
+\hline
+conv2\_x & 56$\times$56 & \blockb{64}{2} & \blockb{64}{3} \\
+\hline
+conv3\_x & 28$\times$28 & \blockb{128}{2} & \blockb{128}{4} \\
+\hline
+conv4\_x & 14$\times$14 & \blockb{256}{2} & \blockb{256}{6} \\
+\hline
+conv5\_x & 7$\times$7 & \blockb{512}{2} & \blockb{512}{3} \\
+\hline
+\end{tabular}
+\end{center}
+The deeper network trains faster.
+\end{document}

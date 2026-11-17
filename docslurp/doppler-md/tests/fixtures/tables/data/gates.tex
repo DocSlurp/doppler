@@ -1,0 +1,20 @@
+\documentclass{article}
+\usepackage{amsmath,booktabs}
+\pagestyle{empty}
+\begin{document}
+Table 1 lists the standard single-qubit gates used in the compiler.
+
+\begin{table}[h]\centering
+\begin{tabular}{lll}
+\toprule
+Gate & Matrix & Cost \\
+\midrule
+Pauli-X & $\begin{pmatrix}0&1\\1&0\end{pmatrix}$ & 1 \\[8pt]
+Pauli-Z & $\begin{pmatrix}1&0\\0&-1\end{pmatrix}$ & 1 \\[8pt]
+Hadamard & $\frac{1}{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix}$ & 2 \\[8pt]
+Phase & $\begin{pmatrix}1&0\\0&i\end{pmatrix}$ & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+After the table the text continues with an ordinary paragraph of prose.
+\end{document}

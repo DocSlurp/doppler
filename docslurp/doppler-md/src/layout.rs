@@ -99,14 +99,18 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
         for i in 0..rs.len() {
             let l = rs[i];
             let tol = p.row_tol * pmax(l.size(), 1.0);
+            // a continuation is alone on its baseline among the right lines (a row of several
+            // cells there is a row of its own, not a wrapped line)
+            let alone = || !rs.iter().enumerate().any(|(k, o)| k != i && (o.base() - l.base()).abs() <= tol);
             row[i] = near_any(&bases, l.base(), tol)
-                || (0..i).rev().take(32).any(|j| {
-                    let o = rs[j];
-                    row[j]
-                        && (o.x0 - l.x0).abs() <= 1.0
-                        && l.base() - o.base() > tol
-                        && l.base() - o.base() <= 1.6 * pmax(l.size(), 1.0)
-                });
+                || alone()
+                    && (0..i).rev().take(32).any(|j| {
+                        let o = rs[j];
+                        row[j]
+                            && (o.x0 - l.x0).abs() <= 1.0
+                            && l.base() - o.base() > tol
+                            && l.base() - o.base() <= 1.6 * pmax(l.size(), 1.0)
+                    });
         }
         let n = row.iter().filter(|&&r| r).count();
         if aligned >= 2 && n as f64 >= p.table_align * rs.len() as f64 {
@@ -117,7 +121,7 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
     // cities): every label shares a baseline with a row on the right, both sides are short
     // cells, and the right side is itself rows of several cells (not prose or margin notes
     // beside a column of labels)
-    left.len() >= 3
+    left.len() >= 2
         && right.len() <= 400
         && words(&left) <= p.table_cell_words
         && words(&right) <= p.table_cell_words

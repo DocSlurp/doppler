@@ -942,6 +942,19 @@ struct Formula {
 
 /// Read the math of a page and rewrite its lines. `bars` are the page's thin rules.
 pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath) {
+    rewrite_page_with(page, opts, None)
+}
+
+/// [`rewrite_page`], with tables claimed first: the lines of every table the table finder sees
+/// on the page (gutter and ruled tables, with layout parameters `tables`) are not read for
+/// math, unless the table is typeset math itself (a matrix between big delimiters, or a system
+/// of equations whose every row has a math relation and whose glyphs are mostly math). With
+/// `--math` a table never turns into a formula.
+pub fn rewrite_page_with(
+    page: &Page,
+    opts: &MathOptions,
+    tables: Option<&crate::params::Params>,
+) -> (Vec<Rc<Line>>, PageMath) {
     let mut stats = PageMath::default();
     if page.glyphs_truncated {
         stats.skipped = true;
@@ -999,6 +1012,23 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     fraction_evidence(page, &mut lines, &bars);
     display_text_words(page, &mut lines);
     stacked_labels(page, &mut lines);
+    if let Some(p) = tables {
+        for li in table_lines(page, &lines, &facts, p, em) {
+            // a line that is all math (a display, a stacked part of one) stays with the math
+            // reader; the table keeps its text lines, with any inline math as written
+            if lines[li].math_only {
+                continue;
+            }
+            let l = &mut lines[li];
+            for g in l.gs.iter_mut() {
+                g.ev = Ev::Text;
+            }
+            l.runs.clear();
+            l.math_only = false;
+            l.strong = false;
+            l.label = None;
+        }
+    }
     let n = lines.len();
     // per line, which glyphs are already in a formula
     let mut used: Vec<Vec<bool>> = lines.iter().map(|l| vec![false; l.gs.len()]).collect();
@@ -1154,7 +1184,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         // fraction of numbers); a table's rules span its columns
         // rows of cells in columns, with no relation, delimiter or bar to make them one formula,
         // are a table of math cells: the table finder reads them, not the math reader
-        if cell_grid(&lines, c, &body_end, bars_in(ctop, cbot)) {
+        if cell_grid(&lines, c, &body_end, bars_in(ctop, cbot)) || rows_beyond_delims(&lines, c, &body_end) {
             cluster_taken[ci] = true;
             continue;
         }
@@ -1670,6 +1700,184 @@ fn cell_grid(lines: &[LineMath], c: &[usize], body_end: &dyn Fn(&LineMath) -> us
         };
         near(&|c| c.0) || near(&|c| c.1) || near(&|c| (c.0 + c.1) / 2.0)
     })
+}
+
+/// Whether a cluster with big delimiters has at least two rows of its own outside every
+/// delimiter's height, none with a relation: a brace or bracket that groups some rows of a
+/// table, not a matrix (whose rows all sit between its delimiters) or an aligned derivation
+/// (whose further rows carry relations). Such a cluster is left as text for the table finder.
+fn rows_beyond_delims(lines: &[LineMath], c: &[usize], body_end: &dyn Fn(&LineMath) -> usize) -> bool {
+    if c.len() < 3 || c.len() > 400 {
+        return false;
+    }
+    let atoms: Vec<&Atom> =
+        c.iter().flat_map(|&k| lines[k].gs[..body_end(&lines[k])].iter().map(|g| &g.atom)).collect();
+    if atoms.len() > 4000 {
+        return false;
+    }
+    let tall = |a: &Atom| a.tex_ext || a.sym.big || a.sym.piece.is_some() || a.sym.class == Class::Piece;
+    let spans: Vec<(f64, f64)> = atoms
+        .iter()
+        .filter(|a| tall(a))
+        .map(|a| {
+            if a.tex_ext {
+                (a.base - 0.2 * a.size, a.base + 1.6 * a.size)
+            } else {
+                (a.base - 1.2 * a.size, a.base + 0.5 * a.size)
+            }
+        })
+        .collect();
+    if spans.is_empty() {
+        return false;
+    }
+    let size = atoms.iter().filter(|a| !tall(a)).map(|a| a.size).fold(0.0, f64::max).max(1.0);
+    // rows by the baselines of full-size, non-delimiter glyphs, with whether they hold a relation
+    let mut rows: Vec<(f64, bool)> = Vec::new();
+    let mut full: Vec<&&Atom> = atoms.iter().filter(|a| !tall(a) && a.size >= 0.85 * size).collect();
+    full.sort_by(|a, b| a.base.total_cmp(&b.base));
+    for a in full {
+        let rel = a.sym.class == Class::Rel;
+        match rows.last_mut() {
+            Some(r) if a.base - r.0 <= 0.5 * size => r.1 |= rel,
+            _ => rows.push((a.base, rel)),
+        }
+    }
+    let outside: Vec<&(f64, bool)> =
+        rows.iter().filter(|r| spans.iter().all(|&(t, b)| r.0 < t - 0.5 * size || r.0 > b + 0.5 * size)).collect();
+    outside.len() >= 2 && outside.iter().all(|r| !r.1)
+}
+
+/// The lines of the page's tables that are not typeset math (see [`rewrite_page_with`]).
+fn table_lines(page: &Page, lines: &[LineMath], facts: &FontFacts, p: &crate::params::Params, em: f64) -> Vec<usize> {
+    if page.lines.len() > 5000 || page.lines.is_empty() {
+        return Vec::new();
+    }
+    let ids: Vec<usize> = (0..page.lines.len()).collect();
+    // the body size is not known yet: the page's median line size stands in for it
+    let body = em;
+    let mut budget = crate::layout::Budget::new(p.max_page_work);
+    let mut found: Vec<Vec<usize>> = Vec::new();
+    if p.rules && p.tables {
+        if let Some(ruled) = crate::tables::ruled_tables(page, &ids, body, p, crate::TableFormat::Gfm, &mut budget) {
+            found.extend(ruled.into_iter().map(|(m, _, _)| m));
+        }
+    }
+    if p.tables {
+        let taken: std::collections::HashSet<usize> = found.iter().flatten().copied().collect();
+        let rest: Vec<usize> = ids.iter().copied().filter(|i| !taken.contains(i)).collect();
+        if let Some(gutter) = crate::tables::find_tables_within(page, &rest, p, body, &mut budget) {
+            found.extend(gutter.into_iter().map(|(m, _)| m));
+        }
+    }
+    let mut out = Vec::new();
+    for members in found {
+        // a candidate with a cell of eight words or more is prose set in columns (a two-column
+        // page read as a table), not a table whose cells need protecting
+        let prose =
+            members.iter().any(|&i| crate::tables::segments(&page.lines[i], p).iter().any(|seg| seg.words.len() >= 8));
+        if members.is_empty() || prose {
+            continue;
+        }
+        if !typeset_math(page, lines, facts, &members, em) {
+            out.extend(members);
+        }
+    }
+    out
+}
+
+/// Whether a table candidate is typeset math: a system of equations (a math relation in at
+/// least half its rows, and a third of its letters and symbols math; digits and punctuation do
+/// not count), or a matrix (big delimiters on its left and right, both spanning most of its
+/// rows). A grid of math-italic symbols with neither is a table.
+fn typeset_math(page: &Page, lines: &[LineMath], facts: &FontFacts, members: &[usize], em: f64) -> bool {
+    let mut bases: Vec<f64> = members.iter().map(|&i| page.lines[i].base()).collect();
+    bases.sort_by(f64::total_cmp);
+    let mut rows: Vec<f64> = Vec::new();
+    for b in bases {
+        if rows.last().is_none_or(|&r| b - r > 0.5 * em) {
+            rows.push(b);
+        }
+    }
+    if rows.len() < 2 {
+        return false;
+    }
+    let (x0, x1, y0, y1) =
+        members.iter().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY), |a, &i| {
+            let l = &page.lines[i];
+            (a.0.min(l.x0), a.1.max(l.x1), a.2.min(l.y0), a.3.max(l.y1))
+        });
+    // tall delimiter atoms in the members and the glyphs outside words, within the box
+    let mut tall: Vec<(f64, f64, f64)> = Vec::new(); // (x centre, top, bottom)
+    let span = |a: &Atom| {
+        if a.tex_ext {
+            (a.base - 0.2 * a.size, a.base + 1.6 * a.size)
+        } else {
+            (a.base - 1.2 * a.size, a.base + 0.5 * a.size)
+        }
+    };
+    let is_tall = |a: &Atom| {
+        (a.tex_ext || a.sym.big || a.sym.class == Class::Piece || a.sym.piece.is_some())
+            && matches!(a.sym.class, Class::Open | Class::Close | Class::Fence | Class::Piece)
+    };
+    let (mut glyphs, mut strong) = (0usize, 0usize);
+    let mut rel_rows = vec![false; rows.len()];
+    for &i in members {
+        for g in &lines[i].gs {
+            // letters and symbols decide (digits and punctuation are in both kinds of cell):
+            // math letters and symbols are math-font or math code points, a data table's are words
+            let letter_or_symbol =
+                g.atom.sym.text.chars().next().is_some_and(|c| !c.is_ascii_digit() && !c.is_ascii_punctuation());
+            if letter_or_symbol {
+                glyphs += 1;
+                strong += matches!(g.ev, Ev::Strong | Ev::Var) as usize;
+            }
+            if is_tall(&g.atom) {
+                let (t, b) = span(&g.atom);
+                tall.push(((g.atom.x0 + g.atom.x1) / 2.0, t, b));
+            }
+            if g.ev == Ev::Strong && g.atom.sym.class == Class::Rel {
+                let k = rows
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| (a.1 - g.atom.base).abs().total_cmp(&(b.1 - g.atom.base).abs()));
+                if let Some((k, _)) = k {
+                    rel_rows[k] = true;
+                }
+            }
+        }
+    }
+    for g in page.extra_glyphs.iter().take(4000) {
+        let gx = g.x;
+        let gb = g.base.unwrap_or(0.0);
+        if gx < x0 - em || gx > x1 + em || gb < y0 - 2.0 * em || gb > y1 + em {
+            continue;
+        }
+        let a = extra_atom(page, facts, g);
+        if a.sym.known && is_tall(&a) {
+            let (t, b) = span(&a);
+            tall.push(((a.x0 + a.x1) / 2.0, t, b));
+        }
+    }
+    // a system of equations: relations in at least half the rows, a third of the letters and
+    // symbols math (a table of math-italic symbols with no relations stays a table)
+    let rels = rel_rows.iter().filter(|&&r| r).count();
+    if glyphs > 0 && rels * 2 >= rows.len() && strong * 3 >= glyphs {
+        return true;
+    }
+    let mid = (x0 + x1) / 2.0;
+    let side = |left: bool| -> (f64, f64) {
+        tall.iter()
+            .filter(|t| (t.0 < mid) == left)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |a, t| (a.0.min(t.1), a.1.max(t.2)))
+    };
+    let (lt, lb) = side(true);
+    let (rt, rb) = side(false);
+    if !(lt.is_finite() && rt.is_finite()) {
+        return false;
+    }
+    let (t, b) = (lt.max(rt), lb.min(rb));
+    let inside = rows.iter().filter(|&&r| r >= t - 0.3 * em && r <= b + 0.3 * em).count();
+    inside >= 2 && inside * 5 >= rows.len() * 3
 }
 
 /// Linear math written in an ordinary text font (`x = (−b ± √(b²−4ac)) / (2a)`, `∑ᵢ₌₁ⁿ xᵢ²`):

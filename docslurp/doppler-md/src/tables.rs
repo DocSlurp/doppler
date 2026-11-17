@@ -801,8 +801,8 @@ fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) 
 /// Aligned content that is not a table even though its cells line up, from cell text: a
 /// bulleted list with amounts set flush right (every first-column cell a bullet), or a form
 /// whose filled cells are mostly labels ending in a colon. Math is never judged from cell text
-/// (signs, letters, brackets and math alphanumerics all occur in data tables); a matrix is
-/// recognised by its delimiters' geometry ([`matrix_delimited`]).
+/// (signs, letters, brackets and math alphanumerics all occur in data tables), and nothing
+/// vetoes a matrix: without `--math` a matrix may come out as a table, never a table as prose.
 pub(crate) fn not_table_content(grid: &Grid) -> bool {
     let cells: Vec<&str> =
         grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).take(100_000).collect();
@@ -815,110 +815,6 @@ pub(crate) fn not_table_content(grid: &Grid) -> bool {
     }
     let colons = cells.iter().filter(|c| c.ends_with(':')).count();
     colons >= 3 && colons * 5 >= cells.len() * 4
-}
-
-/// A piece of a big delimiter on the page: a box and its side (-1 opens, 1 closes, 0 a bar
-/// that can do either).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct DelimPiece {
-    x0: f64,
-    x1: f64,
-    y0: f64,
-    y1: f64,
-    side: i8,
-}
-
-/// The side of a word that is wholly the piece of a big delimiter: TeX extension-font pieces
-/// as pdftotext gives them (U+F8EB..F8F3 open, U+F8F6..F8FE close, U+F8E6 and U+F8F4 bars),
-/// Unicode bracket pieces (U+239B..23AD), vertical-bar extensions (U+23D0, U+20D3), or a
-/// single delimiter glyph at least twice its line's font size tall (a size variant).
-fn piece_side(w: &Word, line_size: f64) -> Option<i8> {
-    let side = |c: char| -> Option<i8> {
-        match c {
-            '\u{f8eb}'..='\u{f8f3}' | '\u{239b}'..='\u{239d}' | '\u{23a1}'..='\u{23a3}' | '\u{23a7}'..='\u{23a9}' => {
-                Some(-1)
-            }
-            '\u{f8f6}'..='\u{f8fe}' | '\u{239e}'..='\u{23a0}' | '\u{23a4}'..='\u{23a6}' | '\u{23ab}'..='\u{23ad}' => {
-                Some(1)
-            }
-            '\u{f8e6}' | '\u{f8f4}' | '\u{23d0}' | '\u{20d3}' | '\u{23aa}' => Some(0),
-            _ => None,
-        }
-    };
-    let mut it = w.text.chars();
-    let first = it.next()?;
-    let delim = |c: char| match c {
-        '(' | '[' | '{' | '⟨' => Some(-1),
-        ')' | ']' | '}' | '⟩' => Some(1),
-        '|' | '‖' | '∣' => Some(0),
-        _ => None,
-    };
-    // a delimiter with a variation selector: pdftotext's mark for a size variant glyph
-    let rest: Vec<char> = w.text.chars().skip(1).take(3).collect();
-    if rest.len() == 1 && ('\u{fe00}'..='\u{fe0f}').contains(&rest[0]) {
-        return delim(first);
-    }
-    if let Some(s) = side(first) {
-        // every character a piece (stacked pieces can come as one word)
-        return w.text.chars().all(|c| side(c).is_some()).then_some(s);
-    }
-    if it.next().is_none() && w.y1 - w.y0 >= 2.0 * line_size {
-        return delim(first);
-    }
-    None
-}
-
-/// The delimiter pieces among the words of lines `ids` (at most 2,000).
-pub(crate) fn delim_pieces(page: &Page, ids: &[usize]) -> Vec<DelimPiece> {
-    let mut out = Vec::new();
-    for &i in ids {
-        let l = &page.lines[i];
-        let size = median(l.words.iter().map(|w| w.size).collect()).max(1.0);
-        for w in l.words.iter() {
-            if let Some(side) = piece_side(w, size) {
-                out.push(DelimPiece { x0: w.x0, x1: w.x1, y0: w.y0, y1: w.y1, side });
-                if out.len() >= 2000 {
-                    return out;
-                }
-            }
-        }
-    }
-    out
-}
-
-/// A matrix, not a table: within the candidate's box (widened by `em` each way), a delimiter on
-/// the left and one on the right (pieces of one side stacked in one column), with at least two
-/// of the candidate's rows (`bases`) inside the height both span. Data tables do not draw big
-/// delimiter pieces around their rows; this reads geometry, never cell text.
-pub(crate) fn matrix_delimited(pieces: &[DelimPiece], bbox: (f64, f64, f64, f64), bases: &[f64], em: f64) -> bool {
-    let (bx0, by0, bx1, by1) = bbox;
-    let near: Vec<&DelimPiece> = pieces
-        .iter()
-        .filter(|p| p.x1 > bx0 - em && p.x0 < bx1 + em && p.y1 > by0 - em && p.y0 < by1 + em)
-        .take(400)
-        .collect();
-    if near.len() < 2 {
-        return false;
-    }
-    let mut delims: Vec<(f64, f64, f64, f64, i8)> = Vec::new();
-    for p in &near {
-        match delims.iter_mut().find(|d| d.4 == p.side && (d.0 - p.x0).abs() <= 2.0) {
-            Some(d) => {
-                d.0 = d.0.min(p.x0);
-                d.1 = d.1.max(p.x1);
-                d.2 = d.2.min(p.y0);
-                d.3 = d.3.max(p.y1);
-            }
-            None => delims.push((p.x0, p.x1, p.y0, p.y1, p.side)),
-        }
-    }
-    let rows_in = |t: f64, b: f64| bases.iter().filter(|&&y| y > t - 0.25 * em && y < b + 0.25 * em).count();
-    delims.iter().any(|l| {
-        l.4 <= 0
-            && delims.iter().any(|r| {
-                r.4 >= 0 && r.0 > l.1 + 0.5 * em && (l.4 != 0 || r.4 == 0) && rows_in(l.2.max(r.2), l.3.min(r.3)) >= 2
-            })
-    })
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -1032,7 +928,28 @@ pub fn find_tables_within(
     // the sparse pass reads the rows again; copy them only when it runs
     let again = p.sparse_tables.then(|| rows.clone());
     for r in rows {
-        let near = run.last().is_some_and(|l| r.base - l.last <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
+        let near = run.last().is_some_and(|l| {
+            let size = pmax(pmax(r.size, l.size), 1.0);
+            let gap = r.base - l.last;
+            // tall rows (stacked fractions, big delimiters in cells) are further apart: a row of
+            // short cells that line up with an earlier row of the run, cell for cell, still
+            // continues it
+            gap <= p.table_row_gap * size
+                || (r.multi
+                    && gap <= 1.5 * p.table_row_gap * size
+                    && r.cells.len() >= 3
+                    && run.iter().filter(|q| q.multi).count() >= 2
+                    && r.cells.iter().all(|c| (c.words.len() as f64) < p.table_cell_words)
+                    && run.iter().rev().take(16).any(|q| {
+                        q.multi
+                            && q.cells.len() == r.cells.len()
+                            && q.cells.iter().all(|c| (c.words.len() as f64) < p.table_cell_words)
+                            && q.cells
+                                .iter()
+                                .zip(&r.cells)
+                                .all(|(a, b)| (a.x0 - b.x0).abs() <= 0.5 * size || (a.x1 - b.x1).abs() <= 0.5 * size)
+                    }))
+        });
         if r.multi {
             if !run.is_empty() && !near && !flush(&mut run, &mut found) {
                 return None;
@@ -1636,7 +1553,8 @@ fn table_columns(
     if rows.iter().filter(|r| r.multi).count() < 2 {
         return Some(None);
     }
-    Some(Some(gutter_columns(rows, p)))
+    // horizontal rules only (booktabs): the gutters, refined under a spanning header cell
+    Some(Some(under_spanning_header(rows, gutter_columns(rows, p), p)))
 }
 
 struct Group {
@@ -1736,6 +1654,8 @@ pub fn ruled_tables(
             bases.windows(2).any(|w| (w[1] - w[0]).abs() <= 1.0)
         })
     };
+    // the joined horizontal rules, kept for the booktabs test below
+    let hs: Vec<(f64, f64, f64)> = h.clone();
     for (x0, x1, y) in h {
         // the open groups (thousands when disjoint rules share a y)
         if !budget.scan(open.len()) {
@@ -1826,8 +1746,11 @@ pub fn ruled_tables(
         let mut cur: Vec<f64> = ys.first().copied().into_iter().collect();
         for w in ys.windows(2) {
             let (a, b) = (w[0], w[1]);
-            // (a booktabs body between its middle and bottom rules is no jump)
-            let jump = b - a > limit && gaps.len() >= 3 && !(v.is_empty() && body_rows(a, b, g.x0, g.x1));
+            // (a booktabs body between a middle and a bottom rule that both span the table is
+            // no jump; column underlines of an accounting table are not such rules)
+            let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
+            let booktabs_body = v.is_empty() && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
+            let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body;
             if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
@@ -1884,13 +1807,8 @@ pub fn ruled_tables(
             return None;
         }
         let mut rows = visual_rows(page, &members, p);
-        // horizontal rules alone that do not separate the rows (booktabs: top, middle and
-        // bottom rules around a body of unruled rows) are left to the gutter-table pass, which
-        // reads the rows' columns, spanning header cells and wrapped cells as a whole
+        // (no vertical rule inside: booktabs, whose columns come from the gutters)
         let crossing_v = v.iter().any(|&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && yb > y0 && ya < y1);
-        if !crossing_v && ys.len() >= 3 && ys.len() < rows.len() && !rows.is_empty() {
-            continue;
-        }
         let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
         if cols.len() < 2 {
             continue;
@@ -2035,7 +1953,14 @@ pub fn ruled_tables(
             if !budget.spend(rows.len() + row_words(&rows)) {
                 return None;
             }
-            build_grid(&rows, &cols, p)
+            let mut g = build_grid(&rows, &cols, p);
+            // horizontal rules only: the gutter table's header repairs apply too
+            if !crossing_v {
+                let size = median(rows.iter().filter(|r| r.multi).map(|r| r.size).collect());
+                join_split_header_words(&mut g, size, p);
+                join_spanning_header_cells(&mut g, &rows);
+            }
+            g
         };
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;

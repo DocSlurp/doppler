@@ -1,0 +1,25 @@
+\documentclass{article}
+\usepackage{amsmath,booktabs}
+\pagestyle{empty}
+\begin{document}
+Table 4 lists the observed transitions; the estimated matrix is shown beside it.
+
+\begin{table}[h]
+\begin{minipage}{0.55\textwidth}\centering
+\begin{tabular}{lrrr}
+\toprule
+From & Sunny & Rainy & Total \\
+\midrule
+Sunny & 81 & 9 & 90 \\
+Rainy & 12 & 48 & 60 \\
+Total & 93 & 57 & 150 \\
+\bottomrule
+\end{tabular}
+\end{minipage}%
+\begin{minipage}{0.4\textwidth}
+\[ \hat P = \begin{pmatrix} 0.90 & 0.10 \\ 0.20 & 0.80 \end{pmatrix} \]
+\end{minipage}
+\end{table}
+
+The estimate converges after a few hundred days.
+\end{document}

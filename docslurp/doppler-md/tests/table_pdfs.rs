@@ -119,21 +119,19 @@ fn libreoffice_writer_table() {
     );
 }
 
+/// A page of matrices: with `--math` they are formulas, never tables (without it a matrix may
+/// come out as a table, as on master: no table is ever vetoed from its text).
 #[test]
-fn matrices_are_not_tables() {
+fn matrices_are_formulas_with_math() {
     let Some(exe) = pdftotext() else { return };
-    let md = convert(&exe, "matrix.pdf", &[]);
-    assert!(table(&md).is_empty(), "{md}");
-    assert!(md.contains("Both segments grow next year."), "{md}");
     let md = convert(&exe, "matrix.pdf", &["--math"]);
     assert!(table(&md).is_empty(), "{md}");
     assert!(md.contains("\\begin{pmatrix}") && md.contains("\\begin{vmatrix}"), "{md}");
+    assert!(convert(&exe, "matrix.pdf", &[]).contains("Both segments grow next year."));
 }
 
 /// Data tables whose cells hold signs that also occur in math (`±`, `≥`, `=`) and short
-/// letter labels stay tables, borderless and ruled: only real math evidence (math-font
-/// letters, big-delimiter pieces, operators of analysis, delimiters cut by a gutter) makes a
-/// grid read as math.
+/// letter labels stay tables, borderless and ruled: no cell text vetoes a table.
 #[test]
 fn signs_and_letter_labels_are_data() {
     let expected = [
@@ -161,7 +159,7 @@ fn signs_and_letter_labels_are_data() {
 
 /// A 3x3 pmatrix whose big parentheses are TeX extension pieces (top and bottom halves): all
 /// three rows are inside the delimiters (the third once fell out, its numbers fused into
-/// `0.020.180.80`), and without `--math` the matrix is not a table.
+/// `0.020.180.80`).
 #[test]
 fn three_row_matrix_from_extension_pieces() {
     let Some(exe) = pdftotext() else { return };
@@ -172,8 +170,6 @@ fn three_row_matrix_from_extension_pieces() {
         ),
         "{md}"
     );
-    let md = convert(&exe, "matrix3.pdf", &[]);
-    assert!(table(&md).is_empty(), "{md}");
 }
 
 /// Data tables whose cells hold what a cell-text heuristic could take for math: enumerated row
@@ -205,20 +201,77 @@ fn cell_text_never_vetoes_a_table() {
     }
 }
 
-/// pdfLaTeX pmatrix and bmatrix (TeX extension pieces around the rows) are not tables without
-/// `--math`; an align* with a matrix and a row under it (`&= 7 \qquad 8`) is not a table in
-/// either mode.
+/// Every table repro keeps at least its tables, in default mode and with `--math` (the counts
+/// are those of master or better; with `--math` a matrix set between big delimiters reads as a
+/// formula, so it may leave one table fewer, and a table beside it stays a table): tables with
+/// fractions, determinants, a pmatrix or brace-grouped rows in their cells, tables beside
+/// matrices, matrices themselves (a table without `--math`, as on master), and the cell-content
+/// cases. No table may become prose.
 #[test]
-fn delimited_matrices_are_not_tables() {
+fn every_repro_keeps_its_tables() {
     let Some(exe) = pdftotext() else { return };
-    for name in ["m2", "m5"] {
-        let md = convert(&exe, &format!("data/{name}.pdf"), &[]);
-        assert!(table(&md).is_empty(), "{name}:\n{md}");
-        assert!(md.contains("Revenue rose in every region"), "{name}:\n{md}");
+    // (fixture under data/, at least this many tables by default, at least this many with --math)
+    let cases: [(&str, usize, usize); 30] = [
+        ("absfrac", 1, 1),
+        ("absfrac2", 1, 1),
+        ("adjmatrix", 1, 1),
+        ("bigbracket", 1, 1),
+        ("bigvert", 1, 1),
+        ("binom", 1, 1),
+        ("blocks", 1, 1),
+        ("blocks3", 1, 1),
+        ("brace", 1, 1),
+        ("detcol", 1, 1),
+        ("fracparen", 1, 1),
+        ("fracparen2", 1, 1),
+        ("gates", 1, 1),
+        ("gatesbm", 1, 1),
+        ("pcell-booktabs", 1, 1),
+        ("pcell-grid", 1, 1),
+        ("sidebyside2", 1, 1),
+        ("sidebmat", 2, 1),
+        ("sidematrix", 2, 1),
+        ("sidematrix2", 1, 1),
+        ("twocol", 2, 1),
+        ("m2", 1, 0),
+        ("m5", 1, 0),
+        ("mx3_0pt", 1, 0),
+        ("enum", 1, 1),
+        ("footnote", 1, 1),
+        ("bins2", 1, 1),
+        ("mathital", 1, 1),
+        ("check", 1, 1),
+        ("numlabels", 1, 1),
+    ];
+    let count = |md: &str| md.lines().filter(|l| l.starts_with("| ---")).count();
+    let mut short = Vec::new();
+    for (name, plain_min, math_min) in cases {
+        let pdf = format!("data/{name}.pdf");
+        let plain = count(&convert(&exe, &pdf, &[]));
+        let math = count(&convert(&exe, &pdf, &["--math"]));
+        if plain < plain_min || math < math_min {
+            short.push(format!("{name}: {plain} (want {plain_min}), --math {math} (want {math_min})"));
+        }
     }
-    for args in [&[][..], &["--math"][..]] {
-        let md = convert(&exe, "data/mx3_0pt.pdf", args);
-        assert!(table(&md).is_empty(), "mx3_0pt {args:?}:\n{md}");
-        assert!(md.contains("The growth plan continues next year."), "{md}");
+    assert!(short.is_empty(), "{short:#?}");
+}
+
+/// A table beside a matrix, and booktabs rows with fractions in their cells, keep their label
+/// column and every row (master lost the label column of a booktabs table with |frac| cells).
+#[test]
+fn tables_with_math_cells_keep_their_rows() {
+    let Some(exe) = pdftotext() else { return };
+    let md = convert(&exe, "data/absfrac.pdf", &[]);
+    assert!(table(&md).iter().any(|l| l.starts_with("| Solver | Error | Bound | Steps |")), "{md}");
+    assert!(table(&md).iter().any(|l| l.starts_with("| RK4 |")), "{md}");
+    let md = convert(&exe, "data/absfrac2.pdf", &[]);
+    for row in ["| Euler |", "| Heun |", "| RK4 |"] {
+        assert!(table(&md).iter().any(|l| l.starts_with(row)), "{row}\n{md}");
     }
+    let md = convert(&exe, "data/gates.pdf", &[]);
+    for row in ["| Hadamard |", "| Phase |"] {
+        assert!(table(&md).iter().any(|l| l.starts_with(row)), "{row}\n{md}");
+    }
+    let md = convert(&exe, "data/sidebyside2.pdf", &[]);
+    assert!(table(&md).iter().any(|l| l.starts_with("| From | Sunny | Rainy | Total |")), "{md}");
 }
