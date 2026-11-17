@@ -1719,7 +1719,14 @@ pub fn ruled_tables(
         };
         let first_x = ids.iter().filter(|&&i| in_row(i)).map(|&i| lines[i].x0).fold(f64::INFINITY, pmin);
         let wraps_first = ids.iter().all(|&i| in_row(i) || (lines[i].x0 - first_x).abs() <= 2.0);
-        (!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first, rows)
+        // the row fills its band: wrapped lines under it, and no empty space above or below
+        // (a gap between two stacked tables leaves space)
+        let top = ids.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pmin);
+        let bottom = ids.iter().map(|&i| lines[i].y1).fold(f64::NEG_INFINITY, pmax);
+        let size = ids.iter().map(|&i| lines[i].size()).fold(1.0, pmax);
+        let fills = top - a <= 0.8 * size && b - bottom <= 0.8 * size;
+        let wrapped = ids.iter().any(|&i| !in_row(i));
+        (!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows)
     };
     // the joined horizontal rules, kept for the booktabs test below (thin stroked rules only:
     // a rule drawn as a filled bar gives two edges, and such groups split as they always did)
@@ -1849,7 +1856,14 @@ pub fn ruled_tables(
             // (a booktabs body between a middle and a bottom rule that both span the table is
             // no jump; column underlines of an accounting table are not such rules)
             let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
-            let booktabs_body = v.is_empty() && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
+            // (a booktabs table has a few rules: top, middle, partial and bottom; a group of
+            // more rules is ruled row by row, and a tall band there is a gap between tables)
+            // (not in a group ruled row by row: when every other band holds one row at most,
+            // a tall band of several rows is the gap between two stacked tables)
+            let row_ruled = ys.len() >= 5
+                && ys.len() <= 200
+                && ys.windows(2).filter(|w| w[0] != a).all(|w| one_row_band(w[0], w[1], g.x0, g.x1).1 <= 1);
+            let booktabs_body = v.is_empty() && !row_ruled && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
             // (nor is a band that holds one row whose cell wraps to several lines: a rule after
             // every row, one row taller than the rest)
             let jump = b - a > limit

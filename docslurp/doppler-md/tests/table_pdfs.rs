@@ -319,3 +319,22 @@ fn rule_under_every_row_with_a_wrapped_label() {
         assert!(table(&md).contains(&"| Total operating expenses | 2,972 | 2,562 |"), "{md}");
     }
 }
+
+/// Two tables ruled under every row, stacked with a gap (and, in one case, a heading line
+/// between them): two tables, the second one's header its own header, the heading prose, in
+/// both modes (they once merged into one table with the heading as a row).
+#[test]
+fn stacked_row_ruled_tables_stay_apart() {
+    let Some(exe) = pdftotext() else { return };
+    for args in [&[][..], &["--math"][..]] {
+        for name in ["two_stack_gap", "stack_head2", "stack_wrapgap"] {
+            let md = convert(&exe, &format!("data/{name}.pdf"), args);
+            assert_eq!(md.lines().filter(|l| l.starts_with("| ---")).count(), 2, "{name} {args:?}\n{md}");
+        }
+        let md = convert(&exe, "data/two_stack_gap.pdf", args);
+        assert!(table(&md).contains(&"| Segment | 2025 | 2024 |"), "{md}");
+        let md = convert(&exe, "data/stack_head2.pdf", args);
+        assert!(md.lines().any(|l| l.starts_with("Cash flow highlights")), "{md}");
+        assert!(table(&md).iter().all(|l| !l.contains("Cash flow highlights")), "{md}");
+    }
+}
