@@ -110,6 +110,8 @@ with t.TempDir() as d:
         "dp_reuse": ("dp_reuse.py", ["249"]),
         "notokbomb": ("notokbomb.py", ["200", "20000000"]),
         "failpred": ("failpred.py", ["249"]),
+        # the rebuild and the doc line's section count open every xref stream: predictor rows stay capped
+        "predchain400": ("predchain.py", ["400", "1"]),
     }
     # argument order of each generator: "out" first or last
     OUT_FIRST = {"selfprev.py", "manysec.py", "tailprev.py", "objstm_es.py", "sp_depth_inv.py", "stmreuse.py", "wide30m_paeth.py", "missing.py", "scopebomb.py", "gapprev.py", "ocbudget.py", "ownparse.py", "shapedbomb.py", "depthpred.py", "deepoc.py", "repairbomb2.py", "shapedbomb_decodeparms.py", "dp_reuse.py", "notokbomb.py", "failpred.py"} - {"manysec.py"}

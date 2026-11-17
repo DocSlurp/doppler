@@ -1034,6 +1034,9 @@ bool XRef::readXRefStreamSection(Stream *xrefStr, const int *w, int first, int n
 // Attempt to construct an xref table for a damaged file.
 bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
 {
+    // A rebuild fetches every xref stream it finds; a hostile /Columns would make each one allocate and
+    // clear a huge predictor row, once per section. Real xref and object streams have rows of a few bytes.
+    const PredictorRowLimit rebuildRowLimit(64 * 1024);
     ++generation;
     int *streamObjNums = nullptr;
     int streamObjNumsLen = 0;
@@ -2117,6 +2120,9 @@ int XRef::countSections(int maxSections, long long maxTokens)
     if (reconstructions > 0 || !str) {
         return 0;
     }
+    // Only the section dictionaries are read, but making a stream object builds its filters, and a
+    // hostile /Columns would have each one allocate and clear a huge predictor row.
+    const PredictorRowLimit rowLimit(64 * 1024);
     const Goffset fileLength = str->getLength();
     Goffset bytesLeft = (fileLength > 0 && fileLength < (Goffset(1) << 40) ? 2 * fileLength : 0) + 65536;
     std::vector<Goffset> seen;

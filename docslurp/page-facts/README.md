@@ -532,7 +532,9 @@ first, as the lazy read did (an entry is taken from the newest section that list
     cost at most four times the file plus 16 MiB. A predictor row larger than what is left is
     refused before it is allocated, and the section counts as past a bound. The main section reads
     as upstream (no decode budget). Filter work (inflating, say) is bounded by the parse and
-    decode budgets, not counted on its own.
+    decode budgets, not counted on its own. A rebuild, and the section count the doc line makes, cap
+    predictor rows at 64 KiB, so a hostile `/Columns` cannot make each xref stream they open
+    allocate and clear a huge row.
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are
