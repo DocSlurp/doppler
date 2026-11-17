@@ -611,13 +611,43 @@ pub fn actual_text_latex(t: &str) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// The rules of a page that can be fraction bars or vincula, as bars.
-fn bars_of(rules: &[Rule]) -> Vec<Bar> {
-    rules
+/// The rules of a page that can be fraction bars or vincula, as bars. Rules of a table grid
+/// are not: a rule with another rule of the same extent a short step above or below it (the
+/// borders of the cells of one column, row after row) is a table border, not a fraction bar.
+/// `em` is the page's typical text size.
+fn bars_of(rules: &[Rule], em: f64) -> Vec<Bar> {
+    let mut bars: Vec<Bar> = rules
         .iter()
         .filter(|r| !r.boxed && r.x1 - r.x0 > 0.8 && r.y1 - r.y0 <= 1.6 && (r.x1 - r.x0) > 2.0 * (r.y1 - r.y0))
         .map(|r| Bar { x0: r.x0, x1: r.x1, y: (r.y0 + r.y1) / 2.0 })
-        .collect()
+        .collect();
+    if bars.len() > 4000 {
+        return bars;
+    }
+    bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let tol = 0.3 * em;
+    let reach = 2.2 * em;
+    let mut grid = vec![false; bars.len()];
+    for i in 0..bars.len() {
+        for j in i + 1..bars.len() {
+            if bars[j].y - bars[i].y > reach {
+                break;
+            }
+            if bars[j].y - bars[i].y > 0.3 * em
+                && (bars[j].x0 - bars[i].x0).abs() <= tol
+                && (bars[j].x1 - bars[i].x1).abs() <= tol
+            {
+                grid[i] = true;
+                grid[j] = true;
+            }
+        }
+    }
+    let mut k = 0;
+    bars.retain(|_| {
+        k += 1;
+        !grid[k - 1]
+    });
+    bars
 }
 
 /// A short bar with a short line centred over it and another under it is a fraction even
@@ -902,7 +932,12 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     }
     let facts = font_facts(page);
     let mut lines: Vec<LineMath> = page.lines.iter().map(|l| analyse_line(page, l, &facts)).collect();
-    let bars = bars_of(&page.rules);
+    let em = {
+        let mut sizes: Vec<f64> = page.lines.iter().map(|l| l.size()).filter(|s| *s > 0.0).collect();
+        sizes.sort_by(f64::total_cmp);
+        sizes.get(sizes.len() / 2).copied().unwrap_or(10.0).max(1.0)
+    };
+    let bars = bars_of(&page.rules, em);
     fraction_evidence(page, &mut lines, &bars);
     display_text_words(page, &mut lines);
     stacked_labels(page, &mut lines);
@@ -1033,16 +1068,34 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
     let mut attached: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
     let mut cluster_taken = vec![false; clusters.len()];
     for (ci, c) in clusters.iter().enumerate() {
-        if !c.iter().any(|&k| lines[k].strong) && c.len() == 1 && !lines[c[0]].gs.iter().any(|g| g.ev == Ev::Var) {
-            // weak-only singleton clusters (a line of numbers) are not math
-            cluster_taken[ci] = true;
-            continue;
-        }
         let (cx0, cx1, ctop, cbot, csize) =
             c.iter().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64), |acc, &k| {
                 let (a, b, t, u, s) = bbox(&lines[k], 0, body_end(&lines[k]));
                 (acc.0.min(a), acc.1.max(b), acc.2.min(t), acc.3.max(u), acc.4.max(s))
             });
+        // weak-only clusters (a line of numbers, the stacked rows of a numeric table column)
+        // are not math, unless a few of them sit across a bar no wider than they are (a
+        // fraction of numbers); a table's rules span its columns
+        let weak_only = !c.iter().any(|&k| lines[k].strong || lines[k].gs.iter().any(|g| g.ev == Ev::Var));
+        if weak_only {
+            let inside: Vec<&Bar> = bars
+                .iter()
+                .filter(|b| b.y > ctop && b.y < cbot && b.x1 > cx0 - csize && b.x0 < cx1 + csize)
+                .take(2)
+                .collect();
+            let fraction = c.len() >= 2
+                && c.len() <= 4
+                && inside.len() == 1
+                && inside[0].x0 >= cx0 - csize
+                && inside[0].x1 <= cx1 + csize
+                && inside[0].x1 - inside[0].x0 >= 0.5 * (cx1 - cx0)
+                && c.iter().any(|&k| page.lines[k].base() < inside[0].y)
+                && c.iter().any(|&k| page.lines[k].base() > inside[0].y);
+            if !fraction {
+                cluster_taken[ci] = true;
+                continue;
+            }
+        }
         // the nearest prose line with a run under or over the cluster
         let mut best: Option<(usize, usize, f64)> = None;
         for &(li, ri, (x0, x1, top, bot, size)) in &run_boxes {

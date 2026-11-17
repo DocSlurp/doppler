@@ -1150,3 +1150,38 @@ fn displays_with_prose_between_stay_apart() {
     assert!(ia < ic && ic < ib, "{md}");
     assert_eq!(report.math.iter().map(|m| m.display).sum::<usize>(), 2);
 }
+
+#[test]
+fn numeric_table_columns_are_not_math() {
+    // a ruled table of text labels and text-font numbers ("+" signs included), each cell
+    // boxed by its own top and bottom border: the stacked number columns are a table, not an
+    // aligned formula, and the cell borders are not fraction bars or overlines
+    let num = |x: f64, t: &'static str, y: f64| {
+        let gs: Vec<G> =
+            t.char_indices().map(|(i, c)| g(x + 5.0 * i as f64, 5.0, 0, &t[i..i + c.len_utf8()])).collect();
+        w(gs, y, 10.0)
+    };
+    let mut lines = vec![prose(120.0)];
+    let mut rules = Vec::new();
+    let rows = [
+        ("North", "12,480", "+12.4%"),
+        ("South", "8,910", "+10.8%"),
+        ("East", "6,205", "+23.4%"),
+        ("West", "2,140", "+20.1%"),
+    ];
+    for (i, (a, b, c)) in rows.iter().enumerate() {
+        let y = 160.0 + 18.0 * i as f64;
+        // the producer gives the label and the number cells as separate lines
+        lines.push(vec![num(100.0, a, y)]);
+        lines.push(vec![num(200.0, b, y), num(300.0, c, y)]);
+        for x in [95.0, 195.0, 295.0] {
+            rules.push((x, y - 12.0, x + 90.0, y - 11.5));
+            rules.push((x, y + 5.5, x + 90.0, y + 6.0));
+        }
+    }
+    lines.push(prose(260.0));
+    let (md, report) = convert(&page(&lines, &rules), &MATH);
+    assert!(!md.contains('$'), "{md}");
+    assert!(md.contains("12,480") && md.contains("+23.4%"), "{md}");
+    assert_eq!(report.math.iter().map(|m| m.display + m.inline).sum::<usize>(), 0, "{md}");
+}
