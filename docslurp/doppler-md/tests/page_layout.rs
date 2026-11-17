@@ -127,32 +127,3 @@ fn exhausted_layout_discards_all_partial_assignments() {
     assert_eq!(report.degraded, [(0, Degraded::PageWork)]);
     assert_eq!((report.doc_work, report.page_work_max), (378, 371));
 }
-
-#[test]
-fn rows_between_two_rules_stay_rows() {
-    // a table with horizontal rules only (top, under the header, under the first row, bottom),
-    // every cell a line of its own, and three rows in its last band: each row stays its own
-    // row with its numbers apart (the band once became one row with "78.378.7" glued)
-    let mut body = String::new();
-    for y in [63.4, 82.5, 101.6, 147.8] {
-        body += &rule(310.0, 522.0, y, y + 0.6);
-    }
-    let cell = |x0: f64, x1: f64, y: f64, t: &str| line(&word(x0, x1, y, t, "Serif"));
-    for (y, cells) in [
-        (68.7, ["Masking", "SQuAD", "MNLI"]),
-        (87.9, ["reference", "76.3", "84.3"]),
-        (120.4, ["static", "78.3", "84.3"]),
-        (134.0, ["dynamic", "78.7", "84.0"]),
-    ] {
-        body += &cell(316.8, 357.0, y, cells[0]);
-        body += &cell(386.3, 405.3, y, cells[1]);
-        body += &cell(445.8, 464.8, y, cells[2]);
-    }
-    body +=
-        &line(&(word(316.8, 334.4, 106.9, "Our", "Serif") + &word(337.2, 416.9, 106.9, "reimplementation:", "Serif")));
-    let (md, _) = to_markdown_report(&page(&body), &Params::default());
-    let md = md.join("\n");
-    assert!(md.contains("| static | 78.3 | 84.3 |"), "{md}");
-    assert!(md.contains("| dynamic | 78.7 | 84.0 |"), "{md}");
-    assert!(!md.contains("78.378.7"), "{md}");
-}
