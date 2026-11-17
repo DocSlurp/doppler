@@ -1097,7 +1097,8 @@ def math_tables_pdf():
     4 a whitespace-aligned table (no rules) under prose;
     5 shaded rows without rules;
     6 a raster formula strip in the text flow, a photo, a lossless low-bytes table-like image;
-    7 a Type 3 font whose glyph procedures paint inline image masks;
+    7 a Type 3 font whose glyph procedures paint inline image masks, at codes that give no
+      usable Unicode (control characters, as a PK math font's low codes do);
     8 tagged structure: Formula (TeX alt, MathML file), role-mapped Table/TR/TD with ColSpan 2,
       MathML-namespace elements, marked-content ActualText holding TeX;
     9 math-font classes, plain Unicode math in Helvetica, a fraction and a 2x2 matrix in CMMI10;
@@ -1128,7 +1129,7 @@ def math_tables_pdf():
         + "q 300 0 0 200 72 120 cm /Im3 Do Q\n"
         + _prose(110, 1)
     )
-    type3 = "BT /T3 12 Tf 72 700 Td (abab abba baba) Tj ET\n" + _prose(680)
+    type3 = "BT /T3 12 Tf 72 700 Td (\\001\\002\\001\\002 \\001\\002\\002\\001) Tj ET\n" + _prose(680)
     tagged = (
         "/Formula << /MCID 0 >> BDC BT /F1 12 Tf 72 700 Td (a/b) Tj ET EMC\n"
         "/TD << /MCID 1 >> BDC BT /F1 12 Tf 72 680 Td (cell) Tj ET EMC\n"
@@ -1155,10 +1156,10 @@ def math_tables_pdf():
     outline = _prose(700, 2) + "q 300 676 m 302 684 304 684 306 676 c 308 668 310 668 312 676 c 314 684 316 684 318 676 c 320 668 322 668 324 676 c 326 684 328 684 330 676 c 332 668 334 668 336 676 c 338 684 340 684 342 676 c 344 668 346 668 348 676 c f Q\n" + _prose(664, 2)
     mask_proc = "600 0 0 0 500 500 d1 q 500 0 0 500 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID \x00\x18\x3c\x7e\x7e\x3c\x18\x00 EI Q"
     t3 = (
-        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {0} 0 R /b {1} 0 R >>"
-        " /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>"
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /pkqx {0} 0 R /pkqy {1} 0 R >>"
+        " /Encoding << /Type /Encoding /Differences [1 /pkqx /pkqy] >> /FirstChar 1 /LastChar 2 /Widths [600 600] /Resources << >> >>"
     )
-    # a TrueType program that is only a table directory with a MATH entry (never drawn: page facts read the directory)
+    # a TrueType program that is only a table directory with a MATH entry (never read: its name holds no Math, so it is text)
     sfnt = b"\x00\x01\x00\x00\x00\x02\x00\x20\x00\x01\x00\x00" + b"MATH" + b"\x00" * 12 + b"cmap" + b"\x00" * 12
     extras = [
         stream("", mask_proc),  # 0

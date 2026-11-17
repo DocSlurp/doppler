@@ -417,7 +417,7 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
 
 What a router needs to send a page down the right math or table route, one fact per
 distinction (never one score). All of it is computed on the text pass from what the pass
-already sees, plus bounded font reads (below). The structure tree (its parent tree, elements,
+already sees, with no read of its own (below). The structure tree (its parent tree, elements,
 RoleMap, Alt and `/AF` files) is never read: a per-page walk of it cost memory and time out
 of proportion to what it told a router (council #51), so the bits that needed it are
 reserved. Everything here is a heuristic over drawing
@@ -438,7 +438,7 @@ arrays):
 | 4 | `mathml` | reserved: never set (needed the structure tree) | |
 | 5 | `raster-strips` | `images.mathStrips` > 0 | vision (region crops) |
 | 6 | `glyph-outlines` | `vectors.glyphOutlineClusters` > 0 | vision (region crops) |
-| 7 | `type3-bitmap-font` | glyphs drawn by a Type 3 bitmap font | vision |
+| 7 | `type3-bitmap-font` | glyphs drawn by a Type 3 font that the text layer gives no usable Unicode (`fonts.mathClasses.type3Bitmap`; the name is kept for the API) | vision |
 | 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs, and at least a quarter of them, for which the text layer gives no Unicode: unmapped, a control character, private use or U+FFFD. The Adobe Symbol bracket and brace pieces (U+F8E5-F8FE) are delimiters, not unreadable, but only from a math extension font (CMEX, LM math extension, Euler, esint, tx/px/newtx extension, Symbol, MathType Extra): any other font mapping there is not trusted | vision |
 | 9 | `plain-unicode-math` | at least 3 scripts, operators or math alphanumerics drawn by text fonts (Greek and arrows alone do not count: units and prose use them) | keep the text |
 | 10 | `formula-struct` | reserved: never set (needed the structure tree) | |
@@ -467,7 +467,7 @@ nibble i at bits `4i..4i+3`, so 52 bits, exact in a JSON reader's double):
 |---|---|
 | 0 | math-font characters with a Unicode value |
 | 1 | `text.unicodeMath` characters drawn by text fonts |
-| 2 | unreadable math glyphs (math-class unmapped or private use, plus Type 3 bitmap glyphs) |
+| 2 | unreadable math glyphs (math-class unmapped or private use, plus `type3Bitmap` glyphs) |
 | 3 | `images.mathStrips` |
 | 4 | `vectors.glyphOutlineClusters` |
 | 5 | reserved (0) |
@@ -484,51 +484,31 @@ development corpus (56 PDFs: the same three tables through 16 encodings, plus co
 rows 3/3, raster table 6/6, outlined text 2/3, matrix-not-table 1/1,
 no false positives on any label (controls: matrix, table of contents, form, two columns, code,
 list, stacked and inline math). On a math-encoding inventory (168 PDFs, one encoding a
-file) the math bits separate raster strips, glyph outlines, Type 3 bitmap fonts, plain Unicode
-math and marked-content ActualText TeX from each other and from no-math controls (tagged
-structure, Alt TeX and MathML were told apart too while the structure tree was read; they are
-no longer).
+file) the math bits separate raster strips, glyph outlines, plain Unicode math and
+marked-content ActualText TeX from each other and from no-math controls (tagged structure, Alt
+TeX and MathML were told apart too while the structure tree was read; they are no longer).
+Since classes come from names and Unicode alone, a dvips PK document that ps2pdf gave
+ToUnicode maps reads as text (its glyphs have usable Unicode), not `type3-bitmap-font`, and an
+OpenType math font whose name lacks the word Math is `text`.
 
-**Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names). In
-order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures (4 KB, then to 64 KB unless that head already holds an inline image mask; decoded bytes charged too), text
-filters only, paint an inline image mask (`BI /IM true`) or run `Do` on an image-mask XObject
-of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math, OpenSymbol);
-`otfMath` (an embedded sfnt program whose table directory, in its first 4 KB, lists `MATH`);
-`texType1` (CMMI, CMSY, CMEX, MSAM/MSBM, Euler, RSFS, LM math, newtx/txfonts/pxfonts math,
-mathptmx, mathpazo); `otfMath` again by a name holding the word Math when the program has no
-readable directory (bare CFF, not embedded); `symbol`; `text`. A font's class is cached per
-document by reference; reads are made under a RepairGuard (they cannot rebuild the
-cross-reference table) and charged the encoded and the decoded bytes they consume, at most 64 MB plus 4 MB for every page begun, a budget of their own (past it, names alone: `analysis-truncated`). A font past the page's
-256-font list is still classed from the document's cache. A Type 3 font's resource `/XObject`
-dictionary is read once per object, however many fonts share it.
+**Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names), from
+what the text pass already has: the font's name (BaseFont) and type and each glyph's Unicode.
+Font classification makes no read of its own: no font program, glyph procedure or resource is
+fetched (reads of those reached object streams the run then kept, council #51), so a font's
+class never depends on a read and is never unknown. In order: `webMath` (KaTeX_, MathJax, MJX);
+`officeMath` (Cambria Math, OpenSymbol); `texType1` (CMMI, CMSY, CMEX, MSAM/MSBM, Euler, RSFS,
+LM math, newtx/txfonts/pxfonts math, mathptmx, mathpazo); `otfMath` (a name holding the word
+Math: STIX Two Math, Latin Modern Math, Cambria Math's kin; an embedded OpenType MATH table is
+not looked for); `symbol`; `text`. `type3Bitmap` counts glyphs of a Type 3 font that the text
+layer gives no usable Unicode (none, a control character, private use or U+FFFD): bitmap or
+vector, such a glyph needs vision (a dvips PK math font's low codes, say; a PK text font whose
+codes pass through as letters is `text`). A font is classed once a page, however many fonts the
+page has; the fonts family's list and counts are the same with or without `mathtables`.
 
-**Reads stay bounded and say when they are partial.** A font's class is computed once per font
-object (a direct font dictionary by its content hash, so a form drawn thousands of times
-classifies its inline fonts once). Every stream read for classification (Type 3 glyph
-procedures, a font program's head) caps the encoded bytes read
-(64 KB, 64 KB) as well as the decoded bytes (64 KB, 4 KB): a longer stream is decoded
-from a copy of its first encoded bytes (an encrypted document's is not read), so a deflate
-stream of empty stored blocks costs at most the cap. A glyph procedure or font program many
-fonts share is read once (by reference). These reads never parse an object stream: before each
-fetch (a procedure, a program, a Type 3 font's `/XObject` dictionary, its entries and their
-`/ImageMask`) the object's cross-reference entry is looked up, and an object in an object stream
-is not fetched (procedures, programs and XObjects are streams, which cannot legally live in one);
-a stream is fetched only when its dictionary, lexed from the file without resolving anything (at
-most 4,096 tokens in its first 64 KB), names its `/Length` directly or by an object outside any
-object stream and its filters and their parameters directly. A refused read makes the font's
-class unknown (`analysis-truncated`). Every fetch is charged 4 KB plus the bytes lexed to vet it
-against the font budget, whatever it yields. The reads are side-effect free for the other
-families: errors they meet are not the page's `parseWarnings`, the fonts list and its counts are
-the same with or without `mathtables`, and an analysis cap sets `analysis-truncated` only (never
-`limit-hit`). A marked-content `/ActualText` string has its first
-4,096 code units tested; a longer one with no TeX in them is TeX unknown (`structure.truncated`,
-`analysis-truncated`). A glyph procedure cut inside an inline image dictionary, a non-empty
-stream that decodes to nothing, a glyph procedure that fills its 64 KB read with no `BI` or
-`Do`, and an OpenType or TrueType program whose table directory cannot be read are unknown: a
-font whose procedures or program could not be read makes the page `analysis-truncated`
-rather than a definite class. A font past the page's 256-font list is still classed (from the
-document's cache) and its glyphs counted in `fonts.mathClasses`; only the fonts family's own
-`fonts.truncated` and `limit-hit` say the list was cut.
+**Side effects.** None on the other families: `mathtables` adds no fetch, no parse warning and
+no font to the fonts list, and an analysis cap sets `analysis-truncated` only (never
+`limit-hit`). A marked-content `/ActualText` string has its first 4,096 code units tested; a
+longer one with no TeX in them is TeX unknown (`structure.truncated`, `analysis-truncated`).
 
 **Bounds.** Math glyph centres (8,192), math words (4,096), regions (64 listed), rule tables
 (64), rules (4,096 a direction), a page's comparisons (2^21: `analysis-truncated`), ActualText code

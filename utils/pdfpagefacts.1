@@ -142,7 +142,8 @@ family each page line carries three integers, one fact per route the router tell
 (bit 0 first): text-math (math-font characters with Unicode), stacked-math (fraction bars or
 vertically stacked math glyphs), actualtext-tex (marked-content ActualText holding TeX),
 alt-tex (reserved), mathml (reserved), raster-strips (short wide images in the text flow),
-glyph-outlines (small curve-dense drawing in the text flow), type3-bitmap-font,
+glyph-outlines (small curve-dense drawing in the text flow), type3-bitmap-font (Type 3 glyphs
+with no usable Unicode),
 math-font-no-unicode, plain-unicode-math (scripts, operators or math alphanumerics in text
 fonts), formula-struct (reserved), math-matrix (a grid of math glyphs), analysis-truncated.
 .PP
@@ -168,9 +169,9 @@ images.items[].stripLike and inTextFlow, images.mathStrips, vectors.glyphOutline
 vectors.ruleTables (horizontal-rule tables, booktabs or open, at most 64), the page's
 structure object (marked-content ActualText spans and the TeX-like ones), mathRegions (text, outline and raster boxes, at most 64), mathLayout, tableLayout,
 mathFlags and tableFlags (the bits as names). docslurp/page-facts/README.md has the exact
-rules and bounds. These facts read a Type 3 font's first 8 glyph procedures (64 KB each), the
-first 4 KB of an embedded font program, without rebuilding the cross-reference table, and
-never the structure tree.
+rules and bounds. These facts make no read of their own: font classes come from names and
+the text layer's Unicode (a Type 3 glyph with none usable is type3Bitmap), and the structure
+tree is never read.
 .SH EXIT CODES
 .TP
 0

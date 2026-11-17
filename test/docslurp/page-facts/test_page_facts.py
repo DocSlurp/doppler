@@ -687,8 +687,8 @@ with t.TempDir() as d:
     t.check(pages[3]["vectors"]["ruleTables"] == [] and pages[3]["tableBits"] == 0, "ruleTables: lined paper and form lines are no table")
     items = pages[6]["images"]["items"]
     t.check([(i["stripLike"], i["inTextFlow"]) for i in items] == [(True, True), (False, True), (False, True)] and pages[6]["images"]["mathStrips"] == 1, "images: one formula strip in the flow", repr(items))
-    t.check(pages[7]["fonts"]["mathClasses"]["type3Bitmap"] == 12, "fonts: Type 3 image-mask glyphs are type3Bitmap", repr(pages[7]["fonts"]["mathClasses"]))
-    t.check(pages[9]["fonts"]["mathClasses"] == {"texType1": 9, "otfMath": 2, "officeMath": 1, "webMath": 1, "symbol": 1, "type3Bitmap": 0, "text": 183}, "fonts: CMMI, STIX Math (name), MATH table (embedded), Cambria Math, KaTeX, Symbol", repr(pages[9]["fonts"]["mathClasses"]))
+    t.check(pages[7]["fonts"]["mathClasses"]["type3Bitmap"] == 8, "fonts: Type 3 glyphs with no usable Unicode are type3Bitmap", repr(pages[7]["fonts"]["mathClasses"]))
+    t.check(pages[9]["fonts"]["mathClasses"] == {"texType1": 9, "otfMath": 1, "officeMath": 1, "webMath": 1, "symbol": 1, "type3Bitmap": 0, "text": 184}, "fonts: CMMI, STIX Math (name), Cambria Math, KaTeX, Symbol; an embedded MATH table is never read (by name: text)", repr(pages[9]["fonts"]["mathClasses"]))
     t.check(pages[9]["text"]["unicodeMath"]["operators"] == 3 and pages[9]["text"]["unicodeMath"]["greek"] >= 1 and pages[9]["text"]["unicodeMath"]["scripts"] == 1, "text: unicodeMath blocks", repr(pages[9]["text"]["unicodeMath"]))
     t.check(pages[9]["mathLayout"]["fractionBars"] == 1 and pages[9]["mathLayout"]["matrixRegions"] == 1, "mathLayout: a fraction bar and a 2x2 matrix", repr(pages[9]["mathLayout"]))
     st = pages[8]["structure"]
@@ -712,16 +712,13 @@ with t.TempDir() as d:
     t.check(rc == 0 and time.monotonic() - start < 20, "mathtables hostile: exit 0, bounded time", "%r %.1fs" % (rc, time.monotonic() - start))
     hs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
     t.check(hs[4]["mathBits"] >> 12 & 1 and hs[4]["tableBits"] >> 9 & 1 and "limit-hit" not in hs[4]["parseWarnings"], "mathtables hostile: the page's analysis budget runs out: analysis-truncated (parseWarnings as without mathtables)", repr(hs[4]["mathFlags"]))
-    # council negative cases: a 1 MB Alt string and an /AF array that 50,000 elements share,
-    # untyped files and glyph procedures of empty stored deflate blocks (2 MB, decode to
-    # nothing), an inline Type 3 font set 3,000 times and drawn by a form 2,000 times: bounded,
-    # and what could not be read is reported as truncated or unknown, never a definite 0
+    # council negative cases (structure, glyph procedures and programs mathtables no longer reads):
+    # bounded, and no font class depends on a read
     start = time.monotonic()
     rc, out, err = facts(paths["math_tables_council"], "-level", "full")
     took = time.monotonic() - start
     t.check(rc == 0 and took < 20, "mathtables council: exit 0, bounded time", "%r %.1fs" % (rc, took))
     cs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
-    t.check(cs[2]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and cs[2]["mathBits"] >> 12 & 1 and cs[2]["tableBits"] >> 9 & 1, "mathtables council: an unreadable Type 3 font is unknown (analysis-truncated), not a definite class", repr(cs[2]["mathFlags"]))
     # math-matrix needs a delimited grid of text-size cells; math-font-no-unicode needs glyphs
     # with no Unicode (not bracket pieces), at least a quarter of the math glyphs
     mm = {l["page"]: l for l in lines(facts(paths["math_matrix"], "-level", "full")[1]) if l["type"] == "page"}
@@ -730,16 +727,12 @@ with t.TempDir() as d:
     t.check(not any(bit(mm[n], 11) or mm[n]["tableBits"] >> 8 & 1 for n in (2, 3, 4)), "math-matrix: side-by-side fractions, aligned equations and sum limits are not matrices", repr([mm[n]["mathFlags"] for n in (2, 3, 4)]))
     t.check(bit(mm[5], 8) and not bit(mm[6], 8), "math-font-no-unicode: private-use glyphs fire; bracket pieces beside readable math do not", repr((mm[5]["mathFlags"], mm[6]["mathFlags"])))
     t.check(bit(mm[7], 8), "math-font-no-unicode: bracket pieces from a font that is not a math extension font are not exempt", repr(mm[7]["mathFlags"]))
-    t.check(bit(mm[8], 12) and mm[8]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "Type 3: a procedure whose read is cut before BI is unknown (analysis-truncated), not a vector font", repr((mm[8]["mathFlags"], mm[8]["fonts"]["mathClasses"])))
-    t.check(not bit(mm[9], 12) and mm[9]["fonts"]["mathClasses"]["text"] > 0, "Type 3: 6 KB vector procedures are read and decided (no truncation)", repr((mm[9]["mathFlags"], mm[9]["fonts"]["mathClasses"])))
-    t.check(mm[10]["fonts"]["mathClasses"]["type3Bitmap"] == 4 and bit(mm[10], 7), "Type 3: a Do in the first 4 KB decides nothing; the mask after it makes a bitmap font", repr((mm[10]["mathFlags"], mm[10]["fonts"]["mathClasses"])))
     here = os.path.join(HERE, "fixtures", "encoding-tables-math.pdf")
     ls = {l["page"]: l for l in lines(facts(here, "-include", "mathtables")[1]) if l["type"] == "page"}
     t.check([ls[n]["mathBits"] for n in (1, 2, 3, 4)] == [0, 3, 2049, 0] and [ls[n]["tableBits"] for n in (1, 2, 3, 4)] == [4, 8, 256, 0], "pdflatex display math: no math-font-no-unicode or math-matrix; the pmatrix page is math-matrix (not whitespace), the booktabs page booktabs; the aligned display math is a whitespace block, as doppler-md writes it", repr([(ls[n]["mathBits"], ls[n]["tableBits"]) for n in (1, 2, 3, 4)]))
 
-    # council round 2: /AF cycles, chains and deep nesting; the class follows the graphics
-    # state; many honest fonts; cut and corrupt deflate heads; one /XObject dictionary 4,000
-    # Type 3 fonts share; 300 ligature ActualText spans; RoleMap chains past the hop cap
+    # council round 2: the class follows the graphics state; many honest fonts; 300 ligature
+    # ActualText spans; the other pages hold objects mathtables no longer reads
     start = time.monotonic()
     rc, out, err = facts(paths["math_tables_round2"], "-level", "full")
     took = time.monotonic() - start
@@ -748,17 +741,13 @@ with t.TempDir() as d:
     trunc = lambda pg: pg["mathBits"] >> 12 & 1
     t.check(r2[2]["fonts"]["mathClasses"]["texType1"] == 5 and r2[2]["fonts"]["mathClasses"]["text"] == 4, "round 2: a form's and a q/Q run's CMMI10 do not leak to the Helvetica body", repr(r2[2]["fonts"]["mathClasses"]))
     t.check(not trunc(r2[3]) and r2[3]["fonts"]["mathClasses"]["text"] == 600, "round 2: 300 honest embedded fonts on a page: classed, not analysis-truncated", repr(r2[3]["mathFlags"]))
-    t.check(trunc(r2[4]) and r2[4]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "round 2: cut and corrupt deflate heads are unknown (analysis-truncated), not a definite class", repr(r2[4]["mathFlags"]))
-    t.check(all(r2[n]["fonts"]["mathClasses"]["type3Bitmap"] == 250 and not trunc(r2[n]) for n in range(5, 21)), "round 2: 4,000 Type 3 fonts sharing one 20,000-entry /XObject dictionary are classed (read once)")
     t.check(not trunc(r2[21]) and r2[21]["structure"]["actualText"] == 300 and "limit-hit" not in r2[21]["parseWarnings"], "round 2: 300 one-character ActualText spans are not truncated", repr(r2[21]["structure"]))
-    t.check(trunc(r2[23]) and r2[23]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "council #51: a glyph procedure that fills the 64 KB read with no BI or Do is unknown, not a text font", repr(r2[23]["mathFlags"]))
     # every mathtables page of every fixture: the reserved bits and nibbles are never set, and the
     # structure object holds marked-content ActualText only
     for name, out in (("math_tables", facts(paths["math_tables"], "-level", "full")[1]), ("hostile", facts(paths["math_tables_hostile"], "-level", "full")[1]), ("council", facts(paths["math_tables_council"], "-level", "full")[1]), ("round2", out), ("math_matrix", facts(paths["math_matrix"], "-level", "full")[1])):
         pgs = [l for l in lines(out) if l["type"] == "page"]
         t.check(all(not (l["mathBits"] & RESERVED_MATH) and not (l["tableBits"] & RESERVED_TABLE) and not (l["encodingCounts"] & RESERVED_COUNTS) for l in pgs), "mathtables %s: reserved bits and counts are never set" % name, repr([(l["page"], l["mathFlags"], l["tableFlags"]) for l in pgs if l["mathBits"] & RESERVED_MATH or l["tableBits"] & RESERVED_TABLE]))
         t.check(all(set(l["structure"]) == {"actualText", "actualTextTexLike", "truncated"} for l in pgs), "mathtables %s: structure holds marked-content ActualText only" % name)
-    t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
 
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------
     td = os.path.join(args.testdata, "unittestcases") if args.testdata else ""
