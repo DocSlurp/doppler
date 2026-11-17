@@ -104,10 +104,7 @@ fn make_pdf(n: usize) -> Vec<u8> {
 fn setup(tag: &str, pages: usize) -> Option<(PathBuf, Scratch, String)> {
     let Some(p) = pdftotext() else {
         // a missing toolchain fails under DOPPLER_REQUIRE_INTEGRATION (tests/toolchain)
-        toolchain::skip(
-            tag,
-            "the DocSlurp pdftotext with -images (PDFTOTEXT, else ../../build/utils/pdftotext) and python3",
-        );
+        toolchain::skip(tag, "the DocSlurp pdftotext with -images (PDFTOTEXT, else ../../build/utils/pdftotext) and python3");
         return None;
     };
     let d = std::env::temp_dir().join(format!("images-batches-{tag}-{}", std::process::id()));
@@ -155,8 +152,7 @@ fn pages(m: &serde_json::Value) -> Vec<(u64, u64)> {
         .iter()
         .map(|b| {
             // The test's manifest reader keeps a batch line's fields without its `type`.
-            let mut keys: Vec<&str> =
-                b.as_object().unwrap().keys().map(String::as_str).filter(|k| *k != "type").collect();
+            let mut keys: Vec<&str> = b.as_object().unwrap().keys().map(String::as_str).filter(|k| *k != "type").collect();
             keys.sort_unstable();
             assert_eq!(keys, ["cut_page", "pages", "status"], "{b}");
             (b["pages"][0].as_u64().unwrap(), b["pages"][1].as_u64().unwrap())

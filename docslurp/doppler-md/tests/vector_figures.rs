@@ -311,66 +311,39 @@ fn markers(body: &str) -> Vec<(String, &'static str)> {
 
 #[test]
 fn vertical_horizontal_stacked_and_grouped_bars_are_figures() {
-    let vertical = axes()
-        + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f")
-        + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f")
-        + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    let vertical = axes() + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
     assert_eq!(markers(&vertical).len(), 1, "vertical bars");
     // horizontal bars share the left axis
-    let horizontal = axes()
-        + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff")
-        + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff")
-        + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff");
+    let horizontal = axes() + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff") + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff") + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff");
     assert_eq!(markers(&horizontal).len(), 1, "horizontal bars");
     // stacked: a second segment on each bar; one figure covering both
-    let stacked = vertical.clone()
-        + &bx(110.0, 220.0, 140.0, 250.0, "#e76f51")
-        + &bx(160.0, 170.0, 190.0, 200.0, "#e76f51")
-        + &bx(210.0, 260.0, 240.0, 280.0, "#e76f51");
+    let stacked = vertical.clone() + &bx(110.0, 220.0, 140.0, 250.0, "#e76f51") + &bx(160.0, 170.0, 190.0, 200.0, "#e76f51") + &bx(210.0, 260.0, 240.0, 280.0, "#e76f51");
     let found = markers(&stacked);
     assert_eq!(found.len(), 1, "stacked bars");
     // grouped: pairs of bars, small gaps inside a group and larger between groups
-    let grouped = axes()
-        + &bx(110.0, 250.0, 125.0, 330.0, "#2a9d8f")
-        + &bx(126.0, 230.0, 141.0, 330.0, "#e76f51")
-        + &bx(170.0, 200.0, 185.0, 330.0, "#2a9d8f")
-        + &bx(186.0, 260.0, 201.0, 330.0, "#e76f51");
+    let grouped = axes() + &bx(110.0, 250.0, 125.0, 330.0, "#2a9d8f") + &bx(126.0, 230.0, 141.0, 330.0, "#e76f51")
+        + &bx(170.0, 200.0, 185.0, 330.0, "#2a9d8f") + &bx(186.0, 260.0, 201.0, 330.0, "#e76f51");
     assert_eq!(markers(&grouped).len(), 1, "grouped bars");
 }
 
 #[test]
 fn shaded_tables_zebra_rows_highlights_and_borders_are_not_bar_charts() {
     // a shaded table: cells of different widths on one baseline, each holding words, on ruled lines
-    let table = rule(72.0, 300.0, 540.0, 300.5)
-        + &bx(72.0, 280.0, 200.0, 300.0, "#dddddd")
-        + &bx(200.0, 280.0, 400.0, 300.0, "#dddddd")
-        + &bx(400.0, 280.0, 540.0, 300.0, "#dddddd")
-        + &line_at(80.0, 284.0, "Region")
-        + &line_at(210.0, 284.0, "Revenue")
-        + &line_at(410.0, 284.0, "Growth");
+    let table = rule(72.0, 300.0, 540.0, 300.5) + &bx(72.0, 280.0, 200.0, 300.0, "#dddddd") + &bx(200.0, 280.0, 400.0, 300.0, "#dddddd") + &bx(400.0, 280.0, 540.0, 300.0, "#dddddd")
+        + &line_at(80.0, 284.0, "Region") + &line_at(210.0, 284.0, "Revenue") + &line_at(410.0, 284.0, "Growth");
     assert!(markers(&table).is_empty(), "shaded table");
     // zebra stripes: rows of one length on a shared left edge, beside a rule
-    let zebra = rule(72.0, 200.0, 72.5, 400.0)
-        + &(0..6)
-            .map(|i| bx(72.0, 200.0 + 30.0 * i as f64, 540.0, 215.0 + 30.0 * i as f64, "#f2f2f2"))
-            .collect::<String>();
+    let zebra = rule(72.0, 200.0, 72.5, 400.0) + &(0..6).map(|i| bx(72.0, 200.0 + 30.0 * i as f64, 540.0, 215.0 + 30.0 * i as f64, "#f2f2f2")).collect::<String>();
     assert!(markers(&zebra).is_empty(), "zebra rows");
     // highlighted text: boxes behind words
-    let highlight = rule(72.0, 400.0, 540.0, 400.5)
-        + &bx(72.0, 380.0, 150.0, 400.0, "#ffff00")
-        + &bx(160.0, 370.0, 260.0, 400.0, "#ffff00")
-        + &bx(270.0, 390.0, 300.0, 400.0, "#ffff00")
-        + &line_at(75.0, 385.0, "launch")
-        + &line_at(165.0, 380.0, "expansion")
-        + &line_at(272.0, 391.0, "go");
+    let highlight = rule(72.0, 400.0, 540.0, 400.5) + &bx(72.0, 380.0, 150.0, 400.0, "#ffff00") + &bx(160.0, 370.0, 260.0, 400.0, "#ffff00") + &bx(270.0, 390.0, 300.0, 400.0, "#ffff00")
+        + &line_at(75.0, 385.0, "launch") + &line_at(165.0, 380.0, "expansion") + &line_at(272.0, 391.0, "go");
     assert!(markers(&highlight).is_empty(), "highlighted text");
     // a page border and a white background
     let border = bx(20.0, 20.0, 592.0, 772.0, "#000000") + &bx(0.0, 0.0, 612.0, 792.0, "#ffffff");
     assert!(markers(&border).is_empty(), "page border");
     // bars without any axis or tick are decoration (a progress strip), not a chart
-    let no_axis = bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f")
-        + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f")
-        + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    let no_axis = bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
     assert!(markers(&no_axis).is_empty(), "no axis");
 }
 
@@ -378,72 +351,45 @@ fn shaded_tables_zebra_rows_highlights_and_borders_are_not_bar_charts() {
 fn redactions_form_fields_and_label_bars_follow_the_shared_rule() {
     // council M1/M2: redaction boxes (near black) in a bordered table column, ragged widths on one left edge, no words
     // under them, and the table's own column border along that edge
-    let redacted_table = rule(72.0, 200.0, 540.0, 200.5)
-        + &rule(72.0, 200.0, 72.5, 400.0)
-        + &rule(200.0, 200.0, 200.5, 400.0)
-        + &(0..6)
-            .map(|i| bx(202.0, 210.0 + 30.0 * i as f64, 262.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, "#000000"))
-            .collect::<String>()
+    let redacted_table = rule(72.0, 200.0, 540.0, 200.5) + &rule(72.0, 200.0, 72.5, 400.0) + &rule(200.0, 200.0, 200.5, 400.0)
+        + &(0..6).map(|i| bx(202.0, 210.0 + 30.0 * i as f64, 262.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, "#000000")).collect::<String>()
         + &(0..6).map(|i| line_at(80.0, 210.0 + 30.0 * i as f64, "Witness")).collect::<String>();
     assert!(markers(&redacted_table).is_empty(), "redacted table column");
     // a redacted paragraph: blacked-out lines from the left margin, a rule under the last one
-    let redacted_paragraph = (0..6)
-        .map(|i| bx(72.0, 200.0 + 14.0 * i as f64, 540.0 - 31.0 * i as f64, 211.0 + 14.0 * i as f64, "#0a0a0a"))
-        .collect::<String>()
+    let redacted_paragraph = (0..6).map(|i| bx(72.0, 200.0 + 14.0 * i as f64, 540.0 - 31.0 * i as f64, 211.0 + 14.0 * i as f64, "#0a0a0a")).collect::<String>()
         + &rule(72.0, 290.0, 540.0, 290.5);
     assert!(markers(&redacted_paragraph).is_empty(), "redacted paragraph");
     // tinted form fields stacked on one left edge, each with its own outline (its left edge is no axis: it spans one field)
     let form = (0..4)
         .map(|i| {
             let (y, w) = (220.0 + 30.0 * i as f64, [300.0, 120.0, 200.0, 80.0][i]);
-            bx(200.0, y, 200.0 + w, y + 18.0, "#e0eeff")
-                + &rule(200.0, y, 200.5, y + 18.0)
-                + &rule(200.0, y + 18.0, 200.0 + w, y + 18.5)
+            bx(200.0, y, 200.0 + w, y + 18.0, "#e0eeff") + &rule(200.0, y, 200.5, y + 18.0) + &rule(200.0, y + 18.0, 200.0 + w, y + 18.5)
                 + &line_at(100.0, y + 3.0, "Name")
         })
         .collect::<String>();
     assert!(markers(&form).is_empty(), "form fields");
     // a common chart style: horizontal bars with their category label inside, at the left end; a third of the bars
     // holding words is the limit, so three labelled bars are not a chart in either tool (PageFacts.cc agrees)
-    let labelled = axes()
-        + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff")
-        + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff")
-        + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff")
-        + &line_at(104.0, 164.0, "London")
-        + &line_at(104.0, 204.0, "Paris")
-        + &line_at(104.0, 244.0, "Tokyo");
+    let labelled = axes() + &bx(100.5, 160.0, 300.0, 180.0, "#7b61ff") + &bx(100.5, 200.0, 220.0, 220.0, "#7b61ff") + &bx(100.5, 240.0, 380.0, 260.0, "#7b61ff")
+        + &line_at(104.0, 164.0, "London") + &line_at(104.0, 204.0, "Paris") + &line_at(104.0, 244.0, "Tokyo");
     assert!(markers(&labelled).is_empty(), "labels inside bars");
     // council r2: redactions in CMYK black (#231f20), grey and navy, 1 pt inside a column rule that spans them
     for fill in ["#231f20", "#262626", "#0d0d33"] {
-        let page = rule(72.0, 200.0, 540.0, 200.5)
-            + &rule(200.0, 200.0, 200.5, 400.0)
-            + &(0..6)
-                .map(|i| bx(201.0, 210.0 + 30.0 * i as f64, 261.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, fill))
-                .collect::<String>()
+        let page = rule(72.0, 200.0, 540.0, 200.5) + &rule(200.0, 200.0, 200.5, 400.0)
+            + &(0..6).map(|i| bx(201.0, 210.0 + 30.0 * i as f64, 261.0 + 23.0 * i as f64, 220.0 + 30.0 * i as f64, fill)).collect::<String>()
             + &(0..6).map(|i| line_at(80.0, 210.0 + 30.0 * i as f64, "Witness")).collect::<String>();
         assert!(markers(&page).is_empty(), "redactions {fill}");
     }
     // a blank flattened form: tinted fields 0.5 pt right of a divider that runs down the whole form
     let divider = rule(150.0, 200.0, 150.5, 560.0)
-        + &[330.0, 70.0, 200.0, 140.0, 260.0]
-            .iter()
-            .enumerate()
-            .map(|(i, w)| bx(150.5, 220.0 + 40.0 * i as f64, 150.5 + w, 238.0 + 40.0 * i as f64, "#dbe8ff"))
-            .collect::<String>()
+        + &[330.0, 70.0, 200.0, 140.0, 260.0].iter().enumerate().map(|(i, w)| bx(150.5, 220.0 + 40.0 * i as f64, 150.5 + w, 238.0 + 40.0 * i as f64, "#dbe8ff")).collect::<String>()
         + &(0..5).map(|i| line_at(80.0, 224.0 + 40.0 * i as f64, "Field")).collect::<String>();
     assert!(markers(&divider).is_empty(), "blank form beside a divider");
     // a black bar chart with its scale is a chart: colour does not decide
-    let black = axes()
-        + &bx(110.0, 250.0, 140.0, 330.0, "#000000")
-        + &bx(160.0, 200.0, 190.0, 330.0, "#000000")
-        + &bx(210.0, 280.0, 240.0, 330.0, "#000000");
+    let black = axes() + &bx(110.0, 250.0, 140.0, 330.0, "#000000") + &bx(160.0, 200.0, 190.0, 330.0, "#000000") + &bx(210.0, 280.0, 240.0, 330.0, "#000000");
     assert_eq!(markers(&black).len(), 1, "black bars");
     // the same bars with no numbers beside them (a progress strip on an axis) are not a chart
-    let unscaled = bx(0.0, 0.0, 612.0, 792.0, "#ffffff")
-        + &rule(100.0, 330.0, 400.0, 330.5)
-        + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f")
-        + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f")
-        + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    let unscaled = bx(0.0, 0.0, 612.0, 792.0, "#ffffff") + &rule(100.0, 330.0, 400.0, 330.5) + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
     assert!(markers(&unscaled).is_empty(), "no scale");
 }
 
@@ -456,16 +402,11 @@ fn bar_runs_are_capped_charged_and_leave_drawings_their_ids() {
         let y = 150.0 + 9.0 * row as f64;
         for run in 0..20 {
             let x = 40.0 + 27.0 * run as f64;
-            body += &(bx(x, y - 3.0, x + 2.0, y, "#2a9d8f")
-                + &bx(x + 3.0, y - 5.0, x + 5.0, y, "#2a9d8f")
-                + &bx(x + 6.0, y - 4.0, x + 8.0, y, "#2a9d8f"));
+            body += &(bx(x, y - 3.0, x + 2.0, y, "#2a9d8f") + &bx(x + 3.0, y - 5.0, x + 5.0, y, "#2a9d8f") + &bx(x + 6.0, y - 4.0, x + 8.0, y, "#2a9d8f"));
             // a scale left of each run: every number on the page at its own height, its value increasing upwards
             for k in 0..3 {
                 let top = y - 14.0 - 2.5 * k as f64 - 0.05 * run as f64;
-                body += &format!(
-                    "<block><line>{}</line></block>",
-                    word(x - 10.0, x - 8.0, top, &format!("{}", (100_000.0 - (top + 5.0) * 100.0).round()))
-                );
+                body += &format!("<block><line>{}</line></block>", word(x - 10.0, x - 8.0, top, &format!("{}", (100_000.0 - (top + 5.0) * 100.0).round())));
             }
             body += &rule(x - 1.0, y, x + 9.0, y + 0.4);
         }
@@ -480,11 +421,7 @@ fn bar_runs_are_capped_charged_and_leave_drawings_their_ids() {
     assert_eq!(fates.len(), 64, "the 64-run cap: {}", fates.len());
     assert!(started.elapsed().as_secs() < 20);
     // a drawing keeps its id (p2.g1) and its place when bars are on the same page
-    let combo = axes()
-        + &chart_body()
-        + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f")
-        + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f")
-        + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
+    let combo = axes() + &chart_body() + &bx(110.0, 250.0, 140.0, 330.0, "#2a9d8f") + &bx(160.0, 200.0, 190.0, 330.0, "#2a9d8f") + &bx(210.0, 280.0, 240.0, 330.0, "#2a9d8f");
     let found = markers(&combo);
     assert_eq!(found.first().map(|f| f.0.as_str()), Some("p2.g1"), "{found:?}");
 }
