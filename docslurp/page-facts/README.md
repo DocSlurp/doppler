@@ -538,7 +538,8 @@ first, as the lazy read did (an entry is taken from the newest section that list
     A rebuild reads an object stream's header only behind the same filters. Filter work of the allowed kinds (inflating, say) is bounded by the parse and decode budgets.
     An offset past the end of the file is refused before it reaches the stream. Object streams (in any
     file) decode at most 4 MiB each and may declare 2,000,000 members in all, since each member is kept
-    for the life of the document.
+    for the life of the document. A rebuild, and the section count the doc line makes, cap predictor rows at
+    64 KiB, so a hostile `/Columns` cannot make each xref stream they open allocate and clear a huge row.
 - **Where the walk stops early**, what it read stands and the rest of the chain is not read:
   - **a loop or a broken older section.** Behind a classic table, the broken section's entries are
     dropped (the lazy read never used a section it could not read). Behind an xref stream they are

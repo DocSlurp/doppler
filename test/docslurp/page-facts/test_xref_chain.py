@@ -110,6 +110,8 @@ with t.TempDir() as d:
         "dp_reuse": ("dp_reuse.py", ["249"]),
         "notokbomb": ("notokbomb.py", ["200", "20000000"]),
         "failpred": ("failpred.py", ["249"]),
+        # the rebuild and the doc line's section count open every xref stream: predictor rows stay capped
+        "predchain400": ("predchain.py", ["400", "1"]),
         # council round 2 of the release after 4578a65: image-filtered older xref streams, the
         # rebuild's predictor rows, and a /Prev near 2^63
         "jbig2chain": ("jbig2chain.py", ["999", "60000", "60000"]),
