@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn convert(exe: &Path, pdf: &str, args: &[&str]) -> String {
+    // `pdf` is relative to tests/fixtures/tables (data/ holds the cell-content cases)
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tables").join(pdf);
     let out =
         Command::new(env!("CARGO_BIN_EXE_pdftomarkdown")).args(args).arg(&path).env("PDFTOTEXT", exe).output().unwrap();
@@ -173,4 +174,51 @@ fn three_row_matrix_from_extension_pieces() {
     );
     let md = convert(&exe, "matrix3.pdf", &[]);
     assert!(table(&md).is_empty(), "{md}");
+}
+
+/// Data tables whose cells hold what a cell-text heuristic could take for math: enumerated row
+/// labels (`a) Revenue`, `1)`), footnote marks (`Bayern 1)`), half-open bins (`[0, 10)`),
+/// bars (`-q | --quiet`, `Ctrl | C`), math italic letters (`𝑥 | 𝑓(𝑥)`, `Run | 𝑛 | 𝑝 | 𝑡`) and
+/// check marks (`√`), borderless and ruled: each is one table, the same with `--math`.
+#[test]
+fn cell_text_never_vetoes_a_table() {
+    let Some(exe) = pdftotext() else { return };
+    let cases: [(&str, &str); 10] = [
+        ("enum", "| a) Revenue | 1,204 | 1,390 |"),
+        ("ruledenum", "| a) Revenue | 1,204 | 1,390 |"),
+        ("footnote", "| Bayern 1) | 1.204 | 1.390 |"),
+        ("bins2", "| [0, 10) | 412 |"),
+        ("flags", "| -q \\| --quiet | 0 |"),
+        ("pipe", "| Ctrl \\| C | 12 |"),
+        ("mathital", "| 𝑥 | 𝑓(𝑥) | 𝑔(𝑥) |"),
+        ("mathitalhdr", "| Run | 𝑛 | 𝑝 | 𝑡 |"),
+        ("check", "| Export | √ | √ | √ | √ |"),
+        ("numlabels", "| 1) | 15 | A |"),
+    ];
+    for (name, line) in cases {
+        let pdf = format!("data/{name}.pdf");
+        let plain = convert(&exe, &pdf, &[]);
+        let math = convert(&exe, &pdf, &["--math"]);
+        assert_eq!(plain.lines().filter(|l| l.starts_with("| ---")).count(), 1, "{name}:\n{plain}");
+        assert!(table(&plain).contains(&line), "{name}: {line}\n{plain}");
+        assert_eq!(table(&math), table(&plain), "{name} --math:\n{math}");
+    }
+}
+
+/// pdfLaTeX pmatrix and bmatrix (TeX extension pieces around the rows) are not tables without
+/// `--math`; an align* with a matrix and a row under it (`&= 7 \qquad 8`) is not a table in
+/// either mode.
+#[test]
+fn delimited_matrices_are_not_tables() {
+    let Some(exe) = pdftotext() else { return };
+    for name in ["m2", "m5"] {
+        let md = convert(&exe, &format!("data/{name}.pdf"), &[]);
+        assert!(table(&md).is_empty(), "{name}:\n{md}");
+        assert!(md.contains("Revenue rose in every region"), "{name}:\n{md}");
+    }
+    for args in [&[][..], &["--math"][..]] {
+        let md = convert(&exe, "data/mx3_0pt.pdf", args);
+        assert!(table(&md).is_empty(), "mx3_0pt {args:?}:\n{md}");
+        assert!(md.contains("The growth plan continues next year."), "{md}");
+    }
 }

@@ -16,3 +16,14 @@ done
 rm -rf "$T/chr-$$"
 soffice -env:UserInstallation="file://$T/lo-$$" --headless --convert-to pdf:writer_pdf_Export --outdir "$PWD" writer.html
 rm -rf "$T/lo-$$"
+# data/: data tables whose cells hold enumerated labels, footnote marks, half-open bins,
+# bars, math italic letters and check marks (Chromium), and pdfLaTeX matrices
+cd data
+for f in enum ruledenum footnote bins2 flags pipe mathital mathitalhdr check numlabels; do
+  chromium --headless=new --no-sandbox --disable-gpu --no-pdf-header-footer --user-data-dir="$T/chr-$$" \
+    --print-to-pdf="$PWD/$f.pdf" "file://$PWD/$f.html"
+done
+rm -rf "$T/chr-$$"
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/w" -w /w texlive/texlive:latest-medium \
+  sh -c 'for f in m2 m5 mx3_0pt; do pdflatex -interaction=nonstopmode $f.tex >/dev/null; done'
+rm -f ./*.aux ./*.log

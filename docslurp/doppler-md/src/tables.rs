@@ -450,8 +450,28 @@ fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<
             break;
         }
         let finer = gutter_columns(body, p);
-        if finer.len() <= cols.len() {
+        // (a header spans a few columns: wide grids keep their columns, which also bounds the
+        // per-gutter header checks below)
+        if finer.len() <= cols.len() || finer.len() > 256 {
             continue;
+        }
+        // per finer column, the body rows with a word in it (once, by binary search)
+        let body_rows: Vec<&Row> = body.iter().filter(|r| r.multi).collect();
+        let mut fill = vec![0usize; finer.len()];
+        let mut seen = vec![usize::MAX; finer.len()];
+        for (ri, r) in body_rows.iter().enumerate() {
+            for w in r.all_words() {
+                let from = finer.partition_point(|c| c.1 <= w.x0);
+                for k in from..finer.len() {
+                    if finer[k].0 >= w.x1 {
+                        break;
+                    }
+                    if seen[k] != ri {
+                        seen[k] = ri;
+                        fill[k] += 1;
+                    }
+                }
+            }
         }
         let new = gaps(&finer);
         let meets = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 + 1.0 && b.0 < a.1 + 1.0;
@@ -476,11 +496,8 @@ fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<
             let (left, right) = (finer[k], finer[k + 1]);
             // both columns it separates are filled in most body rows (a word set apart in one
             // row is not a column under a spanning header)
-            let rows: Vec<&Row> = body.iter().filter(|r| r.multi).collect();
-            let filled = |(a, b): (f64, f64)| {
-                rows.iter().filter(|r| r.all_words().any(|w| w.x1 > a && w.x0 < b)).count() * 2 >= rows.len()
-            };
-            if !filled(left) || !filled(right) {
+            let filled = |k: usize| fill[k] * 2 >= body_rows.len();
+            if !filled(k) || !filled(k + 1) {
                 ok = false;
                 break;
             }
@@ -494,7 +511,12 @@ fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<
                     ok = false;
                 }
             }
-            ok &= crossed;
+            if !crossed {
+                ok = false;
+            }
+            if !ok {
+                break;
+            }
         }
         if !ok {
             continue;
@@ -776,19 +798,11 @@ fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) 
     true
 }
 
-/// Aligned content that is not a table even though its cells line up:
-/// - a bulleted list with amounts set flush right (every first-column cell a bullet);
-/// - a form: most filled cells are labels ending in a colon, with blanks to fill in;
-/// - typeset math (a matrix, a determinant, a system of equations): at least two cells carry
-///   real math evidence and they outnumber the cells of words at least two to one.
-///
-/// Math evidence is what typesetting leaves and data tables do not: math alphanumerics
-/// (glyphs of a math font, U+1D400 on), the pieces and size variants of big delimiters,
-/// operators of analysis (nabla, partial, integrals, sums, products, roots), or a delimiter
-/// cut by the column gutter (a matrix row split into cells: `det A = |d`, `f |`, `A = (`).
-/// Comparison and arithmetic signs (`±`, `≥`, `=`, `→`), Greek letters, numbers and short
-/// letter labels are not evidence: `12.3 ± 0.4`, `≥ 90`, `= 5` and a `Grade | A` column are
-/// data, and those cells count for neither side.
+/// Aligned content that is not a table even though its cells line up, from cell text: a
+/// bulleted list with amounts set flush right (every first-column cell a bullet), or a form
+/// whose filled cells are mostly labels ending in a colon. Math is never judged from cell text
+/// (signs, letters, brackets and math alphanumerics all occur in data tables); a matrix is
+/// recognised by its delimiters' geometry ([`matrix_delimited`]).
 pub(crate) fn not_table_content(grid: &Grid) -> bool {
     let cells: Vec<&str> =
         grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).take(100_000).collect();
@@ -800,48 +814,111 @@ pub(crate) fn not_table_content(grid: &Grid) -> bool {
         return true;
     }
     let colons = cells.iter().filter(|c| c.ends_with(':')).count();
-    if colons >= 3 && colons * 5 >= cells.len() * 4 {
-        return true;
-    }
-    let (mut evidence, mut text) = (0usize, 0usize);
-    for c in &cells {
-        if c.contains('$') {
-            continue;
-        }
-        if c.chars().any(math_evidence_char) || cut_delimiter(c) {
-            evidence += 1;
-        } else if c.split_whitespace().any(|w| w.chars().filter(|ch| ch.is_alphabetic()).count() >= 2) {
-            text += 1;
-        }
-    }
-    evidence >= 2 && evidence >= 2 * text
+    colons >= 3 && colons * 5 >= cells.len() * 4
 }
 
-/// Characters only typeset math draws: math alphanumerics, big-delimiter pieces and the
-/// combining marks and variation selectors of sized delimiters, and the operators of analysis.
-fn math_evidence_char(c: char) -> bool {
-    matches!(c,
-        '\u{1d400}'..='\u{1d7ff}' | '\u{239b}'..='\u{23b3}' | '\u{20d0}'..='\u{20ff}' | '\u{fe00}'..='\u{fe0f}'
-        | '∇' | '∂' | '∫' | '∬' | '∭' | '∮' | '∑' | '∏' | '∐' | '√' | '∛' | '∜' | '⟨' | '⟩' | '‖')
+/// A piece of a big delimiter on the page: a box and its side (-1 opens, 1 closes, 0 a bar
+/// that can do either).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DelimPiece {
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+    side: i8,
 }
 
-/// A cell whose delimiters do not balance: an odd number of bars, or parentheses or brackets
-/// opened and not closed (or closed and not opened) in it. A matrix or determinant split into
-/// cells leaves its delimiters in the first and last cells of its rows; a data cell
-/// (`(n = 5)`, `[2]`, `12 (4%)`) closes what it opens.
-fn cut_delimiter(c: &str) -> bool {
-    let bars = c.chars().filter(|&ch| ch == '|' || ch == '∣').count();
-    let (mut paren, mut bracket) = (0i32, 0i32);
-    for ch in c.chars() {
-        match ch {
-            '(' => paren += 1,
-            ')' => paren -= 1,
-            '[' => bracket += 1,
-            ']' => bracket -= 1,
-            _ => {}
+/// The side of a word that is wholly the piece of a big delimiter: TeX extension-font pieces
+/// as pdftotext gives them (U+F8EB..F8F3 open, U+F8F6..F8FE close, U+F8E6 and U+F8F4 bars),
+/// Unicode bracket pieces (U+239B..23AD), vertical-bar extensions (U+23D0, U+20D3), or a
+/// single delimiter glyph at least twice its line's font size tall (a size variant).
+fn piece_side(w: &Word, line_size: f64) -> Option<i8> {
+    let side = |c: char| -> Option<i8> {
+        match c {
+            '\u{f8eb}'..='\u{f8f3}' | '\u{239b}'..='\u{239d}' | '\u{23a1}'..='\u{23a3}' | '\u{23a7}'..='\u{23a9}' => {
+                Some(-1)
+            }
+            '\u{f8f6}'..='\u{f8fe}' | '\u{239e}'..='\u{23a0}' | '\u{23a4}'..='\u{23a6}' | '\u{23ab}'..='\u{23ad}' => {
+                Some(1)
+            }
+            '\u{f8e6}' | '\u{f8f4}' | '\u{23d0}' | '\u{20d3}' | '\u{23aa}' => Some(0),
+            _ => None,
+        }
+    };
+    let mut it = w.text.chars();
+    let first = it.next()?;
+    let delim = |c: char| match c {
+        '(' | '[' | '{' | '⟨' => Some(-1),
+        ')' | ']' | '}' | '⟩' => Some(1),
+        '|' | '‖' | '∣' => Some(0),
+        _ => None,
+    };
+    // a delimiter with a variation selector: pdftotext's mark for a size variant glyph
+    let rest: Vec<char> = w.text.chars().skip(1).take(3).collect();
+    if rest.len() == 1 && ('\u{fe00}'..='\u{fe0f}').contains(&rest[0]) {
+        return delim(first);
+    }
+    if let Some(s) = side(first) {
+        // every character a piece (stacked pieces can come as one word)
+        return w.text.chars().all(|c| side(c).is_some()).then_some(s);
+    }
+    if it.next().is_none() && w.y1 - w.y0 >= 2.0 * line_size {
+        return delim(first);
+    }
+    None
+}
+
+/// The delimiter pieces among the words of lines `ids` (at most 2,000).
+pub(crate) fn delim_pieces(page: &Page, ids: &[usize]) -> Vec<DelimPiece> {
+    let mut out = Vec::new();
+    for &i in ids {
+        let l = &page.lines[i];
+        let size = median(l.words.iter().map(|w| w.size).collect()).max(1.0);
+        for w in l.words.iter() {
+            if let Some(side) = piece_side(w, size) {
+                out.push(DelimPiece { x0: w.x0, x1: w.x1, y0: w.y0, y1: w.y1, side });
+                if out.len() >= 2000 {
+                    return out;
+                }
+            }
         }
     }
-    bars % 2 == 1 || paren != 0 || bracket != 0
+    out
+}
+
+/// A matrix, not a table: within the candidate's box (widened by `em` each way), a delimiter on
+/// the left and one on the right (pieces of one side stacked in one column), with at least two
+/// of the candidate's rows (`bases`) inside the height both span. Data tables do not draw big
+/// delimiter pieces around their rows; this reads geometry, never cell text.
+pub(crate) fn matrix_delimited(pieces: &[DelimPiece], bbox: (f64, f64, f64, f64), bases: &[f64], em: f64) -> bool {
+    let (bx0, by0, bx1, by1) = bbox;
+    let near: Vec<&DelimPiece> = pieces
+        .iter()
+        .filter(|p| p.x1 > bx0 - em && p.x0 < bx1 + em && p.y1 > by0 - em && p.y0 < by1 + em)
+        .take(400)
+        .collect();
+    if near.len() < 2 {
+        return false;
+    }
+    let mut delims: Vec<(f64, f64, f64, f64, i8)> = Vec::new();
+    for p in &near {
+        match delims.iter_mut().find(|d| d.4 == p.side && (d.0 - p.x0).abs() <= 2.0) {
+            Some(d) => {
+                d.0 = d.0.min(p.x0);
+                d.1 = d.1.max(p.x1);
+                d.2 = d.2.min(p.y0);
+                d.3 = d.3.max(p.y1);
+            }
+            None => delims.push((p.x0, p.x1, p.y0, p.y1, p.side)),
+        }
+    }
+    let rows_in = |t: f64, b: f64| bases.iter().filter(|&&y| y > t - 0.25 * em && y < b + 0.25 * em).count();
+    delims.iter().any(|l| {
+        l.4 <= 0
+            && delims.iter().any(|r| {
+                r.4 >= 0 && r.0 > l.1 + 0.5 * em && (l.4 != 0 || r.4 == 0) && rows_in(l.2.max(r.2), l.3.min(r.3)) >= 2
+            })
+    })
 }
 
 /// Two columns: list numbers on the left, prose on the right.
@@ -2362,19 +2439,15 @@ mod not_table_tests {
     }
 
     #[test]
-    fn matrices_forms_and_bullet_lists_are_not_tables() {
-        // a determinant, a matrix with its name, equations with numbers
-        assert!(not_table_content(&g(&[&["𝑎", "𝑏", "𝑐"], &["det 𝐴 = |𝑑", "𝑒", "𝑓 |"], &["𝑔", "ℎ", "𝑖"]])));
-        assert!(not_table_content(&g(&[&["a11", "a12"], &["A = (", ")"], &["a21", "a22"]])));
-        assert!(not_table_content(&g(&[&["∇· E = ε0", "(1)"], &["∇· B = 0", "(2)"], &["∇× E = −∂B", "(3)"]])));
-        assert!(not_table_content(&g(&[&["[︃", "]︃"], &["1.2", "0.1 40"], &["=", ","]])));
-        // a form and a bulleted list with amounts
+    fn forms_and_bullet_lists_are_not_tables() {
         assert!(not_table_content(&g(&[&["Name:", "Team:"], &["Destination:", ""], &["Departure:", "Return:"]])));
         assert!(not_table_content(&g(&[
             &["•", "Flights", "$3,240"],
             &["•", "Hotel", "$2,180"],
             &["•", "Passes", "$1,650"]
         ])));
+        // math is never judged from cell text: a cut-up matrix's text alone is left to geometry
+        assert!(!not_table_content(&g(&[&["𝑎", "𝑏", "𝑐"], &["det 𝐴 = |𝑑", "𝑒", "𝑓 |"], &["𝑔", "ℎ", "𝑖"]])));
     }
 
     #[test]
@@ -2406,6 +2479,48 @@ mod not_table_tests {
             &["Group", "Count"],
             &["Treated (n = 5)", "12 (40%)"],
             &["Control [2]", "9 (31%)"]
+        ])));
+        // labels, footnote marks, pairs, half-open bins, option flags, math italic
+        assert!(!not_table_content(&g(&[
+            &["Item", "Q1"],
+            &["a) Revenue", "12"],
+            &["b) Costs", "9"],
+            &["c) Margin", "3"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["State", "Sites"],
+            &["Bayern 1)", "12"],
+            &["Hessen 2)", "9"],
+            &["Berlin", "4"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Pair", "Rate"],
+            &["EUR|USD", "1.08"],
+            &["GBP|USD", "1.27"],
+            &["USD|JPY", "151"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Bin", "Count"],
+            &["[0, 10)", "4"],
+            &["[10, 20)", "7"],
+            &["[20, 30)", "2"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Flag", "Meaning"],
+            &["-q | --quiet", "less output"],
+            &["-v | --verbose", "more"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Step", "Owner"],
+            &["1) Draft", "Ana"],
+            &["2) Review", "Ben"],
+            &["3) Ship", "Cy"]
+        ])));
+        assert!(!not_table_content(&g(&[&["𝑥", "𝑓(𝑥)"], &["0", "1"], &["1", "2"], &["2", "5"]])));
+        assert!(!not_table_content(&g(&[
+            &["Run", "𝑛", "𝑝", "𝑡"],
+            &["A", "12", "0.4", "3.1"],
+            &["B", "9", "0.2", "2.7"]
         ])));
     }
 }

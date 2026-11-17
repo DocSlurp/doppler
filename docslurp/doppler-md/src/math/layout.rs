@@ -398,10 +398,11 @@ pub fn parse(mut atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx) -> Item {
 }
 
 /// Whether a row of the tree (a group, or a matrix cell) holds two digit leaves side by side
-/// more than half their size apart. Visits at most `budget` items.
+/// more than half their size apart. Visits at most `budget` items; a tree too large to check
+/// counts as fused (doubtful), never as checked.
 fn fused_numbers(it: &Item, budget: &mut usize) -> bool {
     if *budget == 0 {
-        return false;
+        return true;
     }
     *budget -= 1;
     let digit = |it: &Item, last: bool| match &it.node {

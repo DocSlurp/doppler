@@ -526,7 +526,27 @@ fn runs(gs: &[G]) -> Vec<(usize, usize)> {
         }
         i = j;
     }
-    out
+    // a gap of more than two and a half sizes inside a run is a column gap (check marks or
+    // values in the cells of a table row), never space inside one formula: split there, and
+    // keep the parts that still have a math glyph
+    let mut split: Vec<(usize, usize)> = Vec::with_capacity(out.len());
+    for (s, e) in out {
+        let mut a = s;
+        for k in s + 1..=e {
+            let cut = k == e || {
+                let (p, q) = (&gs[k - 1].atom, &gs[k].atom);
+                q.x0 - p.x1 > 2.5 * p.size.max(q.size)
+            };
+            if cut {
+                let strong = gs[a..k].iter().any(|g| g.ev == Ev::Strong);
+                if strong && !(k - a == 1 && list_mark(&gs[a].atom.sym.text)) {
+                    split.push((a, k));
+                }
+                a = k;
+            }
+        }
+    }
+    split
 }
 
 /// A line as glyphs and its runs.
@@ -1132,6 +1152,12 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         // weak-only clusters (a line of numbers, the stacked rows of a numeric table column)
         // are not math, unless a few of them sit across a bar no wider than they are (a
         // fraction of numbers); a table's rules span its columns
+        // rows of cells in columns, with no relation, delimiter or bar to make them one formula,
+        // are a table of math cells: the table finder reads them, not the math reader
+        if cell_grid(&lines, c, &body_end, bars_in(ctop, cbot)) {
+            cluster_taken[ci] = true;
+            continue;
+        }
         let weak_only = !c.iter().any(|&k| lines[k].strong || lines[k].gs.iter().any(|g| g.ev == Ev::Var));
         if weak_only {
             let window = bars_in(ctop, cbot);
@@ -1565,6 +1591,85 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
     }
     (out, stats)
+}
+
+/// Whether the lines of a cluster are the rows of a table whose cells hold math: at least two
+/// rows (by the baselines of full-size glyphs; scripts belong to the row they hang from), every
+/// row split by gaps of at least 0.9 of its size into the same number of cells (two or more,
+/// or one lone symbol per row),
+/// the cells of each column lined up (left edges, right edges or centres within one size), and
+/// nothing that binds rows into one formula: no relation, big operator, extensible or big
+/// delimiter, and no bar (a radical's vinculum is a bar; a lone radical sign is a check mark).
+fn cell_grid(lines: &[LineMath], c: &[usize], body_end: &dyn Fn(&LineMath) -> usize, bars: &[Bar]) -> bool {
+    if c.len() < 2 || c.len() > 400 || !bars.is_empty() {
+        return false;
+    }
+    let atoms: Vec<&Atom> =
+        c.iter().flat_map(|&k| lines[k].gs[..body_end(&lines[k])].iter().map(|g| &g.atom)).collect();
+    if atoms.len() > 4000 {
+        return false;
+    }
+    let binds = |a: &Atom| {
+        a.tex_ext
+            || a.sym.big
+            || a.sym.piece.is_some()
+            || matches!(a.sym.class, Class::Rel | Class::LargeOp | Class::Piece | Class::Fence)
+    };
+    if atoms.iter().any(|a| binds(a)) {
+        return false;
+    }
+    let size = atoms.iter().map(|a| a.size).fold(0.0, f64::max).max(1.0);
+    // row baselines from full-size glyphs
+    let mut bases: Vec<f64> = atoms.iter().filter(|a| a.size >= 0.85 * size).map(|a| a.base).collect();
+    bases.sort_by(f64::total_cmp);
+    let mut rows: Vec<f64> = Vec::new();
+    for b in bases {
+        if rows.last().is_none_or(|&r| b - r > 0.5 * size) {
+            rows.push(b);
+        }
+    }
+    if rows.len() < 2 {
+        return false;
+    }
+    // each glyph to the nearest row at or above-and-near it (a subscript hangs below its row)
+    let mut per_row: Vec<Vec<(f64, f64)>> = vec![Vec::new(); rows.len()];
+    for a in &atoms {
+        let k =
+            rows.iter().enumerate().min_by(|x, y| (x.1 - a.base).abs().total_cmp(&(y.1 - a.base).abs())).map(|x| x.0);
+        if let Some(k) = k {
+            per_row[k].push((a.x0, a.x1));
+        }
+    }
+    let mut cells: Vec<Vec<(f64, f64)>> = Vec::with_capacity(rows.len());
+    for r in &mut per_row {
+        r.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut cs: Vec<(f64, f64)> = Vec::new();
+        for &(x0, x1) in r.iter() {
+            match cs.last_mut() {
+                Some(c) if x0 - c.1 < 0.9 * size => c.1 = c.1.max(x1),
+                _ => cs.push((x0, x1)),
+            }
+        }
+        cells.push(cs);
+    }
+    let n = cells[0].len();
+    if cells.iter().any(|r| r.len() != n) {
+        return false;
+    }
+    // one column: only a stack of lone symbols (check marks down a table column), never a
+    // stacked formula
+    if n < 2 && !(n == 1 && per_row.iter().all(|r| r.len() == 1)) {
+        return false;
+    }
+    (0..n).all(|j| {
+        let col: Vec<(f64, f64)> = cells.iter().map(|r| r[j]).collect();
+        let near = |f: &dyn Fn(&(f64, f64)) -> f64| {
+            let v: Vec<f64> = col.iter().map(f).collect();
+            let (lo, hi) = v.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, &x| (acc.0.min(x), acc.1.max(x)));
+            hi - lo <= size
+        };
+        near(&|c| c.0) || near(&|c| c.1) || near(&|c| (c.0 + c.1) / 2.0)
+    })
 }
 
 /// Linear math written in an ordinary text font (`x = (−b ± √(b²−4ac)) / (2a)`, `∑ᵢ₌₁ⁿ xᵢ²`):
