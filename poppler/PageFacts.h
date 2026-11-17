@@ -199,6 +199,7 @@ private:
         bool type3, embedded, cid, toUnicode, symbolic, ocr, math, vertical;
         uint8_t mathClass; // fonts.mathClasses (PageFacts.cc MathClass); text when not classified
         bool fixedWidth; // the font descriptor's FixedPitch flag (code listings)
+        bool extension; // a math extension font by name (CMEX, Symbol...): its bracket pieces map to U+F8E5-F8FE
     };
     struct AnnotDraw
     {

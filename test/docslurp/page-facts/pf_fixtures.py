@@ -1307,8 +1307,8 @@ def math_tables_round2_pdf():
       procedures that run Do: the dictionary is read once;
     21 300 one-character /ActualText spans (ligatures): not truncated;
     22 a RoleMap chain of 12 hops and a two-type cycle: structure truncated, not 0;
-    23 a Type 3 font whose glyph procedures put a 5 KB comment before BI /IM true (past the
-       4 KB read): unknown, never a definite text font;
+    23 a Type 3 font whose glyph procedures put a 70 KB comment before BI /IM true (past the
+       64 KB read): unknown, never a definite text font;
     24 a Formula whose Alt is 5,000 characters with no TeX in them (past the 4,096 scanned): TeX
        unknown (truncated);
     25 a parent-tree entry of 65,000 duplicate references to one Formula: counted once, not
@@ -1393,7 +1393,7 @@ def math_tables_round2_pdf():
     # 22: the RoleMap page (parent-tree key 1)
     page("/P << /MCID 0 >> BDC " + words(5) + " EMC /P << /MCID 1 >> BDC " + words(5, 600) + " EMC\n", extra="/StructParents 1")
     # 23 a 5 KB comment before the image mask
-    padproc = new(t.stream("", b"1000 0 0 0 750 750 d1\n%" + b"x" * 5000 + b"\nq 750 0 0 750 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID " + b"\xff" * 8 + b" EI Q", compress=True).decode("latin-1"))
+    padproc = new(t.stream("", b"1000 0 0 0 750 750 d1\n%" + b"x" * 70000 + b"\nq 750 0 0 750 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID " + b"\xff" * 8 + b" EI Q", compress=True).decode("latin-1"))
     t3pad = new("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a %d 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [1000] /Resources << >> >>" % padproc)
     page("BT /P3 10 Tf 72 700 Td (aaaa) Tj ET\n" + words(10, 600), res="/Font << /F1 %d 0 R /P3 %d 0 R >>" % (helv, t3pad))
     # 24, 25 (parent-tree keys 2 and 3)
@@ -1428,7 +1428,11 @@ def math_matrix_pdf():
     4 two sums side by side whose script-size limits line up, between parentheses: no matrix;
     5 math glyphs whose ToUnicode gives private-use code points: math-font-no-unicode;
     6 math glyphs whose ToUnicode gives the Adobe Symbol bracket pieces (U+F8EB...) beside
-      readable math: delimiters, not unreadable."""
+      readable math: delimiters, not unreadable;
+    7 the same pieces from a font that is not a math extension font (CMSY10): unreadable;
+    8 a Type 3 font whose glyph procedure is a stored deflate block, 100 KB of empty stored
+      blocks, then BI /IM true (the read is cut before BI): unknown, not a vector font;
+    9 a Type 3 font whose glyph procedures are 6 KB of path operators: a vector font, decided."""
     prose = _prose(740, 2)
     paren = lambda x, y: _row(y, ((x, "\\("),), "X")
     rparen = lambda x, y: _row(y, ((x, "\\)"),), "X")
@@ -1439,9 +1443,22 @@ def math_matrix_pdf():
     cmap = lambda pairs: stream("", "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def 1 begincodespacerange <00> <FF> endcodespacerange %d beginbfchar %s endbfchar endcmap CMapName currentdict /CMap defineresource pop end end" % (len(pairs), " ".join("<%02X> <%04X>" % p for p in pairs)))
     pua = prose + _row(600, ((100, "abab abab"),), "P")
     pieces = prose + _row(600, ((100, "abab"),), "Q") + _row(600, ((200, "xyz w"),), "M")
-    res = "<< /Font << /F1 3 0 R /M {0} 0 R /X {1} 0 R /P {2} 0 R /Q {3} 0 R >> >>"
+    nonext = prose + _row(600, ((100, "abab"),), "N") + _row(600, ((200, "xyz w"),), "M")
+    import zlib
+
+    def stored(data, final=False):
+        return bytes([1 if final else 0]) + len(data).to_bytes(2, "little") + (len(data) ^ 0xFFFF).to_bytes(2, "little") + data
+
+    head = b"600 0 0 0 500 500 d1\n"
+    tail = b"\nq 500 0 0 500 0 0 cm BI /IM true /W 8 /H 8 /BPC 1 ID " + b"\x00\x18\x3c\x7e\x7e\x3c\x18\x00" + b" EI Q"
+    cutproc = b"\x78\x01" + stored(head) + stored(b"") * 20000 + stored(tail, True) + zlib.adler32(head + tail).to_bytes(4, "big")
+    vecproc = "600 0 0 0 600 800 d1\n" + "".join("%d %d m %d %d %d %d %d %d c %d %d l h\n" % ((i * 37) % 500 + 50, (i * 53) % 700 + 50, 70, 55, 80, 75, 60, 90, 50, 80) for i in range(150)) + "f"
+    t3 = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a {%d} 0 R /b {%d} 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [600 600] /Resources << >> >>"
+    cut3 = prose + _row(600, ((100, "abab"),), "C")
+    vec3 = prose + _row(600, ((100, "abab"),), "V")
+    res = "<< /Font << /F1 3 0 R /M {0} 0 R /X {1} 0 R /P {2} 0 R /Q {3} 0 R /N {6} 0 R /C {8} 0 R /V {10} 0 R >> >>"
     return doc(
-        [{"content": c, "resources": res} for c in (matrix, fractions, aligned, limits, pua, pieces)],
+        [{"content": c, "resources": res} for c in (matrix, fractions, aligned, limits, pua, pieces, nonext, cut3, vec3)],
         extras=[
             "<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>",  # 0
             "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 >>",  # 1
@@ -1449,6 +1466,11 @@ def math_matrix_pdf():
             "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 /ToUnicode {5} 0 R >>",  # 3
             cmap([(0x61, 0xE001), (0x62, 0xE002)]),  # 4
             cmap([(0x61, 0xF8EB), (0x62, 0xF8ED)]),  # 5
+            "<< /Type /Font /Subtype /Type1 /BaseFont /CMSY10 /ToUnicode {5} 0 R >>",  # 6
+            stream("/Filter /FlateDecode", cutproc),  # 7
+            t3 % (7, 7),  # 8
+            stream("", vecproc),  # 9
+            t3 % (9, 9),  # 10
         ],
     )
 

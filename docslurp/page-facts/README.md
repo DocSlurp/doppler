@@ -436,7 +436,7 @@ arrays):
 | 5 | `raster-strips` | `images.mathStrips` > 0 | vision (region crops) |
 | 6 | `glyph-outlines` | `vectors.glyphOutlineClusters` > 0 | vision (region crops) |
 | 7 | `type3-bitmap-font` | glyphs drawn by a Type 3 bitmap font | vision |
-| 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs, and at least a quarter of them, for which the text layer gives no Unicode: unmapped, a control character, private use or U+FFFD. The Adobe Symbol bracket and brace pieces (U+F8E5-F8FE) that glyph names map to are delimiters, not unreadable | vision |
+| 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs, and at least a quarter of them, for which the text layer gives no Unicode: unmapped, a control character, private use or U+FFFD. The Adobe Symbol bracket and brace pieces (U+F8E5-F8FE) are delimiters, not unreadable, but only from a math extension font (CMEX, LM math extension, Euler, esint, tx/px/newtx extension, Symbol, MathType Extra): any other font mapping there is not trusted | vision |
 | 9 | `plain-unicode-math` | at least 3 scripts, operators or math alphanumerics drawn by text fonts (Greek and arrows alone do not count: units and prose use them) | keep the text |
 | 10 | `formula-struct` | `structure.formulas` > 0 | structure |
 | 11 | `math-matrix` | a matrix: a grid of at least 2 rows x 2 columns of cells at about the text size (font sizes 0.8 to 1.6 of the page's median: script-size limits are not cells; rows at most 1.8 heights apart, or across one row that has nothing inside the grid's columns), cells short and centred within half a height across the rows, no fraction bar between the two cells of a column and no delimiter between columns, and on both sides a delimiter in a math-class font spanning the rows: built-up pieces (U+239B-23B3, U+F8E5-F8FE) chained at most 1.2 em apart, bars (U+007C, 2016, 2223, 2225, 20D3, 23D0) only as a touching column, or one full delimiter glyph (parenthesis, bracket, brace, angle, floor, ceiling, or the U+0020 the text layer gives a TeX extension font's size variant) centred within the rows and alone in its column there. Integral and sum limits, aligned equations and stacked fractions do not count | not a table |
@@ -447,14 +447,14 @@ arrays):
 | bit | name (`tableFlags`) | set when |
 |---|---|---|
 | 0 | `rule-grid` | a ruled grid (`vectors.grids`) with at least 2 rows and column lines (pdftomarkdown's columns, or 3 distinct vertical rule lines in its box) whose words lie in cells (2 rows, a gutter, not prose), not mostly math |
-| 1 | `hrule-open` | a `vectors.ruleTables` table of style `open`, not mostly math |
-| 2 | `booktabs` | a `vectors.ruleTables` table of style `booktabs`, not mostly math |
-| 3 | `whitespace` | rows aligned on gutters with no rules: at least 3 consecutive text rows of the page sharing at least 2 gutters (each at least a body size wide, words on both sides in 60% of the rows), rows at most 2.5 word heights apart, at most 4 words a cell, not prose, not mostly fixed-pitch words (a code listing), outside ruled grids, rule tables and shaded rows; not mostly math |
+| 1 | `hrule-open` | a `vectors.ruleTables` table of style `open` |
+| 2 | `booktabs` | a `vectors.ruleTables` table of style `booktabs` |
+| 3 | `whitespace` | rows aligned on gutters with no rules: at least 3 consecutive text rows of the page sharing at least 2 gutters (each at least a body size wide, words on both sides in 60% of the rows), rows at most 2.5 word heights apart, at most 4 words a cell, not prose, not mostly fixed-pitch words (a code listing), outside ruled grids, rule tables and shaded rows, and not overlapping a delimited matrix (`math-grid`); a block of math words is still one, as doppler-md writes it |
 | 4 | `shaded-rows` | at least 2 filled, non-white row boxes of one span (cells shaded one by one, touching in a row, are joined first; 3 body sizes tall at most, 6 wide at least) stacked within 3 box heights, holding words in 2 rows that share a column gutter (0.6 body sizes), outside ruled grids and rule tables |
 | 5 | `tagged-table` | `structure.tables` > 0 |
 | 6 | `raster-table-like` | an image on a page with at least 10 visible characters, not a scan, 2-60% of the page, at least 60 points tall (formula strips are shorter) and at least as wide as tall, not DCT or JPX, at most 1.5 encoded bytes a pixel (never decoded: line art and text compress well, photos do not; a chart matches too). Such an image is not also counted in `mathStrips` |
 | 7 | `outlined-text-grid` | glyph-like drawing clusters (at least 20 curves and 4 a path, at most 60% of the width and half the height of the page): an interior one (side-by-side clusters left and right in its row) whose left or right edge lines up within 2 points with an interior one of another row, both rows holding 3 to 12 clusters |
-| 8 | `math-grid` | as `math-matrix` (a matrix of math, which must not take a table route). A ruled grid or rule table whose words are mostly math is still a table; a whitespace-aligned block of mostly math words (aligned display equations) is no table at all |
+| 8 | `math-grid` | as `math-matrix` (a matrix of math, which must not take a table route). A ruled grid or rule table whose words are mostly math is still a table, and so is a whitespace block of math words (aligned display equations) unless it holds a delimited matrix |
 | 9 | `analysis-truncated` | as above |
 
 `encodingCounts`: 13 four-bit log2 buckets (`0` for 0, else `floor(log2 n) + 1`, at most 15;
@@ -485,7 +485,7 @@ file) the math bits separate raster strips, glyph outlines, Type 3 bitmap fonts,
 math, ActualText/Alt TeX and Formula structure from each other and from no-math controls.
 
 **Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names). In
-order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures, 4 KB each, text
+order: `type3Bitmap` (a Type 3 font most of whose first 8 glyph procedures, 64 KB each, text
 filters only, paint an inline image mask (`BI /IM true`) or run `Do` on an image-mask XObject
 of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math, OpenSymbol);
 `otfMath` (an embedded sfnt program whose table directory, in its first 4 KB, lists `MATH`);
@@ -493,8 +493,7 @@ of its resources); `webMath` (KaTeX_, MathJax, MJX); `officeMath` (Cambria Math,
 mathptmx, mathpazo); `otfMath` again by a name holding the word Math when the program has no
 readable directory (bare CFF, not embedded); `symbol`; `text`. A font's class is cached per
 document by reference; reads are made under a RepairGuard (they cannot rebuild the
-cross-reference table) and charged the encoded bytes they consume, at most 64 MB a run, a
-budget of their own (past it, names alone: `analysis-truncated`). A font past the page's
+cross-reference table) and charged the encoded bytes they consume, at most 64 MB plus 4 MB for every page begun, a budget of their own (past it, names alone: `analysis-truncated`). A font past the page's
 256-font list is still classed from the document's cache. A Type 3 font's resource `/XObject`
 dictionary is read once per object, however many fonts share it.
 
@@ -502,7 +501,7 @@ dictionary is read once per object, however many fonts share it.
 object (a direct font dictionary by its content hash, so a form drawn thousands of times
 classifies its inline fonts once). Every stream read for classification (Type 3 glyph
 procedures, a font program's head, an untyped associated file) caps the encoded bytes read
-(16 KB, 64 KB, 16 KB) as well as the decoded bytes (4 KB, 4 KB, 2 KB): a longer stream is decoded
+(64 KB, 64 KB, 16 KB) as well as the decoded bytes (64 KB, 4 KB, 2 KB): a longer stream is decoded
 from a copy of its first encoded bytes (an encrypted document's is not read), so a deflate
 stream of empty stored blocks costs at most the cap. Structure elements and indirect Alt and
 ActualText strings are read once a document (a string thousands of elements share is parsed
@@ -512,9 +511,9 @@ of encoded bytes; a glyph procedure or font program many fonts share is read onc
 reference). The structure tree (its root, RoleMap and parent-tree root) is resolved once a
 document; a parent-tree entry is walked once however many pages name it (by key and by
 reference), duplicates in it cost nothing, an entry longer than a page's budget (65,536) is not
-walked (`structure.truncated`), and the document has a budget of 2^22 structure objects. A RoleMap chain still mapping after 8 hops (or a cycle) sets
+walked (`structure.truncated`), and the document has a budget of 2^22 structure objects read for the first time, plus 2^13 for every page begun (cached elements cost nothing more, so an honest document is not truncated); a structure tree whose catalog cannot be read is unknown, never cached. A RoleMap chain still mapping after 8 hops (or a cycle) sets
 `structure.truncated`. A glyph procedure cut inside an inline image dictionary, a non-empty
-stream that decodes to nothing, a glyph procedure that fills its 4 KB read with no `BI` or
+stream that decodes to nothing, a glyph procedure that fills its 64 KB read with no `BI` or
 `Do`, and an OpenType or TrueType program whose table directory cannot be read are unknown. What cannot be read is reported: `structure.unknown`, and a
 font whose procedures or program could not be read makes the page `analysis-truncated`
 rather than a definite class. A font past the page's 256-font list is still classed (from the

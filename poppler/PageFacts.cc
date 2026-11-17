@@ -1915,12 +1915,19 @@ inline bool isMathClass(uint8_t c)
 }
 
 constexpr size_t maxFontProbeBytes = 4096; // decoded bytes of a font program read for its table directory
-constexpr size_t maxCharProcBytes = 4096; // decoded bytes of a Type 3 glyph procedure read (filled with no BI or Do: unknown)
+constexpr size_t maxCharProcBytes = 65536; // decoded bytes of a Type 3 glyph procedure read (filled with no BI or Do: unknown)
 constexpr int maxCharProcsProbed = 8; // glyph procedures a Type 3 font is probed by
 constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checked for image masks
-// encoded bytes the font-class reads may consume over a run (their own budget, never shared with
-// another family's): a typical head costs a few KB, so an honest document's fonts never reach it
+// encoded bytes the font-class reads may consume (their own budget, never shared with another
+// family's): 64 MB, plus 4 MB for every page begun, so a compilation whose pages embed their
+// own programs never reaches it; hostile cost is bounded by the per-stream read caps, the
+// memo by reference and this allowance, which grows only with pages
 constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
+constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
+// structure objects read for the first time over a document: 2^22, plus 2^13 for every page
+// begun (an honest document's elements are read once each; cached visits are not charged)
+constexpr size_t structWorkDoc = size_t(1) << 22;
+constexpr size_t structWorkPerPage = size_t(1) << 13;
 constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
 constexpr size_t maxStructWork = size_t(1) << 16; // structure objects visited for one page
 constexpr int maxStructDepth = 64; // parent links followed up from one element
@@ -2189,7 +2196,13 @@ struct MathDocCache
     // sharing an entry walk it once
     std::unordered_map<int, StructCounts> entryByKey;
     std::unordered_map<Ref, StructCounts> entryByRef;
-    size_t structWorkLeft = size_t(1) << 22; // structure objects visited over the document
+    size_t structWorkLeft = structWorkDoc; // structure objects read for the first time over the document
+    // a page was begun: its allowances (saturating)
+    void pageBegun()
+    {
+        fontBytesLeft = fontBytesLeft > SIZE_MAX - fontProbeBytesPerPage ? SIZE_MAX : fontBytesLeft + fontProbeBytesPerPage;
+        structWorkLeft = structWorkLeft > SIZE_MAX - structWorkPerPage ? SIZE_MAX : structWorkLeft + structWorkPerPage;
+    }
     void sync(XRef *x)
     {
         if (x != xref || (x && x->getGeneration() != generation)) {
@@ -2204,7 +2217,7 @@ struct MathDocCache
             structParentTree = Object::null();
             entryByKey.clear();
             entryByRef.clear();
-            structWorkLeft = size_t(1) << 22;
+            structWorkLeft = structWorkDoc;
             roles.clear();
             mathmlNamespaces.clear();
             mathmlFiles.clear();
@@ -2285,7 +2298,7 @@ std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypt
     return out;
 }
 
-constexpr size_t maxCharProcRaw = 16384; // encoded bytes of a Type 3 glyph procedure read
+constexpr size_t maxCharProcRaw = 65536; // encoded bytes of a Type 3 glyph procedure read
 constexpr size_t maxFontProbeRaw = 65536; // encoded bytes of a font program's head read
 constexpr size_t maxSniffRaw = 16384; // encoded bytes of an untyped associated file read
 
@@ -2356,7 +2369,8 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                         const CharProcPaint p = charProcPaint(text);
                         // an image dictionary cut before ID, or the decode cap filled with no BI or Do
                         // found (a long comment, say): unknown, not a definite vector glyph
-                        const bool undecided = p.cut || (!p.inlineMask && !p.doOp && text.size() >= maxCharProcBytes);
+                        // a copy cut at the read cap that decoded to less than asked is undecided too
+                        const bool undecided = p.cut || unreadable || (!p.inlineMask && !p.doOp && text.size() >= maxCharProcBytes);
                         bits = (p.inlineMask ? 1 : 0) | (p.doOp ? 2 : 0) | (undecided ? 4 : 0);
                     }
                     if (procNF.isRef() && cache.charProcs.size() < maxFontClassCache) {
@@ -2532,7 +2546,10 @@ public:
             Object af = pageObj.dictLookup("AF");
             c.mathmlFiles += afMathml(af.isArray() ? af : pageObj.dictLookupNF("AF"), &c);
         }
-        resolve();
+        if (!resolve()) {
+            c.unknown = true;
+            return c;
+        }
         if (!cache.structRoot.isDict()) {
             c.unknown = c.unknown || cache.structTagged; // a /StructTreeRoot that is not a readable dictionary
             return c;
@@ -2556,20 +2573,33 @@ public:
     }
 
     // the document's tagged flag, structure tree root, RoleMap and parent-tree root, read once
-    void resolve()
+    // false when the read failed (the catalog is not a dictionary, or a refused repair shaped
+    // it): nothing is cached, and the page's structure is unknown
+    bool resolve()
     {
         if (cache.structResolved) {
-            return;
+            return true;
+        }
+        const unsigned int repairsBefore = xref->getSuppressedRepairs();
+        Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
+        if (!catalog.isDict() || xref->getSuppressedRepairs() != repairsBefore) {
+            return false;
+        }
+        const bool tagged = !catalog.dictLookupNF("StructTreeRoot").isNull();
+        Object root = catalog.dictLookup("StructTreeRoot");
+        Object roleMap = root.isDict() ? root.dictLookup("RoleMap") : Object::null();
+        Object parentTree = root.isDict() ? cachedFetch(root.dictLookupNF("ParentTree")) : Object::null();
+        if (xref->getSuppressedRepairs() != repairsBefore) {
+            return false;
         }
         cache.structResolved = true;
-        Object catalog = xref->fetch(xref->getRootNum(), xref->getRootGen());
-        cache.structTagged = catalog.isDict() && !catalog.dictLookupNF("StructTreeRoot").isNull();
-        Object root = catalog.isDict() ? catalog.dictLookup("StructTreeRoot") : Object::null();
+        cache.structTagged = tagged;
         if (root.isDict()) {
-            cache.structRoleMap = root.dictLookup("RoleMap");
-            cache.structParentTree = cachedFetch(root.dictLookupNF("ParentTree"));
+            cache.structRoleMap = std::move(roleMap);
+            cache.structParentTree = std::move(parentTree);
             cache.structRoot = std::move(root);
         }
+        return true;
     }
 
     static void merge(const StructCounts &e, StructCounts *c)
@@ -2658,13 +2688,24 @@ public:
 
 private:
     // a page's budget (maxStructWork) and the document's (MathDocCache::structWorkLeft)
+    // a page's budget (maxStructWork), every visit
     bool spend(StructCounts *c)
     {
-        if (work >= maxStructWork || cache.structWorkLeft == 0) {
+        if (work >= maxStructWork) {
             c->truncated = true;
             return false;
         }
         ++work;
+        return true;
+    }
+    // the document's budget (MathDocCache::structWorkLeft), only reads of objects not yet cached:
+    // a cached element many pages reach costs the document nothing more
+    bool spendDoc(StructCounts *c)
+    {
+        if (cache.structWorkLeft == 0) {
+            c->truncated = true;
+            return false;
+        }
         --cache.structWorkLeft;
         return true;
     }
@@ -2919,7 +2960,7 @@ private:
         if (it != cache.strings.end()) {
             return { (it->second & 1) != 0, static_cast<TexVerdict>(it->second >> 1) };
         }
-        if (!spend(c)) {
+        if (!spend(c) || !spendDoc(c)) {
             return { false, texNo };
         }
         Object v = xref->fetch(nf.getRef());
@@ -2939,6 +2980,10 @@ private:
             return it->second;
         }
         MathDocCache::Element out;
+        if (!spendDoc(c)) {
+            out.terminal = true; // not read (and not cached): the page is truncated
+            return out;
+        }
         const unsigned int repairsBefore = xref->getSuppressedRepairs();
         Object e = xref->fetch(ref);
         if (!e.isDict() || e.isDict("StructTreeRoot")) {
@@ -3681,7 +3726,7 @@ size_t stackedPairs(const std::vector<MathGlyph> &byX, const FlowBox &r, Budget 
 // rows: one tall glyph, or pieces lined up within 2 points and chained at most 1.2 em apart
 // (extension pieces; an em is taken as 1.125 median word heights). A cell pair with a fraction
 // bar (<bars>: thin short horizontal rules) between its two cells is a fraction, not a column. Aligned "=" columns, stacked fractions and limits lack one or the other.
-size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<FlowBox> &bars, Budget &budget)
+size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<FlowBox> &bars, Budget &budget, std::vector<FlowBox> *boxes)
 {
     if (words.size() < 6 || !budget.spend(words.size() * 4)) {
         return 0;
@@ -3849,13 +3894,16 @@ size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<Flow
                 const FlowBox g { pairs[i].x0, pairs[i].y0, pairs[k - 1].x1, pairs[k - 1].y1 };
                 // across a skipped row only when that row has nothing inside the grid's columns
                 bool clear = true;
-                if (r2 == r + 2) {
+                if (r2 == r + 2 && budget.spend(rows[r + 1].size() + 1)) {
                     for (const AWord *w : rows[r + 1]) {
                         const double c = 0.5 * (w->x0 + w->x1);
                         clear = clear && !(c >= g.x0 && c <= g.x1);
                     }
                 }
-                found += clear && side(g, true) && side(g, false);
+                if (clear && side(g, true) && side(g, false)) {
+                    ++found;
+                    boxes->push_back({ g.x0, std::min(g.y0, ay0), g.x1, std::max(g.y1, by1) });
+                }
             }
             i = k;
         }
@@ -4290,6 +4338,9 @@ void PageFacts::beginPage(int pageNum)
     st->reconstructionsAtBegin = docXref ? docXref->getReconstructionCount() : 0;
     tally.reset();
     activeFacts = this;
+    if (wants(MathTables)) {
+        st->mathDoc.pageBegun();
+    }
 }
 
 void PageFacts::noteError(ErrorCategory category, const char *format)
@@ -4416,6 +4467,15 @@ const PageFacts::FontSeen *PageFacts::fontOf(const TextFontInfo *info)
     }
     f.mathClass = mcText;
     f.fixedWidth = font->isFixedWidth();
+    f.extension = false;
+    if (wants(MathTables) && font->getName()) {
+        // the fonts whose delimiter pieces glyph names map to the Adobe Symbol pieces
+        // (U+F8E5-F8FE): TeX's extension fonts, Symbol, MathType's Extra
+        const std::string_view base = fontBaseName(*font->getName());
+        for (std::string_view p : { "CMEX", "LMMathExtension", "EUEX", "esint", "txex", "pxex", "ntxex", "NewTXEX", "Symbol", "StandardSym", "MTExtra", "MT Extra", "MT-Extra" }) {
+            f.extension = f.extension || startsNoCase(base, p);
+        }
+    }
     if (wants(MathTables)) {
         f.mathClass = classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited);
     }
@@ -4506,7 +4566,8 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
             const Unicode c = u[i];
             // U+F8E5-F8FE: the Adobe Symbol extension pieces (bracket and brace tops, middles,
             // bottoms, extenders) that glyph names map to: delimiters, not unreadable math
-            const bool piece = c >= 0xf8e5 && c <= 0xf8fe;
+            // (only from a math extension font: any other font mapping there is not trusted)
+            const bool piece = f && f->extension && c >= 0xf8e5 && c <= 0xf8fe;
             const bool unreadable = !piece && (c < 0x20 || (c >= 0xe000 && c <= 0xf8ff) || (c >= 0xf0000 && c <= 0x10fffd) || c == 0xfffd);
             if (mathFont) {
                 ++(unreadable ? s.mathUnreadable : s.mathReadable);
@@ -5141,14 +5202,6 @@ void PageFacts::endPage(const TextPage &text)
         if (docXref && s.page) {
             sc = StructWalk(docXref, s.mathDoc).page(s.page);
         }
-        // the packed words (bit order: mathBitNames, tableBitNames)
-        uint64_t open = 0, booktabs = 0, whitespace = 0;
-        for (const RuleTable &t : rTables) {
-            ++(t.booktabs ? booktabs : open);
-        }
-        for (const RuleTable &t : wTables) {
-            whitespace += t.mathShare < 0.5; // mostly math words lined up: aligned display math, not a table
-        }
         std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
         for (const TextRule &r : text.getRules()) {
             const double w = r.xMax - r.xMin, hh = r.yMax - r.yMin;
@@ -5156,8 +5209,23 @@ void PageFacts::endPage(const TextPage &text)
                 bars.push_back({ r.xMin, r.yMin, r.xMax, r.yMax });
             }
         }
-        matrixRegions += delimitedMatrices(aw, bars, budget);
+        std::vector<FlowBox> matrices;
+        matrixRegions += delimitedMatrices(aw, bars, budget, &matrices);
         mathGrids += matrixRegions;
+        // the packed words (bit order: mathBitNames, tableBitNames)
+        uint64_t open = 0, booktabs = 0, whitespace = 0;
+        for (const RuleTable &t : rTables) {
+            ++(t.booktabs ? booktabs : open);
+        }
+        // a whitespace block is a table (as doppler-md writes it), math words or not, unless it holds
+        // a delimited matrix: that is math-grid, the one table-shaped thing that is not a table
+        for (const RuleTable &t : wTables) {
+            bool matrix = false;
+            for (const FlowBox &m : matrices) {
+                matrix = matrix || (std::min(m.x1, t.x1) > std::max(m.x0, t.x0) && std::min(m.y1, t.y1) > std::max(m.y0, t.y0));
+            }
+            whitespace += !matrix;
+        }
         const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.texUnknown || s.markedTexUnknown || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
         const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,

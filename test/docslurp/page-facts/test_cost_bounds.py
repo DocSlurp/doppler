@@ -361,6 +361,56 @@ def shared_program(fonts=6000, pages=30):
     return d.pages(contents, resources=res)
 
 
+def struct_honest(elements=400, pages=12000):
+    """An honest large tagged document: every page its own parent-tree entry listing the same
+    <elements> elements (one a Formula): 4.8 million cached element visits, which a document
+    budget counting every visit cut short from page 10,116 on."""
+    d = Doc()
+    root = d.reserve()
+    docel = d.add("<< /Type /StructElem /S /Document /P %d 0 R >>" % root)
+    els = [d.add("<< /Type /StructElem /S /%s /P %d 0 R >>" % ("Formula" if i == 0 else "P", docel)) for i in range(elements)]
+    arr = "[%s]" % " ".join("%d 0 R" % e for e in els)
+    entries = [d.add(arr) for _ in range(pages)]
+    tree = d.add("<< /Nums [%s] >>" % " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries)))
+    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % tree, root)
+    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    pages_num = d.reserve()
+    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (pages_num, content, font, i)) for i in range(pages)]
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), pages_num)
+    # Doc.pages() adds its own page tree: build the catalog here instead
+    cat = d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (pages_num, root))
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    offs = {}
+    for num in sorted(d.objs):
+        offs[num] = len(out)
+        out += b"%d 0 obj\n" % num + d.objs[num] + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (d.n + 1)
+    for i in range(1, d.n + 1):
+        out += b"%010d 00000 n \n" % offs[i] if i in offs else b"0000000000 65535 f \n"
+    out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (d.n + 1, cat, xref)
+    return bytes(out)
+
+
+def font_compilation(pages=1200, fonts=4, size=14000):
+    """An honest compilation: every page embeds its own <fonts> TrueType programs of <size>
+    bytes (a table directory, then data): 67 MB of programs, past a 64 MB run total."""
+    d = Doc()
+    body = bytes((k * 131 + 7) % 251 for k in range(size - 28))
+    sfnt = b"\x00\x01\x00\x00\x00\x01\x00\x10\x00\x00\x00\x00" + b"glyf" + b"\x00" * 12 + body
+    contents, res = [], []
+    for pg in range(pages):
+        names = []
+        for k in range(fonts):
+            prog = d.add(b"<< /Length %d >>\nstream\n" % len(sfnt) + sfnt + b"\nendstream")
+            desc = d.add("<< /Type /FontDescriptor /FontName /Face /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % prog)
+            names.append("/T%d %d 0 R" % (k, d.add("<< /Type /Font /Subtype /TrueType /BaseFont /Face /FirstChar 32 /LastChar 126 /FontDescriptor %d 0 R >>" % desc)))
+        contents.append(d.stream("".join("BT /T%d 10 Tf 72 %d Td (Revenue grew) Tj ET\n" % (k, 700 - 20 * k) for k in range(fonts))))
+        res.append("/Font << %s >>" % " ".join(names))
+    return d.pages(contents, resources=res)
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -465,6 +515,16 @@ with t.TempDir() as d:
 
     ls = bounded("6,000 font dictionaries sharing one 200 KB empty-deflate program", d.write("shared-program.pdf", shared_program()))
     t.check(page(ls, 1)["mathBits"] >> 12 & 1, "a program that decodes to nothing is unknown (analysis-truncated)", repr(page(ls, 1)["mathFlags"]))
+
+    # each page lists 400 elements of its own entry (no two pages share one), so every page
+    # walks 400 cached elements: linear, about 0.15 ms a page, on pages whose drawing costs
+    # 0.05 ms (a real page draws for far longer); the bound is 5x this unusually cheap base
+    ls = bounded("12,000 pages of an honest tagged document, 400 elements an entry", d.write("struct-honest.pdf", struct_honest()), factor=5.0)
+    pgs = [l for l in ls if l["type"] == "page"]
+    t.check(len(pgs) == 12000 and not any(p["mathBits"] >> 12 & 1 for p in pgs) and all(p["structure"]["formulas"] == 1 for p in pgs), "an honest large tagged document is never truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
+    ls = bounded("1,200 pages, each embedding 4 programs of its own (67 MB)", d.write("compilation.pdf", font_compilation()))
+    pgs = [l for l in ls if l["type"] == "page"]
+    t.check(len(pgs) == 1200 and not any(p["mathBits"] >> 12 & 1 for p in pgs), "an honest compilation's fonts are all classed: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))
