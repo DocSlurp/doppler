@@ -1918,8 +1918,10 @@ constexpr size_t maxFontProbeBytes = 4096; // decoded bytes of a font program re
 constexpr size_t maxCharProcBytes = 1024; // decoded bytes of a Type 3 glyph procedure read
 constexpr int maxCharProcsProbed = 8; // glyph procedures a Type 3 font is probed by
 constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checked for image masks
-constexpr size_t maxFontProbeReads = size_t(1) << 16; // stream reads for font classes over a run
-constexpr size_t maxFontClassCache = size_t(1) << 14; // font classes kept per document
+// encoded bytes the font-class reads may consume over a run (their own budget, never shared with
+// another family's): a typical head costs a few KB, so an honest document's fonts never reach it
+constexpr size_t maxFontProbeBytesRun = size_t(512) << 20;
+constexpr size_t maxFontClassCache = size_t(1) << 18; // font classes kept per document
 constexpr size_t maxStructWork = size_t(1) << 16; // structure objects visited for one page
 constexpr int maxStructDepth = 64; // parent links followed up from one element
 constexpr int maxNumberTreeDepth = 32;
@@ -2037,6 +2039,7 @@ bool pdfSpace(char c)
 struct CharProcPaint
 {
     bool inlineMask = false, doOp = false;
+    bool cut = false; // an inline image dictionary with no ID before the end of what was read
 };
 
 CharProcPaint charProcPaint(std::string_view p)
@@ -2054,6 +2057,7 @@ CharProcPaint charProcPaint(std::string_view p)
             while (end + 1 < p.size() && !token(end, "ID")) {
                 ++end;
             }
+            r.cut = r.cut || !(end + 1 < p.size());
             const std::string_view dict = p.substr(i + 2, end - (i + 2));
             for (std::string_view key : { std::string_view("/IM"), std::string_view("/ImageMask") }) {
                 for (size_t at = dict.find(key); at != std::string_view::npos; at = dict.find(key, at + 1)) {
@@ -2144,12 +2148,14 @@ struct MathDocCache
         uint8_t mathmlFiles = 0;
         bool terminal = false; // not an element (the tree root, or not a dictionary)
         bool unreadable = false;
+        bool roleCapped = false; // its RoleMap chain did not end within 8 hops
     };
     std::unordered_map<Ref, Element> elements;
     // indirect Alt and ActualText strings: bit 0 a string, bit 1 TeX-like
     std::unordered_map<Ref, uint8_t> strings;
     size_t sniffBytesLeft = size_t(4) << 20; // encoded bytes of untyped associated files sniffed a document
-    size_t fontReadsLeft = maxFontProbeReads; // over the run
+    size_t fontBytesLeft = maxFontProbeBytesRun; // over the run
+    std::unordered_map<Ref, bool> maskXObjects; // a Type 3 font's resource /XObject dictionary: has an image mask among its first entries
     void sync(XRef *x)
     {
         if (x != xref || (x && x->getGeneration() != generation)) {
@@ -2170,10 +2176,12 @@ struct MathDocCache
 // The first <decodedCap> decoded bytes of a stream with text filters only (textFiltersOnly),
 // reading at most <rawCap> of its encoded bytes: a filter that yields nothing (a deflate stream
 // of empty stored blocks) cannot make the read cost the whole stream. A stream longer than
-// rawCap is decoded from a copy of its first rawCap encoded bytes; in an encrypted document that
+// rawCap is decoded from a copy of its first encoded bytes, taken in growing steps (4 KB, 16 KB,
+// rawCap) until enough decodes, so a typical head costs a few KB; in an encrypted document that
 // copy would skip decryption, so nothing is read (*unknown). *unknown is also set when the
-// stream cannot be read at all.
-std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypted, bool *unknown)
+// stream cannot be read, when a non-empty stream decodes to nothing (corrupt), and when a cut
+// copy decodes to less than asked. *consumed: the encoded bytes read (the caller's budget).
+std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypted, bool *unknown, size_t *consumed)
 {
     if (!obj.isStream() || !textFiltersOnly(obj.getStream())) {
         *unknown = *unknown || obj.isStream();
@@ -2183,36 +2191,50 @@ std::string readHead(Object &obj, size_t decodedCap, size_t rawCap, bool encrypt
     BaseStream *base = str->getBaseStream();
     const Goffset len = base ? base->getLength() : -1;
     if (len >= 0 && static_cast<uint64_t>(len) <= rawCap) {
-        return readCapped(obj, decodedCap);
-    }
-    Stream *raw = str->getUndecodedStream();
-    if (encrypted || !raw || !str->getDict() || !raw->rewind()) {
-        *unknown = true;
-        return {};
-    }
-    std::vector<char> head(rawCap);
-    const int got = raw->doGetChars(static_cast<int>(rawCap), reinterpret_cast<unsigned char *>(head.data()));
-    raw->close();
-    if (got <= 0) {
-        *unknown = true;
-        return {};
-    }
-    head.resize(static_cast<size_t>(got));
-    std::unique_ptr<Stream> decoded = Stream::addFilters(std::make_unique<AutoFreeMemStream>(std::move(head), Object::null()), str->getDict());
-    std::string out;
-    if (!decoded || !decoded->rewind()) {
-        *unknown = true;
+        *consumed += static_cast<size_t>(len);
+        std::string out = readCapped(obj, decodedCap);
+        *unknown = *unknown || (out.empty() && len > 0);
         return out;
     }
-    unsigned char buf[4096];
-    while (out.size() < decodedCap) {
-        const int n = decoded->doGetChars(static_cast<int>(std::min(sizeof(buf), decodedCap - out.size())), buf);
-        if (n <= 0) {
+    Stream *raw = str->getUndecodedStream();
+    if (encrypted || !raw || !str->getDict()) {
+        *unknown = true;
+        return {};
+    }
+    std::string out;
+    for (size_t step : { std::min<size_t>(4096, rawCap), std::min<size_t>(16384, rawCap), rawCap }) {
+        if (!raw->rewind()) {
+            *unknown = true;
+            return {};
+        }
+        std::vector<char> head(step);
+        const int got = raw->doGetChars(static_cast<int>(step), reinterpret_cast<unsigned char *>(head.data()));
+        raw->close();
+        if (got <= 0) {
+            *unknown = true;
+            return {};
+        }
+        *consumed += static_cast<size_t>(got);
+        head.resize(static_cast<size_t>(got));
+        std::unique_ptr<Stream> decoded = Stream::addFilters(std::make_unique<AutoFreeMemStream>(std::move(head), Object::null()), str->getDict());
+        out.clear();
+        if (!decoded || !decoded->rewind()) {
+            *unknown = true;
+            return out;
+        }
+        unsigned char buf[4096];
+        while (out.size() < decodedCap) {
+            const int n = decoded->doGetChars(static_cast<int>(std::min(sizeof(buf), decodedCap - out.size())), buf);
+            if (n <= 0) {
+                break;
+            }
+            out.append(reinterpret_cast<const char *>(buf), n);
+        }
+        decoded->close();
+        if (out.size() >= decodedCap || static_cast<size_t>(got) < step) {
             break;
         }
-        out.append(reinterpret_cast<const char *>(buf), n);
     }
-    decoded->close();
     // a cut copy that decoded to less than asked: what the rest holds is unknown
     *unknown = *unknown || out.size() < decodedCap;
     return out;
@@ -2249,14 +2271,15 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
         guard.emplace(xref, XRef::GuardKind::Facts);
     }
     bool budgetHit = false;
+    // reads are charged the encoded bytes they consume (an image-mask lookup 1 KB)
     auto takeRead = [&]() {
-        if (!xref || cache.fontReadsLeft == 0) {
+        if (!xref || cache.fontBytesLeft == 0) {
             budgetHit = budgetHit || xref;
             return false;
         }
-        --cache.fontReadsLeft;
         return true;
     };
+    auto charge = [&](size_t bytes) { cache.fontBytesLeft -= std::min(cache.fontBytesLeft, bytes); };
     const std::optional<std::string> &fullName = font->getName();
     const std::string_view name = fullName ? fontBaseName(*fullName) : std::string_view();
     uint8_t cls = mcCount;
@@ -2271,32 +2294,49 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                 }
                 Object proc = procs->getVal(i);
                 bool unreadable = false;
-                const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable);
+                size_t used = 0;
+                const std::string text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
+                charge(used);
                 if (text.empty()) {
                     budgetHit = budgetHit || unreadable; // unknown, not a definite vector font
                     continue;
                 }
                 ++examined;
                 const CharProcPaint p = charProcPaint(text);
+                // an image dictionary cut before ID (a truncated or corrupt head): unknown
+                budgetHit = budgetHit || p.cut;
                 masks += p.inlineMask;
                 doOps += !p.inlineMask && p.doOp;
             }
         }
         if (doOps > 0) {
             // a procedure that runs Do paints a mask when the font's XObjects are image masks
+            // memoized per /XObject dictionary object: thousands of fonts sharing one large
+            // dictionary fetch and parse it once; never copied, at most maxXObjectsProbed entries read
             Dict *res = f8->getResources();
-            Object xobjects = res ? res->lookup("XObject") : Object::null();
-            bool maskXObject = false;
-            if (xobjects.isDict()) {
-                for (int i = 0; i < std::min(xobjects.dictGetLength(), maxXObjectsProbed) && !maskXObject; ++i) {
-                    if (!takeRead()) {
-                        break;
+            const Object xNF = res ? res->lookupNF("XObject").copy() : Object::null();
+            bool maskXObject = false, known = false;
+            if (xNF.isRef()) {
+                const auto it = cache.maskXObjects.find(xNF.getRef());
+                if (it != cache.maskXObjects.end()) {
+                    maskXObject = it->second;
+                    known = true;
+                }
+            }
+            if (!known && takeRead()) {
+                charge(1024);
+                Object xobjects = xNF.isRef() ? xref->fetch(xNF.getRef()) : xNF.copy();
+                if (xobjects.isDict()) {
+                    for (int i = 0; i < std::min(xobjects.dictGetLength(), maxXObjectsProbed) && !maskXObject; ++i) {
+                        Object x = xobjects.dictGetVal(i);
+                        if (x.isStream() && x.getStream()->getDict()) {
+                            Object mask = x.getStream()->getDict()->lookup("ImageMask");
+                            maskXObject = mask.isBool() && mask.getBool();
+                        }
                     }
-                    Object x = xobjects.dictGetVal(i);
-                    if (x.isStream() && x.getStream()->getDict()) {
-                        Object mask = x.getStream()->getDict()->lookup("ImageMask");
-                        maskXObject = mask.isBool() && mask.getBool();
-                    }
+                }
+                if (xNF.isRef() && cache.maskXObjects.size() < maxFontClassCache) {
+                    cache.maskXObjects.emplace(xNF.getRef(), maskXObject);
                 }
             }
             masks += maskXObject ? doOps : 0;
@@ -2316,10 +2356,17 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
     if (cls == mcCount && font->getType() != fontType3 && font->getEmbeddedFontID(&embedded) && xref && takeRead()) {
         Object program = xref->fetch(embedded);
         bool unreadable = false;
-        table = sfntMath(readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable));
+        size_t used = 0;
+        table = sfntMath(readHead(program, maxFontProbeBytes, maxFontProbeRaw, xref->isEncrypted(), &unreadable, &used));
+        charge(used);
         if (table == SfntMath::Yes) {
             cls = mcOtfMath;
         }
+        // a program that must be OpenType/TrueType whose table directory could not be read
+        // (cut, corrupt, encrypted and long): its MATH table is unknown, not absent
+        const GfxFontType ft = font->getType();
+        const bool sfntExpected = ft == fontTrueType || ft == fontTrueTypeOT || ft == fontCIDType2 || ft == fontCIDType2OT || ft == fontType1COT || ft == fontCIDType0COT;
+        budgetHit = budgetHit || (sfntExpected && table == SfntMath::Unknown);
     }
     if (cls == mcCount && texMathName(name)) {
         cls = mcTexType1;
@@ -2349,6 +2396,7 @@ struct StructCounts
 {
     uint64_t formulas = 0, tables = 0, tableRows = 0, tableCells = 0, spannedCells = 0, mathml = 0, mathmlFiles = 0, altText = 0, altTextTexLike = 0, actualText = 0, actualTextTexLike = 0;
     bool truncated = false; // a cap or budget was hit: the counts are lower bounds
+    bool roleCapped = false; // a RoleMap chain past 8 hops (or a cycle): an element's role is unknown
     bool unknown = false; // the page's structure could not be read (a missing parent-tree entry, a broken element): counts are not a definite 0
 };
 
@@ -2458,6 +2506,7 @@ public:
                 if (e.unreadable) {
                     c.unknown = true;
                 }
+                c.roleCapped = c.roleCapped || e.roleCapped;
                 if (e.terminal) {
                     break;
                 }
@@ -2554,7 +2603,7 @@ private:
         return Object::null();
     }
 
-    StructRole roleOf(const std::string &s, const Object &ns)
+    StructRole roleOf(const std::string &s, const Object &ns, bool *capped)
     {
         // a PDF 2.0 namespace's /RoleMapNS first (one hop: [name ns] or name)
         std::string name = s;
@@ -2570,20 +2619,30 @@ private:
         }
         const auto it = cache.roles.find(name);
         if (it != cache.roles.end()) {
-            return static_cast<StructRole>(it->second);
+            *capped = *capped || (it->second & 0x80);
+            return static_cast<StructRole>(it->second & 0x7f);
         }
         StructRole r = standardRole(name);
         std::string cur = name;
-        for (int hop = 0; hop < 8 && r == roleOther && roleMap.isDict(); ++hop) {
+        bool ended = r != roleOther || !roleMap.isDict();
+        for (int hop = 0; hop < 8 && !ended; ++hop) {
             Object to = roleMap.dictLookup(cur);
             if (!to.isName()) {
+                ended = true; // the chain ends on a type with no mapping: not one of ours
                 break;
             }
             cur = to.getNameString();
             r = standardRole(cur);
+            ended = r != roleOther;
         }
+        if (!ended) {
+            // still mapping after 8 hops (a long chain or a cycle): the role is unknown, not "other"
+            Object to = roleMap.dictLookup(cur);
+            ended = !to.isName();
+        }
+        *capped = *capped || !ended;
         if (cache.roles.size() < 4096 && name.size() <= 128) {
-            cache.roles.emplace(name, r);
+            cache.roles.emplace(name, static_cast<uint8_t>(r | (ended ? 0 : 0x80)));
         }
         return r;
     }
@@ -2649,9 +2708,10 @@ private:
             } else if (cache.sniffBytesLeft < maxSniffRaw) {
                 undecided = true; // the document's sniff budget is spent: unknown, not false
             } else if (spend(c)) {
-                cache.sniffBytesLeft -= maxSniffRaw;
                 bool unreadable = false;
-                m = readHead(file, 2048, maxSniffRaw, xref->isEncrypted(), &unreadable).find(mathmlNamespace) != std::string::npos;
+                size_t used = 0;
+                m = readHead(file, 2048, maxSniffRaw, xref->isEncrypted(), &unreadable, &used).find(mathmlNamespace) != std::string::npos;
+                cache.sniffBytesLeft -= std::min(cache.sniffBytesLeft, used);
                 undecided = undecided || (unreadable && !m);
             }
         };
@@ -2748,7 +2808,7 @@ private:
             const Object &nsNF = e.dictLookupNF("NS");
             Object ns = nsNF.isRef() ? (spend(c) ? xref->fetch(nsNF.getRef()) : Object::null()) : nsNF.copy();
             uint8_t flags = mathmlNs(nsNF, ns) ? sfMathml : 0;
-            const StructRole role = s.isName() ? roleOf(s.getNameString(), ns) : roleOther;
+            const StructRole role = s.isName() ? roleOf(s.getNameString(), ns, &out.roleCapped) : roleOther;
             if (role == roleTD || role == roleTH) {
                 Object a = e.dictLookup("A");
                 bool spanned = false;
@@ -4145,15 +4205,21 @@ const PageFacts::FontSeen *PageFacts::fontOf(const TextFontInfo *info)
     return st->lastFont;
 }
 
+uint8_t PageFacts::untrackedClass(const TextFontInfo *info)
+{
+    const GfxFont *font = info ? info->getGfxFont() : nullptr;
+    return font ? classifyFont(font, docXref, st->mathDoc, &st->fontClassLimited) : uint8_t(mcText);
+}
+
 void PageFacts::onUnmappedGlyph(const GfxState * /*state*/, const TextFontInfo *font, double fontSize)
 {
     add(st->glyphs, 1);
     add(st->unmapped, 1);
     if (wants(MathTables)) {
-        if (const FontSeen *f = fontOf(font)) {
-            ++st->classGlyphs[f->mathClass];
-            st->mathUnreadable += isMathClass(f->mathClass);
-        }
+        const FontSeen *f = fontOf(font);
+        const uint8_t cls = f ? f->mathClass : untrackedClass(font);
+        ++st->classGlyphs[cls];
+        st->mathUnreadable += isMathClass(cls);
     }
     if (wants(Fonts)) {
         fontOf(font);
@@ -4212,8 +4278,9 @@ void PageFacts::onGlyph(const TextFontInfo *font, double fontSize, const Unicode
         s.smallestFont = fontSize;
     }
     if (fams & MathTables) {
-        const uint8_t cls = f ? f->mathClass : uint8_t(mcText);
-        s.fontClassLimited = s.fontClassLimited || (!f && s.fontsTruncated); // a font past the 256 cap: its class is unknown
+        // a font past the page's 256-font list is still classed (once per font object, from the
+        // document's cache): many honest fonts on a page do not make the page truncated
+        const uint8_t cls = f ? f->mathClass : untrackedClass(font);
         const bool mathFont = isMathClass(cls);
         ++s.classGlyphs[cls];
         for (int i = 0; i < uLen; ++i) {
@@ -4291,7 +4358,7 @@ void PageFacts::onWord(const TextWord *word)
             const int n = word->getLength();
             for (int i = 0; i < n; ++i) {
                 const FontSeen *f = fontOf(word->getFontInfo(i));
-                mathChars += f && isMathClass(f->mathClass);
+                mathChars += f ? isMathClass(f->mathClass) : isMathClass(untrackedClass(word->getFontInfo(i)));
                 monoChars += f && f->fixedWidth;
             }
             math = n > 0 && 2 * mathChars > n;
@@ -4866,7 +4933,7 @@ void PageFacts::endPage(const TextPage &text)
         }
         matrixRegions += delimitedMatrices(aw, budget);
         mathGrids += matrixRegions;
-        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
+        const bool truncatedAnalysis = budget.hit || sc.truncated || sc.roleCapped || sc.unknown || s.mathGlyphsTruncated || rTablesTruncated || s.fontClassLimited || gridsTruncated;
         const uint64_t texSources = sc.actualTextTexLike + sc.altTextTexLike + s.markedActualTex;
         const bool m[] = { s.mathReadable >= 2,
                            stackedRegions > 0,
@@ -5484,7 +5551,7 @@ void PageFacts::endPage(const TextPage &text)
         j.kint("actualTextTexLike", sc.actualTextTexLike + s.markedActualTex);
         j.kint("markedActualText", s.markedActual);
         j.kint("markedActualTextTexLike", s.markedActualTex);
-        j.kbool("truncated", sc.truncated);
+        j.kbool("truncated", sc.truncated || sc.roleCapped);
         j.kbool("unknown", sc.unknown);
         j.close();
     }

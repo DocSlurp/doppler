@@ -207,6 +207,7 @@ private:
         uint64_t glyphs;
     };
     const FontSeen *fontOf(const TextFontInfo *info);
+    uint8_t untrackedClass(const TextFontInfo *info); // the class of a font past the page's font list (mathtables)
     uint64_t paintMarks() const;
     std::string serializePage(int pageNum, double ms) const;
 

@@ -723,6 +723,22 @@ with t.TempDir() as d:
     st = cs[1]["structure"]
     t.check(st["formulas"] > 0 and st["altTextTexLike"] == st["formulas"] and (st["truncated"] or st["formulas"] == 50000) and st["unknown"] and cs[1]["mathBits"] >> 12 & 1, "mathtables council: shared Alt and /AF read once; capped or unreadable reads say truncated/unknown", repr(st))
     t.check(cs[2]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and cs[2]["mathBits"] >> 12 & 1 and cs[2]["tableBits"] >> 9 & 1, "mathtables council: an unreadable Type 3 font is unknown (analysis-truncated), not a definite class", repr(cs[2]["mathFlags"]))
+    # council round 2: /AF cycles, chains and deep nesting; the class follows the graphics
+    # state; many honest fonts; cut and corrupt deflate heads; one /XObject dictionary 4,000
+    # Type 3 fonts share; 300 ligature ActualText spans; RoleMap chains past the hop cap
+    start = time.monotonic()
+    rc, out, err = facts(paths["math_tables_round2"], "-level", "full")
+    took = time.monotonic() - start
+    t.check(rc == 0 and took < 20, "mathtables round 2: exit 0, bounded time", "%r %.1fs" % (rc, took))
+    r2 = {l["page"]: l for l in lines(out) if l["type"] == "page"}
+    trunc = lambda pg: pg["mathBits"] >> 12 & 1
+    t.check(r2[1]["structure"]["formulas"] == 3 and r2[1]["structure"]["mathmlFiles"] == 0, "round 2: /AF self-cycle, 30,000-long chain and 30,000-deep nesting are bounded", repr(r2[1]["structure"]))
+    t.check(r2[2]["fonts"]["mathClasses"]["texType1"] == 5 and r2[2]["fonts"]["mathClasses"]["text"] == 4, "round 2: a form's and a q/Q run's CMMI10 do not leak to the Helvetica body", repr(r2[2]["fonts"]["mathClasses"]))
+    t.check(not trunc(r2[3]) and r2[3]["fonts"]["mathClasses"]["text"] == 600, "round 2: 300 honest embedded fonts on a page: classed, not analysis-truncated", repr(r2[3]["mathFlags"]))
+    t.check(trunc(r2[4]) and r2[4]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "round 2: cut and corrupt deflate heads are unknown (analysis-truncated), not a definite class", repr(r2[4]["mathFlags"]))
+    t.check(all(r2[n]["fonts"]["mathClasses"]["type3Bitmap"] == 250 and not trunc(r2[n]) for n in range(5, 21)), "round 2: 4,000 Type 3 fonts sharing one 20,000-entry /XObject dictionary are classed (read once)")
+    t.check(not trunc(r2[21]) and r2[21]["structure"]["actualText"] == 300 and "limit-hit" not in r2[21]["parseWarnings"], "round 2: 300 one-character ActualText spans are not truncated", repr(r2[21]["structure"]))
+    t.check(r2[22]["structure"]["truncated"] and trunc(r2[22]) and r2[22]["structure"]["tables"] == 0, "round 2: a RoleMap chain past 8 hops or a cycle is truncated, not 0", repr(r2[22]["structure"]))
     t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
 
     # --- encrypted files (poppler-test) ------------------------------------------------------------------------------------------------------
