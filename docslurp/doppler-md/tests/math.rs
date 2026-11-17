@@ -1194,3 +1194,64 @@ fn numeric_table_columns_are_not_math() {
     assert!(md.contains("12,480") && md.contains("+23.4%"), "{md}");
     assert_eq!(report.math.iter().map(|m| m.display + m.inline).sum::<usize>(), 0, "{md}");
 }
+
+#[test]
+fn many_bars_and_prose_runs_stay_bounded() {
+    // 1,600 prose lines with an inline math run and 1,600 small math-only lines in a grid of
+    // cells (each its own cluster), and 4,000 bars of different lengths (no
+    // two alike, so none reads as a table border):
+    // matching clusters to runs across bars must stay near linear
+    let mut lines = Vec::new();
+    for r in 0..88 {
+        for c in 0..18 {
+            let (x, y) = (20.0 + 30.0 * c as f64, 20.0 + 8.5 * r as f64);
+            lines.push(vec![
+                w(vec![g(x, 4.0, 0, "S"), g(x + 4.0, 4.0, 0, "o")], y, 6.0),
+                w(vec![g(x + 10.0, 4.0, 1, "x")], y, 6.0),
+            ]);
+            lines.push(vec![w(vec![g(x + 10.0, 2.0, 5, "a"), g(x + 12.0, 2.0, 4, "+")], y + 3.0, 4.0)]);
+        }
+    }
+    let rules: Vec<(f64, f64, f64, f64)> = (0..4000)
+        .map(|i| {
+            (
+                100.0 + 3.0 * (i % 13) as f64,
+                20.0 + i as f64 * 0.19,
+                150.0 + 3.0 * (i % 11) as f64,
+                20.1 + i as f64 * 0.19,
+            )
+        })
+        .collect();
+    let x = page(&lines, &rules);
+    let t = Instant::now();
+    let (_, report) = convert(&x, &MATH);
+    let took = t.elapsed();
+    assert!(took < Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 1 }), "took {took:?}");
+    // every formula is decided: rewritten, or (past the page's work) the page is reported
+    let m = &report.math[0];
+    assert!(m.inline + m.display == 1584 || (m.uncertain_limit > 0 && !m.uncertain_regions.is_empty()), "{m:?}");
+}
+
+#[test]
+fn over_the_page_work_the_page_is_kept_and_reported() {
+    // the same kind of page with a tiny work allowance: nothing is rewritten, and the page is
+    // listed as uncertain (limit) with a whole-page region, never silently decided
+    let mut lines = Vec::new();
+    for c in 0..10 {
+        let x = 20.0 + 30.0 * c as f64;
+        lines.push(vec![
+            w(vec![g(x, 4.0, 0, "S"), g(x + 4.0, 4.0, 0, "o")], 100.0, 6.0),
+            w(vec![g(x + 10.0, 4.0, 1, "x")], 100.0, 6.0),
+        ]);
+        lines.push(vec![w(vec![g(x + 10.0, 2.0, 5, "a"), g(x + 12.0, 2.0, 4, "+")], 103.0, 4.0)]);
+    }
+    let x = page(&lines, &[]);
+    let mut parse = doppler_md::ParseReport::default();
+    let pages = doppler_md::model::parse_with(&x, &mut parse, true);
+    let opts = doppler_md::math::MathOptions { max_page_work: 5, ..Default::default() };
+    let (out, stats) = doppler_md::math::rewrite_page(&pages[0], &opts);
+    assert!(out.iter().all(|l| !l.text().contains('$')));
+    assert!(stats.uncertain_limit > 0 && stats.inline + stats.display == 0, "{stats:?}");
+    assert_eq!(stats.uncertain_regions.len(), 1);
+    assert_eq!(stats.uncertain_regions[0].reason, "limit");
+}

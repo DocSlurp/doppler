@@ -648,17 +648,18 @@ pub fn actual_text_latex(t: &str) -> Option<String> {
 /// The rules of a page that can be fraction bars or vincula, as bars. Rules of a table grid
 /// are not: a rule with another rule of the same extent a short step above or below it (the
 /// borders of the cells of one column, row after row) is a table border, not a fraction bar.
-/// `em` is the page's typical text size.
+/// `em` is the page's typical text size. The bars come sorted by y.
 fn bars_of(rules: &[Rule], em: f64) -> Vec<Bar> {
     let mut bars: Vec<Bar> = rules
         .iter()
         .filter(|r| !r.boxed && r.x1 - r.x0 > 0.8 && r.y1 - r.y0 <= 1.6 && (r.x1 - r.x0) > 2.0 * (r.y1 - r.y0))
         .map(|r| Bar { x0: r.x0, x1: r.x1, y: (r.y0 + r.y1) / 2.0 })
         .collect();
+    // sorted by y: callers look up the bars of a y window by binary search
+    bars.sort_by(|a, b| a.y.total_cmp(&b.y));
     if bars.len() > 4000 {
         return bars;
     }
-    bars.sort_by(|a, b| a.y.total_cmp(&b.y));
     let tol = 0.3 * em;
     let reach = 2.2 * em;
     let mut grid = vec![false; bars.len()];
@@ -1101,10 +1102,28 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         .flat_map(|(li, l)| l.runs.iter().enumerate().map(move |(ri, &(a, b))| (li, ri, (a, b))))
         .map(|(li, ri, (a, b))| (li, ri, bbox(&lines[li], a, b)))
         .collect();
+    // by top, so each cluster looks only at runs in its vertical window; bars are sorted by y
+    // (bars_of), so a bar test looks only at bars in its y window. Every run and bar visited is
+    // charged to the page's work: past `max_page_work` the page is not rewritten and is listed
+    // as uncertain (limit), never silently decided.
+    let mut run_boxes = run_boxes;
+    run_boxes.sort_by(|a, b| a.2.2.total_cmp(&b.2.2));
+    let run_h = run_boxes.iter().map(|r| r.2.3 - r.2.2).fold(0.0f64, f64::max);
+    let run_size = run_boxes.iter().map(|r| r.2.4).fold(1.0f64, f64::max);
+    let bars_in = |lo: f64, hi: f64| {
+        let a = bars.partition_point(|b| b.y <= lo);
+        let z = bars.partition_point(|b| b.y < hi).max(a);
+        &bars[a..z]
+    };
+    let mut scan: u64 = 0;
+    let scan_limit = opts.max_page_work;
     // a cluster next to a prose line's run belongs to that run (an inline fraction or limits)
     let mut attached: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
     let mut cluster_taken = vec![false; clusters.len()];
     for (ci, c) in clusters.iter().enumerate() {
+        if scan > scan_limit {
+            break;
+        }
         let (cx0, cx1, ctop, cbot, csize) =
             c.iter().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY, 0.0f64), |acc, &k| {
                 let (a, b, t, u, s) = bbox(&lines[k], 0, body_end(&lines[k]));
@@ -1115,11 +1134,10 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         // fraction of numbers); a table's rules span its columns
         let weak_only = !c.iter().any(|&k| lines[k].strong || lines[k].gs.iter().any(|g| g.ev == Ev::Var));
         if weak_only {
-            let inside: Vec<&Bar> = bars
-                .iter()
-                .filter(|b| b.y > ctop && b.y < cbot && b.x1 > cx0 - csize && b.x0 < cx1 + csize)
-                .take(2)
-                .collect();
+            let window = bars_in(ctop, cbot);
+            scan += window.len() as u64;
+            let inside: Vec<&Bar> =
+                window.iter().filter(|b| b.x1 > cx0 - csize && b.x0 < cx1 + csize).take(2).collect();
             let fraction = c.len() >= 2
                 && c.len() <= 4
                 && inside.len() == 1
@@ -1135,27 +1153,34 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
         // the nearest prose line with a run under or over the cluster
         let mut best: Option<(usize, usize, f64)> = None;
-        for &(li, ri, (x0, x1, top, bot, size)) in &run_boxes {
+        // runs whose gap to the cluster can be under 0.3 of the larger size
+        let reach = 0.3 * run_size.max(csize);
+        let from = run_boxes.partition_point(|r| r.2.2 < ctop - reach - run_h);
+        for &(li, ri, (x0, x1, top, bot, size)) in &run_boxes[from..] {
+            if top >= cbot + reach {
+                break;
+            }
+            scan += 1;
+            let s = size.max(csize);
+            let vgap = (top - cbot).max(ctop - bot);
+            let overlap = x1.min(cx1) - x0.max(cx0);
+            if !(vgap < 0.3 * s
+                && overlap > 0.3 * (cx1 - cx0).min(x1 - x0).max(0.5)
+                && best.is_none_or(|(_, _, g)| vgap < g))
             {
-                let s = size.max(csize);
-                let vgap = (top - cbot).max(ctop - bot);
-                let overlap = x1.min(cx1) - x0.max(cx0);
-                // scripts and limits are smaller than the run; fraction parts sit across a bar
-                let smaller = csize <= 0.85 * size;
+                continue;
+            }
+            // scripts and limits are smaller than the run; fraction parts sit across a bar
+            let smaller = csize <= 0.85 * size;
+            let across_bar = smaller || {
                 let (lo, hi) = (cx0.max(x0), cx1.min(x1));
-                let across_bar = bars.iter().any(|b| {
-                    b.x1 > lo
-                        && b.x0 < hi
-                        && ((b.y > cbot - 0.5 * s && b.y < top + 0.5 * s)
-                            || (b.y < ctop + 0.5 * s && b.y > bot - 0.5 * s))
-                });
-                if vgap < 0.3 * s
-                    && (smaller || across_bar)
-                    && overlap > 0.3 * (cx1 - cx0).min(x1 - x0).max(0.5)
-                    && best.is_none_or(|(_, _, g)| vgap < g)
-                {
-                    best = Some((li, ri, vgap));
-                }
+                let below = bars_in(cbot - 0.5 * s, top + 0.5 * s);
+                let above = bars_in(bot - 0.5 * s, ctop + 0.5 * s);
+                scan += (below.len() + above.len()) as u64;
+                below.iter().chain(above).any(|b| b.x1 > lo && b.x0 < hi)
+            };
+            if across_bar {
+                best = Some((li, ri, vgap));
             }
         }
         if let Some((li, ri, _)) = best {
@@ -1163,6 +1188,15 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             attached[ci].push(key);
             cluster_taken[ci] = true;
         }
+    }
+    if scan > scan_limit {
+        // too much to compare within the page's work: keep the page as written, uncertain
+        stats.uncertain += 1;
+        stats.uncertain_limit += 1;
+        stats.whole_page(page, "limit");
+        stats.math_glyphs = lines.iter().map(|l| l.gs.iter().filter(|g| g.ev == Ev::Strong).count()).sum();
+        stats.math_glyphs_left = stats.math_glyphs;
+        return (escape_dollars(&page.lines), stats);
     }
     let label_line_ids: Vec<usize> = (0..n).filter(|&i| lines[i].label_only).collect();
     // inline formulas: every run of a prose line, with the clusters attached to it
@@ -1398,8 +1432,9 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                 });
             let em = atoms.iter().map(|a| a.size).fold(1.0, f64::max);
             let top = top - 1.0 * em;
-            let fb: Vec<Bar> =
-                bars.iter().copied().filter(|b| b.x0 >= x0 - em && b.x1 <= x1 + em && b.y > top && b.y < bot).collect();
+            let window = bars_in(top, bot);
+            work += window.len() as u64;
+            let fb: Vec<Bar> = window.iter().copied().filter(|b| b.x0 >= x0 - em && b.x1 <= x1 + em).collect();
             if fb.len() > opts.max_formula_bars {
                 ctx_failed_bars = true;
             }
