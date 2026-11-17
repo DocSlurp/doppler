@@ -899,6 +899,20 @@ fn word_text(raw: &str) -> Rc<str> {
 }
 
 /// `Rc<str>` for a value that usually repeats the previous one (colours): share the last one.
+/// Glyph strings shared through `map` (at most 4,096 distinct ones are kept; past that, new
+/// strings are allocated on their own), so the many glyphs that repeat a character hold one
+/// copy of it.
+fn intern(map: &mut std::collections::HashMap<Box<str>, Rc<str>>, v: &str) -> Rc<str> {
+    if let Some(rc) = map.get(v) {
+        return rc.clone();
+    }
+    let rc: Rc<str> = Rc::from(v);
+    if map.len() < 4096 {
+        map.insert(v.into(), rc.clone());
+    }
+    rc
+}
+
 fn interned(last: &mut Option<Rc<str>>, v: &str) -> Rc<str> {
     match last {
         Some(rc) if **rc == *v => rc.clone(),
@@ -1032,6 +1046,8 @@ struct ParseState {
     doc_glyphs: usize,
     page_glyphs: usize,
     last_glyph_name: Option<Rc<str>>,
+    /// glyph texts and names seen so far, shared (most glyphs repeat a few characters)
+    glyph_strs: std::collections::HashMap<Box<str>, Rc<str>>,
     font_index: std::collections::HashMap<i64, u16>,
 
     /// the last `<page>`: complete once the next `<page>` opens or the input ends (lines and
@@ -1055,6 +1071,7 @@ impl Default for ParseState {
             doc_glyphs: 0,
             page_glyphs: 0,
             last_glyph_name: None,
+            glyph_strs: Default::default(),
             font_index: Default::default(),
             page: None,
             words: Vec::new(),
@@ -1106,6 +1123,7 @@ impl ParseState {
             doc_glyphs,
             page_glyphs,
             last_glyph_name,
+            glyph_strs,
             font_index,
         } = self;
         let glyphs = *glyphs;
@@ -1225,7 +1243,7 @@ impl ParseState {
                     let name = ga[G_N].map(|n| match &*last_glyph_name {
                         Some(rc) if **rc == *n => rc.clone(),
                         _ => {
-                            let rc: Rc<str> = Rc::from(&*pyc::html_unescape(n));
+                            let rc = intern(glyph_strs, &pyc::html_unescape(n));
                             *last_glyph_name = Some(rc.clone());
                             rc
                         }
@@ -1237,7 +1255,7 @@ impl ParseState {
                         size: ga[G_Z].and_then(py_float).filter(|z| *z > 0.0),
                         font,
                         code: ga[G_C].and_then(|c| c.parse::<u32>().ok()).unwrap_or(u32::MAX),
-                        text: Rc::from(glyph_text(ga[G_U].unwrap_or(""))),
+                        text: intern(glyph_strs, &glyph_text(ga[G_U].unwrap_or(""))),
                         src,
                         name,
                     });

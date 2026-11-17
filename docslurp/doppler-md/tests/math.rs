@@ -1255,3 +1255,26 @@ fn over_the_page_work_the_page_is_kept_and_reported() {
     assert_eq!(stats.uncertain_regions.len(), 1);
     assert_eq!(stats.uncertain_regions[0].reason, "limit");
 }
+
+#[test]
+fn numbers_set_apart_are_never_fused() {
+    // x = 0.02   0.18 on a display line: two numbers a wide space apart with nothing between
+    // them would be written fused (0.020.18); the formula keeps its words and is reported
+    let num = |x: f64, t: [&'static str; 4]| W {
+        gs: t.iter().enumerate().map(|(i, c)| g(x + 5.0 * i as f64, 5.0, 0, c)).collect(),
+        base: 200.0,
+        size: 10.0,
+    };
+    let line = || {
+        vec![
+            W { gs: vec![g(250.0, 6.0, 1, "x")], base: 200.0, size: 10.0 },
+            W { gs: vec![g(258.0, 6.0, 2, "=")], base: 200.0, size: 10.0 },
+            num(268.0, ["0", ".", "0", "2"]),
+            num(300.0, ["0", ".", "1", "8"]),
+        ]
+    };
+    let (md, report) = convert(&page(&[prose(150.0), line(), prose(250.0)], &[]), &MATH);
+    assert!(!md.contains("0.020.18") && md.contains("0.02 0.18"), "{md}");
+    let v: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(v["mathUncertainRegions"][0]["reason"], "doubt", "{v}");
+}

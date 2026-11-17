@@ -157,3 +157,20 @@ fn signs_and_letter_labels_are_data() {
     check("signs.pdf", &expected);
     check("signs-ruled.pdf", &expected);
 }
+
+/// A 3x3 pmatrix whose big parentheses are TeX extension pieces (top and bottom halves): all
+/// three rows are inside the delimiters (the third once fell out, its numbers fused into
+/// `0.020.180.80`), and without `--math` the matrix is not a table.
+#[test]
+fn three_row_matrix_from_extension_pieces() {
+    let Some(exe) = pdftotext() else { return };
+    let md = convert(&exe, "matrix3.pdf", &["--math"]);
+    assert!(
+        md.contains(
+            "$$P=\\begin{pmatrix}0.82&0.15&0.03\\\\0.10&0.80&0.10\\\\0.02&0.18&0.80\\end{pmatrix},\\pi P=\\pi.$$"
+        ),
+        "{md}"
+    );
+    let md = convert(&exe, "matrix3.pdf", &[]);
+    assert!(table(&md).is_empty(), "{md}");
+}
