@@ -1928,11 +1928,11 @@ constexpr int maxXObjectsProbed = 4; // a Type 3 font's resource XObjects checke
 constexpr size_t maxFontProbeBytesRun = size_t(64) << 20;
 constexpr size_t fontProbeBytesPerPage = size_t(4) << 20;
 // structure visits over a document, every one charged (cached or not: element visits, parent-tree
-// node and entry reads): 2^22, plus 2^7 for every page begun. An honest document visits a few
-// hundred elements a page (12,000 pages x 400 elements fit); a document making every page walk
-// the per-page maximum runs it out, and its later pages are truncated.
+// node and entry reads): 2^22, plus 2^11 for every page begun. An honest document visits up to
+// a couple of thousand elements a page (6,000 pages x 1,000 and 12,000 x 400 fit); a document
+// making every page walk the per-page maximum runs it out, and its later pages are truncated.
 constexpr size_t structWorkDoc = size_t(1) << 22;
-constexpr size_t structWorkPerPage = size_t(1) << 7;
+constexpr size_t structWorkPerPage = size_t(1) << 11;
 // a page's parent-tree entry is read only while at least this much of the document's budget is
 // left: past it a page is truncated without fetching (an entry array in an object stream costs
 // a parse of that stream, and a hostile document can give every page its own)
@@ -2375,8 +2375,10 @@ uint8_t classifyFont(const GfxFont *font, XRef *xref, MathDocCache &cache, bool 
                     std::string text = readHead(proc, 4096, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
                     charge(used + text.size());
                     if (text.size() >= 4096 && !unreadable) {
+                        // only an inline mask in the head decides: a Do there (or in a comment)
+                        // may run a form, and a mask can still follow
                         const CharProcPaint head = charProcPaint(text);
-                        if (!head.inlineMask && !head.doOp) {
+                        if (!head.inlineMask) {
                             if (takeRead()) {
                                 used = 0;
                                 text = readHead(proc, maxCharProcBytes, maxCharProcRaw, xref->isEncrypted(), &unreadable, &used);
@@ -2826,6 +2828,8 @@ private:
                     break;
                 }
             }
+            // a miss (Kids out of key order) is not trusted either: the bounded linear scan decides
+            linear = linear || next.isNull();
             for (int i = 0; linear && next.isNull() && i < n; ++i) {
                 if (!spend(c)) {
                     return Object::null();

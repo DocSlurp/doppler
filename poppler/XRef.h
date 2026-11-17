@@ -39,7 +39,6 @@
 #define XREF_H
 
 #include <array>
-#include <deque>
 #include <unordered_set>
 #include <functional>
 #include <unordered_map>
@@ -139,6 +138,16 @@ public:
             return false;
         }
         objStrMembersLeft -= n;
+        return true;
+    }
+    // the same for parses made under a RepairGuard, from a budget of their own: reads only some
+    // runs make never take from the members drawing relies on
+    bool takeGuardedObjectStreamMembers(int n)
+    {
+        if (n < 0 || n > guardedMembersLeft) {
+            return false;
+        }
+        guardedMembersLeft -= n;
         return true;
     }
 
@@ -338,11 +347,11 @@ private:
     std::unordered_set<Goffset> objStrsFailed; // object streams (by offset) the unguarded reads failed to parse; constructXRef clears it
     std::unordered_map<Goffset, std::unique_ptr<ObjectStream>> objStrsGuarded;
     std::array<std::unordered_map<Goffset, std::unique_ptr<ObjectStream>>, 3> objStrsByKind; // Facts, Geometry, Audit
-    // parses objStrsGuarded and each objStrsByKind keep: past it the oldest is dropped (a later
-    // read parses it again), so reads reaching one object stream after another cannot hold every
-    // stream they parsed; keptOrder: insertion order (index 3: objStrsGuarded)
-    static constexpr size_t maxKeptGuardedObjStrs = 8;
-    std::array<std::deque<Goffset>, 4> keptOrder;
+    // objStrsByKind holds every guarded parse for the run (never evicted, so never parsed again)
+    // up to maxGuardedObjStrBytes decoded bytes in all; past it a new guarded parse is refused
+    // (counted as a refused repair: the reader marks what it read unknown)
+    static constexpr long long maxGuardedObjStrBytes = 64LL << 20;
+    long long guardedObjStrBytes = 0;
     GuardKind guardKind = GuardKind::Scope; // the outermost RepairGuard's
     // object streams whose guarded parse depended on where it was reached from (an object being
     // fetched up the stack, or the parser's depth limit): refused, per kind, without re-parsing
@@ -415,6 +424,7 @@ private:
     bool chainStreamFiltersOk(Dict *dict);
     long long rebuildMembersLeft = 0; // constructXRef sets it: object-stream members left for this rebuild's header reads
     long long objStrMembersLeft = 2000000; // takeObjectStreamMembers
+    long long guardedMembersLeft = 2000000; // takeGuardedObjectStreamMembers
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);

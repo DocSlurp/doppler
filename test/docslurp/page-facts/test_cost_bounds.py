@@ -49,6 +49,36 @@ class Doc:
             extra += " /Filter /FlateDecode"
         return self.add(b"<< " + extra.encode("latin-1") + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
 
+    def write_objstm(self, root, groups):
+        """The PDF with each object of <groups> (lists of object numbers) inside an object stream of
+        its own group, other objects direct, and a cross-reference stream."""
+        import struct
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        entries = {}
+        grouped = {k for g in groups for k in g}
+        for num in sorted(self.objs):
+            if num not in grouped:
+                entries[num] = (1, len(out), 0)
+                out += b"%d 0 obj\n" % num + self.objs[num] + b"\nendobj\n"
+        nxt = self.n + 1
+        for g in groups:
+            hdr, body = bytearray(), bytearray()
+            for j, k in enumerate(g):
+                hdr += b"%d %d " % (k, len(body))
+                body += self.objs[k] + b"\n"
+                entries[k] = (2, nxt, j)
+            data = zlib.compress(bytes(hdr) + bytes(body), 9)
+            entries[nxt] = (1, len(out), 0)
+            out += b"%d 0 obj\n<< /Type /ObjStm /N %d /First %d /Filter /FlateDecode /Length %d >>\nstream\n" % (nxt, len(g), len(hdr), len(data)) + data + b"\nendstream\nendobj\n"
+            nxt += 1
+        xs = nxt
+        entries[xs] = (1, len(out), 0)
+        rows = b"".join(struct.pack(">BIH", *entries.get(k, (0, 0, 0))) for k in range(xs + 1))
+        data = zlib.compress(rows, 9)
+        out += b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root %d 0 R /Filter /FlateDecode /Length %d >>\nstream\n" % (xs, xs + 1, root, len(data)) + data + b"\nendstream\nendobj\n"
+        out += b"startxref\n%d\n%%%%EOF\n" % entries[xs][1]
+        return bytes(out)
+
     def pages_tagged(self, contents, font, root):
         """One tagged page per content stream, page i naming parent-tree key i."""
         pages = self.reserve()
@@ -469,6 +499,45 @@ def type3_inflate(fonts=2000):
     return d.pages([content], resources="/Font << %s >>" % " ".join(names))
 
 
+def objstm_rounds(streams=9, members=300, leaves=2000, pages=1, pad=True, drain=False):
+    """Structure elements in <streams> object streams of <members> elements (each padded to ~4 MB
+    decoded with <pad>); every page's parent-tree entry lists <leaves> elements round-robin across
+    the streams, so a small cache of parses would miss on every read. With <drain>, a second page
+    whose objects (its dictionary, font, Table element) live in an object stream of their own
+    follows: it must still be drawn (guarded parses never take drawing's member budget)."""
+    d = Doc()
+    cat, ptree, root = d.reserve(), d.reserve(), d.reserve()
+    docel = d.add("<< /S /Document /P %d 0 R >>" % root)
+    groups = []
+    for g in range(streams):
+        els = [d.add("<< /S /%s /P %d 0 R >>" % ("Formula" if g == 0 and j == 0 else "P", docel)) for j in range(members)]
+        if pad:
+            els.append(d.add("(" + "x" * (4 * 1024 * 1024 - 64 * members - 4096) + ")"))
+        groups.append(els)
+    rr = [groups[i % streams][(i // streams) % members] for i in range(streams * members)]
+    entries = [d.add("[%s]" % " ".join("%d 0 R" % rr[(pg * leaves + i) % len(rr)] for i in range(leaves))) for pg in range(pages)]
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
+    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R /StructParents %d >>" % (ptree, font, content, i)) for i in range(pages)]
+    nums = " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries))
+    if drain:
+        tbl = d.add("<< /S /Table /P %d 0 R >>" % docel)
+        tr = d.add("<< /S /TR /P %d 0 R >>" % tbl)
+        td = d.add("<< /S /TD /P %d 0 R >>" % tr)
+        e2 = d.add("[%d 0 R]" % td)
+        font2 = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        c2 = d.stream("BT /F1 12 Tf 72 720 Td (Region) Tj 200 0 Td (Revenue) Tj ET BT /F1 12 Tf 72 700 Td (North) Tj 200 0 Td (120) Tj ET")
+        p2 = d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R /StructParents %d >>" % (ptree, font2, c2, pages))
+        kids.append(p2)
+        nums += " %d %d 0 R" % (pages, e2)
+        groups.append([tbl, tr, td, e2, font2, p2])
+    tree = d.add("<< /Nums [%s] >>" % nums)
+    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R /K [%d 0 R] >>" % (tree, docel), root)
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), ptree)
+    d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (ptree, root), cat)
+    return d.write_objstm(cat, groups)
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -596,6 +665,20 @@ with t.TempDir() as d:
     ls = bounded("300 pages walking 4,224 chains of 64 elements (past the element cache)", d.write("elcache.pdf", struct_tree(300, entry_leaves=4224, depth=64)), factor=100.0)
     ls = bounded("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", d.write("t3inflate.pdf", type3_inflate()), factor=100.0)
     t.check(page(ls, 1)["mathBits"] >> 12 & 1, "inflating procedures: the font budget (charged decoded bytes) runs out: analysis-truncated", repr(page(ls, 1)["mathFlags"]))
+
+    # guarded object-stream parses (council #51 final-2): kept for the run up to 64 MB decoded and
+    # never parsed twice; past the bound refused (read as unknown); their own member budget
+    ls = bounded("one page reading 2,000 leaves round-robin over 9 object streams of 4 MB", d.write("rr9.pdf", objstm_rounds()), factor=100.0)
+    t.check(page(ls, 1)["structure"]["formulas"] == 1, "round-robin object streams: every element read, each stream parsed once", repr(page(ls, 1)["structure"]))
+    ls = bounded("2,000 pages reading 2,000 leaves round-robin over 9 object streams of 4 MB", d.write("rr9p.pdf", objstm_rounds(pages=2000)), factor=100.0)
+    t.check(len([l for l in ls if l["type"] == "page"]) == 2000, "round-robin object streams on 2,000 pages: every page's line written")
+    ls = bounded("page 1 reading 18,000 leaves of 9 object streams of 2,000 members, then page 2", d.write("drain.pdf", objstm_rounds(members=2000, leaves=18000, pad=False, drain=True)), factor=100.0)
+    p2 = page(ls, 2)
+    t.check("error" not in p2 and p2["tableBits"] >> 5 & 1 and p2["text"]["wordCount"] == 4, "guarded parses never drain drawing's member budget: page 2 is drawn", repr(p2.get("error") or p2["text"]))
+    # 1,000 element visits a page (linear, about 0.27 ms) on pages that draw in 0.05 ms
+    ls = bounded("6,000 pages of an honest tagged document, 1,000 elements an entry", d.write("struct-honest-1000.pdf", struct_honest(elements=1000, pages=6000)), factor=8.0)
+    pgs = [l for l in ls if l["type"] == "page"]
+    t.check(not any(p["mathBits"] >> 12 & 1 for p in pgs), "6,000 x 1,000 honest structure: no page truncated", repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))
