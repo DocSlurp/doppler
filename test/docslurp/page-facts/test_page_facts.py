@@ -684,7 +684,7 @@ with t.TempDir() as d:
     items = pages[6]["images"]["items"]
     t.check([(i["stripLike"], i["inTextFlow"]) for i in items] == [(True, True), (False, True), (False, True)] and pages[6]["images"]["mathStrips"] == 1, "images: one formula strip in the flow", repr(items))
     t.check(pages[7]["fonts"]["mathClasses"]["type3Bitmap"] == 12, "fonts: Type 3 image-mask glyphs are type3Bitmap", repr(pages[7]["fonts"]["mathClasses"]))
-    t.check(pages[9]["fonts"]["mathClasses"] == {"texType1": 7, "otfMath": 2, "officeMath": 1, "webMath": 1, "symbol": 1, "type3Bitmap": 0, "text": 183}, "fonts: CMMI, STIX Math (name), MATH table (embedded), Cambria Math, KaTeX, Symbol", repr(pages[9]["fonts"]["mathClasses"]))
+    t.check(pages[9]["fonts"]["mathClasses"] == {"texType1": 9, "otfMath": 2, "officeMath": 1, "webMath": 1, "symbol": 1, "type3Bitmap": 0, "text": 183}, "fonts: CMMI, STIX Math (name), MATH table (embedded), Cambria Math, KaTeX, Symbol", repr(pages[9]["fonts"]["mathClasses"]))
     t.check(pages[9]["text"]["unicodeMath"]["operators"] == 3 and pages[9]["text"]["unicodeMath"]["greek"] >= 1 and pages[9]["text"]["unicodeMath"]["scripts"] == 1, "text: unicodeMath blocks", repr(pages[9]["text"]["unicodeMath"]))
     t.check(pages[9]["mathLayout"]["fractionBars"] == 1 and pages[9]["mathLayout"]["matrixRegions"] == 1, "mathLayout: a fraction bar and a 2x2 matrix", repr(pages[9]["mathLayout"]))
     st = pages[8]["structure"]
@@ -723,6 +723,17 @@ with t.TempDir() as d:
     st = cs[1]["structure"]
     t.check(st["formulas"] > 0 and st["altTextTexLike"] == st["formulas"] and (st["truncated"] or st["formulas"] == 50000) and st["unknown"] and cs[1]["mathBits"] >> 12 & 1, "mathtables council: shared Alt and /AF read once; capped or unreadable reads say truncated/unknown", repr(st))
     t.check(cs[2]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and cs[2]["mathBits"] >> 12 & 1 and cs[2]["tableBits"] >> 9 & 1, "mathtables council: an unreadable Type 3 font is unknown (analysis-truncated), not a definite class", repr(cs[2]["mathFlags"]))
+    # math-matrix needs a delimited grid of text-size cells; math-font-no-unicode needs glyphs
+    # with no Unicode (not bracket pieces), at least a quarter of the math glyphs
+    mm = {l["page"]: l for l in lines(facts(paths["math_matrix"], "-level", "full")[1]) if l["type"] == "page"}
+    bit = lambda pg, k: pg["mathBits"] >> k & 1
+    t.check(bit(mm[1], 11) and mm[1]["tableBits"] >> 8 & 1, "math-matrix: a delimited 2x2 grid of text-size cells", repr(mm[1]["mathFlags"]))
+    t.check(not any(bit(mm[n], 11) or mm[n]["tableBits"] >> 8 & 1 for n in (2, 3, 4)), "math-matrix: side-by-side fractions, aligned equations and sum limits are not matrices", repr([mm[n]["mathFlags"] for n in (2, 3, 4)]))
+    t.check(bit(mm[5], 8) and not bit(mm[6], 8), "math-font-no-unicode: private-use glyphs fire; bracket pieces beside readable math do not", repr((mm[5]["mathFlags"], mm[6]["mathFlags"])))
+    here = os.path.join(HERE, "fixtures", "encoding-tables-math.pdf")
+    ls = {l["page"]: l for l in lines(facts(here, "-include", "mathtables")[1]) if l["type"] == "page"}
+    t.check([ls[n]["mathBits"] for n in (1, 2, 3, 4)] == [0, 3, 2049, 0] and [ls[n]["tableBits"] for n in (1, 2, 3, 4)] == [4, 0, 256, 0], "pdflatex display math: no math-font-no-unicode or math-matrix; the pmatrix page is math-matrix, the booktabs page booktabs", repr([(ls[n]["mathBits"], ls[n]["tableBits"]) for n in (1, 2, 3, 4)]))
+
     # council round 2: /AF cycles, chains and deep nesting; the class follows the graphics
     # state; many honest fonts; cut and corrupt deflate heads; one /XObject dictionary 4,000
     # Type 3 fonts share; 300 ligature ActualText spans; RoleMap chains past the hop cap
