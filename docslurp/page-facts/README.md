@@ -484,10 +484,12 @@ development corpus (56 PDFs: the same three tables through 16 encodings, plus co
 rows 3/3, raster table 6/6, outlined text 2/3, matrix-not-table 1/1,
 no false positives on any label (controls: matrix, table of contents, form, two columns, code,
 list, stacked and inline math). On a math-encoding inventory (168 PDFs, one encoding a
-file) the math bits separate raster strips, glyph outlines, Type 3 bitmap fonts, plain Unicode
-math and marked-content ActualText TeX from each other and from no-math controls (tagged
-structure, Alt TeX and MathML were told apart too while the structure tree was read; they are
-no longer).
+file) the math bits separate raster strips, glyph outlines, plain Unicode math and
+marked-content ActualText TeX from each other and from no-math controls (tagged structure, Alt
+TeX and MathML were told apart too while the structure tree was read; they are no longer).
+Since classes come from names and Unicode alone, a dvips PK document that ps2pdf gave
+ToUnicode maps reads as text (its glyphs have usable Unicode), not `type3-bitmap-font`, and an
+OpenType math font whose name lacks the word Math is `text`.
 
 **Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names), from
 what the text pass already has: the font's name (BaseFont) and type and each glyph's Unicode.
