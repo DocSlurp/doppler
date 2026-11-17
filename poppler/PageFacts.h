@@ -197,7 +197,10 @@ private:
     {
         const GfxFont *font;
         bool type3, embedded, cid, toUnicode, symbolic, ocr, math, vertical;
-        uint8_t mathClass; // fonts.mathClasses (PageFacts.cc MathClass); text when not classified
+    };
+    struct MathFont
+    {
+        uint8_t cls; // fonts.mathClasses (PageFacts.cc MathClass)
         bool fixedWidth; // the font descriptor's FixedPitch flag (code listings)
         bool extension; // a math extension font by name (CMEX, Symbol...): its bracket pieces map to U+F8E5-F8FE
     };
@@ -208,7 +211,7 @@ private:
         uint64_t glyphs;
     };
     const FontSeen *fontOf(const TextFontInfo *info);
-    uint8_t untrackedClass(const TextFontInfo *info); // the class of a font past the page's font list (mathtables)
+    MathFont mathFontOf(const TextFontInfo *info); // mathtables' view of a font, never added to the fonts list
     uint64_t paintMarks() const;
     std::string serializePage(int pageNum, double ms) const;
 

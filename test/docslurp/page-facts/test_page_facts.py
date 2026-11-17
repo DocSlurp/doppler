@@ -711,7 +711,7 @@ with t.TempDir() as d:
     rc, out, err = facts(paths["math_tables_hostile"], "-level", "full")
     t.check(rc == 0 and time.monotonic() - start < 20, "mathtables hostile: exit 0, bounded time", "%r %.1fs" % (rc, time.monotonic() - start))
     hs = {l["page"]: l for l in lines(out) if l["type"] == "page"}
-    t.check(hs[4]["mathBits"] >> 12 & 1 and hs[4]["tableBits"] >> 9 & 1 and "limit-hit" in hs[4]["parseWarnings"], "mathtables hostile: the page's analysis budget runs out: analysis-truncated, limit-hit", repr(hs[4]["mathFlags"]))
+    t.check(hs[4]["mathBits"] >> 12 & 1 and hs[4]["tableBits"] >> 9 & 1 and "limit-hit" not in hs[4]["parseWarnings"], "mathtables hostile: the page's analysis budget runs out: analysis-truncated (parseWarnings as without mathtables)", repr(hs[4]["mathFlags"]))
     # council negative cases: a 1 MB Alt string and an /AF array that 50,000 elements share,
     # untyped files and glyph procedures of empty stored deflate blocks (2 MB, decode to
     # nothing), an inline Type 3 font set 3,000 times and drawn by a form 2,000 times: bounded,
