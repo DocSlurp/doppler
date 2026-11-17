@@ -950,6 +950,38 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
         i
     }
+    // prose lines (text that no math pass claimed), by baseline: a formula's lines never
+    // reach across one, so two displays with a sentence between them stay two formulas
+    // (a prose line beside the formula, such as a caption to its left, counts when it fits in
+    // the gap between the two lines)
+    let mut prose: Vec<(f64, f64, f64, f64, f64)> = (0..n)
+        .filter(|&i| {
+            let l = &lines[i];
+            !l.math_only
+                && !l.label_only
+                && l.gs.iter().any(|g| g.ev == Ev::Text && g.atom.sym.text.chars().any(char::is_alphanumeric))
+        })
+        .map(|i| {
+            let l = &page.lines[i];
+            (l.base(), l.x0, l.x1, l.y0, l.y1)
+        })
+        .collect();
+    prose.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let prose_between = |i: usize, j: usize, x0: f64, x1: f64, s: f64| {
+        let (li, lj) = (&page.lines[i], &page.lines[j]);
+        let (upper, lower) = if li.base() <= lj.base() { (li, lj) } else { (lj, li) };
+        let (lo, hi) = (upper.base() + 0.3 * s, lower.base() - 0.3 * s);
+        if lo >= hi {
+            return false;
+        }
+        let from = prose.partition_point(|p| p.0 <= lo);
+        prose[from..].iter().take_while(|p| p.0 < hi).take(64).any(|p| {
+            let overlap = p.2 > x0 && p.1 < x1;
+            let in_gap = p.3 >= upper.y1 - 0.1 * s && p.4 <= lower.y0 + 0.1 * s;
+            let near = (p.1 - x1).max(x0 - p.2) < 8.0 * s;
+            overlap || (in_gap && near)
+        })
+    };
     let mut max_bot = f64::NEG_INFINITY;
     let mut max_size = 1.0f64;
     for (k, &i) in order.iter().enumerate() {
@@ -964,7 +996,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
             }
             let vgap = (top - jbot).max(jtop - bot);
             let hgap = (x0 - jx1).max(jx0 - x1);
-            if vgap < 0.5 * s && hgap < 2.5 * s {
+            if vgap < 0.5 * s && hgap < 2.5 * s && !prose_between(i, j, x0.min(jx0), x1.max(jx1), s) {
                 let (a, b) = (find(&mut parent, i), find(&mut parent, j));
                 parent[a] = b;
             }
@@ -1213,7 +1245,8 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         // a few unknown glyphs in a longer formula become placeholders instead of sending the
         // whole formula back to text
         let partial = unknown > 0 && atoms.len() >= 3 && unknown * 4 <= atoms.len() && unknown <= 3;
-        let tex = if numbers_only {
+        let linear = actual.is_empty() && linear_text(&atoms, &bars);
+        let tex = if numbers_only || linear {
             None
         } else if !actual.is_empty() && atoms.is_empty() {
             match actual.iter().map(|t| actual_text_latex(t)).collect::<Option<Vec<String>>>() {
@@ -1310,7 +1343,7 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
                     stats.partial += 1;
                 }
             }
-            None if numbers_only => {}
+            None if numbers_only || linear => {}
             None => {
                 stats.uncertain += 1;
                 match reason {
@@ -1365,6 +1398,25 @@ pub fn rewrite_page(page: &Page, opts: &MathOptions) -> (Vec<Rc<Line>>, PageMath
         }
     }
     (out, stats)
+}
+
+/// Linear math written in an ordinary text font (`x = (−b ± √(b²−4ac)) / (2a)`, `∑ᵢ₌₁ⁿ xᵢ²`):
+/// every glyph is in a text font, on one baseline at one size, with no bar near it. With no
+/// 2D layout to read, the text already is the formula as its author wrote it (Unicode scripts,
+/// `√` without a vinculum, `/` for division), and a LaTeX reading could only guess, so it stays
+/// as written.
+fn linear_text(atoms: &[Atom], bars: &[Bar]) -> bool {
+    let Some(first) = atoms.first() else { return false };
+    if atoms.iter().any(|a| a.role != FontRole::Text || a.tex_ext || a.sym.big) {
+        return false;
+    }
+    let size = first.size;
+    if atoms.iter().any(|a| (a.size - size).abs() > 0.03 * size || (a.base - first.base).abs() > 0.08 * size) {
+        return false;
+    }
+    let (x0, x1) = atoms.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |acc, a| (acc.0.min(a.x0), acc.1.max(a.x1)));
+    let (top, bot) = (first.base - 1.3 * size, first.base + 0.5 * size);
+    !bars.iter().any(|b| b.x1 > x0 && b.x0 < x1 && b.y > top && b.y < bot)
 }
 
 /// A display is set off from prose: it does not start at the left edge of the text around it.

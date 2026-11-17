@@ -1079,3 +1079,74 @@ fn glyph_tags_accept_xml_whitespace_across_streaming_splits() {
         }
     }
 }
+
+#[test]
+fn linear_unicode_math_in_a_text_font_stays_as_written() {
+    // x = (−b ± √(b²−4ac)) / (2a) and ∑ᵢ₌₁ⁿ xᵢ², set in a text font on one baseline at one size:
+    // no layout to read, so the text is the formula as written (and nothing is uncertain)
+    let mut x = 260.0;
+    let mut glyphs = Vec::new();
+    for t in ["x", "=", "(", "−", "b", "±", "√", "(", "b", "²", "−", "4", "a", "c", ")", ")", "/", "(", "2", "a", ")"]
+    {
+        glyphs.push(g(x, 5.0, 0, t));
+        x += 5.0;
+    }
+    let sum: Vec<G> = ["∑", "ᵢ", "₌", "₁", "ⁿ", "x", "ᵢ", "²"]
+        .iter()
+        .enumerate()
+        .map(|(i, t)| g(270.0 + 5.0 * i as f64, 5.0, 0, t))
+        .collect();
+    let lines = [prose(150.0), vec![w(glyphs, 200.0, 10.0)], prose(230.0), vec![w(sum, 260.0, 10.0)], prose(290.0)];
+    let (md, report) = convert(&page(&lines, &[]), &MATH);
+    assert!(!md.contains('$'), "{md}");
+    assert!(md.contains("x=(−b±√(b²−4ac))/(2a)"), "{md}");
+    assert!(md.contains("∑ᵢ₌₁ⁿxᵢ²"), "{md}");
+    assert!(report.to_json().contains("\"mathUncertainPages\":[]"), "{}", report.to_json());
+    // the same glyphs with a raised, smaller script are 2D layout: read as math
+    let line = vec![
+        w(vec![g(280.0, 5.0, 0, "b")], 200.0, 10.0),
+        w(vec![g(285.0, 4.0, 4, "2")], 196.0, 7.0),
+        w(vec![g(292.0, 5.0, 0, "±"), g(297.0, 5.0, 0, "c")], 200.0, 10.0),
+    ];
+    let (md, _) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
+    assert!(md.contains("^{2}\\pm"), "{md}");
+}
+
+#[test]
+fn displays_with_prose_between_stay_apart() {
+    // display A ends with a tall extension-font sum, display B starts just below; a caption line
+    // sits between them, left of the formulas. The tall glyph reaches B, but the caption keeps
+    // them two formulas, and the caption stays in place
+    let a = vec![
+        w(vec![g(280.0, 6.0, 1, "x")], 200.0, 10.0),
+        w(vec![g(288.0, 5.0, 2, "=")], 200.0, 10.0),
+        w(vec![G { x: 296.0, w: 10.0, f: 3, t: "X", n: Some("summationdisplay"), src: 'c', b: None }], 200.0, 10.0),
+        w(vec![g(308.0, 6.0, 1, "y")], 200.0, 10.0),
+    ];
+    let caption = vec![
+        w(
+            vec![g(200.0, 5.0, 0, "C"), g(205.0, 5.0, 0, "a"), g(210.0, 5.0, 0, "s"), g(215.0, 5.0, 0, "e")],
+            213.0,
+            10.0,
+        ),
+        w(
+            vec![g(224.0, 5.0, 0, "t"), g(229.0, 5.0, 0, "w"), g(234.0, 5.0, 0, "o"), g(239.0, 3.0, 0, ":")],
+            213.0,
+            10.0,
+        ),
+    ];
+    let b = vec![
+        w(vec![g(280.0, 6.0, 1, "u")], 226.0, 10.0),
+        w(vec![g(288.0, 5.0, 2, "≤")], 226.0, 10.0),
+        w(vec![g(296.0, 6.0, 1, "v")], 226.0, 10.0),
+    ];
+    let (md, report) = convert(&page(&[prose(150.0), a, caption, b, prose(280.0)], &[]), &MATH);
+    let f = formulas(&md);
+    assert_eq!(f.len(), 2, "{md}");
+    assert!(f[0].contains("\\sum") && !f[0].contains("v"), "{md}");
+    assert!(f[1].contains("u\\le") || f[1].contains("u\\leq"), "{md}");
+    let (ia, ic, ib) =
+        (md.find("\\sum").unwrap(), md.find("Case two:").expect("caption kept"), md.find("v$$").unwrap());
+    assert!(ia < ic && ic < ib, "{md}");
+    assert_eq!(report.math.iter().map(|m| m.display).sum::<usize>(), 2);
+}
