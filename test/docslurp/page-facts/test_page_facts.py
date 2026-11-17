@@ -730,9 +730,12 @@ with t.TempDir() as d:
     t.check(bit(mm[1], 11) and mm[1]["tableBits"] >> 8 & 1, "math-matrix: a delimited 2x2 grid of text-size cells", repr(mm[1]["mathFlags"]))
     t.check(not any(bit(mm[n], 11) or mm[n]["tableBits"] >> 8 & 1 for n in (2, 3, 4)), "math-matrix: side-by-side fractions, aligned equations and sum limits are not matrices", repr([mm[n]["mathFlags"] for n in (2, 3, 4)]))
     t.check(bit(mm[5], 8) and not bit(mm[6], 8), "math-font-no-unicode: private-use glyphs fire; bracket pieces beside readable math do not", repr((mm[5]["mathFlags"], mm[6]["mathFlags"])))
+    t.check(bit(mm[7], 8), "math-font-no-unicode: bracket pieces from a font that is not a math extension font are not exempt", repr(mm[7]["mathFlags"]))
+    t.check(bit(mm[8], 12) and mm[8]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "Type 3: a procedure whose read is cut before BI is unknown (analysis-truncated), not a vector font", repr((mm[8]["mathFlags"], mm[8]["fonts"]["mathClasses"])))
+    t.check(not bit(mm[9], 12) and mm[9]["fonts"]["mathClasses"]["text"] > 0, "Type 3: 6 KB vector procedures are read and decided (no truncation)", repr((mm[9]["mathFlags"], mm[9]["fonts"]["mathClasses"])))
     here = os.path.join(HERE, "fixtures", "encoding-tables-math.pdf")
     ls = {l["page"]: l for l in lines(facts(here, "-include", "mathtables")[1]) if l["type"] == "page"}
-    t.check([ls[n]["mathBits"] for n in (1, 2, 3, 4)] == [0, 3, 2049, 0] and [ls[n]["tableBits"] for n in (1, 2, 3, 4)] == [4, 0, 256, 0], "pdflatex display math: no math-font-no-unicode or math-matrix; the pmatrix page is math-matrix, the booktabs page booktabs", repr([(ls[n]["mathBits"], ls[n]["tableBits"]) for n in (1, 2, 3, 4)]))
+    t.check([ls[n]["mathBits"] for n in (1, 2, 3, 4)] == [0, 3, 2049, 0] and [ls[n]["tableBits"] for n in (1, 2, 3, 4)] == [4, 8, 256, 0], "pdflatex display math: no math-font-no-unicode or math-matrix; the pmatrix page is math-matrix (not whitespace), the booktabs page booktabs; the aligned display math is a whitespace block, as doppler-md writes it", repr([(ls[n]["mathBits"], ls[n]["tableBits"]) for n in (1, 2, 3, 4)]))
 
     # council round 2: /AF cycles, chains and deep nesting; the class follows the graphics
     # state; many honest fonts; cut and corrupt deflate heads; one /XObject dictionary 4,000
@@ -750,7 +753,7 @@ with t.TempDir() as d:
     t.check(all(r2[n]["fonts"]["mathClasses"]["type3Bitmap"] == 250 and not trunc(r2[n]) for n in range(5, 21)), "round 2: 4,000 Type 3 fonts sharing one 20,000-entry /XObject dictionary are classed (read once)")
     t.check(not trunc(r2[21]) and r2[21]["structure"]["actualText"] == 300 and "limit-hit" not in r2[21]["parseWarnings"], "round 2: 300 one-character ActualText spans are not truncated", repr(r2[21]["structure"]))
     t.check(r2[22]["structure"]["truncated"] and trunc(r2[22]) and r2[22]["structure"]["tables"] == 0, "round 2: a RoleMap chain past 8 hops or a cycle is truncated, not 0", repr(r2[22]["structure"]))
-    t.check(trunc(r2[23]) and r2[23]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "council #51: a glyph procedure that fills the 4 KB read with no BI or Do is unknown, not a text font", repr(r2[23]["mathFlags"]))
+    t.check(trunc(r2[23]) and r2[23]["fonts"]["mathClasses"]["type3Bitmap"] == 0, "council #51: a glyph procedure that fills the 64 KB read with no BI or Do is unknown, not a text font", repr(r2[23]["mathFlags"]))
     t.check(r2[24]["structure"]["altText"] == 1 and r2[24]["structure"]["altTextTexLike"] == 0 and r2[24]["structure"]["truncated"] and trunc(r2[24]), "council #51: an Alt past the 4,096 scanned code units with no TeX is unknown (truncated), not 'not TeX'", repr(r2[24]["structure"]))
     t.check(r2[25]["structure"]["formulas"] == 1 and not r2[25]["structure"]["truncated"] and not trunc(r2[25]), "council #51: 65,000 duplicate leaves cost nothing: one Formula, not truncated", repr(r2[25]["structure"]))
     t.check(hs[3]["fonts"]["mathClasses"]["type3Bitmap"] == 0 and hs[3]["fonts"]["mathClasses"]["otfMath"] == 3, "mathtables hostile: a vector Type 3 font is text; a directory past the bytes read falls back to the name", repr(hs[3]["fonts"]["mathClasses"]))
