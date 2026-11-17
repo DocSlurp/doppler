@@ -389,6 +389,37 @@ fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
     }
 }
 
+/// A header cell of several words spanning two columns (`Harvest (t)` over `2025 | 2026`)
+/// is cut by the column gutter under it: its words land in both columns. In the first two
+/// rows, the words of one cell that fall in several columns go back together, in the first.
+fn join_spanning_header_cells(t: &mut Table, run: &[Row]) {
+    if t.cols.len() < 2 || t.rows.len() < 3 || t.cols.len() != t.rows[0].len() {
+        return;
+    }
+    let column = |x: f64| t.cols.iter().position(|&(a, b)| a - 1.0 <= x && x <= b + 1.0);
+    for (ri, r) in run.iter().take(2).enumerate() {
+        if ri >= t.rows.len() || r.cells.len() > t.cols.len() {
+            break;
+        }
+        for c in &r.cells {
+            let (Some(first), Some(last)) = (c.words.first(), c.words.last()) else { continue };
+            let (Some(j0), Some(j1)) = (column((first.x0 + first.x1) / 2.0), column((last.x0 + last.x1) / 2.0)) else {
+                continue;
+            };
+            if j1 <= j0 || j1 - j0 > 3 {
+                continue;
+            }
+            let row = &mut t.rows[ri];
+            // only when those columns hold nothing but this cell's words
+            if !strip(&row[j1]).starts_with(strip(&last.text)) {
+                continue;
+            }
+            let text: Vec<String> = (j0..=j1).map(|j| std::mem::take(&mut row[j])).filter(|x| !x.is_empty()).collect();
+            row[j0] = text.join(" ");
+        }
+    }
+}
+
 /// The columns of a table whose header has a cell spanning several columns (`Headcount` over
 /// `2026 | 2027`): that cell crosses the gutter between the columns it spans, so the gutters of
 /// all rows join them. When the rows below the first one or two multi-cell rows (at least
@@ -874,6 +905,7 @@ pub fn find_tables_within(
                 let mut grid = build_grid(run, &cols, p);
                 let size = median(run.iter().filter(|r| r.multi).map(|r| r.size).collect());
                 join_split_header_words(&mut grid, size, p);
+                join_spanning_header_cells(&mut grid, run);
                 if plausible(&grid.rows, p) {
                     found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
                 }
