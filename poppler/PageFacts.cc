@@ -27,9 +27,6 @@
 #ifndef _WIN32
 #    include <sys/resource.h>
 #endif
-#ifdef __GLIBC__
-#    include <malloc.h>
-#endif
 
 #include "Annot.h"
 #include "Catalog.h"
@@ -2718,10 +2715,6 @@ public:
 
 private:
     // a page's budget (maxStructWork) and the document's (MathDocCache::structWorkLeft)
-public:
-    size_t visits() const { return work; }
-
-private:
     // every visit: the page's budget (maxStructWork) and the document's (structWorkLeft)
     bool spend(StructCounts *c)
     {
@@ -5261,14 +5254,6 @@ void PageFacts::endPage(const TextPage &text)
         if (docXref && s.page) {
             StructWalk walk(docXref, s.mathDoc);
             sc = walk.page(s.page);
-#ifdef __GLIBC__
-            // a large walk churns big transient allocations (an object stream parsed for the
-            // page's entry, the visited set) between long-lived memo entries: give the freed
-            // pages back, or the arena keeps growing page after page
-            if (walk.visits() >= structWorkToStart) {
-                malloc_trim(0);
-            }
-#endif
         }
         std::vector<FlowBox> bars; // fraction-bar candidates: thin, short horizontal rules
         for (const TextRule &r : text.getRules()) {
