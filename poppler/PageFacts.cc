@@ -2129,7 +2129,7 @@ public:
     {
         const double a = y0 - pad, b = y1 + pad;
         // words with top <= b; one of them has bottom >= a
-        const size_t n = static_cast<size_t>(std::ranges::upper_bound(spans, std::pair { b, INFINITY }) - spans.begin());
+        const size_t n = static_cast<size_t>(std::ranges::upper_bound(spans, std::pair<double, double> { b, INFINITY }) - spans.begin());
         return n > 0 && maxBottom[n - 1] >= a;
     }
     bool empty() const { return spans.empty(); }
