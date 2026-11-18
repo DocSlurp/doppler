@@ -51,7 +51,9 @@ dropped (`0.5`, `612`).
 
 ## Levels and families
 
-`-level basic` (the default) computes the basic fields; `-level full` adds every family;
+`-level basic` (the default) computes the basic fields; `-level full` adds every family,
+`mathtables` included (its structure, font-class and table analysis costs about 7% more CPU
+than `full` without it, measured on textbook pages);
 `-include LIST` adds the named families to basic (`pdfpagefacts -include`,
 `pdftotext -page-facts-include`, `pdftomarkdown --page-facts-include`):
 
@@ -66,6 +68,10 @@ dropped (`0.5`, `612`).
 | `annots` | page `annots` |
 | `ocg` | page `layers`; doc `ocgCount`, `ocgOffByDefault` |
 | `structure` | doc `incrementalUpdates`, `tagged`, `markedContent`, `lang`, `outlineCount`, `pageLabels`, `embeddedFiles`, `javascript`, `openAction`, `launchAction`, `producer`, `creator` |
+| `mathtables` | page `mathBits`, `tableBits`, `encodingCounts` (the packed words; see [Math and table encodings](#math-and-table-encodings-mathtables)); with the other families their readable fields: `text.unicodeMath` (`oddtext`), `fonts.mathClasses` (`fonts`), `images.items[].stripLike`/`inTextFlow` and `images.mathStrips` (`images-detail`), `vectors.glyphOutlineClusters`/`ruleTables`/`ruleTablesTruncated` (`vectors`), page `structure`, marked-content `/ActualText` only (`structure`), and at `full` `mathRegions`, `mathRegionsTruncated`, `mathLayout`, `tableLayout`, `mathFlags`, `tableFlags` |
+
+`-include mathtables` at basic is the cheap router form: the basic line plus three integers a page.
+`full` includes `mathtables`; basic alone does not, so basic lines are unchanged.
 
 A flag of `unusualFeatures` appears only when its family was computed (`type3-font` needs
 `fonts`, say). The doc line says which: `level` and, for basic plus families, `include`.
@@ -406,6 +412,111 @@ connected thin rules (DocSlurp's layout walker, `pdf_layout_facts.ruled_grids`) 
   way, or the search makes more than 2^20 rule visits a page (the touch tests between rules of
   the two directions, found by a sorted sweep, and each grid's candidate rules): counts from
   part of the rules could be too low.
+
+### Math and table encodings (`mathtables`)
+
+What a router needs to send a page down the right math or table route, one fact per
+distinction (never one score). All of it is computed on the text pass from what the pass
+already sees, with no read of its own (below). The structure tree (its parent tree, elements,
+RoleMap, Alt and `/AF` files) is never read: a per-page walk of it cost memory and time out
+of proportion to what it told a router (council #51), so the bits that needed it are
+reserved. Everything here is a heuristic over drawing
+geometry and dictionaries: image data is never decoded, so `raster-table-like` and the
+outlined-text grid are shapes, not verified tables.
+
+**Packed words** (every level that includes `mathtables`, on each page line; no document-level
+arrays):
+
+`mathBits` (bit i = 1 << i; the order is an API, bits are only appended):
+
+| bit | name (`mathFlags`) | set when | route |
+|---|---|---|---|
+| 0 | `text-math` | at least 2 characters with a Unicode value drawn by a math-class font (`fonts.mathClasses` other than `text` and `type3Bitmap`) | Doppler text |
+| 1 | `stacked-math` | a text math region holds a fraction bar (a thin rule 0.3-15 body sizes long with math glyphs within 1.5 em above and below) or two math-glyph pairs 0.3-1.6 em apart vertically within 0.35 em across | 2D math: scramble risk |
+| 2 | `actualtext-tex` | a marked-content span (`BDC` with `/ActualText`) holding TeX | copy the source |
+| 3 | `alt-tex` | reserved: never set (needed the structure tree) | |
+| 4 | `mathml` | reserved: never set (needed the structure tree) | |
+| 5 | `raster-strips` | `images.mathStrips` > 0 | vision (region crops) |
+| 6 | `glyph-outlines` | `vectors.glyphOutlineClusters` > 0 | vision (region crops) |
+| 7 | `type3-bitmap-font` | glyphs drawn by a Type 3 font that the text layer gives no usable Unicode (`fonts.mathClasses.type3Bitmap`; the name is kept for the API) | vision |
+| 8 | `math-font-no-unicode` | at least 2 math-class-font glyphs, and at least a quarter of them, for which the text layer gives no Unicode: unmapped, a control character, private use or U+FFFD. The Adobe Symbol bracket and brace pieces (U+F8E5-F8FE) are delimiters, not unreadable, but only from a math extension font (CMEX, LM math extension, Euler, esint, tx/px/newtx extension, Symbol, MathType Extra): any other font mapping there is not trusted | vision |
+| 9 | `plain-unicode-math` | at least 3 scripts, operators or math alphanumerics drawn by text fonts (Greek and arrows alone do not count: units and prose use them) | keep the text |
+| 10 | `formula-struct` | reserved: never set (needed the structure tree) | |
+| 11 | `math-matrix` | a matrix: a grid of at least 2 rows x 2 columns of cells at about the text size (font sizes 0.8 to 1.6 of the page's median: script-size limits are not cells; rows at most 1.8 heights apart, or across one row that has nothing inside the grid's columns), cells short and centred within half a height across the rows, no fraction bar between the two cells of a column and no delimiter between columns, and on both sides a delimiter in a math-class font spanning the rows: built-up pieces (U+239B-23B3, U+F8E5-F8FE) chained at most 1.2 em apart, bars (U+007C, 2016, 2223, 2225, 20D3, 23D0) only as a touching column, or one full delimiter glyph (parenthesis, bracket, brace, angle, floor, ceiling, or the U+0020 the text layer gives a TeX extension font's size variant) centred within the rows and alone in its column there. Integral and sum limits, aligned equations and stacked fractions do not count | not a table |
+| 12 | `analysis-truncated` | a cap or budget of this analysis was hit (the bits may be incomplete) | |
+
+`tableBits`:
+
+| bit | name (`tableFlags`) | set when |
+|---|---|---|
+| 0 | `rule-grid` | a ruled grid (`vectors.grids`) with at least 2 rows and column lines (pdftomarkdown's columns, or 3 distinct vertical rule lines in its box) whose words lie in cells (2 rows, a gutter, not prose), not mostly math |
+| 1 | `hrule-open` | a `vectors.ruleTables` table of style `open` |
+| 2 | `booktabs` | a `vectors.ruleTables` table of style `booktabs` |
+| 3 | `whitespace` | rows aligned on gutters with no rules: at least 3 consecutive text rows of the page sharing at least 2 gutters (each at least a body size wide, words on both sides in 60% of the rows), rows at most 2.5 word heights apart, at most 4 words a cell, not prose, not mostly fixed-pitch words (a code listing), outside ruled grids, rule tables and shaded rows, and not overlapping a delimited matrix (`math-grid`); a block of math words is still one, as doppler-md writes it |
+| 4 | `shaded-rows` | at least 2 filled, non-white row boxes of one span (cells shaded one by one, touching in a row, are joined first; 3 body sizes tall at most, 6 wide at least) stacked within 3 box heights, holding words in 2 rows that share a column gutter (0.6 body sizes), outside ruled grids and rule tables |
+| 5 | `tagged-table` | reserved: never set (needed the structure tree) |
+| 6 | `raster-table-like` | an image on a page with at least 10 visible characters, not a scan, 2-60% of the page, at least 60 points tall (formula strips are shorter) and at least as wide as tall, not DCT or JPX, at most 1.5 encoded bytes a pixel (never decoded: line art and text compress well, photos do not; a chart matches too). Such an image is not also counted in `mathStrips` |
+| 7 | `outlined-text-grid` | glyph-like drawing clusters (at least 20 curves and 4 a path, at most 60% of the width and half the height of the page): an interior one (side-by-side clusters left and right in its row) whose left or right edge lines up within 2 points with an interior one of another row, both rows holding 3 to 12 clusters |
+| 8 | `math-grid` | as `math-matrix` (a matrix of math, which must not take a table route). A ruled grid or rule table whose words are mostly math is still a table, and so is a whitespace block of math words (aligned display equations) unless it holds a delimited matrix |
+| 9 | `analysis-truncated` | as above |
+
+`encodingCounts`: 13 four-bit log2 buckets (`0` for 0, else `floor(log2 n) + 1`, at most 15;
+nibble i at bits `4i..4i+3`, so 52 bits, exact in a JSON reader's double):
+
+| nibble | count |
+|---|---|
+| 0 | math-font characters with a Unicode value |
+| 1 | `text.unicodeMath` characters drawn by text fonts |
+| 2 | unreadable math glyphs (math-class unmapped or private use, plus `type3Bitmap` glyphs) |
+| 3 | `images.mathStrips` |
+| 4 | `vectors.glyphOutlineClusters` |
+| 5 | reserved (0) |
+| 6 | TeX sources (`structure.actualTextTexLike`) |
+| 7 | reserved (0) |
+| 8 | ruled grids (`tableLayout.ruledGrids`) |
+| 9 | `vectors.ruleTables` (at most 64) |
+| 10 | whitespace tables (at most 64) |
+| 11 | reserved (0) |
+| 12 | math regions (all of them, before the 64-item list cap) |
+
+**Validation** (in-sample: rules were revised after the first look). A table-encoding
+development corpus (56 PDFs: the same three tables through 16 encodings, plus controls): full-grid 24/24, booktabs 3/3, whitespace 6/6, shaded
+rows 3/3, raster table 6/6, outlined text 2/3, matrix-not-table 1/1,
+no false positives on any label (controls: matrix, table of contents, form, two columns, code,
+list, stacked and inline math). On a math-encoding inventory (168 PDFs, one encoding a
+file) the math bits separate raster strips, glyph outlines, plain Unicode math and
+marked-content ActualText TeX from each other and from no-math controls (tagged structure, Alt
+TeX and MathML were told apart too while the structure tree was read; they are no longer).
+Since classes come from names and Unicode alone, a dvips PK document that ps2pdf gave
+ToUnicode maps reads as text (its glyphs have usable Unicode), not `type3-bitmap-font`, and an
+OpenType math font whose name lacks the word Math is `text`.
+
+**Font classes** (`fonts.mathClasses`, glyph counts by a fixed vocabulary, never names), from
+what the text pass already has: the font's name (BaseFont) and type and each glyph's Unicode.
+Font classification makes no read of its own: no font program, glyph procedure or resource is
+fetched (reads of those reached object streams the run then kept, council #51), so a font's
+class never depends on a read and is never unknown. In order: `webMath` (KaTeX_, MathJax, MJX);
+`officeMath` (Cambria Math, OpenSymbol); `texType1` (CMMI, CMSY, CMEX, MSAM/MSBM, Euler, RSFS,
+LM math, newtx/txfonts/pxfonts math, mathptmx, mathpazo); `otfMath` (a name holding the word
+Math: STIX Two Math, Latin Modern Math, Cambria Math's kin; an embedded OpenType MATH table is
+not looked for); `symbol`; `text`. `type3Bitmap` counts glyphs of a Type 3 font that the text
+layer gives no usable Unicode (none, a control character, private use or U+FFFD): bitmap or
+vector, such a glyph needs vision (a dvips PK math font's low codes, say; a PK text font whose
+codes pass through as letters is `text`). A font is classed once a page, however many fonts the
+page has; the fonts family's list and counts are the same with or without `mathtables`.
+
+**Side effects.** None on the other families: `mathtables` adds no fetch, no parse warning and
+no font to the fonts list, and an analysis cap sets `analysis-truncated` only (never
+`limit-hit`). A marked-content `/ActualText` string has its first 4,096 code units tested; a
+longer one with no TeX in them is TeX unknown (`structure.truncated`, `analysis-truncated`).
+
+**Bounds.** Math glyph centres (8,192), math words (4,096), outlined-text clusters (512), rules
+(4,096 a direction, for fraction bars, grids and vertical rules), shaded row boxes, rule tables
+(64), regions (64 listed), a page's comparisons (2^21), ActualText code units tested (4,096).
+Every cap that drops input a bit reads fails closed: the page says `analysis-truncated`, and so
+does a page whose text-pass lists were cut (2,000 images, the page's rules) or whose drawing
+clusters ran out of the graphics budget. Caps on what is listed, not read (64 rule tables or
+regions), do not change a bit. On the corpus (494 files, 7,994 pages) no honest page trips one.
 
 ### `forms` (`forms`)
 

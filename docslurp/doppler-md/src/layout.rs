@@ -84,7 +84,65 @@ pub fn table_like<T>(left: &[Elem<T>], right: &[Elem<T>], lines: &[Rc<Line>], p:
     if words(&left) > p.table_cell_words && words(&right) > p.table_cell_words {
         return false;
     }
-    aligned_count(&left, &right, p) as f64 >= p.table_align * right.len() as f64
+    let aligned = aligned_count(&left, &right, p);
+    if aligned as f64 >= p.table_align * right.len() as f64 {
+        return true;
+    }
+    // short cells on the right that wrap: a line under a line of its cell (same left edge,
+    // at most a line pitch and a half below) continues that cell's row
+    if words(&right) <= p.table_cell_words && right.len() <= 400 {
+        let mut bases: Vec<f64> = left.iter().map(|l| l.base()).collect();
+        bases.sort_by(|a, b| fcmp(*a, *b));
+        let mut rs: Vec<&Line> = right.clone();
+        rs.sort_by(|a, b| fcmp(a.base(), b.base()));
+        let mut row = vec![false; rs.len()];
+        for i in 0..rs.len() {
+            let l = rs[i];
+            let tol = p.row_tol * pmax(l.size(), 1.0);
+            // a continuation is alone on its baseline among the right lines (a row of several
+            // cells there is a row of its own, not a wrapped line)
+            let alone = || !rs.iter().enumerate().any(|(k, o)| k != i && (o.base() - l.base()).abs() <= tol);
+            row[i] = near_any(&bases, l.base(), tol)
+                || alone()
+                    && (0..i).rev().take(32).any(|j| {
+                        let o = rs[j];
+                        row[j]
+                            && (o.x0 - l.x0).abs() <= 1.0
+                            && l.base() - o.base() > tol
+                            && l.base() - o.base() <= 1.6 * pmax(l.size(), 1.0)
+                    });
+        }
+        let n = row.iter().filter(|&&r| r).count();
+        if aligned >= 2 && n as f64 >= p.table_align * rs.len() as f64 {
+            return true;
+        }
+    }
+    // a sparse first column (row labels that span several rows, such as a region beside its
+    // cities): every label shares a baseline with a row on the right, both sides are short
+    // cells, and the right side is itself rows of several cells (not prose or margin notes
+    // beside a column of labels)
+    left.len() >= 2
+        && right.len() <= 400
+        && words(&left) <= p.table_cell_words
+        && words(&right) <= p.table_cell_words
+        && aligned_count(&right, &left, p) == left.len()
+        && {
+            let shared = right
+                .iter()
+                .enumerate()
+                .filter(|&(i, l)| {
+                    l.x1 - l.x0 > 1.0
+                        && (crate::tables::segment_count(l, p) >= 2
+                            || right.iter().enumerate().any(|(j, o)| {
+                                i != j
+                                    && o.x1 - o.x0 > 1.0
+                                    && (o.base() - l.base()).abs() <= p.row_tol * pmax(l.size(), 1.0)
+                                    && (o.x0 >= l.x1 || o.x1 <= l.x0)
+                            }))
+                })
+                .count();
+            2 * shared >= right.len()
+        }
 }
 
 /// Right-side lines sharing a baseline (within `row_tol`) with a left-side line.

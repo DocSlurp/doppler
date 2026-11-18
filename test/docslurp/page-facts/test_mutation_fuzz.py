@@ -132,7 +132,7 @@ def run_case(case):
 
 
 rng = random.Random(20261112)
-seeds = {name: make() for name, make in fx.ALL.items() if name != "vectors"}
+seeds = {name: make() for name, make in fx.ALL.items() if name not in ("vectors", "math_tables_council", "math_tables_round2")}  # 11 MB: its own test
 seeds["vectors_small"] = fx.doc([{"content": "0.5 w 72 600 m 472 600 l S 72 560 m 472 560 l S 100 400 m 100 600 l S /Sh1 sh\n" + fx.words(20)}], extras=[])
 names = sorted(seeds)
 with t.TempDir() as d:

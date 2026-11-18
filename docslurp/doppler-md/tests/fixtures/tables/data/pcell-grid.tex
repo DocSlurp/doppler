@@ -1,0 +1,20 @@
+\documentclass{article}
+\usepackage{amsmath,booktabs}
+\pagestyle{empty}
+\begin{document}
+Common image transforms and their matrices.
+
+\begin{tabular}{|l|c|l|}
+\hline
+Transform & Matrix & Use \\
+\hline
+Scale & $\begin{pmatrix} 2 & 0 \\ 0 & 2 \end{pmatrix}$ & zoom \\
+\hline
+Shear & $\begin{pmatrix} 1 & 1 \\ 0 & 1 \end{pmatrix}$ & slant \\
+\hline
+Flip & $\begin{pmatrix} -1 & 0 \\ 0 & 1 \end{pmatrix}$ & mirror \\
+\hline
+\end{tabular}
+
+The editor applies them in this order.
+\end{document}

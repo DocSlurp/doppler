@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import resource
+import tempfile
 import subprocess
 import sys
 import time
@@ -49,10 +50,59 @@ class Doc:
             extra += " /Filter /FlateDecode"
         return self.add(b"<< " + extra.encode("latin-1") + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
 
-    def pages(self, contents, resources="", catalog_extra=""):
+    def write_objstm(self, root, groups):
+        """The PDF with each object of <groups> (lists of object numbers) inside an object stream of
+        its own group, other objects direct, and a cross-reference stream."""
+        import struct
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        entries = {}
+        grouped = {k for g in groups for k in g}
+        for num in sorted(self.objs):
+            if num not in grouped:
+                entries[num] = (1, len(out), 0)
+                out += b"%d 0 obj\n" % num + self.objs[num] + b"\nendobj\n"
+        nxt = self.n + 1
+        for g in groups:
+            hdr, body = bytearray(), bytearray()
+            for j, k in enumerate(g):
+                hdr += b"%d %d " % (k, len(body))
+                body += self.objs[k] + b"\n"
+                entries[k] = (2, nxt, j)
+            data = zlib.compress(bytes(hdr) + bytes(body), 9)
+            entries[nxt] = (1, len(out), 0)
+            out += b"%d 0 obj\n<< /Type /ObjStm /N %d /First %d /Filter /FlateDecode /Length %d >>\nstream\n" % (nxt, len(g), len(hdr), len(data)) + data + b"\nendstream\nendobj\n"
+            nxt += 1
+        xs = nxt
+        entries[xs] = (1, len(out), 0)
+        rows = b"".join(struct.pack(">BIH", *entries.get(k, (0, 0, 0))) for k in range(xs + 1))
+        data = zlib.compress(rows, 9)
+        out += b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root %d 0 R /Filter /FlateDecode /Length %d >>\nstream\n" % (xs, xs + 1, root, len(data)) + data + b"\nendstream\nendobj\n"
+        out += b"startxref\n%d\n%%%%EOF\n" % entries[xs][1]
+        return bytes(out)
+
+    def pages_tagged(self, contents, font, root):
+        """One tagged page per content stream, page i naming parent-tree key i."""
+        pages = self.reserve()
+        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (pages, c, font, i)) for i, c in enumerate(contents)]
+        self.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), pages)
+        cat = self.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (pages, root))
+        out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+        offs = {}
+        for num in sorted(self.objs):
+            offs[num] = len(out)
+            out += b"%d 0 obj\n" % num + self.objs[num] + b"\nendobj\n"
+        xref = len(out)
+        out += b"xref\n0 %d\n0000000000 65535 f \n" % (self.n + 1)
+        for i in range(1, self.n + 1):
+            out += b"%010d 00000 n \n" % offs[i] if i in offs else b"0000000000 65535 f \n"
+        out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (self.n + 1, cat, xref)
+        return bytes(out)
+
+    def pages(self, contents, resources="", catalog_extra="", page_extra="", media="0 0 612 792"):
         """One page per content stream object number (repeats allowed); returns the PDF bytes."""
         pages = self.reserve()
-        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << %s >> >>" % (pages, c, resources)) for c in contents]
+        res = resources if isinstance(resources, list) else [resources] * len(contents)
+        kids = [self.add("<< /Type /Page /Parent %d 0 R /MediaBox [%s] /Contents %d 0 R /Resources << %s >> %s >>" % (pages, media, c, r, page_extra)) for c, r in zip(contents, res)]
         self.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), pages)
         root = self.add("<< /Type /Catalog /Pages %d 0 R %s >>" % (pages, catalog_extra))
         out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
@@ -318,6 +368,197 @@ def hex_chain(n):
 # --- measuring ------------------------------------------------------------------------------
 
 
+def shared_program(fonts=6000, pages=30):
+    """<fonts> TrueType font dictionaries sharing one FontFile2 that is 200 KB of empty stored
+    deflate blocks (decodes to nothing): the program is read once, not once a font (was +3 s)."""
+    d = Doc()
+    bomb = b"\x78\x01" + b"\x00\x00\x00\xff\xff" * 40000 + b"\x01\x00\x00\xff\xff\x00\x00\x00\x01"
+    prog = d.add(b"<< /Filter /FlateDecode /Length %d >>\nstream\n" % len(bomb) + bomb + b"\nendstream")
+    per = fonts // pages
+    contents, res = [], []
+    for pg in range(pages):
+        names = []
+        for k in range(per):
+            desc = d.add("<< /Type /FontDescriptor /FontName /Bomb%d /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % (k, prog))
+            names.append("/T%d %d 0 R" % (pg * per + k, d.add("<< /Type /Font /Subtype /TrueType /BaseFont /Bomb%d /FirstChar 32 /LastChar 126 /FontDescriptor %d 0 R >>" % (k, desc))))
+        contents.append(d.stream("".join("BT /T%d 6 Tf %d %d Td (x) Tj ET\n" % (pg * per + k, 30 + (k % 25) * 22, 760 - (k // 25) * 12) for k in range(per))))
+        res.append("/Font << %s >>" % " ".join(names))
+    return d.pages(contents, resources=res)
+
+
+def font_compilation(pages=1200, fonts=4, size=14000):
+    """An honest compilation: every page embeds its own <fonts> TrueType programs of <size>
+    bytes (a table directory, then data): 67 MB of programs, past a 64 MB run total."""
+    d = Doc()
+    body = bytes((k * 131 + 7) % 251 for k in range(size - 28))
+    sfnt = b"\x00\x01\x00\x00\x00\x01\x00\x10\x00\x00\x00\x00" + b"glyf" + b"\x00" * 12 + body
+    contents, res = [], []
+    for pg in range(pages):
+        names = []
+        for k in range(fonts):
+            prog = d.add(b"<< /Length %d >>\nstream\n" % len(sfnt) + sfnt + b"\nendstream")
+            desc = d.add("<< /Type /FontDescriptor /FontName /Face /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % prog)
+            names.append("/T%d %d 0 R" % (k, d.add("<< /Type /Font /Subtype /TrueType /BaseFont /Face /FirstChar 32 /LastChar 126 /FontDescriptor %d 0 R >>" % desc)))
+        contents.append(d.stream("".join("BT /T%d 10 Tf 72 %d Td (Revenue grew) Tj ET\n" % (k, 700 - 20 * k) for k in range(fonts))))
+        res.append("/Font << %s >>" % " ".join(names))
+    return d.pages(contents, resources=res)
+
+
+def struct_tree(pages, entry_leaves=0, depth=1, decoys=0, objstm=0):
+    """Tagged pages, each with its own parent-tree entry; the entries list <entry_leaves> leaves
+    whose parent chains are <depth> deep (shared by every page), or, with <decoys>, the parent
+    tree's root /Kids holds <decoys> nodes whose Limits lie below every key, then one node per
+    page (a linear Kids scan reads every decoy on every page). With <objstm>, the elements and
+    the entries sit in object streams of that many members (each entry stream parses to ~10 MB)."""
+    d = Doc()
+    first = d.n + 1
+    root = d.reserve()
+    docel = d.add("<< /Type /StructElem /S /Document /P %d 0 R >>" % root)
+    leaves = []
+    for i in range(max(entry_leaves, 1)):
+        par = docel
+        for _ in range(depth - 1):
+            par = d.add("<< /S /Div /P %d 0 R >>" % par)
+        leaves.append(d.add("<< /S /%s /P %d 0 R >>" % ("Formula" if i == 0 else "P", par)))
+    if decoys:
+        dec = [d.add("<< /Limits [-2 -1] /Nums [-2 null] >>") for _ in range(decoys)]
+        nodes = [d.add("<< /Limits [%d %d] /Nums [%d [%d 0 R]] >>" % (i, i, i, leaves[0])) for i in range(pages)]
+        tree = d.add("<< /Kids [%s] >>" % " ".join("%d 0 R" % k for k in dec + nodes))
+    else:
+        arr = "[%s]" % " ".join("%d 0 R" % e for e in leaves)
+        entries = [d.add(arr) for _ in range(pages)]
+        tree = d.add("<< /Nums [%s] >>" % " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries)))
+    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R >>" % tree, root)
+    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    if not objstm:
+        return d.pages_tagged([content] * pages, font, root)
+    packed = [k for k in range(first, tree) if k != root]
+    ptree = d.reserve()
+    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Contents %d 0 R /Resources << /Font << /F1 %d 0 R >> >> /StructParents %d >>" % (ptree, content, font, i)) for i in range(pages)]
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), ptree)
+    cat = d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (ptree, root))
+    return d.write_objstm(cat, [packed[i:i + objstm] for i in range(0, len(packed), objstm)])
+
+
+def type3_inflate(fonts=2000):
+    """<fonts> Type 3 fonts, each with 8 distinct tiny deflate glyph procedures that inflate to
+    64 KB of spaces (no BI, no Do), all on one page (was 9.9 s against 0.83 s)."""
+    d = Doc()
+    names = []
+    for f in range(fonts):
+        procs = [d.stream(b"600 0 0 0 500 500 d1 %d " % (f * 8 + g) + b" " * 65536 + b" 0 0 500 500 re f", compress=True) for g in range(8)]
+        names.append("/T%d %d 0 R" % (f, d.add("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << %s >> /Encoding << /Type /Encoding /Differences [97 %s] >> /FirstChar 97 /LastChar 104 /Widths [%s] /Resources << >> >>" % (" ".join("/g%d %d 0 R" % (g, procs[g]) for g in range(8)), " ".join("/g%d" % g for g in range(8)), " ".join(["600"] * 8)))))
+    content = d.stream("".join("BT /T%d 6 Tf %d %d Td (abcdefgh) Tj ET\n" % (k, 20 + (k % 20) * 28, 780 - (k // 20) * 7) for k in range(fonts)))
+    return d.pages([content], resources="/Font << %s >>" % " ".join(names))
+
+
+def objstm_rounds(streams=9, members=300, leaves=2000, pages=1, pad=True, drain=False):
+    """Structure elements in <streams> object streams of <members> elements (each padded to ~4 MB
+    decoded with <pad>); every page's parent-tree entry lists <leaves> elements round-robin across
+    the streams, so a small cache of parses would miss on every read. With <drain>, a second page
+    whose objects (its dictionary, font, Table element) live in an object stream of their own
+    follows: it must still be drawn (guarded parses never take drawing's member budget)."""
+    d = Doc()
+    cat, ptree, root = d.reserve(), d.reserve(), d.reserve()
+    docel = d.add("<< /S /Document /P %d 0 R >>" % root)
+    groups = []
+    for g in range(streams):
+        els = [d.add("<< /S /%s /P %d 0 R >>" % ("Formula" if g == 0 and j == 0 else "P", docel)) for j in range(members)]
+        if pad:
+            els.append(d.add("(" + "x" * (4 * 1024 * 1024 - 64 * members - 4096) + ")"))
+        groups.append(els)
+    rr = [groups[i % streams][(i // streams) % members] for i in range(streams * members)]
+    entries = [d.add("[%s]" % " ".join("%d 0 R" % rr[(pg * leaves + i) % len(rr)] for i in range(leaves))) for pg in range(pages)]
+    font = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    content = d.stream("BT /F1 12 Tf 72 700 Td (Quarterly growth beat the plan) Tj ET")
+    kids = [d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R /StructParents %d >>" % (ptree, font, content, i)) for i in range(pages)]
+    nums = " ".join("%d %d 0 R" % (i, e) for i, e in enumerate(entries))
+    if drain:
+        tbl = d.add("<< /S /Table /P %d 0 R >>" % docel)
+        tr = d.add("<< /S /TR /P %d 0 R >>" % tbl)
+        td = d.add("<< /S /TD /P %d 0 R >>" % tr)
+        e2 = d.add("[%d 0 R]" % td)
+        font2 = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        c2 = d.stream("BT /F1 12 Tf 72 720 Td (Region) Tj 200 0 Td (Revenue) Tj ET BT /F1 12 Tf 72 700 Td (North) Tj 200 0 Td (120) Tj ET")
+        p2 = d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R /StructParents %d >>" % (ptree, font2, c2, pages))
+        kids.append(p2)
+        nums += " %d %d 0 R" % (pages, e2)
+        groups.append([tbl, tr, td, e2, font2, p2])
+    tree = d.add("<< /Nums [%s] >>" % nums)
+    d.add("<< /Type /StructTreeRoot /ParentTree %d 0 R /K [%d 0 R] >>" % (tree, docel), root)
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), len(kids)), ptree)
+    d.add("<< /Type /Catalog /Pages %d 0 R /StructTreeRoot %d 0 R /MarkInfo << /Marked true >> >>" % (ptree, root), cat)
+    return d.write_objstm(cat, groups)
+
+
+def font_objects(kind, size=4000000, pages=30):
+    """Each page draws one font whose class read would reach an object stream: with <kind>
+    "charproc" a Type 3 font's procedure is a non-stream member of its own object stream; "xobj"
+    its /Resources /XObject is; "ttf" a TrueType font's /FontFile2 is; "length" its procedure is
+    a stream whose /Length is. Beside that member each object stream holds a <size>-byte array of
+    empty names (it parses to about <size> objects). The class reads must not parse any of them
+    (council #51 final-5: 30 pages ran out of a 4 GB address space)."""
+    d = Doc()
+    cat, ptree = d.reserve(), d.reserve()
+    helv = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    bomb = "[" + "/" * (size - 2) + "]"
+    groups, kids = [], []
+    for i in range(pages):
+        x = d.add("<< /Note (quarterly) >>")
+        if kind == "length":
+            data = b"500 0 d0 0 0 m 400 0 l 400 600 l h f"
+            x = d.add("%d" % len(data))
+            proc = d.add(b"<< /Length %d 0 R >>\nstream\n" % x + data + b"\nendstream")
+        groups.append([x, d.add(bomb)])
+        if kind == "ttf":
+            fd = d.add("<< /Type /FontDescriptor /FontName /GrowthSans%d /Flags 32 /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 %d 0 R >>" % (i, x))
+            font = d.add("<< /Type /Font /Subtype /TrueType /BaseFont /GrowthSans%d /FirstChar 97 /LastChar 98 /Widths [500 500] /FontDescriptor %d 0 R /Encoding /WinAnsiEncoding >>" % (i, fd))
+        else:
+            if kind == "charproc":
+                procs, res = "/a %d 0 R /b %d 0 R" % (x, d.stream("500 0 d0 0 0 m 400 0 l 400 600 l h f")), "<< >>"
+            elif kind == "xobj":
+                do = d.stream("500 0 d0 /Im0 Do")
+                procs, res = "/a %d 0 R /b %d 0 R" % (do, do), "<< /XObject %d 0 R >>" % x
+            else:
+                procs, res = "/a %d 0 R /b %d 0 R" % (proc, proc), "<< >>"
+            font = d.add("<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << %s >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> /FirstChar 97 /LastChar 98 /Widths [500 500] /Resources %s >>" % (procs, res))
+        content = d.stream("BT /H 11 Tf 72 740 Td (Revenue beat the plan in every region.) Tj ET BT /T 10 Tf 72 700 Td (ab) Tj ET")
+        kids.append(d.add("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /H %d 0 R /T %d 0 R >> >> /Contents %d 0 R >>" % (ptree, helv, font, content)))
+    d.add("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), pages), ptree)
+    d.add("<< /Type /Catalog /Pages %d 0 R >>" % ptree, cat)
+    return d.write_objstm(cat, groups)
+
+
+def fail_open(case, n):
+    """One 1200 x 1600 page whose mathtables signal sits past a list cap (council #51 final-7):
+    "words": <n> single-glyph CMMI10 words in staggered rows (never stacked), then a CMMI fraction
+    a/b with its bar at the bottom (past 4,096 math words its words are not looked at); "imgs":
+    <n> table-ish images, then one formula strip beside prose (past the text pass's 2,000
+    images it is not seen). Either way the page must say analysis-truncated."""
+    d = Doc()
+    fh = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    fm = d.add("<< /Type /Font /Subtype /Type1 /BaseFont /CMMI10 >>")
+    data = zlib.compress(bytes(200 * 20))
+    strip = d.add(b"<< /Type /XObject /Subtype /Image /Width 200 /Height 20 /BitsPerComponent 8 /ColorSpace /DeviceGray /Filter /FlateDecode /Length %d >>\nstream\n" % len(data) + data + b"\nendstream")
+    prose = ["BT /H 10 Tf 40 %d Td (Revenue grew in every region this quarter and the team beat the plan again.) Tj ET" % y for y in range(60, 300, 14)]
+    ops = []
+    if case == "words":
+        for i in range(n):
+            r, c = divmod(i, 58)
+            ops.append("BT /M 8 Tf %.2f %.2f Td (x) Tj ET" % (20 + c * 20 + (r * 3.1) % 20, 1600 - 20 - r * 14))
+        ops += prose
+        ops.append("BT /M 8 Tf 600 110 Td (a) Tj ET 598 106 8 0.4 re f BT /M 8 Tf 600 99 Td (b) Tj ET")
+    else:
+        for i in range(n):
+            r, c = divmod(i, 40)
+            ops.append("q 20 0 0 20 %.2f %.2f cm /S Do Q" % (20 + c * 29, 1600 - 40 - r * 22 % 1200))
+        ops += prose
+        ops.append("q 150 0 0 15 600 170 cm /S Do Q")
+    content = d.stream("\n".join(ops), compress=True)
+    return d.pages([content], resources="/Font << /H %d 0 R /M %d 0 R >> /XObject << /S %d 0 R >>" % (fh, fm, strip), media="0 0 1200 1600")
+
+
 def cpu_run(cmd, pass_fds=(), timeout=300):
     """(exit code, stdout, CPU seconds of the child)."""
     r0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -360,6 +601,25 @@ def bounded(label, path, slack=3.0, factor=3.0):
     t.check(facts1 == facts2, "%s: pdftotext -page-facts-fd and pdfpagefacts agree" % label)
     print("  %s: base %.2f s, pdftotext+facts %.2f s, pdfpagefacts %.2f s" % (label, base, cpu1, cpu2))
     return [json.loads(l) for l in facts2.decode("ascii").splitlines()]
+
+
+# a peak RSS survives exec, so pdfpagefacts is started from a small launcher, not from this
+# process (which holds the generated documents): it prints "<exit code> <peak RSS KB>"
+RSS_LAUNCHER = """import os, subprocess, sys
+p = subprocess.Popen(sys.argv[1:], stdout=sys.stdout, stderr=subprocess.DEVNULL)
+_, status, ru = os.wait4(p.pid, 0)
+sys.stderr.write("%d %d" % (os.waitstatus_to_exitcode(status), ru.ru_maxrss))
+"""
+
+
+def max_rss(*args):
+    """pdfpagefacts ARGS: (exit code, page lines, peak RSS in MB of that run alone)."""
+    with tempfile.TemporaryFile() as out:
+        r = subprocess.run([sys.executable, "-I", "-c", RSS_LAUNCHER, os.path.join(BIN, "pdfpagefacts")] + list(args), stdout=out, stderr=subprocess.PIPE, timeout=300)
+        out.seek(0)
+        lines = [json.loads(l) for l in out.read().decode("ascii").splitlines()]
+    rc, kb = (int(v) for v in r.stderr.split()[-2:])
+    return rc, [l for l in lines if l["type"] == "page"], kb / 1024
 
 
 def page(ls, n):
@@ -406,6 +666,73 @@ with t.TempDir() as d:
     t.check(plain and plain == withf, "pdftotext with facts: stderr unchanged", repr((plain[:200], withf[:200])))
     quiet = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", small, os.devnull], capture_output=True).stderr
     t.check(quiet == b"", "pdftotext -q: no messages")
+
+    # mathtables font classes come from names only (council #51 final-6): programs and glyph
+    # procedures are never read, so none of these costs anything or leaves a class unknown
+    for label, name, pdf in (
+        ("6,000 font dictionaries sharing one 200 KB empty-deflate program", "shared-program.pdf", shared_program),
+        ("1,200 pages, each embedding 4 programs of its own (67 MB)", "compilation.pdf", font_compilation),
+        ("2,000 Type 3 fonts whose 8 procedures each inflate to 64 KB", "t3inflate.pdf", type3_inflate),
+    ):
+        ls = bounded(label, d.write(name, pdf()))
+        pgs = [l for l in ls if l["type"] == "page"]
+        t.check(not any(p["mathBits"] >> 12 & 1 for p in pgs), "%s: classed by name, nothing truncated" % label, repr(sum(p["mathBits"] >> 12 & 1 for p in pgs)))
+
+    # mathtables never reads the structure tree (council #51 final-4): documents whose parent
+    # trees reach deep chains, many large object streams or decoy nodes cost the full level what
+    # they cost the basic level (a structure walk held 1 GB at 20,000 pages, or ran out of
+    # address space on honest tagged documents of 5,000 pages)
+    for label, name, pdf in (
+        ("4,000 pages whose entries in object streams list 1,024 leaves of 64-deep chains", "chain-objstm.pdf", lambda: struct_tree(4000, entry_leaves=1024, depth=64, objstm=200)),
+        ("2,000 pages behind 60,000 decoy parent-tree nodes", "decoys.pdf", lambda: struct_tree(2000, decoys=60000)),
+        ("2,000 pages reading 2,000 leaves round-robin over 9 object streams of 4 MB", "rr9p.pdf", lambda: objstm_rounds(pages=2000)),
+        ("page 1 reading 18,000 leaves of 9 object streams of 2,000 members, then page 2", "drain.pdf", lambda: objstm_rounds(members=2000, leaves=18000, pad=False, drain=True)),
+    ):
+        path = d.write(name, pdf())
+        ls = bounded(label, path)
+        pgs = [l for l in ls if l["type"] == "page"]
+        t.check(all(set(p["structure"]) == {"actualText", "actualTextTexLike", "truncated"} and not p["mathBits"] >> 12 & 1 for p in pgs), "%s: no structure read, nothing truncated" % label, repr(pgs[-1]["structure"]))
+        rc_b, pg_b, rss_b = max_rss("-level", "basic", path)
+        rc_f, pg_f, rss_f = max_rss("-level", "full", path)
+        t.check(rc_b == rc_f == 0 and len(pg_f) == len(pg_b) == len(pgs), "%s: every page's line written" % label, repr((rc_b, rc_f, len(pg_b), len(pg_f))))
+        t.check(rss_f <= 1.2 * rss_b + 16, "%s: peak RSS at most 1.2x the basic level + 16 MB" % label, "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
+        print("  %s: basic %.0f MB, full %.0f MB" % (label, rss_b, rss_f))
+    p2 = page(ls, 2)
+    t.check("error" not in p2 and p2["text"]["wordCount"] == 4, "a page whose objects sit in their own object stream is drawn", repr(p2.get("error") or p2["text"]))
+
+    # a list cap that drops input a mathtables bit reads makes the page analysis-truncated
+    # (council #51 final-7): fail closed, never a silent "no stacked math" or "no strips"
+    for case, small, big in (("words", 100, 4500), ("imgs", 10, 2000)):
+        ok = [l for l in json.loads("[" + ",".join(cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "mathtables", d.write("fo-%s-%d.pdf" % (case, small), fail_open(case, small))])[1].decode().splitlines()) + "]") if l["type"] == "page"][0]
+        cut = [l for l in json.loads("[" + ",".join(cpu_run([os.path.join(BIN, "pdfpagefacts"), "-include", "mathtables", d.write("fo-%s-%d.pdf" % (case, big), fail_open(case, big))])[1].decode().splitlines()) + "]") if l["type"] == "page"][0]
+        bit = 1 if case == "words" else 5  # stacked-math, raster-strips
+        t.check(ok["mathBits"] >> bit & 1 and not ok["mathBits"] >> 12 & 1, "%s below the cap: the signal is seen, nothing truncated" % case, repr(ok["mathBits"]))
+        t.check(cut["mathBits"] >> 12 & 1 and cut["tableBits"] >> 9 & 1, "%s past the cap: analysis-truncated" % case, repr(cut["mathBits"]))
+
+    # font classes fetch nothing (council #51 final-5/6): a procedure, program or /XObject
+    # dictionary in an object stream (or a procedure whose /Length is) is never reached by
+    # mathtables, so full costs what basic costs, and pdftotext with full facts still writes its
+    # XHTML under a 4 GiB address-space limit
+    def limited_as():
+        resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
+    # (a TrueType program is fetched by drawing's font loading too, which parses each of these
+    # streams as master does: 6 pages of 1 MB arrays keep that within the address space)
+    for kind, size, pages in (("charproc", 4000000, 30), ("xobj", 4000000, 30), ("ttf", 1000000, 6), ("length", 4000000, 30)):
+        path = d.write("fontobj-%s.pdf" % kind, font_objects(kind, size, pages))
+        rc_b, pg_b, rss_b = max_rss("-level", "basic", path)
+        rc_f, pg_f, rss_f = max_rss("-level", "full", path)
+        t.check(rc_b == rc_f == 0 and len(pg_f) == len(pg_b) == pages, "font objects in object streams (%s): every page's line written" % kind, repr((rc_b, rc_f, len(pg_b), len(pg_f))))
+        t.check(rss_f <= 1.2 * rss_b + 16, "font objects in object streams (%s): peak RSS at most 1.2x the basic level + 16 MB" % kind, "basic %.0f MB, full %.0f MB" % (rss_b, rss_f))
+        t.check(not any(p["mathBits"] >> 12 & 1 for p in pg_f), "font objects in object streams (%s): classed without a read, nothing truncated" % kind, repr(pg_f[0]["mathFlags"]))
+        print("  font objects in object streams (%s): basic %.0f MB, full %.0f MB" % (kind, rss_b, rss_f))
+        out = os.path.join(os.path.dirname(path), "fontobj.jsonl")
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            r = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", "-page-facts-fd", str(fd), "-page-facts-level", "full", path, "-"], capture_output=True, pass_fds=(fd,), preexec_fn=limited_as, timeout=300)
+        finally:
+            os.close(fd)
+        plain = subprocess.run([os.path.join(BIN, "pdftotext"), "-q", "-bbox-layout", path, "-"], capture_output=True, timeout=300)
+        t.check(r.returncode == 0 and r.stdout == plain.stdout, "font objects in object streams (%s): pdftotext with full facts under 4 GiB writes the XHTML it writes without them" % kind, repr(r.returncode))
 
     # 4. the figure-cluster merge is near-linear per page (was 10x the pass on 10,000 slim pages)
     ls = bounded("2000 pages of 256 drawing cells", d.write("slim.pdf", slim_graphics()))

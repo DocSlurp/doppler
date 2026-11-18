@@ -120,12 +120,13 @@ impl PageLayout {
             })
             .collect();
         if p.rules && p.tables {
-            let tables = ruled_tables(page, &ids, body, p, format, budget)?.into_iter().map(
-                |(members, table, (x0, y0, x1, y1))| {
+            let tables = ruled_tables(page, &ids, body, p, format, budget)?
+                .into_iter()
+                .filter(|(_, t, _)| !crate::tables::not_table_content(&t.rows))
+                .map(|(members, table, (x0, y0, x1, y1))| {
                     let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None };
                     (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
-                },
-            );
+                });
             elements = replace_members(elements, tables);
         }
         elements.extend(rendered);
@@ -580,11 +581,16 @@ fn assign_region(
 ) -> Option<Vec<SeqItem>> {
     if p.tables {
         let ids: Vec<usize> = region.iter().filter_map(|e| e.line).collect();
-        let tables = find_tables_within(page, &ids, p, body, budget)?.into_iter().map(|(members, grid)| {
+        let bbox = |members: &[usize]| {
             let y0 = members.iter().map(|&i| page.lines[i].y0).fold(f64::INFINITY, pmin);
             let x0 = members.iter().map(|&i| page.lines[i].x0).fold(f64::INFINITY, pmin);
             let x1 = members.iter().map(|&i| page.lines[i].x1).fold(f64::NEG_INFINITY, pmax);
             let y1 = members.iter().map(|&i| page.lines[i].y1).fold(f64::NEG_INFINITY, pmax);
+            (x0, y0, x1, y1)
+        };
+        let found = find_tables_within(page, &ids, p, body, budget)?;
+        let tables = found.into_iter().map(|(members, grid)| {
+            let (x0, y0, x1, y1) = bbox(&members);
             let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, y1, header: None };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.

@@ -355,6 +355,9 @@ pub struct Report {
     pub page_numbers: Option<Vec<u32>>,
 }
 
+/// The most uncertain math regions a report lists for a document.
+pub const MAX_MATH_REGIONS: usize = 1000;
+
 /// The most image entries a report keeps for a document (the producer's own document cap).
 pub const MAX_DOC_IMAGES: usize = 100_000;
 
@@ -407,6 +410,34 @@ impl Report {
         s
     }
 
+    /// `mathUncertainRegions`: per uncertain formula (or page not read), its page, box and
+    /// reason, so that a caller can crop just those regions for a vision model; at most
+    /// [`MAX_MATH_REGIONS`] for the document, the rest counted in `mathUncertainRegionsDropped`.
+    fn math_regions_json(&self) -> String {
+        let mut items = Vec::new();
+        let mut dropped = 0usize;
+        for (i, m) in self.math.iter().enumerate() {
+            dropped += m.regions_dropped;
+            for r in &m.uncertain_regions {
+                if items.len() >= MAX_MATH_REGIONS {
+                    dropped += 1;
+                    continue;
+                }
+                let (x0, y0, x1, y1) = r.bbox;
+                items.push(format!(
+                    "{{\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"reason\":\"{}\"}}",
+                    i + 1,
+                    coord(x0),
+                    coord(y0),
+                    coord(x1),
+                    coord(y1),
+                    r.reason
+                ));
+            }
+        }
+        format!(",\"mathUncertainRegions\":[{}],\"mathUncertainRegionsDropped\":{dropped}", items.join(","))
+    }
+
     /// One line of JSON.
     pub fn to_json(&self) -> String {
         let r = &self.parse;
@@ -449,7 +480,7 @@ impl Report {
                 r.glyphs_skipped,
                 r.glyphs_truncated_pages.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join(","),
                 pages(|m| m.uncertain > 0 || m.partial > 0 || m.ocr_layer || m.unreadable)
-            )
+            ) + &self.math_regions_json()
         };
         let watermark = if self.watermark_words > 0 {
             format!(",\"watermark_words\":{}", self.watermark_words)
@@ -1022,7 +1053,7 @@ impl<'p> Converter<'p> {
             }
         }
         if self.o.math {
-            let (lines, stats) = math::rewrite_page(&page, &math::MathOptions::default());
+            let (lines, stats) = math::rewrite_page_with(&page, &math::MathOptions::default(), Some(self.p));
             page.lines = lines;
             if emitted {
                 let pi = local - self.win.skip;

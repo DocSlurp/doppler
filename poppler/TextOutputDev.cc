@@ -6421,6 +6421,9 @@ void TextOutputDev::incCharCount(int nChars)
 
 void TextOutputDev::beginActualText(GfxState *state, const std::string &t)
 {
+    if (facts) {
+        facts->onActualText(t);
+    }
     actualText->begin(state, t);
 }
 

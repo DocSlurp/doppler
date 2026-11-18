@@ -1,0 +1,19 @@
+\documentclass{article}
+\usepackage{amsmath,booktabs}
+\pagestyle{empty}
+\begin{document}
+Relative errors of the three solvers.
+
+\begin{table}[h]\centering
+\begin{tabular}{lccr}
+\toprule
+Solver & Error & Bound & Steps \\
+\midrule
+Euler & $\left|\frac{3}{4}\right|$ & $\left|\frac{1}{2}\right|$ & 120 \\[4pt]
+Heun & $\left|\frac{1}{4}\right|$ & $\left|\frac{1}{8}\right|$ & 60 \\[4pt]
+RK4 & $\left|\frac{1}{9}\right|$ & $\left|\frac{1}{9}\right|$ & 30 \\
+\bottomrule
+\end{tabular}
+\end{table}
+More text here.
+\end{document}

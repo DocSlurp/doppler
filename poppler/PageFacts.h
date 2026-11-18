@@ -128,14 +128,17 @@ public:
         Annots = 1u << 5,
         Ocg = 1u << 6,
         Structure = 1u << 7,
-        AllFamilies = (1u << 8) - 1
+        // math and table encodings: the packed mathBits, tableBits and encodingCounts words on
+        // every page, and (with the other families) their readable fields; see the README
+        MathTables = 1u << 8,
+        AllFamilies = (1u << 9) - 1
     };
     static constexpr const char *schemaName = "doppler-page-facts/1";
 
     // Parses "basic" or "full" into families (0 or AllFamilies).
     static bool parseLevel(const char *text, unsigned *families);
     // Parses a comma-separated list of family names (fonts,oddtext,images-detail,vectors,forms,
-    // annots,ocg,structure) into a mask; false for an unknown name.
+    // annots,ocg,structure,mathtables) into a mask; false for an unknown name.
     static bool parseInclude(const char *text, unsigned *families);
 
     explicit PageFacts(unsigned families);
@@ -179,11 +182,13 @@ public:
     void onUnmappedGlyph(const GfxState *state, const TextFontInfo *font, double fontSize);
     void onWord(const TextWord *word);
     void onPath(const GfxState *state, bool filled);
+    // a marked-content span with /ActualText begins (its string is only tested, never kept)
+    void onActualText(const std::string &text);
     void beginAnnot(Annot *annot);
     void endAnnot(Annot *annot);
     void endPage(const TextPage &text);
-    bool wantsRules() const { return wants(Vectors); }
-    bool wantsGraphics() const { return wants(Vectors); }
+    bool wantsRules() const { return wants(Vectors | MathTables); }
+    bool wantsGraphics() const { return wants(Vectors | MathTables); }
     bool wantsPaths() const { return wants(Vectors); }
     bool wantsAnnots() const { return wants(Annots | Forms); }
 
@@ -193,6 +198,13 @@ private:
         const GfxFont *font;
         bool type3, embedded, cid, toUnicode, symbolic, ocr, math, vertical;
     };
+    struct MathFont
+    {
+        uint8_t cls; // fonts.mathClasses (PageFacts.cc MathClass)
+        bool fixedWidth; // the font descriptor's FixedPitch flag (code listings)
+        bool extension; // a math extension font by name (CMEX, Symbol...): its bracket pieces map to U+F8E5-F8FE
+        bool type3; // a Type 3 font: its glyphs with no usable Unicode count as type3Bitmap
+    };
     struct AnnotDraw
     {
         Annot *annot;
@@ -200,6 +212,7 @@ private:
         uint64_t glyphs;
     };
     const FontSeen *fontOf(const TextFontInfo *info);
+    MathFont mathFontOf(const TextFontInfo *info); // mathtables' view of a font, never added to the fonts list
     uint64_t paintMarks() const;
     std::string serializePage(int pageNum, double ms) const;
 

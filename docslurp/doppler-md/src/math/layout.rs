@@ -192,7 +192,13 @@ pub fn merge_pieces(atoms: Vec<Atom>) -> Vec<Atom> {
             group.iter().map(|p| p.base).fold(f64::NEG_INFINITY, f64::max),
         );
         a.base = (top + bottom) / 2.0;
-        a.span = Some((top - a.size, bottom + 0.5 * a.size));
+        // an extension-font piece (TeX CMEX) hangs from its baseline: the bottom piece reaches
+        // about two sizes below its baseline, and the rows it encloses go down that far
+        a.span = Some(if a.tex_ext {
+            (top - 0.4 * a.size, bottom + 2.0 * a.size)
+        } else {
+            (top - a.size, bottom + 0.5 * a.size)
+        });
         a.sym.class = match a.sym.text.as_str() {
             "(" | "[" | "{" | "⌈" | "⌊" | "⟨" => Class::Open,
             ")" | "]" | "}" | "⌉" | "⌋" | "⟩" => Class::Close,
@@ -380,7 +386,54 @@ pub fn parse(mut atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx) -> Item {
         mark_big(&mut atoms);
     }
     let atoms = merge_pieces(atoms);
-    parse_row(atoms, bars, ctx, 0)
+    let tree = parse_row(atoms, bars, ctx, 0);
+    // two numbers set apart in one row of the result with nothing between them (`0.02  0.18`:
+    // matrix entries that no delimiter or column claimed) would be written fused (`0.020.18`):
+    // too doubtful to write
+    let mut budget = 100_000usize;
+    if fused_numbers(&tree, &mut budget) {
+        ctx.doubt += 0.5;
+    }
+    tree
+}
+
+/// Whether a row of the tree (a group, or a matrix cell) holds two digit leaves side by side
+/// more than half their size apart. Visits at most `budget` items; a tree too large to check
+/// counts as fused (doubtful), never as checked.
+fn fused_numbers(it: &Item, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return true;
+    }
+    *budget -= 1;
+    let digit = |it: &Item, last: bool| match &it.node {
+        Node::Leaf(a) => {
+            let c = if last { a.sym.text.chars().last() } else { a.sym.text.chars().next() };
+            c.is_some_and(|c| c.is_ascii_digit())
+        }
+        _ => false,
+    };
+    match &it.node {
+        Node::Leaf(_) => false,
+        Node::Group(v) | Node::Stack(v) => {
+            v.windows(2).any(|w| {
+                digit(&w[0], true) && digit(&w[1], false) && w[1].x0 - w[0].x1 > 0.5 * w[0].size.max(w[1].size)
+            }) || v.iter().any(|i| fused_numbers(i, budget))
+        }
+        Node::Frac(a, b) => fused_numbers(a, budget) || fused_numbers(b, budget),
+        Node::Sqrt(a, b) => fused_numbers(a, budget) || b.as_ref().is_some_and(|b| fused_numbers(b, budget)),
+        Node::Over(a) | Node::Under(a) | Node::Accent(_, a) => fused_numbers(a, budget),
+        Node::Scripts { base, sub, sup } => {
+            fused_numbers(base, budget)
+                || sub.as_ref().is_some_and(|x| fused_numbers(x, budget))
+                || sup.as_ref().is_some_and(|x| fused_numbers(x, budget))
+        }
+        Node::Limits { base, under, over } => {
+            fused_numbers(base, budget)
+                || under.as_ref().is_some_and(|x| fused_numbers(x, budget))
+                || over.as_ref().is_some_and(|x| fused_numbers(x, budget))
+        }
+        Node::Matrix { rows, .. } => rows.iter().flatten().any(|i| fused_numbers(i, budget)),
+    }
 }
 
 fn parse_row(atoms: Vec<Atom>, bars: Vec<Bar>, ctx: &mut Ctx, depth: usize) -> Item {

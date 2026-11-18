@@ -358,6 +358,200 @@ pub fn gutter_columns(rows: &[Row], p: &Params) -> Vec<(f64, f64)> {
     }
 }
 
+/// A header cell of several words wider than its column (`Temp (C)` over `18.4`) leaves a
+/// word space that no row crosses, and the gutters split it into two columns that only the
+/// header fills. A column whose only text is in the first row, a word space or less from the
+/// header text of the column beside it, is that header cell's other half: join them.
+fn join_split_header_words(t: &mut Table, size: f64, p: &Params) {
+    // only a rectangular grid with one interval per column
+    if t.rows.len() < 3 || t.rows.iter().any(|r| r.len() != t.cols.len()) {
+        return;
+    }
+    // a few joins per table (each moves the cells after it)
+    let (mut k, mut joins) = (0, 0);
+    while k + 1 < t.cols.len() && joins < 16 {
+        let only_header = |c: usize| !t.rows[0][c].is_empty() && t.rows[1..].iter().all(|r| r[c].is_empty());
+        let gap = t.cols[k + 1].0 - t.cols[k].1;
+        let both = !t.rows[0][k].is_empty() && !t.rows[0][k + 1].is_empty();
+        if both && gap < p.min_gutter * pmax(size, 1.0) && (only_header(k) || only_header(k + 1)) {
+            let right = std::mem::take(&mut t.rows[0][k + 1]);
+            t.rows[0][k] = format!("{} {}", t.rows[0][k], right);
+            for r in t.rows[1..].iter_mut() {
+                if r[k].is_empty() {
+                    r[k] = std::mem::take(&mut r[k + 1]);
+                }
+                r.remove(k + 1);
+            }
+            t.rows[0].remove(k + 1);
+            t.cols[k].1 = t.cols[k + 1].1;
+            t.cols.remove(k + 1);
+            joins += 1;
+            continue;
+        }
+        k += 1;
+    }
+}
+
+/// A header cell of several words spanning two columns (`Harvest (t)` over `2025 | 2026`)
+/// is cut by the column gutter under it: its words land in both columns. In the first two
+/// rows, the words of one cell that fall in several columns go back together, in the first.
+fn join_spanning_header_cells(t: &mut Table, run: &[Row]) {
+    if t.cols.len() < 2 || t.rows.len() < 3 || t.rows.iter().any(|r| r.len() != t.cols.len()) {
+        return;
+    }
+    // columns are ordered and disjoint: the first whose end (plus slack) reaches x
+    let cols = t.cols.clone();
+    let column = |x: f64| {
+        let k = cols.partition_point(|&(_, b)| b + 1.0 < x);
+        cols.get(k).filter(|&&(a, b)| a - 1.0 <= x && x <= b + 1.0).map(|_| k)
+    };
+    for (ri, r) in run.iter().take(2).enumerate() {
+        if ri >= t.rows.len() || r.cells.len() > t.cols.len() {
+            break;
+        }
+        for c in &r.cells {
+            let (Some(first), Some(last)) = (c.words.first(), c.words.last()) else { continue };
+            let (Some(j0), Some(j1)) = (column((first.x0 + first.x1) / 2.0), column((last.x0 + last.x1) / 2.0)) else {
+                continue;
+            };
+            if j1 <= j0 || j1 - j0 > 3 {
+                continue;
+            }
+            let row = &mut t.rows[ri];
+            // only when those columns hold nothing but this cell's words
+            // the grid row must be this visual row (rows merged above it shift the mapping):
+            // the cell's first word starts column j0's text and its last word column j1's
+            if !strip(&row[j1]).starts_with(strip(&last.text)) || !strip(&row[j0]).contains(strip(&first.text)) {
+                continue;
+            }
+            let text: Vec<String> = (j0..=j1).map(|j| std::mem::take(&mut row[j])).filter(|x| !x.is_empty()).collect();
+            row[j0] = text.join(" ");
+        }
+    }
+}
+
+/// The columns of a table whose header has a cell spanning several columns (`Headcount` over
+/// `2026 | 2027`): that cell crosses the gutter between the columns it spans, so the gutters of
+/// all rows join them. When the rows below the first one or two multi-cell rows (at least
+/// three) have gutters that refine the table's (every gutter of the table is still one of
+/// theirs) and each header word crossing a new gutter reaches into the columns on both sides
+/// of it, the finer columns are kept, widened to the header's extent. The spanning cell then
+/// sits in the first column it covers, with the others empty, as a colspan is written.
+fn under_spanning_header(run: &[Row], cols: Vec<(f64, f64)>, p: &Params) -> Vec<(f64, f64)> {
+    let multi: Vec<usize> = run.iter().enumerate().filter(|(_, r)| r.multi).map(|(i, _)| i).collect();
+    if multi.len() < 4 || cols.len() < 2 {
+        return cols;
+    }
+    let gaps = |c: &[(f64, f64)]| c.windows(2).map(|w| (w[0].1, w[1].0)).collect::<Vec<_>>();
+    let old = gaps(&cols);
+    for skip in 1..=2usize {
+        let body = &run[multi[skip - 1] + 1..];
+        if body.iter().filter(|r| r.multi).count() < 3 {
+            break;
+        }
+        let finer = gutter_columns(body, p);
+        // (a header spans a few columns: wide grids keep their columns, which also bounds the
+        // per-gutter header checks below)
+        if finer.len() <= cols.len() || finer.len() > 256 {
+            continue;
+        }
+        // per finer column, the body rows with a word in it (once, by binary search)
+        let body_rows: Vec<&Row> = body.iter().filter(|r| r.multi).collect();
+        let mut fill = vec![0usize; finer.len()];
+        let mut seen = vec![usize::MAX; finer.len()];
+        for (ri, r) in body_rows.iter().enumerate() {
+            for w in r.all_words() {
+                let from = finer.partition_point(|c| c.1 <= w.x0);
+                for k in from..finer.len() {
+                    if finer[k].0 >= w.x1 {
+                        break;
+                    }
+                    if seen[k] != ri {
+                        seen[k] = ri;
+                        fill[k] += 1;
+                    }
+                }
+            }
+        }
+        let new = gaps(&finer);
+        let meets = |a: (f64, f64), b: (f64, f64)| a.0 < b.1 + 1.0 && b.0 < a.1 + 1.0;
+        if !old.iter().all(|&g| new.iter().any(|&h| meets(g, h))) {
+            continue;
+        }
+        let header = &run[..multi[skip - 1] + 1];
+        let size = pmax(median(body.iter().filter(|r| r.multi).map(|r| r.size).collect()), 1.0);
+        let words: Vec<&Word> = header.iter().flat_map(|r| r.all_words()).collect();
+        let mut ok = true;
+        for (k, &h) in new.iter().enumerate() {
+            if old.iter().any(|&g| meets(g, h)) {
+                continue;
+            }
+            // a new gutter is a full one (word-space gutters accepted for their aligned edges,
+            // such as `=` before a number, are not column breaks a header can span), and the
+            // header words crossing it span the columns on both sides of it
+            if h.1 - h.0 < p.min_gutter * size {
+                ok = false;
+                break;
+            }
+            let (left, right) = (finer[k], finer[k + 1]);
+            // both columns it separates are filled in most body rows (a word set apart in one
+            // row is not a column under a spanning header)
+            let filled = |k: usize| fill[k] * 2 >= body_rows.len();
+            if !filled(k) || !filled(k + 1) {
+                ok = false;
+                break;
+            }
+            // each header cell crossing it reaches past the middle of both columns (a cell
+            // spanning them, not a long first-row cell running into the next column)
+            let mid = |(a, b): (f64, f64)| (a + b) / 2.0;
+            let mut crossed = false;
+            for c in header.iter().flat_map(|r| r.cells.iter()).filter(|c| c.x0 < h.1 && c.x1 > h.0) {
+                crossed = true;
+                if !(c.x0 < mid(left) && c.x1 > mid(right)) {
+                    ok = false;
+                }
+            }
+            if !crossed {
+                ok = false;
+            }
+            // a range cut in two ("16 -" | "19"): most of the left column's body cells end with
+            // a dash or "to", so the gutter is inside one value
+            let (mut ends, mut cells) = (0usize, 0usize);
+            for r in &body_rows {
+                if let Some(w) = r.all_words().filter(|w| w.x1 > left.0 && w.x0 < left.1).last() {
+                    cells += 1;
+                    let t = strip(&w.text);
+                    ends += (t.ends_with(['-', '–', '—', '~']) || t == "to") as usize;
+                }
+            }
+            if cells > 0 && ends * 2 >= cells {
+                ok = false;
+            }
+            if !ok {
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let mut out = finer;
+        // a spanning cell goes to the first column it covers: that column reaches across the
+        // new gutter (its words' midpoints fall there)
+        for (k, &h) in new.iter().enumerate() {
+            if !old.iter().any(|&g| meets(g, h)) {
+                out[k].1 = pmax(out[k].1, out[k + 1].0 - 1.5);
+            }
+        }
+        let x0 = words.iter().map(|w| w.x0).fold(out[0].0, pmin);
+        let x1 = words.iter().map(|w| w.x1).fold(out[out.len() - 1].1, pmax);
+        out[0].0 = x0;
+        let last = out.len() - 1;
+        out[last].1 = x1;
+        return out;
+    }
+    cols
+}
+
 /// Join two columns across a narrow gutter (under `narrow` slots, accepted because the rows'
 /// word edges line up on it) that the wrapped lines of more than `allowed` rows (and of two rows
 /// or more: one wrapped header line is not evidence) cross, or that
@@ -548,7 +742,9 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
         if let (Some(last), Some(pr)) = (grid.last_mut(), prev) {
             let close = pitch.is_some_and(|pt| pt != 0.0 && r.base - pr.last < p.wrap_pitch * pt);
             let fewer = filled < last.iter().filter(|x| !x.is_empty()).count();
-            if (close && fewer) || (filled == 1 && texts[0].is_empty() && !r.multi) {
+            // a number under a number starts a row (a label spanning rows leaves a cell empty)
+            let numbers = texts.iter().zip(last.iter()).any(|(t, l)| !t.is_empty() && numeric(t) && numeric(l));
+            if (close && fewer && !numbers) || (filled == 1 && texts[0].is_empty() && !r.multi) {
                 for (k, t) in texts.iter().enumerate() {
                     if !t.is_empty() {
                         last[k] = strip(&format!("{} {}", last[k], t)).to_string(); // wrapped cell continuation
@@ -615,6 +811,38 @@ fn merge_stacked_header(grid: &mut Grid, spans: &[(f64, f64, f64)], p: &Params) 
     true
 }
 
+/// Aligned content that is not a table even though its cells line up, from cell text: a
+/// bulleted list with amounts set flush right (every first-column cell a bullet), or a form
+/// whose filled cells are mostly labels ending in a colon. Math is never judged from cell text
+/// (signs, letters, brackets and math alphanumerics all occur in data tables), and nothing
+/// vetoes a matrix: without `--math` a matrix may come out as a table, never a table as prose.
+pub(crate) fn not_table_content(grid: &Grid) -> bool {
+    let cells: Vec<&str> =
+        grid.iter().flat_map(|r| r.iter().map(|c| strip(c))).filter(|c| !c.is_empty()).take(100_000).collect();
+    if cells.len() < 2 {
+        return false;
+    }
+    let keys: Vec<&str> = grid.iter().filter_map(|r| r.first()).map(|k| strip(k)).filter(|k| !k.is_empty()).collect();
+    if keys.len() >= 2 && keys.iter().all(|k| bullet(k)) {
+        return true;
+    }
+    let colons = cells.iter().filter(|c| c.ends_with(':')).count();
+    colons >= 3 && colons * 5 >= cells.len() * 4
+}
+
+/// A caption line: "Table 3", "TABLE II", "Tab. 2" or "Figure 1" (with a number) opening it.
+fn caption_line(t: &str) -> bool {
+    let mut it = strip(t).split_whitespace();
+    let (Some(a), Some(b)) = (it.next(), it.next()) else { return false };
+    let word = matches!(a.trim_end_matches('.'), "Table" | "TABLE" | "Tab" | "Figure" | "FIGURE" | "Fig");
+    // a caption puts a mark after its number ("Table 3." "Table 3:" "TABLE 3 |"); prose that
+    // mentions a table ("Table 6 presents ...") does not
+    let num = b.trim_end_matches(['.', ':', '|']);
+    word && !num.is_empty()
+        && num.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && (num.chars().any(|c| c.is_ascii_digit()) || num.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L')))
+}
+
 /// Two columns: list numbers on the left, prose on the right.
 pub fn numbered_list(grid: &Grid, p: &Params) -> bool {
     if grid.first().is_none_or(|r| r.len() != 2) {
@@ -628,7 +856,7 @@ pub fn numbered_list(grid: &Grid, p: &Params) -> bool {
 }
 
 pub fn plausible(grid: &Grid, p: &Params) -> bool {
-    if grid.len() < 2 || grid[0].len() < 2 || numbered_list(grid, p) {
+    if grid.len() < 2 || grid[0].len() < 2 || numbered_list(grid, p) || not_table_content(grid) {
         return false;
     }
     let full = grid.iter().filter(|row| row.iter().filter(|x| !x.is_empty()).count() >= 2).count();
@@ -709,9 +937,12 @@ pub fn find_tables_within(
             if !budget.spend(2 * row_words(run)) {
                 return false;
             }
-            let cols = gutter_columns(run, p);
+            let cols = under_spanning_header(run, gutter_columns(run, p), p);
             if cols.len() >= 2 {
-                let grid = build_grid(run, &cols, p);
+                let mut grid = build_grid(run, &cols, p);
+                let size = median(run.iter().filter(|r| r.multi).map(|r| r.size).collect());
+                join_split_header_words(&mut grid, size, p);
+                join_spanning_header_cells(&mut grid, run);
                 if plausible(&grid.rows, p) {
                     found.push((run.iter().flat_map(|r| r.ids.iter().copied()).collect(), grid));
                 }
@@ -723,7 +954,28 @@ pub fn find_tables_within(
     // the sparse pass reads the rows again; copy them only when it runs
     let again = p.sparse_tables.then(|| rows.clone());
     for r in rows {
-        let near = run.last().is_some_and(|l| r.base - l.last <= p.table_row_gap * pmax(pmax(r.size, l.size), 1.0));
+        let near = run.last().is_some_and(|l| {
+            let size = pmax(pmax(r.size, l.size), 1.0);
+            let gap = r.base - l.last;
+            // tall rows (stacked fractions, big delimiters in cells) are further apart: a row of
+            // short cells that line up with an earlier row of the run, cell for cell, still
+            // continues it
+            gap <= p.table_row_gap * size
+                || (r.multi
+                    && gap <= 1.5 * p.table_row_gap * size
+                    && r.cells.len() >= 3
+                    && run.iter().filter(|q| q.multi).count() >= 2
+                    && r.cells.iter().all(|c| (c.words.len() as f64) < p.table_cell_words)
+                    && run.iter().rev().take(16).any(|q| {
+                        q.multi
+                            && q.cells.len() == r.cells.len()
+                            && q.cells.iter().all(|c| (c.words.len() as f64) < p.table_cell_words)
+                            && q.cells
+                                .iter()
+                                .zip(&r.cells)
+                                .all(|(a, b)| (a.x0 - b.x0).abs() <= 0.5 * size || (a.x1 - b.x1).abs() <= 0.5 * size)
+                    }))
+        });
         if r.multi {
             if !run.is_empty() && !near && !flush(&mut run, &mut found) {
                 return None;
@@ -1322,7 +1574,8 @@ fn table_columns(
     if rows.iter().filter(|r| r.multi).count() < 2 {
         return Some(None);
     }
-    Some(Some(gutter_columns(rows, p)))
+    // horizontal rules only (booktabs): the gutters, refined under a spanning header cell
+    Some(Some(under_spanning_header(rows, gutter_columns(rows, p), p)))
 }
 
 struct Group {
@@ -1356,6 +1609,8 @@ pub fn ruled_tables(
     by_mid.sort_by(|a, b| fcmp(a.0, b.0));
     let ids_ascending = ids.windows(2).all(|w| w[0] < w[1]);
     let mut h: Vec<(f64, f64, f64)> = Vec::new();
+    // the edges of rules drawn as filled bars
+    let mut bar_ys: Vec<f64> = Vec::new();
     let mut v: Vec<VRule> = Vec::new();
     for r in &page.rules {
         let (w, hh) = (r.x1 - r.x0, r.y1 - r.y0);
@@ -1364,6 +1619,8 @@ pub fn ruled_tables(
             if w >= 0.5 * body && w < 0.95 * page.width && hh < 0.5 * page.height {
                 h.push((r.x0, r.x1, r.y0));
                 h.push((r.x0, r.x1, r.y1));
+                bar_ys.push(r.y0);
+                bar_ys.push(r.y1);
             }
         } else if luminance(&r.color) > p.rule_max_lum {
             continue;
@@ -1394,15 +1651,109 @@ pub fn ruled_tables(
     // first match unchanged without rescanning every group for every rule.
     let mut open: Vec<usize> = Vec::new();
     let gap = p.rule_row_gap * body;
+    // the lines between two rules (middles strictly between, centres inside x0..x1) are table
+    // rows: some split into cells, none is a long line of prose
+    let body_rows = |a: f64, b: f64, x0: f64, x1: f64| {
+        let lo = by_mid.partition_point(|&(m, _)| m <= a);
+        let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+        if hi - lo > 400 {
+            return false;
+        }
+        let (mut cells, mut any) = (false, false);
+        for &(_, i) in &by_mid[lo..hi] {
+            let l = &lines[i];
+            let mx = (l.x0 + l.x1) / 2.0;
+            if mx < x0 - 2.0 || mx > x1 + 2.0 {
+                continue;
+            }
+            any = true;
+            if l.words.len() >= 6 && l.x1 - l.x0 > 0.6 * (x1 - x0) {
+                return false;
+            }
+            cells |= segment_count(l, p) >= 2;
+        }
+        // separate lines per cell share baselines with others
+        any && (cells || {
+            let mut bases: Vec<f64> = by_mid[lo..hi].iter().map(|&(_, i)| lines[i].base()).collect();
+            bases.sort_by(|a, b| fcmp(*a, *b));
+            bases.windows(2).any(|w| (w[1] - w[0]).abs() <= 1.0)
+        })
+    };
+    bar_ys.sort_by(|a, b| fcmp(*a, *b));
+    let bar_edge = |y: f64| near_any(&bar_ys, y, 1.0);
+    // whether the lines between two rules are one row of cells whose first cell wraps (one
+    // baseline with several cells, the other lines starting where that row starts), and how
+    // many rows of cells they hold
+    let one_row_band = |a: f64, b: f64, x0: f64, x1: f64| {
+        let lo = by_mid.partition_point(|&(m, _)| m <= a);
+        let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+        if hi - lo > 200 {
+            return (false, usize::MAX);
+        }
+        let ids: Vec<usize> = by_mid[lo..hi]
+            .iter()
+            .map(|&(_, i)| i)
+            .filter(|&i| {
+                let mx = (lines[i].x0 + lines[i].x1) / 2.0;
+                x0 - 2.0 <= mx && mx <= x1 + 2.0
+            })
+            .collect();
+        // (base, several cells) of each line, by base: each test below is a binary search
+        let mut by_base: Vec<(f64, bool)> =
+            ids.iter().map(|&i| (lines[i].base(), segment_count(&lines[i], p) >= 2)).collect();
+        by_base.sort_by(|x, y| fcmp(x.0, y.0));
+        let near = |y: f64| {
+            let lo = by_base.partition_point(|e| e.0 < y - 1.0);
+            let hi = by_base.partition_point(|e| e.0 <= y + 1.0).max(lo);
+            &by_base[lo..hi]
+        };
+        let bases: Vec<f64> = by_base.iter().map(|e| e.0).collect();
+        let mut rows = 0;
+        let mut k = 0;
+        while k < bases.len() {
+            let mut j = k + 1;
+            while j < bases.len() && bases[j] - bases[k] <= 1.0 {
+                j += 1;
+            }
+            let multi = j - k >= 2 || near(bases[k]).iter().any(|e| e.1);
+            rows += multi as usize;
+            k = j;
+        }
+        // the other lines continue the row's first cell: they start where it starts
+        let in_row = |i: usize| segment_count(&lines[i], p) >= 2 || near(lines[i].base()).len() >= 2;
+        let first_x = ids.iter().filter(|&&i| in_row(i)).map(|&i| lines[i].x0).fold(f64::INFINITY, pmin);
+        let wraps_first = ids.iter().all(|&i| in_row(i) || (lines[i].x0 - first_x).abs() <= 2.0);
+        // the row fills its band: wrapped lines under it, and no empty space above or below
+        // (a gap between two stacked tables leaves space)
+        let top = ids.iter().map(|&i| lines[i].y0).fold(f64::INFINITY, pmin);
+        let bottom = ids.iter().map(|&i| lines[i].y1).fold(f64::NEG_INFINITY, pmax);
+        let size = ids.iter().map(|&i| lines[i].size()).fold(1.0, pmax);
+        let fills = top - a <= 0.8 * size && b - bottom <= 0.8 * size;
+        let wrapped = ids.iter().any(|&i| !in_row(i));
+        (!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows)
+    };
+    // the joined horizontal rules, kept for the booktabs test below (thin stroked rules only:
+    // a rule drawn as a filled bar gives two edges, and such groups split as they always did)
+    let hs: Vec<(f64, f64, f64)> = h.iter().copied().filter(|r| !bar_edge(r.2)).collect();
     for (x0, x1, y) in h {
         // the open groups (thousands when disjoint rules share a y)
         if !budget.scan(open.len()) {
             return None;
         }
         let mut hit = None;
+        // a horizontal-only (booktabs) table: its top, middle and bottom rules span the table
+        // and can be far apart around a tall body; a rule of the group's width takes a longer
+        // gap when the lines between are short table cells, never prose
+        let long_gap = |g: &Group, l: f64| {
+            let w = g.x1 - g.x0;
+            (x0 - g.x0).abs() <= 0.05 * w + 2.0
+                && (x1 - g.x1).abs() <= 0.05 * w + 2.0
+                && y - l <= 4.0 * gap
+                && body_rows(l, y, g.x0, g.x1)
+        };
         open.retain(|&gi| {
             let g = &groups[gi];
-            if !g.ys.last().is_some_and(|&l| y - l <= gap) {
+            if !g.ys.last().is_some_and(|&l| y - l <= gap || long_gap(g, l)) {
                 return false;
             }
             if hit.is_none() {
@@ -1449,8 +1800,32 @@ pub fn ruled_tables(
             if !budget.scan(crossing.map_or(near.len(), |k| k + 1)) {
                 return None;
             }
-            if crossing.is_some() || v.is_empty() {
+            if crossing.is_some() {
                 return Some(false);
+            }
+            if v.is_empty() {
+                // horizontal rules only: a caption line ("Table 3 ...") between two rules starts
+                // the next table
+                let lo = by_mid.partition_point(|&(m, _)| m <= a);
+                let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
+                if hi - lo > 400 || !budget.spend(hi - lo) {
+                    return Some(false);
+                }
+                // the caption stands alone across the band: no other line of the band shares its
+                // baseline (prose beside a table's cells that mentions "Table 6" is not one)
+                let inside = |i: usize| {
+                    let mx = (lines[i].x0 + lines[i].x1) / 2.0;
+                    g.x0 - 2.0 <= mx && mx <= g.x1 + 2.0
+                };
+                return Some(by_mid[lo..hi].iter().any(|&(_, i)| {
+                    inside(i)
+                        && caption_line(lines[i].text())
+                        && !by_mid[lo..hi].iter().any(|&(_, j)| {
+                            j != i
+                                && inside(j)
+                                && (lines[j].base() - lines[i].base()).abs() <= 0.5 * pmax(lines[i].size(), 1.0)
+                        })
+                }));
             }
             let mut any = false;
             // the result does not depend on the order lines are visited in
@@ -1471,10 +1846,42 @@ pub fn ruled_tables(
             }
             Some(any)
         };
+        // each band's reading, once per group (one row whose first cell wraps; its rows of
+        // cells), charged by the lines it visits
+        let bands: Vec<(bool, usize)> = if ys.len() <= 200 {
+            let lo = by_mid.partition_point(|&(m, _)| m <= ys[0]);
+            let hi = by_mid.partition_point(|&(m, _)| m < ys[ys.len() - 1]).max(lo);
+            if !budget.spend(ys.len() + 2 * (hi - lo)) {
+                return None;
+            }
+            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1)).collect()
+        } else {
+            Vec::new()
+        };
+        let multi_bands = bands.iter().filter(|b| b.1 > 1).count();
+        // a rule under every row: no band between two rules holds two rows of cells
+        // (thin stroked rules across the whole group, no vertical rule, each band one row)
+        let full_rule = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
+        let every_row_ruled = v.is_empty()
+            && ys.len() >= 4
+            && !bands.is_empty()
+            && ys.iter().all(|&y| full_rule(y))
+            && bands.iter().all(|b| b.1 == 1);
         let mut cur: Vec<f64> = ys.first().copied().into_iter().collect();
-        for w in ys.windows(2) {
+        for (k, w) in ys.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
-            if (b - a > limit && gaps.len() >= 3) || caption_band(a, b, budget)? {
+            // (a booktabs body between a middle and a bottom rule that both span the table is
+            // no jump; column underlines of an accounting table are not such rules)
+            let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
+            // (not in a group ruled row by row: when every other band holds one row at most,
+            // a tall band of several rows is the gap between two stacked tables)
+            let band = bands.get(k).copied().unwrap_or((false, usize::MAX));
+            let row_ruled = ys.len() >= 5 && !bands.is_empty() && multi_bands - (band.1 > 1) as usize == 0;
+            let booktabs_body = v.is_empty() && !row_ruled && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
+            // (nor is a band that holds one row whose cell wraps to several lines: a rule after
+            // every row, one row taller than the rest)
+            let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body && !(band.0 && every_row_ruled);
+            if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
             cur.push(b);
@@ -1530,6 +1937,8 @@ pub fn ruled_tables(
             return None;
         }
         let mut rows = visual_rows(page, &members, p);
+        // (no vertical rule inside: booktabs, whose columns come from the gutters)
+        let crossing_v = v.iter().any(|&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && yb > y0 && ya < y1);
         let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
         if cols.len() < 2 {
             continue;
@@ -1652,9 +2061,13 @@ pub fn ruled_tables(
                     for c in &r.cells {
                         for w in &c.words {
                             let mid = (w.x0 + w.x1) / 2.0;
+                            // a word across an inner rule (a header cell spanning columns) goes
+                            // to the first column holding a quarter of it, as a colspan is written
+                            let quarter = 0.25 * (w.x1 - w.x0);
                             let k = cols
                                 .iter()
-                                .position(|&(ca, cb)| ca - 1.0 <= mid && mid <= cb + 1.0)
+                                .position(|&(ca, cb)| quarter > 1.0 && pmin(w.x1, cb) - pmax(w.x0, ca) >= quarter)
+                                .or_else(|| cols.iter().position(|&(ca, cb)| ca - 1.0 <= mid && mid <= cb + 1.0))
                                 .unwrap_or(cols.len() - 1);
                             cells[k].push(w.clone());
                         }
@@ -1670,7 +2083,14 @@ pub fn ruled_tables(
             if !budget.spend(rows.len() + row_words(&rows)) {
                 return None;
             }
-            build_grid(&rows, &cols, p)
+            let mut g = build_grid(&rows, &cols, p);
+            // horizontal rules only: the gutter table's header repairs apply too
+            if !crossing_v {
+                let size = median(rows.iter().filter(|r| r.multi).map(|r| r.size).collect());
+                join_split_header_words(&mut g, size, p);
+                join_spanning_header_cells(&mut g, &rows);
+            }
+            g
         };
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
@@ -2062,5 +2482,100 @@ mod tests {
             let mid = next(800) as f64 / 8.0;
             assert_eq!(lookup.column(mid), reference(&rev, mid));
         }
+    }
+}
+
+#[cfg(test)]
+mod not_table_tests {
+    use super::not_table_content;
+
+    fn g(rows: &[&[&str]]) -> super::Grid {
+        rows.iter().map(|r| r.iter().map(|c| c.to_string()).collect()).collect()
+    }
+
+    #[test]
+    fn forms_and_bullet_lists_are_not_tables() {
+        assert!(not_table_content(&g(&[&["Name:", "Team:"], &["Destination:", ""], &["Departure:", "Return:"]])));
+        assert!(not_table_content(&g(&[
+            &["•", "Flights", "$3,240"],
+            &["•", "Hotel", "$2,180"],
+            &["•", "Passes", "$1,650"]
+        ])));
+        // math is never judged from cell text: a cut-up matrix's text alone is left to geometry
+        assert!(!not_table_content(&g(&[&["𝑎", "𝑏", "𝑐"], &["det 𝐴 = |𝑑", "𝑒", "𝑓 |"], &["𝑔", "ℎ", "𝑖"]])));
+    }
+
+    #[test]
+    fn real_tables_with_symbols_and_numbers_stay() {
+        assert!(!not_table_content(&g(&[
+            &["Region", "Q1", "Q2"],
+            &["EMEA", "1,204", "1,390"],
+            &["APAC", "880", "941"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Symbol", "Meaning", "Value"],
+            &["𝜇", "population mean", "12.5"],
+            &["𝜎", "standard deviation", "2.1"],
+            &["𝜒2", "test statistic", "3.84"],
+        ])));
+        assert!(!not_table_content(&g(&[&["x", "f(x)"], &["0", "1"], &["1", "2"], &["2", "5"]])));
+        assert!(!not_table_content(&g(&[&["Item", "Change"], &["Revenue", "+12.4%"], &["Margin", "−0.3%"]])));
+        // comparison and arithmetic signs, Greek letters and letter labels are data
+        assert!(!not_table_content(&g(&[
+            &["Sample", "Mean ± SD", "n"],
+            &["A", "12.3 ± 0.4", "5"],
+            &["B", "11.1 ± 0.6", "6"],
+            &["C", "9.8 ± 0.2", "4"],
+        ])));
+        assert!(!not_table_content(&g(&[&["Grade", "Score"], &["A", "≥ 90"], &["B", "80-89"], &["C", "< 70"]])));
+        assert!(!not_table_content(&g(&[&["Parameter", "Setting"], &["x", "= 5"], &["y", "= 10"], &["z", "= 2"]])));
+        assert!(!not_table_content(&g(&[&["Route", "Time"], &["A → B", "2 h"], &["B → C", "3 h"], &["σ", "0.4"]])));
+        assert!(!not_table_content(&g(&[
+            &["Group", "Count"],
+            &["Treated (n = 5)", "12 (40%)"],
+            &["Control [2]", "9 (31%)"]
+        ])));
+        // labels, footnote marks, pairs, half-open bins, option flags, math italic
+        assert!(!not_table_content(&g(&[
+            &["Item", "Q1"],
+            &["a) Revenue", "12"],
+            &["b) Costs", "9"],
+            &["c) Margin", "3"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["State", "Sites"],
+            &["Bayern 1)", "12"],
+            &["Hessen 2)", "9"],
+            &["Berlin", "4"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Pair", "Rate"],
+            &["EUR|USD", "1.08"],
+            &["GBP|USD", "1.27"],
+            &["USD|JPY", "151"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Bin", "Count"],
+            &["[0, 10)", "4"],
+            &["[10, 20)", "7"],
+            &["[20, 30)", "2"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Flag", "Meaning"],
+            &["-q | --quiet", "less output"],
+            &["-v | --verbose", "more"]
+        ])));
+        assert!(!not_table_content(&g(&[
+            &["Step", "Owner"],
+            &["1) Draft", "Ana"],
+            &["2) Review", "Ben"],
+            &["3) Ship", "Cy"]
+        ])));
+        assert!(!not_table_content(&g(&[&["𝑥", "𝑓(𝑥)"], &["0", "1"], &["1", "2"], &["2", "5"]])));
+        assert!(!not_table_content(&g(&[
+            &["Run", "𝑛", "𝑝", "𝑡"],
+            &["A", "12", "0.4", "3.1"],
+            &["B", "9", "0.2", "2.7"]
+        ])));
     }
 }
