@@ -146,7 +146,7 @@ struct JoinPlan {
     widen_anchor: bool,
 }
 
-fn compatible(a: &PlacedTable, b: &PlacedTable, budget: &mut Budget) -> Option<JoinPlan> {
+fn compatible(a: &PlacedTable, b: &PlacedTable, edge_cue: bool, budget: &mut Budget) -> Option<JoinPlan> {
     if a.ruled != b.ruled
         || a.table.spans.is_some()
         || b.table.spans.is_some()
@@ -194,6 +194,11 @@ fn compatible(a: &PlacedTable, b: &PlacedTable, budget: &mut Budget) -> Option<J
             has_header && b.table.rows.first().is_some_and(|r| headers_match(r))
         }
     };
+    // A separate header above was either matched or explicitly marked as a
+    // continuation. Without one, aligned columns alone can belong to unrelated tables.
+    if b.header.is_none() && !repeated && !edge_cue {
+        return None;
+    }
     let skip = usize::from(repeated);
     let left = &a.table.rows[usize::from(a.header.is_none())..];
     let right = &b.table.rows[skip..];
@@ -222,11 +227,12 @@ impl TableJoiner {
         let continued = self.pages.last().zip(head).and_then(|(prev, at)| {
             let Block::Table(a) = &self.pages[0].layout.blocks[self.tail] else { unreachable!() };
             let Block::Table(b) = &page.layout.blocks[at] else { unreachable!() };
+            let edge_cue = at != 0 || prev.layout.blocks.last().is_some_and(continuation_block);
             (self.pages.len() < self.max_pages
                 && prev.number.checked_add(1) == Some(page.number)
                 && (prev.width - page.width).abs() <= 0.5
                 && (prev.height - page.height).abs() <= 0.5)
-                .then(|| compatible(a, b, budget))
+                .then(|| compatible(a, b, edge_cue, budget))
                 .flatten()
                 .map(|skip| (at, skip))
         });

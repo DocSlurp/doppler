@@ -246,6 +246,19 @@ fn joined_table_keeps_page_slots_and_reports_span() {
 }
 
 #[test]
+fn matching_columns_do_not_join_independent_tables_without_a_continuation_cue() {
+    let source = page(&table(560.0, Some(HEADER), 1)) + &page(&table(60.0, Some(["Part", "Units", "Cost"]), 9));
+    let (pages, report) = join(&source, None);
+    assert_eq!(pages, convert(&source, false));
+    assert!(report.joined_tables.is_empty());
+
+    let source = page(&table(560.0, Some(HEADER), 1)) + &page(&table(60.0, Some(HEADER), 9));
+    let (pages, report) = join(&source, None);
+    assert!(pages[1].is_empty(), "{pages:#?}");
+    assert_eq!(report.joined_tables[0].rows, 17);
+}
+
+#[test]
 fn page_table_join_respects_body_barriers_and_bound() {
     let first = page(&table(560.0, Some(HEADER), 1));
     let second = page(&table(60.0, Some(HEADER), 9));
@@ -288,8 +301,10 @@ fn long_ruled_table(first: usize, rows: usize, top: f64) -> String {
 #[test]
 fn ruled_chain_groups_pages_and_flushes_at_the_window_limit() {
     let first = page(&long_ruled_table(1, 8, 590.0));
-    let middle = page(&long_ruled_table(9, 28, 60.0));
-    let last = page(&long_ruled_table(37, 8, 60.0));
+    // Furniture filtering can remove the repeated row at the top of pages 2
+    // and 3. Distinct continuation notes supply evidence even in that mode.
+    let middle = page(&(text(30.0, "(continued)") + &long_ruled_table(9, 28, 60.0)));
+    let last = page(&(text(30.0, "Table 1 (cont.)") + &long_ruled_table(37, 8, 60.0)));
     let source = first + &middle + &last;
     let (pages, report) = join(&source, None);
     assert_eq!(pages.len(), 3);

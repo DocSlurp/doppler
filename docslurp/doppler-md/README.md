@@ -152,8 +152,8 @@ byte-identical.
   tables are joined at the first part, with a repeated header removed and every form-feed
   page slot retained. The report's `joinedTables` lists each `{startPage, endPage, rows}`
   (including the header). A join ends at the window limit (16 pages without a window) or
-  when the table shapes, page geometry, or column types disagree. Body text between parts
-  prevents a join. HTML tables with explicit spans stay separate. The option is independent of
+  when the table shapes, page geometry, or column types disagree. A join also needs
+  a matching header or an explicit continuation note. Body text between parts prevents a join. HTML tables with explicit spans stay separate. The option is independent of
   `--page-markers` and cannot be combined with `--markers` or `--images-dir`. Convert
   complete documents to join across all their page boundaries.
 - **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
