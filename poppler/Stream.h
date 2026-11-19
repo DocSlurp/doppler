@@ -818,10 +818,12 @@ public:
 // EmbedStream decreases it's length every time a character is read
 //------------------------------------------------------------------------
 
+struct ContentReadBudget;
+
 class POPPLER_PRIVATE_EXPORT EmbedStream : public BaseStream
 {
 public:
-    EmbedStream(Stream *strA, Object &&dictA, bool limitedA, Goffset lengthA, bool reusableA = false);
+    EmbedStream(Stream *strA, Object &&dictA, bool limitedA, Goffset lengthA, bool reusableA = false, ContentReadBudget *budgetA = nullptr);
     ~EmbedStream() override;
     std::unique_ptr<BaseStream> copy() override;
     std::unique_ptr<Stream> makeSubStream(Goffset start, bool limitedA, Goffset lengthA, Object &&dictA) override;
@@ -834,7 +836,7 @@ public:
     Goffset getStart() override;
     void moveStart(Goffset delta) override;
 
-    int getUnfilteredChar() override { return str->getUnfilteredChar(); }
+    int getUnfilteredChar() override;
     [[nodiscard]] bool unfilteredRewind() override { return str->unfilteredRewind(); }
 
 private:
@@ -850,6 +852,7 @@ private:
     long bufLen;
     long bufPos;
     const Goffset initialLength;
+    ContentReadBudget *const budget;
 };
 
 //------------------------------------------------------------------------

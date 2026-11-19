@@ -358,6 +358,7 @@ int main(int argc, char *argv[])
 
     // the same device and page geometry as pdftotext -bbox-layout, without laying out lines
     TextOutputDev textOut(nullptr, false, 0, false, false, false);
+    textOut.enableContentReadBudget();
     if (!textOut.isOk()) {
         return fail(exitOpenError, "cannot set up text extraction");
     }
@@ -376,6 +377,10 @@ int main(int argc, char *argv[])
         doc->displayPage(&textOut, page, 72, 72, 0, true, false, false);
         if (!writeOut(facts.finishPage(page, millisecondsSince(pageStart)))) {
             return fail(exitOpenError, "cannot write output");
+        }
+        if (textOut.getContentTruncated()) {
+            // Leave the facts stream without a completion record.
+            return fail(exitLimit, "decoded content byte budget exhausted");
         }
     }
     if (!writeOut(facts.runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), stop))) {

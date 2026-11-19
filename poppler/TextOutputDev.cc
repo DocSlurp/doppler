@@ -6095,6 +6095,7 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
 
 void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
 {
+    contentReadBudget.startPage();
     text->startPage(state);
     gsDepth = 0;
     oddClipDepth = -1;
@@ -6156,7 +6157,8 @@ void TextOutputDev::endPage()
         }
     }
     text->endPage();
-    if (facts) {
+    // finishPage reports a page failure without derived facts if the device did not finish it.
+    if (facts && !getContentTruncated()) {
         facts->endPage(*text);
     }
     if (wordsOnly) {

@@ -27,6 +27,7 @@ pub(crate) struct PlacedTable {
     /// the bottom edge (a gutter table's last line, a ruled table's last rule)
     pub y1: f64,
     pub header: Option<Vec<String>>,
+    pub ruled: bool,
 }
 
 pub(crate) enum FlowItem {
@@ -64,7 +65,7 @@ type Placement = Elem<Option<Placed>>;
 
 /// A page whose content has its final ownership and reading order.
 pub(crate) struct PageLayout {
-    blocks: Vec<Block>,
+    pub(crate) blocks: Vec<Block>,
 }
 
 impl PageLayout {
@@ -124,7 +125,7 @@ impl PageLayout {
                 .into_iter()
                 .filter(|(_, t, _)| !crate::tables::not_table_content(&t.rows))
                 .map(|(members, table, (x0, y0, x1, y1))| {
-                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None };
+                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None, ruled: true };
                     (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
                 });
             elements = replace_members(elements, tables);
@@ -591,7 +592,7 @@ fn assign_region(
         let found = find_tables_within(page, &ids, p, body, budget)?;
         let tables = found.into_iter().map(|(members, grid)| {
             let (x0, y0, x1, y1) = bbox(&members);
-            let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, y1, header: None };
+            let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, y1, header: None, ruled: false };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.
             (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 })
@@ -605,7 +606,9 @@ fn assign_region(
         .chain(lines)
         .map(|e| {
             let item = match e.table {
-                Some(Placed::Table(t)) => Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1, y1: t.y1 },
+                Some(Placed::Table(t)) => {
+                    Seq::Table { table: t.table.clone(), x0: t.x0, x1: t.x1, y1: t.y1, ruled: t.ruled }
+                }
                 Some(Placed::Rendered(r)) => Seq::Rendered(r),
                 None => Seq::Line(page.lines[e.line.expect("line placement")].clone()),
             };

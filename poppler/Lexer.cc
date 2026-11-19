@@ -81,7 +81,7 @@ Lexer::Lexer(XRef *xrefA, std::unique_ptr<Stream> &&str)
     (void)curStr.getStream()->rewind();
 }
 
-Lexer::Lexer(XRef *xrefA, Object *obj)
+Lexer::Lexer(XRef *xrefA, Object *obj, ContentReadBudget *budgetA) : budget(budgetA)
 {
     lookCharLastValueCached = LOOK_VALUE_NOT_CACHED;
     xref = xrefA;
@@ -132,8 +132,8 @@ int Lexer::getCharFromNextStream()
         if (!curStr.isStream()) {
             return EOF;
         }
-        const int c = curStr.getStream()->getChar();
-        if (c != EOF) {
+        const int c = readCurrentChar();
+        if (c != EOF || (budget && budget->truncated)) {
             return c;
         }
     } while (true);

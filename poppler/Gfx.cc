@@ -622,6 +622,11 @@ void Gfx::display(Object *obj, DisplayType displayType)
         return;
     }
 
+    ContentReadBudget *budget = out->getContentReadBudget();
+    if (budget && budget->truncated) {
+        return;
+    }
+
     if (obj->isArray()) {
         for (int i = 0; i < obj->arrayGetLength(); ++i) {
             Object obj2 = obj->arrayGet(i);
@@ -634,8 +639,15 @@ void Gfx::display(Object *obj, DisplayType displayType)
         error(errSyntaxError, -1, "Weird page contents");
         return;
     }
-    parser = new Parser(xref, obj, false);
+    parser = new Parser(xref, obj, false, budget);
     go(displayType);
+    if (budget && budget->truncated && !budget->warned) {
+        budget->warned = true;
+        if (ScanCopyAudit *audit = out->getScanCopyAudit()) {
+            audit->deny(ScanCopyAudit::Reason::Unevaluated);
+        }
+        error(errSyntaxWarning, -1, "Decoded content byte budget exhausted");
+    }
     delete parser;
     parser = nullptr;
 }
@@ -656,8 +668,9 @@ void Gfx::go(DisplayType displayType)
     updateLevel = 1; // make sure even empty pages trigger a call to dump()
     lastAbortCheck = 0;
     numArgs = 0;
+    const ContentReadBudget *budget = out->getContentReadBudget();
     obj = parser->getObj();
-    while (!obj.isEOF()) {
+    while (!obj.isEOF() && !(budget && budget->truncated)) {
         commandAborted = false;
 
         // got a command - execute it
@@ -708,6 +721,11 @@ void Gfx::go(DisplayType displayType)
                 break;
             }
 
+            // Nested content may have spent the same page's allowance.
+            if (budget && budget->truncated) {
+                break;
+            }
+
             // check for an abort
             if (abortCheckCbk) {
                 if (updateLevel - lastAbortCheck > 10) {
@@ -737,7 +755,7 @@ void Gfx::go(DisplayType displayType)
     }
 
     // args at end with no command
-    if (numArgs > 0) {
+    if (numArgs > 0 && !(budget && budget->truncated)) {
         error(errSyntaxError, getPos(), "Leftover args in content stream");
         if (printCommands) {
             printf("%d leftovers:", numArgs);
@@ -5626,7 +5644,7 @@ std::unique_ptr<Stream> Gfx::buildImageStream()
 
     // make stream
     if (parser->getStream()) {
-        auto str = std::make_unique<EmbedStream>(parser->getStream(), std::move(dict), false, 0, true);
+        auto str = std::make_unique<EmbedStream>(parser->getStream(), std::move(dict), false, 0, true, out->getContentReadBudget());
         auto *filterDict = str->getDict();
         return Stream::addFilters(std::move(str), filterDict);
     }

@@ -42,6 +42,7 @@
 #define TEXTOUTPUTDEV_H
 
 #include "poppler_private_export.h"
+#include "ContentReadBudget.h"
 #include "GfxFont.h"
 #include "GfxState.h"
 #include "OutputDev.h"
@@ -1087,6 +1088,10 @@ public:
     void imageMaskGeometry(GfxState *state) override;
     const std::vector<TextRule> &getRules() const;
     bool getRulesTruncated() const;
+    bool getContentTruncated() const { return contentReadBudget.truncated; }
+    bool contentWasTruncated() const { return contentReadBudget.hadTruncated; }
+    void enableContentReadBudget() { contentReadBudgetEnabled = true; }
+    ContentReadBudget *getContentReadBudget() override { return contentReadBudgetEnabled ? &contentReadBudget : nullptr; }
 
     // Record where each visible image and image mask lands on the page (TextImage). Only the
     // image dictionary is read; the image data is never decoded.
@@ -1173,6 +1178,8 @@ private:
     // transparency groups open around the current content
     int transparencyGroupDepth = 0;
     ScanCopyAudit scanAudit;
+    ContentReadBudget contentReadBudget;
+    bool contentReadBudgetEnabled = false;
     void noteClip(GfxState *state, bool rectangular);
     void overpaintPath(GfxState *state, bool stroke);
     void overpaintGlyph(GfxState *state, double x, double y, double dx, double dy);

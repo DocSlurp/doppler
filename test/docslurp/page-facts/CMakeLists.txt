@@ -37,3 +37,8 @@ set_tests_properties(docslurp-page-facts-walker-parity PROPERTIES SKIP_RETURN_CO
 add_executable(docslurp-info-edit-probe info_edit_probe.cc)
 target_link_libraries(docslurp-info-edit-probe poppler)
 docslurp_add_test(page-facts-xref-chain test_xref_chain.py --info-probe $<TARGET_FILE:docslurp-info-edit-probe>)
+
+add_executable(docslurp-content-budget-test content_budget_test.cc)
+target_link_libraries(docslurp-content-budget-test poppler)
+add_test(NAME docslurp-content-budget COMMAND docslurp-content-budget-test
+    "${CMAKE_SOURCE_DIR}/docslurp/doppler-md/tests/fixtures/tables/grid.pdf")

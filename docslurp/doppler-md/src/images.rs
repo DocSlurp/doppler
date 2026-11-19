@@ -677,6 +677,7 @@ fn insert_marker(page: &mut Page, li: usize, b: (f64, f64, f64, f64), marker: &s
         y1: pmax(neighbour.y1, b.3),
         bold: false,
         italic: false,
+        math_font: false,
         space: true,
         glyphs: Default::default(),
         ..neighbour.clone()

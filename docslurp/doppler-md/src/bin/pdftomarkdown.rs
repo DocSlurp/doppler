@@ -49,6 +49,9 @@ usage: pdftomarkdown [--html] [--math] [--markers] [--strict] [--stream | --wind
                      [--images-dir DIR [image options]] [--] FILE.pdf
 
   --html         write tables as HTML <table> blocks (prose stays Markdown)
+  --join-page-tables  join compatible tables across consecutive page slots; the report
+                 lists their page spans. Incompatible with --markers and --images-dir.
+                 Bounded by --window, or 16 pages without a window.
   --math         read typeset math (pdftotext -glyphs) and write it as LaTeX: $...$ inline,
                  $$...$$ display; doubtful formulas stay text (report: mathUncertainPages, and
                  mathUncertainRegions: page, bbox and reason of each, to crop for a vision model)
@@ -271,6 +274,7 @@ fn main() -> ExitCode {
     let mut context: Option<usize> = None;
     let mut estimate = false;
     let mut page_sizes = false;
+    let mut join_page_tables = false;
     // pdftotext options, in order
     let mut pass: Vec<OsString> = Vec::new();
     let mut passwords: Vec<OsString> = Vec::new();
@@ -308,6 +312,7 @@ fn main() -> ExitCode {
             "--" => options_done = true,
             "--report" => want_report = true,
             "--html" => opts.tables = TableFormat::Html,
+            "--join-page-tables" => join_page_tables = true,
             "--math" => opts.math = true,
             "--markers" => opts.markers = true,
             "--page-info" => page_sizes = true,
@@ -430,6 +435,9 @@ fn main() -> ExitCode {
         }
         // pictures and figures are found through the markers
         opts.markers = true;
+    }
+    if join_page_tables && (opts.markers || estimate) {
+        return usage_error("--join-page-tables does not take --markers, --images-dir or --estimate-body");
     }
     if estimate && (images.dir.is_some() || plan_in.is_some() || plan_out.is_some()) {
         return usage_error("--estimate-body takes no image options");
@@ -598,6 +606,7 @@ fn main() -> ExitCode {
             estimate,
             strict,
             page_sizes,
+            join_page_tables,
             &pass,
             &file,
             want_report,
@@ -630,6 +639,7 @@ fn convert(
     estimate: bool,
     strict: bool,
     page_sizes: bool,
+    join_page_tables: bool,
     pass: &[OsString],
     file: &OsString,
     want_report: bool,
@@ -696,6 +706,9 @@ fn convert(
     );
     let window = if estimate { doppler_md::Window { emit: Some(0), ..window } } else { window };
     let mut run = cli::Run::new(params, opts, window);
+    if join_page_tables && !run.enable_page_table_joining() {
+        return usage_error("cannot join page tables with marker mode");
+    }
     if estimate {
         run.stop_at_body();
     }
@@ -704,7 +717,7 @@ fn convert(
         Some(mut out) => run.read_from(&mut out),
         None => Ok(()),
     };
-    if estimate && read.is_ok() && run.body_known() {
+    if estimate && read.is_ok() && run.body_known() && !run.content_truncated() {
         // the sample is complete: the rest of the document is not needed
         let _ = child.kill();
         let _ = child.wait();
@@ -767,12 +780,17 @@ fn convert(
             Some(6) => eprintln!(
                 "pdftomarkdown: pdftotext ran past its time limit (status 6; see --text-timeout); no Markdown"
             ),
+            Some(7) => eprintln!("pdftomarkdown: pdftotext exhausted its decoded content byte budget (status 7); output is incomplete"),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
             None => eprintln!("pdftomarkdown: {} {}", exe.display(), status),
         }
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
+    if report.content_truncated {
+        eprintln!("pdftomarkdown: decoded content byte budget exhausted; output is incomplete");
+        return ExitCode::FAILURE;
+    }
     if estimate {
         // every page read is context here (none is written): the estimate stands when any was
         // read. The sample ended with the input (a short document or range, or no window)

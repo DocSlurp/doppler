@@ -38,6 +38,11 @@ permissions:
 
 jobs:
   test:
+    name: test (GCC ${{ matrix.gcc }})
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: [13, 14]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -48,19 +53,19 @@ jobs:
       - name: System packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++-14 ninja-build ccache pkg-config \
+          sudo apt-get install -y --no-install-recommends g++-${{ matrix.gcc }} ninja-build ccache pkg-config \
             libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev libpng-dev \
             libcairo2-dev liblcms2-dev zlib1g-dev python3
       - uses: actions/cache@v4
         with:
           path: .ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: ccache-${{ runner.os }}-
+          key: ccache-${{ runner.os }}-${{ matrix.gcc }}-${{ github.sha }}
+          restore-keys: ccache-${{ runner.os }}-${{ matrix.gcc }}-
       - name: Build pdftotext, pdfregions, pdfpagefacts
         env:
-          # C++23 (CMakeLists.txt): GCC 14 rather than 24.04's default 13
-          CC: gcc-14
-          CXX: g++-14
+          # GCC 13 is used by the downstream Ubuntu 24.04 build.
+          CC: gcc-${{ matrix.gcc }}
+          CXX: g++-${{ matrix.gcc }}
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -69,7 +74,8 @@ jobs:
             -DENABLE_LIBCURL=OFF -DENABLE_LIBTIFF=OFF -DENABLE_BROTLI=OFF -DENABLE_HARFBUZZ=OFF \
             -DENABLE_UNSTABLE_API_ABI_HEADERS=OFF -DRUN_GPERF_IF_PRESENT=OFF -DBUILD_GTK_TESTS=OFF \
             -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_CPP_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF
-          cmake --build build --target pdftotext pdfregions pdfpagefacts
+          cmake --build build --target pdftotext pdfregions pdfpagefacts docslurp-content-budget-test
+          ctest --test-dir build -R "^docslurp-content-budget$" --output-on-failure
           ccache --show-stats || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -85,4 +91,4 @@ jobs:
           PDFREGIONS: ${{ github.workspace }}/build/utils/pdfregions
         run: |
           cargo test --release --lib
-          cargo test --release --test images_batches --test images_dir --test page_facts --test page_info --test page_scans --test table_pdfs
+          cargo test --release --test images_batches --test images_dir --test page_facts --test page_info --test page_scans --test table_pdfs --test math --test stitch --test stream --test units

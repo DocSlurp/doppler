@@ -6,7 +6,8 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use doppler_md::{Options, Params, TableFormat, to_markdown_report_with};
+use doppler_md::model::Parser;
+use doppler_md::{Converter, Options, Params, TableFormat, Window, to_markdown_report_with};
 
 const MATH: Options =
     Options { tables: TableFormat::Gfm, math: true, markers: false, page_markers: false, first_page: None };
@@ -195,7 +196,8 @@ fn actual_text_latex() {
 fn unknown_glyph_stays_text_and_is_reported() {
     // a private-use glyph inside a formula: no LaTeX for it, so the formula keeps its words
     let line = vec![w(vec![g(280.0, 5.0, 1, "x"), g(285.0, 5.0, 2, "\u{e123}"), g(290.0, 5.0, 1, "y")], 200.0, 10.0)];
-    let (md, report) = convert(&page(&[prose(150.0), line, prose(250.0)], &[]), &MATH);
+    let source = page(&[prose(150.0), line, prose(250.0)], &[]);
+    let (md, report) = convert(&source, &MATH);
     assert!(!md.contains('$'), "{md}");
     assert!(report.to_json().contains("\"mathUncertainPages\":[1]"), "{}", report.to_json());
     // the region to crop for a vision model: the formula's box on page 1, padded, with its reason
@@ -207,6 +209,35 @@ fn unknown_glyph_stays_text_and_is_reported() {
     let b: Vec<f64> = regions[0]["bbox"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
     assert!(b[0] <= 280.0 && b[2] >= 295.0 && b[1] < 200.0 && b[3] > 200.0 && b[2] < 320.0 && b[3] < 215.0, "{b:?}");
     assert_eq!(v["mathUncertainRegionsDropped"], 0);
+
+    let source = source.replace("<page ", "<page number=\"5\" ");
+    let (_, report) = convert(&source, &MATH);
+    let ranged: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(ranged["mathUncertainPages"], serde_json::json!([5]));
+    assert_eq!(ranged["mathUncertainRegions"][0]["page"], 5);
+
+    let context = page(&[prose(150.0)], &[]).replace("</doc>", "");
+    let unnumbered = source.replace("<doc>", "").replace(" number=\"5\"", "");
+    let mut parser = Parser::with_glyphs(true);
+    let params = Params::default();
+    let window = Window { skip: 1, emit: Some(1), first_page: 4, ..Window::default() };
+    let mut converter = Converter::with(&params, Options { first_page: Some(5), ..MATH }, window);
+    let mut out = |_, _: String| {};
+    parser.push(&(context + &unnumbered), &mut |page| converter.push(page, &mut out));
+    let parse = parser.finish(&mut |page| converter.push(page, &mut out));
+    let report = converter.finish(parse, &mut out);
+    let ranged: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(ranged["mathUncertainPages"], serde_json::json!([5]));
+    assert_eq!(ranged["mathUncertainRegions"][0]["page"], 5);
+}
+
+#[test]
+fn producer_content_limit_is_reported_as_incomplete() {
+    let source = page(&[prose(150.0)], &[]).replace("<page ", "<page contentTruncated=\"1\" ");
+    let (markdown, report) = convert(&source, &PLAIN);
+    assert!(!markdown.trim().is_empty());
+    let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(json["degraded"][0]["reason"], "content_truncated");
 }
 
 #[test]

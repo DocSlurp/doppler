@@ -46,6 +46,8 @@ pub struct Word {
     pub text: Rc<str>,
     pub bold: bool,
     pub italic: bool,
+    /// The producer identified the word's font as a math or symbol font.
+    pub math_font: bool,
     pub size: f64,
     pub base: f64,
     pub space: bool,
@@ -378,6 +380,8 @@ pub const MAX_PAGE_GRAPHICS: usize = 1024;
 
 #[derive(Debug)]
 pub struct Page {
+    /// The producer exhausted its decoded content read budget.
+    pub content_truncated: bool,
     /// the PDF's own page number, from `number="N"` (doppler `-images` writes it)
     pub number: Option<u32>,
     /// doppler `-images`
@@ -420,7 +424,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 33] = [
+const KEYS: [&str; 34] = [
     "xMin",
     "yMin",
     "xMax",
@@ -454,6 +458,7 @@ const KEYS: [&str; 33] = [
     "copyable",
     "xrefRebuilt",
     "rebuilt",
+    "contentTruncated",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -492,6 +497,7 @@ fn key_index(name: &str) -> Option<usize> {
         "copyable" => 30,
         "xrefRebuilt" => 31,
         "rebuilt" => 32,
+        "contentTruncated" => 33,
         _ => return None,
     })
 }
@@ -851,6 +857,7 @@ const SMASK: usize = 29;
 const COPYABLE: usize = 30;
 const XREF_REBUILT: usize = 31;
 const REBUILT: usize = 32;
+const CONTENT_TRUNCATED: usize = 33;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -1133,7 +1140,7 @@ impl ParseState {
         let mut a = Attrs([None; KEYS.len()]);
         let mut scan = Scan::new();
         // font names repeat word after word: cache the last style
-        let mut last_font: Option<(&str, (bool, bool))> = None;
+        let mut last_font: Option<(&str, (bool, bool, bool))> = None;
         let mut pos = 0;
         while let Some(off) = memchr(b'<', &b[pos..]) {
             let lt = pos + off;
@@ -1414,7 +1421,9 @@ impl ParseState {
                     *page_glyphs = 0;
                     line_glyphs.clear();
                     font_index.clear();
+                    let content_truncated = a.0[CONTENT_TRUNCATED] == Some("1");
                     let next = Page {
+                        content_truncated,
                         number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
                         images: Vec::new(),
                         images_truncated: a.0[IMAGES_TRUNCATED] == Some("1"),
@@ -1423,7 +1432,7 @@ impl ParseState {
                         glyphs: Vec::new(),
                         fonts: Vec::new(),
                         extra_glyphs: Vec::new(),
-                        glyphs_truncated: glyphs && a.0[GLYPHS_TRUNCATED] == Some("1"),
+                        glyphs_truncated: glyphs && (content_truncated || a.0[GLYPHS_TRUNCATED] == Some("1")),
                         width: dim(WIDTH, 612.0),
                         height: dim(HEIGHT, 792.0),
                         lines: Vec::new(),
@@ -1491,12 +1500,19 @@ impl ParseState {
                         continue;
                     };
                     let font = a.0[FONT_NAME].unwrap_or("");
-                    let (bold, italic) = match last_font {
+                    let (bold, italic, math_font) = match last_font {
                         Some((f, style)) if f == font => style,
                         _ => {
-                            let style = Word::font_style(font);
-                            last_font = Some((font, style));
-                            style
+                            let (bold, italic) = Word::font_style(font);
+                            let name = match font.split_once('+') {
+                                Some((tag, name)) if tag.len() == 6 && tag.bytes().all(|c| c.is_ascii_uppercase()) => {
+                                    name
+                                }
+                                _ => font,
+                            };
+                            let flags = (bold, italic, crate::math::symbols::font_role(name).is_math());
+                            last_font = Some((font, flags));
+                            flags
                         }
                     };
                     if let Some(info) = report.page_info.last_mut() {
@@ -1511,6 +1527,7 @@ impl ParseState {
                         text: word_text(text),
                         bold,
                         italic,
+                        math_font,
                         size,
                         base,
                         space: a.0[SPACE_AFTER].unwrap_or("1") != "0",

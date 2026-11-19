@@ -719,6 +719,7 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
                 cells[column(w)].push(w.clone());
             }
         }
+        let math_cells: Vec<bool> = cells.iter().map(|ws| !ws.is_empty() && ws.iter().all(|w| w.math_font)).collect();
         let mut texts: Vec<String> = cells.into_iter().map(line_text).collect();
         // wrapped lines folded into the row: each line's words in a column go on after the
         // column's text, as the lines of a paragraph do
@@ -742,8 +743,10 @@ pub fn build_grid(rows: &[Row], cols: &[(f64, f64)], p: &Params) -> Table {
         if let (Some(last), Some(pr)) = (grid.last_mut(), prev) {
             let close = pitch.is_some_and(|pt| pt != 0.0 && r.base - pr.last < p.wrap_pitch * pt);
             let fewer = filled < last.iter().filter(|x| !x.is_empty()).count();
-            // a number under a number starts a row (a label spanning rows leaves a cell empty)
-            let numbers = texts.iter().zip(last.iter()).any(|(t, l)| !t.is_empty() && numeric(t) && numeric(l));
+            // A number under a number can start a row with a carried label.
+            // Numerals set entirely in a math font can instead be stacked parts of one cell.
+            let numbers =
+                texts.iter().zip(last.iter()).zip(&math_cells).any(|((t, l), math)| !math && numeric(t) && numeric(l));
             if (close && fewer && !numbers) || (filled == 1 && texts[0].is_empty() && !r.multi) {
                 for (k, t) in texts.iter().enumerate() {
                     if !t.is_empty() {
@@ -1015,6 +1018,15 @@ pub fn find_tables_within(
 /// own (a row with empty cells). Rows without the evidence are returned as they were. Linear in
 /// the rows' words; charges twice their count when a multi-cell row has a row below it.
 pub(crate) fn fold_wraps(rows: Vec<Row>, p: &Params, budget: &mut Budget) -> Option<Vec<Row>> {
+    fold_wraps_in_bands(rows, p, budget, None)
+}
+
+fn fold_wraps_in_bands(
+    rows: Vec<Row>,
+    p: &Params,
+    budget: &mut Budget,
+    horizontal_rules: Option<&[f64]>,
+) -> Option<Vec<Row>> {
     // nothing to fold without a multi-cell row with a row after it
     if !rows.iter().rev().skip(1).any(|r| r.multi) {
         return Some(rows);
@@ -1022,7 +1034,7 @@ pub(crate) fn fold_wraps(rows: Vec<Row>, p: &Params, budget: &mut Budget) -> Opt
     if !budget.spend(2 * row_words(&rows)) {
         return None;
     }
-    let (folded, steps) = fold_padded(&rows, p, f64::INFINITY);
+    let (folded, steps) = fold_padded(&rows, p, f64::INFINITY, horizontal_rules);
     if steps.is_empty() {
         return Some(rows);
     }
@@ -1043,13 +1055,13 @@ pub(crate) fn fold_wraps(rows: Vec<Row>, p: &Params, budget: &mut Budget) -> Opt
         return Some(rows);
     }
     let cut = (step + gap) / 2.0;
-    Some(if longest < cut { folded } else { fold_padded(&rows, p, cut).0 })
+    Some(if longest < cut { folded } else { fold_padded(&rows, p, cut, horizontal_rules).0 })
 }
 
 /// [`fold_pass`], then unfold each folded row whose neighbours are not clear of it by
 /// `wrap_padding` times its longest step: the rows, and the steps of the folds kept.
-fn fold_padded(rows: &[Row], p: &Params, cut: f64) -> (Vec<Row>, Vec<f64>) {
-    let folded = fold_pass(rows, p, cut);
+fn fold_padded(rows: &[Row], p: &Params, cut: f64, horizontal_rules: Option<&[f64]>) -> (Vec<Row>, Vec<f64>) {
+    let folded = fold_pass(rows, p, cut, horizontal_rules);
     let mut out = Vec::with_capacity(rows.len());
     let mut steps = Vec::new();
     for (i, (row, range, longest)) in folded.iter().enumerate() {
@@ -1077,20 +1089,35 @@ type Slot = (f64, f64, f64, f64);
 
 /// One folding pass with wrap steps under `cut` points: each row, the range of `rows` it was
 /// folded from, and its longest wrap step (0 when nothing was folded).
-fn fold_pass(rows: &[Row], p: &Params, cut: f64) -> Vec<(Row, std::ops::Range<usize>, f64)> {
+fn fold_pass(
+    rows: &[Row],
+    p: &Params,
+    cut: f64,
+    horizontal_rules: Option<&[f64]>,
+) -> Vec<(Row, std::ops::Range<usize>, f64)> {
     let mut out = Vec::with_capacity(rows.len());
     // the open row, where it started, its longest step, and for each of its cells the extent,
     // baseline and size of its last line
     let mut open: Option<(Row, usize, f64, Vec<Slot>)> = None;
     for (i, r) in rows.iter().enumerate() {
         if let Some((row, _, longest, slots)) = open.as_mut()
-            && let Some(assign) = wrap_slots(row, slots, r, p, cut)
+            && let Some(assign) = wrap_slots(row, slots, r, p, cut, horizontal_rules)
         {
             *longest = pmax(*longest, r.base - row.last);
             row.ids.extend_from_slice(&r.ids);
-            for (c, k) in r.cells.iter().zip(assign) {
-                row.wraps.push((k, c.clone()));
-                slots[k] = (c.x0, c.x1, r.base, c.size());
+            let mut chunks = r.cells.iter().zip(assign).peekable();
+            while let Some((c, k)) = chunks.next() {
+                let mut line = c.clone();
+                if chunks.peek().is_some_and(|(_, next)| *next == k) {
+                    let mut words = c.words.clone();
+                    while chunks.peek().is_some_and(|(_, next)| *next == k) {
+                        let (part, _) = chunks.next().unwrap();
+                        words.extend(part.words.iter().cloned());
+                    }
+                    line = Rc::new(Line::new(words, c.block, c.flow));
+                }
+                slots[k] = (line.x0, line.x1, r.base, line.size());
+                row.wraps.push((k, line));
             }
             row.last = r.base;
             continue;
@@ -1112,7 +1139,14 @@ fn fold_pass(rows: &[Row], p: &Params, cut: f64) -> Vec<(Row, std::ops::Range<us
 }
 
 /// The cell of `row` each cell of `r` continues, when `r` is a wrapped line of `row`.
-fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Option<Vec<usize>> {
+fn wrap_slots(
+    row: &Row,
+    slots: &[Slot],
+    r: &Row,
+    p: &Params,
+    cut: f64,
+    horizontal_rules: Option<&[f64]>,
+) -> Option<Vec<usize>> {
     let n = row.cells.len();
     if r.cells.is_empty() || r.cells.len() >= n {
         return None;
@@ -1123,13 +1157,21 @@ fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Optio
     if !(step > 0.0 && step <= reach) {
         return None;
     }
+    if horizontal_rules.is_some_and(|ys| {
+        let i = ys.partition_point(|&y| y <= row.last);
+        ys.get(i).is_some_and(|&y| y <= r.base)
+    }) {
+        return None;
+    }
     let tol = 0.6 * size;
     let mut used = vec![false; n];
     let mut out = Vec::with_capacity(r.cells.len());
     for c in &r.cells {
         // the last cell starting at or before this one (cells are in x order)
         let k = row.cells.iter().rposition(|a| a.x0 - p.cell_gap * size <= c.x0)?;
-        if used[k] || row.cells.get(k + 1).is_some_and(|b| c.x1 > b.x0 - p.min_gutter * size) {
+        if (horizontal_rules.is_none() && used[k])
+            || row.cells.get(k + 1).is_some_and(|b| c.x1 > b.x0 - p.min_gutter * size)
+        {
             return None;
         }
         let (ax0, ax1, abase, asize) = slots[k];
@@ -1140,7 +1182,10 @@ fn wrap_slots(row: &Row, slots: &[Slot], r: &Row, p: &Params, cut: f64) -> Optio
             || (c.x1 - ax1).abs() <= tol
             || ((c.x0 + c.x1) / 2.0 - (ax0 + ax1) / 2.0).abs() <= tol
             || (c.x0 > first && c.x0 - first <= 2.0 * size && (ax0 - first).abs() <= tol);
-        if !(below > 0.0 && below <= reach) || !aligned || (c.size() - asize).abs() > 0.1 * pmax(asize, 1.0) {
+        if !(below > 0.0 && below <= reach)
+            || (!aligned && !used[k])
+            || (c.size() - asize).abs() > 0.1 * pmax(asize, 1.0)
+        {
             return None;
         }
         used[k] = true;
@@ -1653,7 +1698,7 @@ pub fn ruled_tables(
     let gap = p.rule_row_gap * body;
     // the lines between two rules (middles strictly between, centres inside x0..x1) are table
     // rows: some split into cells, none is a long line of prose
-    let body_rows = |a: f64, b: f64, x0: f64, x1: f64| {
+    let body_rows = |a: f64, b: f64, x0: f64, x1: f64, budget: &mut Budget| {
         let lo = by_mid.partition_point(|&(m, _)| m <= a);
         let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
         if hi - lo > 400 {
@@ -1662,6 +1707,9 @@ pub fn ruled_tables(
         let (mut cells, mut any) = (false, false);
         for &(_, i) in &by_mid[lo..hi] {
             let l = &lines[i];
+            if !budget.spend(1 + l.words.len()) {
+                return false;
+            }
             let mx = (l.x0 + l.x1) / 2.0;
             if mx < x0 - 2.0 || mx > x1 + 2.0 {
                 continue;
@@ -1684,11 +1732,11 @@ pub fn ruled_tables(
     // whether the lines between two rules are one row of cells whose first cell wraps (one
     // baseline with several cells, the other lines starting where that row starts), and how
     // many rows of cells they hold
-    let one_row_band = |a: f64, b: f64, x0: f64, x1: f64| {
+    let one_row_band = |a: f64, b: f64, x0: f64, x1: f64, budget: &mut Budget| {
         let lo = by_mid.partition_point(|&(m, _)| m <= a);
         let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
         if hi - lo > 200 {
-            return (false, usize::MAX);
+            return Some((false, usize::MAX));
         }
         let ids: Vec<usize> = by_mid[lo..hi]
             .iter()
@@ -1698,6 +1746,12 @@ pub fn ruled_tables(
                 x0 - 2.0 <= mx && mx <= x1 + 2.0
             })
             .collect();
+        // Segment counts are inspected up to five times per candidate.
+        for &i in &ids {
+            if !budget.spend(5 * lines[i].words.len()) {
+                return None;
+            }
+        }
         // (base, several cells) of each line, by base: each test below is a binary search
         let mut by_base: Vec<(f64, bool)> =
             ids.iter().map(|&i| (lines[i].base(), segment_count(&lines[i], p) >= 2)).collect();
@@ -1730,7 +1784,7 @@ pub fn ruled_tables(
         let size = ids.iter().map(|&i| lines[i].size()).fold(1.0, pmax);
         let fills = top - a <= 0.8 * size && b - bottom <= 0.8 * size;
         let wrapped = ids.iter().any(|&i| !in_row(i));
-        (!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows)
+        Some((!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows))
     };
     // the joined horizontal rules, kept for the booktabs test below (thin stroked rules only:
     // a rule drawn as a filled bar gives two edges, and such groups split as they always did)
@@ -1744,12 +1798,12 @@ pub fn ruled_tables(
         // a horizontal-only (booktabs) table: its top, middle and bottom rules span the table
         // and can be far apart around a tall body; a rule of the group's width takes a longer
         // gap when the lines between are short table cells, never prose
-        let long_gap = |g: &Group, l: f64| {
+        let mut long_gap = |g: &Group, l: f64| {
             let w = g.x1 - g.x0;
             (x0 - g.x0).abs() <= 0.05 * w + 2.0
                 && (x1 - g.x1).abs() <= 0.05 * w + 2.0
                 && y - l <= 4.0 * gap
-                && body_rows(l, y, g.x0, g.x1)
+                && body_rows(l, y, g.x0, g.x1, budget)
         };
         open.retain(|&gi| {
             let g = &groups[gi];
@@ -1764,6 +1818,9 @@ pub fn ruled_tables(
             }
             true
         });
+        if !budget.spend(0) {
+            return None;
+        }
         match hit.map(|gi| &mut groups[gi]) {
             Some(g) => {
                 g.ys.push(y);
@@ -1854,14 +1911,19 @@ pub fn ruled_tables(
             if !budget.spend(ys.len() + 2 * (hi - lo)) {
                 return None;
             }
-            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1)).collect()
+            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1, budget)).collect::<Option<_>>()?
         } else {
             Vec::new()
         };
         let multi_bands = bands.iter().filter(|b| b.1 > 1).count();
         // a rule under every row: no band between two rules holds two rows of cells
         // (thin stroked rules across the whole group, no vertical rule, each band one row)
-        let full_rule = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
+        if !budget.scan(hs.len()) {
+            return None;
+        }
+        let min_full_width = 0.9 * (g.x1 - g.x0);
+        let full_ys: Vec<f64> = hs.iter().filter(|r| r.1 - r.0 >= min_full_width).map(|r| r.2).collect();
+        let full_rule = |y: f64| near_any(&full_ys, y, 1.5);
         let every_row_ruled = v.is_empty()
             && ys.len() >= 4
             && !bands.is_empty()
@@ -1872,15 +1934,17 @@ pub fn ruled_tables(
             let (a, b) = (w[0], w[1]);
             // (a booktabs body between a middle and a bottom rule that both span the table is
             // no jump; column underlines of an accounting table are not such rules)
-            let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
             // (not in a group ruled row by row: when every other band holds one row at most,
             // a tall band of several rows is the gap between two stacked tables)
             let band = bands.get(k).copied().unwrap_or((false, usize::MAX));
             let row_ruled = ys.len() >= 5 && !bands.is_empty() && multi_bands - (band.1 > 1) as usize == 0;
-            let booktabs_body = v.is_empty() && !row_ruled && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
+            let booktabs_body = v.is_empty() && !row_ruled && full_rule(a) && full_rule(b) && body_rows(a, b, g.x0, g.x1, budget);
             // (nor is a band that holds one row whose cell wraps to several lines: a rule after
             // every row, one row taller than the rest)
             let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body && !(band.0 && every_row_ruled);
+            if !budget.spend(0) {
+                return None;
+            }
             if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
@@ -2083,6 +2147,22 @@ pub fn ruled_tables(
             if !budget.spend(rows.len() + row_words(&rows)) {
                 return None;
             }
+            let cols = if crossing_v {
+                cols
+            } else {
+                // Resolve close, padded cell continuations before counting column
+                // gutters. Their separately positioned words are not new columns.
+                let len = rows.len();
+                rows = fold_wraps_in_bands(rows, p, budget, Some(ys))?;
+                if rows.len() < len {
+                    if !budget.spend(rows.len() + row_words(&rows)) {
+                        return None;
+                    }
+                    under_spanning_header(&rows, gutter_columns(&rows, p), p)
+                } else {
+                    cols
+                }
+            };
             let mut g = build_grid(&rows, &cols, p);
             // horizontal rules only: the gutter table's header repairs apply too
             if !crossing_v {
@@ -2291,16 +2371,19 @@ fn ruled_html(
             if ws.is_empty() {
                 continue;
             }
-            if !texts[i].is_empty() {
-                // Multiple source fragments need the established grid assembler's
-                // wrapping/bidi evidence. Decline spans rather than invent a join.
-                return Ok(None);
-            }
             charge!(sort_work(ws.len()));
             for w in &ws {
                 charge!(w.text.len().saturating_mul(4));
             }
-            texts[i].push_str(&line_text(ws));
+            let line = line_text(ws);
+            if texts[i].is_empty() {
+                texts[i] = line;
+            } else {
+                // The closed grid gives each fragment an unambiguous cell. Keep
+                // the line's own bidi ordering and join in source baseline order.
+                charge!(texts[i].len().saturating_add(line.len()));
+                crate::prose::append_line(&mut texts[i], &line, p);
+            }
         }
     }
     for text in &texts {
@@ -2352,6 +2435,7 @@ mod span_tests {
             height: 300.,
             lines: vec![],
             rules: vec![],
+            content_truncated: false,
             rules_truncated: Some(false),
             glyphs: vec![],
             fonts: vec![],
@@ -2371,6 +2455,35 @@ mod span_tests {
             page.rules.push(Rule { x0, y0, x1, y1, color: "#000000".into(), boxed: false });
         }
         page
+    }
+    #[test]
+    fn wrapped_lines_remain_in_their_ruled_cell() {
+        let mut page = fixture();
+        for (y, text) in [(20., "first line"), (40., "second line"), (60., "third line")] {
+            let word = Word {
+                x0: 20.,
+                y0: y,
+                x1: 80.,
+                y1: y + 10.,
+                text: text.into(),
+                bold: false,
+                italic: false,
+                math_font: false,
+                size: 10.,
+                base: y + 8.,
+                space: true,
+                color: "#000000".into(),
+                rot: 0,
+                invisible: false,
+                glyphs: Default::default(),
+            };
+            page.lines.push(Rc::new(Line::new(vec![word], 0, 0)));
+        }
+        let html = ruled_html(&page, &[0, 1, 2], (0., 0., 300., 300.), &Params::default(), &mut Budget::new(100_000.))
+            .unwrap()
+            .unwrap();
+        assert_eq!(html.matches("<tr>").count(), 3);
+        assert!(html.contains("<td rowspan=\"2\" colspan=\"2\">first line second line third line</td>"), "{html}");
     }
     #[test]
     fn actual_work_and_exhaustion() {

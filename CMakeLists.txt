@@ -693,6 +693,7 @@ if(ENABLE_UNSTABLE_API_ABI_HEADERS)
     poppler/GlobalParams.h
     poppler/HashAlgorithm.h
     poppler/JSInfo.h
+    poppler/ContentReadBudget.h
     poppler/Lexer.h
     poppler/Link.h
     poppler/MarkedContentOutputDev.h

@@ -1339,8 +1339,10 @@ int main(int argc, char *argv[])
     }
 
     // write text file
+    bool contentTruncated = false;
     if (htmlMeta && bbox) { // htmlMeta && is superfluous but makes gcc happier
         TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+        textOut.enableContentReadBudget();
 
         if (textOut.isOk()) {
             textOut.setTextEOL(textEOL);
@@ -1360,6 +1362,7 @@ int main(int argc, char *argv[])
                 printWordBBox(f, doc.get(), &textOut, firstPage, lastPage);
             }
         }
+        contentTruncated = textOut.contentWasTruncated();
         if (f != stdout) {
             fclose(f);
         }
@@ -1367,6 +1370,7 @@ int main(int argc, char *argv[])
 
         if (tsvMode) {
             TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            textOut.enableContentReadBudget();
             textOut.setEndOfLineHyphenMode(hyphenMode);
             if (textFileName->toStr() == "-") {
                 f = stdout;
@@ -1377,11 +1381,13 @@ int main(int argc, char *argv[])
                 }
             }
             printTSVBBox(f, doc.get(), &textOut, firstPage, lastPage);
+            contentTruncated = textOut.contentWasTruncated();
             if (f != stdout) {
                 fclose(f);
             }
         } else {
             TextOutputDev textOut(textFileName->c_str(), physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            textOut.enableContentReadBudget();
             if (textOut.isOk()) {
                 textOut.setTextEOL(textEOL);
                 textOut.setMinColSpacing1(colspacing);
@@ -1403,10 +1409,11 @@ int main(int argc, char *argv[])
             } else {
                 return 2;
             }
+            contentTruncated = textOut.contentWasTruncated();
         }
     }
 
-    if (pageFacts) {
+    if (pageFacts && !contentTruncated) {
         writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
     }
 
@@ -1430,6 +1437,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A distinct status also covers quiet or plain-text paths without an XHTML marker.
+    if (contentTruncated) {
+        return 7;
+    }
     if (pageFactsWriteFailed) {
         // the text output is complete: its own exit code, so a caller can keep it
         error(errIO, -1, "Couldn't write the page facts");
@@ -1608,6 +1619,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         if (glyphContext) {
             glyphContext->startPage(page, textOut);
             glyphAttrs = std::string(glyphContext->pageTruncated() ? " glyphsTruncated=\"1\"" : "") + (glyphContext->pageFontsTruncated() ? " fontsTruncated=\"1\"" : "");
+        }
+        if (textOut->getContentTruncated()) {
+            glyphAttrs += " contentTruncated=\"1\"";
         }
         std::vector<TextGraphic> graphics;
         if (collectImages) {
@@ -1804,7 +1818,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
-        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
+        fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, textOut->getContentTruncated() ? " contentTruncated=\"1\"" : "");
         const std::unique_ptr<TextWordList> wordlist = textOut->makeWordList();
         const std::vector<TextWord *> &words = wordlist->getWords();
 

@@ -60,6 +60,8 @@ impl Default for MathOptions {
 /// What the math reader did on one page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageMath {
+    /// Document page number when collected by the converter.
+    pub document_page: Option<u32>,
     pub inline: usize,
     pub display: usize,
     /// formulas taken from ActualText LaTeX
@@ -1170,7 +1172,7 @@ pub fn rewrite_page_with(
     // a cluster next to a prose line's run belongs to that run (an inline fraction or limits)
     let mut attached: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
     let mut cluster_taken = vec![false; clusters.len()];
-    for (ci, c) in clusters.iter().enumerate() {
+    'clusters: for (ci, c) in clusters.iter().enumerate() {
         if scan > scan_limit {
             break;
         }
@@ -1191,7 +1193,10 @@ pub fn rewrite_page_with(
         let weak_only = !c.iter().any(|&k| lines[k].strong || lines[k].gs.iter().any(|g| g.ev == Ev::Var));
         if weak_only {
             let window = bars_in(ctop, cbot);
-            scan += window.len() as u64;
+            scan = scan.saturating_add(window.len() as u64);
+            if scan > scan_limit {
+                break;
+            }
             let inside: Vec<&Bar> =
                 window.iter().filter(|b| b.x1 > cx0 - csize && b.x0 < cx1 + csize).take(2).collect();
             let fraction = c.len() >= 2
@@ -1216,7 +1221,10 @@ pub fn rewrite_page_with(
             if top >= cbot + reach {
                 break;
             }
-            scan += 1;
+            scan = scan.saturating_add(1);
+            if scan > scan_limit {
+                break 'clusters;
+            }
             let s = size.max(csize);
             let vgap = (top - cbot).max(ctop - bot);
             let overlap = x1.min(cx1) - x0.max(cx0);
@@ -1232,7 +1240,10 @@ pub fn rewrite_page_with(
                 let (lo, hi) = (cx0.max(x0), cx1.min(x1));
                 let below = bars_in(cbot - 0.5 * s, top + 0.5 * s);
                 let above = bars_in(bot - 0.5 * s, ctop + 0.5 * s);
-                scan += (below.len() + above.len()) as u64;
+                scan = scan.saturating_add((below.len() + above.len()) as u64);
+                if scan > scan_limit {
+                    break 'clusters;
+                }
                 below.iter().chain(above).any(|b| b.x1 > lo && b.x0 < hi)
             };
             if across_bar {
@@ -1664,11 +1675,14 @@ fn cell_grid(lines: &[LineMath], c: &[usize], body_end: &dyn Fn(&LineMath) -> us
     // each glyph to the nearest row at or above-and-near it (a subscript hangs below its row)
     let mut per_row: Vec<Vec<(f64, f64)>> = vec![Vec::new(); rows.len()];
     for a in &atoms {
-        let k =
-            rows.iter().enumerate().min_by(|x, y| (x.1 - a.base).abs().total_cmp(&(y.1 - a.base).abs())).map(|x| x.0);
-        if let Some(k) = k {
-            per_row[k].push((a.x0, a.x1));
-        }
+        let right = rows.partition_point(|&b| b < a.base);
+        let k = match right {
+            0 => 0,
+            right if right == rows.len() => right - 1,
+            right if a.base - rows[right - 1] <= rows[right] - a.base => right - 1,
+            right => right,
+        };
+        per_row[k].push((a.x0, a.x1));
     }
     let mut cells: Vec<Vec<(f64, f64)>> = Vec::with_capacity(rows.len());
     for r in &mut per_row {
@@ -1990,6 +2004,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     text: Rc::from(text),
                     bold: false,
                     italic: false,
+                    math_font: false,
                     size: if *fsize > 0.0 { *fsize } else { first.size },
                     base: first.base,
                     space: if ends_word { last.space } else { false },
