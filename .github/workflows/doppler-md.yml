@@ -74,7 +74,8 @@ jobs:
             -DENABLE_LIBCURL=OFF -DENABLE_LIBTIFF=OFF -DENABLE_BROTLI=OFF -DENABLE_HARFBUZZ=OFF \
             -DENABLE_UNSTABLE_API_ABI_HEADERS=OFF -DRUN_GPERF_IF_PRESENT=OFF -DBUILD_GTK_TESTS=OFF \
             -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_CPP_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF
-          cmake --build build --target pdftotext pdfregions pdfpagefacts
+          cmake --build build --target pdftotext pdfregions pdfpagefacts docslurp-content-budget-test
+          ctest --test-dir build -R "^docslurp-content-budget$" --output-on-failure
           ccache --show-stats || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
