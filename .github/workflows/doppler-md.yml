@@ -91,4 +91,4 @@ jobs:
           PDFREGIONS: ${{ github.workspace }}/build/utils/pdfregions
         run: |
           cargo test --release --lib
-          cargo test --release --test images_batches --test images_dir --test page_facts --test page_info --test page_scans --test table_pdfs --test math
+          cargo test --release --test images_batches --test images_dir --test page_facts --test page_info --test page_scans --test table_pdfs --test math --test stitch --test stream --test units
