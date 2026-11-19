@@ -371,6 +371,7 @@ mod tests {
             height: 792.0,
             lines: Vec::new(),
             rules,
+            content_truncated: false,
             rules_truncated: None,
             glyphs: Vec::new(),
             fonts: Vec::new(),

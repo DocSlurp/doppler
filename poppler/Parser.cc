@@ -67,7 +67,7 @@ Parser::Parser(XRef *xrefA, std::unique_ptr<Stream> &&streamA, bool allowStreams
     inlineImg = 0;
 }
 
-Parser::Parser(XRef *xrefA, Object *objectA, bool allowStreamsA) : lexer { xrefA, objectA }
+Parser::Parser(XRef *xrefA, Object *objectA, bool allowStreamsA, ContentReadBudget *budget) : lexer { xrefA, objectA, budget }
 {
     allowStreams = allowStreamsA;
     buf1 = lexer.getObj();

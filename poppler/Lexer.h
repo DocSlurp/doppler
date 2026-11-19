@@ -29,6 +29,7 @@
 #ifndef LEXER_H
 #define LEXER_H
 
+#include "ContentReadBudget.h"
 #include "Object.h"
 #include "Stream.h"
 
@@ -49,7 +50,7 @@ public:
 
     // Construct a lexer for a stream or array of streams (assumes obj
     // is either a stream or array of streams).
-    Lexer(XRef *xrefA, Object *obj);
+    Lexer(XRef *xrefA, Object *obj, ContentReadBudget *budgetA = nullptr);
 
     // Destructor.
     ~Lexer();
@@ -114,13 +115,17 @@ private:
         if (!curStr.isStream()) {
             return EOF;
         }
-        const int c = curStr.getStream()->getChar();
-        if (c != EOF || comesFromLook) {
+        const int c = readCurrentChar();
+        if (c != EOF || comesFromLook || (budget && budget->truncated)) {
             return c;
         }
         return getCharFromNextStream();
     }
     int getCharFromNextStream();
+    int readCurrentChar()
+    {
+        return budget && !budget->spend() ? EOF : curStr.getStream()->getChar();
+    }
     int lookChar()
     {
         if (lookCharLastValueCached != LOOK_VALUE_NOT_CACHED) {
@@ -139,6 +144,7 @@ private:
     Object curStr; // current stream
     bool freeArray; // should lexer free the streams array?
     XRef *xref;
+    ContentReadBudget *budget = nullptr;
 };
 
 #endif

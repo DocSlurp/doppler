@@ -232,6 +232,15 @@ fn unknown_glyph_stays_text_and_is_reported() {
 }
 
 #[test]
+fn producer_content_limit_is_reported_as_incomplete() {
+    let source = page(&[prose(150.0)], &[]).replace("<page ", "<page contentTruncated=\"1\" ");
+    let (markdown, report) = convert(&source, &PLAIN);
+    assert!(!markdown.trim().is_empty());
+    let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(json["degraded"][0]["reason"], "content_truncated");
+}
+
+#[test]
 fn math_off_ignores_glyph_records() {
     // without Options::math the glyph records and font table change nothing
     let line = vec![w(vec![g(90.0, 5.7, 1, "x")], 100.0, 10.0), w(vec![g(95.7, 4.0, 4, "2")], 96.0, 7.0)];

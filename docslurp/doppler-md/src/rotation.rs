@@ -160,6 +160,7 @@ pub(crate) fn split(page: &Page, ids: &[usize], p: &Params) -> (Vec<usize>, Vec<
             height,
             lines: ls.iter().map(|l| Rc::new(frame.line(l))).collect(),
             rules,
+            content_truncated: page.content_truncated,
             rules_truncated: page.rules_truncated,
             glyphs: Vec::new(),
             fonts: Vec::new(),

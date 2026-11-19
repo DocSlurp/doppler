@@ -358,6 +358,7 @@ int main(int argc, char *argv[])
 
     // the same device and page geometry as pdftotext -bbox-layout, without laying out lines
     TextOutputDev textOut(nullptr, false, 0, false, false, false);
+    textOut.enableContentReadBudget();
     if (!textOut.isOk()) {
         return fail(exitOpenError, "cannot set up text extraction");
     }

@@ -61,6 +61,7 @@ class Catalog;
 class Page;
 class Function;
 class ScanCopyAudit;
+struct ContentReadBudget;
 
 //------------------------------------------------------------------------
 // OutputDev
@@ -333,6 +334,8 @@ public:
     // once, when a page's Gfx is created; nullptr for none), and calls around the drawing of
     // each annotation's appearance on a page.
     virtual GfxOpTally *getOpTally() { return nullptr; }
+    // An output device may bound decoded content lexing across all of its page draws.
+    virtual ContentReadBudget *getContentReadBudget() { return nullptr; }
     // DocSlurp page-scan copies: the allow-list a page's Gfx reports its operators and
     // annotations to (asked once, when a page's Gfx is created; nullptr for none). See
     // ScanCopyAudit.h; the device itself reports clips, groups and soft masks to it.

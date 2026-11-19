@@ -2435,6 +2435,7 @@ mod span_tests {
             height: 300.,
             lines: vec![],
             rules: vec![],
+            content_truncated: false,
             rules_truncated: Some(false),
             glyphs: vec![],
             fonts: vec![],

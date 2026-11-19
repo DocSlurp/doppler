@@ -6095,6 +6095,7 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
 
 void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
 {
+    contentReadBudget.startPage();
     text->startPage(state);
     gsDepth = 0;
     oddClipDepth = -1;

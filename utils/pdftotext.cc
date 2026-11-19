@@ -1341,6 +1341,7 @@ int main(int argc, char *argv[])
     // write text file
     if (htmlMeta && bbox) { // htmlMeta && is superfluous but makes gcc happier
         TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+        textOut.enableContentReadBudget();
 
         if (textOut.isOk()) {
             textOut.setTextEOL(textEOL);
@@ -1367,6 +1368,7 @@ int main(int argc, char *argv[])
 
         if (tsvMode) {
             TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            textOut.enableContentReadBudget();
             textOut.setEndOfLineHyphenMode(hyphenMode);
             if (textFileName->toStr() == "-") {
                 f = stdout;
@@ -1382,6 +1384,7 @@ int main(int argc, char *argv[])
             }
         } else {
             TextOutputDev textOut(textFileName->c_str(), physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            textOut.enableContentReadBudget();
             if (textOut.isOk()) {
                 textOut.setTextEOL(textEOL);
                 textOut.setMinColSpacing1(colspacing);
@@ -1609,6 +1612,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             glyphContext->startPage(page, textOut);
             glyphAttrs = std::string(glyphContext->pageTruncated() ? " glyphsTruncated=\"1\"" : "") + (glyphContext->pageFontsTruncated() ? " fontsTruncated=\"1\"" : "");
         }
+        if (textOut->getContentTruncated()) {
+            glyphAttrs += " contentTruncated=\"1\"";
+        }
         std::vector<TextGraphic> graphics;
         if (collectImages) {
             graphics = textOut->takeGraphics();
@@ -1804,7 +1810,7 @@ void printWordBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int 
         // The page size must be in the same space as the word coordinates (rotated and scaled)
         const double wid = textOut->getPageWidth();
         const double hgt = textOut->getPageHeight();
-        fprintf(f, "  <page width=\"%f\" height=\"%f\">\n", wid, hgt);
+        fprintf(f, "  <page width=\"%f\" height=\"%f\"%s>\n", wid, hgt, textOut->getContentTruncated() ? " contentTruncated=\"1\"" : "");
         const std::unique_ptr<TextWordList> wordlist = textOut->makeWordList();
         const std::vector<TextWord *> &words = wordlist->getWords();
 

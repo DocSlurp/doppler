@@ -3393,7 +3393,7 @@ void PageFacts::noteError(ErrorCategory category, const char *format)
     // fixed messages of poppler's own budgets (optional content expressions and the page's operand budget,
     // image colour spaces, marked-content nesting, filter chains)
     static const char *const limitPrefixes[] = { "Optional content visibility expression too large", "Optional content visibility budget", "Image colour space budget exhausted", "Marked content nested too deeply",
-                                                 "Too many stream filters" };
+                                                 "Too many stream filters", "Decoded content byte budget exhausted" };
     auto note = [&w, format](Warning warning, const auto &prefixes) {
         if (w & (1u << warning)) {
             return;

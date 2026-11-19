@@ -1206,7 +1206,8 @@ void AutoFreeMemStream::setFilterRemovalForbidden(bool forbidden)
 // EmbedStream
 //------------------------------------------------------------------------
 
-EmbedStream::EmbedStream(Stream *strA, Object &&dictA, bool limitedA, Goffset lengthA, bool reusableA) : BaseStream(std::move(dictA), lengthA), limited(limitedA), reusable(reusableA), initialLength(length)
+EmbedStream::EmbedStream(Stream *strA, Object &&dictA, bool limitedA, Goffset lengthA, bool reusableA, ContentReadBudget *budgetA)
+    : BaseStream(std::move(dictA), lengthA), limited(limitedA), reusable(reusableA), initialLength(length), budget(budgetA)
 {
     str = strA;
     length = lengthA;
@@ -1265,6 +1266,9 @@ Goffset EmbedStream::getPos()
 
 int EmbedStream::getChar()
 {
+    if (budget && !budget->spend()) {
+        return EOF;
+    }
     if (replay) {
         if (bufPos < bufLen) {
             return bufData[bufPos++];
@@ -1290,8 +1294,17 @@ int EmbedStream::getChar()
     return c;
 }
 
+int EmbedStream::getUnfilteredChar()
+{
+    return budget && !budget->spend() ? EOF : str->getUnfilteredChar();
+}
+
 int EmbedStream::lookChar()
 {
+    if (budget && budget->remaining() == 0) {
+        budget->truncated = true;
+        return EOF;
+    }
     if (replay) {
         if (bufPos < bufLen) {
             return bufData[bufPos];
@@ -1309,6 +1322,23 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
     if (nChars <= 0) {
         return 0;
     }
+    const int requested = nChars;
+    if (budget) {
+        nChars = std::min<uint64_t>(nChars, budget->remaining());
+        if (nChars == 0) {
+            budget->truncated = true;
+            return 0;
+        }
+    }
+    // Inline images read through this stream instead of the content lexer.
+    const auto charge = [&](int len) {
+        if (budget && len > 0) {
+            budget->spend(len);
+            if (budget->remaining() == 0 && len < requested) {
+                budget->truncated = true;
+            }
+        }
+    };
     if (replay) {
         if (bufPos >= bufLen) {
             replay = false;
@@ -1320,6 +1350,7 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
         }
         memcpy(buffer, &bufData[bufPos], nChars);
         bufPos += nChars;
+        charge(nChars);
         return nChars;
     }
     if (limited && length < nChars) {
@@ -1337,6 +1368,7 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
         memcpy(bufData + bufLen, buffer, len);
         bufLen += len;
     }
+    charge(len);
     return len;
 }
 

@@ -380,6 +380,8 @@ pub const MAX_PAGE_GRAPHICS: usize = 1024;
 
 #[derive(Debug)]
 pub struct Page {
+    /// The producer exhausted its decoded content read budget.
+    pub content_truncated: bool,
     /// the PDF's own page number, from `number="N"` (doppler `-images` writes it)
     pub number: Option<u32>,
     /// doppler `-images`
@@ -422,7 +424,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 33] = [
+const KEYS: [&str; 34] = [
     "xMin",
     "yMin",
     "xMax",
@@ -456,6 +458,7 @@ const KEYS: [&str; 33] = [
     "copyable",
     "xrefRebuilt",
     "rebuilt",
+    "contentTruncated",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -494,6 +497,7 @@ fn key_index(name: &str) -> Option<usize> {
         "copyable" => 30,
         "xrefRebuilt" => 31,
         "rebuilt" => 32,
+        "contentTruncated" => 33,
         _ => return None,
     })
 }
@@ -853,6 +857,7 @@ const SMASK: usize = 29;
 const COPYABLE: usize = 30;
 const XREF_REBUILT: usize = 31;
 const REBUILT: usize = 32;
+const CONTENT_TRUNCATED: usize = 33;
 
 /// `"num gen"`: two decimal numbers separated by one space, else `None`.
 fn object_ref(v: &str) -> Option<(u32, u32)> {
@@ -1416,7 +1421,9 @@ impl ParseState {
                     *page_glyphs = 0;
                     line_glyphs.clear();
                     font_index.clear();
+                    let content_truncated = a.0[CONTENT_TRUNCATED] == Some("1");
                     let next = Page {
+                        content_truncated,
                         number: a.0[NUMBER].and_then(|v| v.parse::<u32>().ok()),
                         images: Vec::new(),
                         images_truncated: a.0[IMAGES_TRUNCATED] == Some("1"),
@@ -1425,7 +1432,7 @@ impl ParseState {
                         glyphs: Vec::new(),
                         fonts: Vec::new(),
                         extra_glyphs: Vec::new(),
-                        glyphs_truncated: glyphs && a.0[GLYPHS_TRUNCATED] == Some("1"),
+                        glyphs_truncated: glyphs && (content_truncated || a.0[GLYPHS_TRUNCATED] == Some("1")),
                         width: dim(WIDTH, 612.0),
                         height: dim(HEIGHT, 792.0),
                         lines: Vec::new(),

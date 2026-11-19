@@ -276,6 +276,8 @@ pub(crate) fn body_size<'a>(pages: impl Iterator<Item = &'a Page>) -> (f64, Stri
 /// Why a page was read as plain lines instead of being laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Degraded {
+    /// The producer did not read the entire content stream.
+    ContentTruncated,
     /// more lines than `max_page_lines`
     PageLines,
     /// more rules than `max_page_rules`
@@ -294,6 +296,7 @@ pub enum Degraded {
 impl Degraded {
     pub fn as_str(self) -> &'static str {
         match self {
+            Degraded::ContentTruncated => "content_truncated",
             Degraded::PageLines => "page_lines",
             Degraded::PageRules => "page_rules",
             Degraded::PageWork => "page_work",
@@ -1260,7 +1263,9 @@ impl<'p> Converter<'p> {
         let doc_left = p.doc_work_limit((self.win.first_page as usize).saturating_sub(1) + self.next)
             - self.spent as f64
             - n as f64;
-        let early = if n as f64 > p.max_page_lines {
+        let early = if page.content_truncated {
+            Some(Degraded::ContentTruncated)
+        } else if n as f64 > p.max_page_lines {
             Some(Degraded::PageLines)
         } else if page.rules.len() as f64 > p.max_page_rules {
             Some(Degraded::PageRules)
