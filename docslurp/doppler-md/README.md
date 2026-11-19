@@ -5,7 +5,7 @@ byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-1
 
 ```sh
 doppler-md [--html] [--math] [--markers] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--heading-levels size|rank] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
+pdftomarkdown [--html] [--join-page-tables] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
               [--heading-levels size|rank] [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW]
               [--text-timeout S] [--text-timeout-per-page P] [--text-timeout-max M] [--images-dir DIR ...] [--] FILE.pdf
 ```
@@ -148,6 +148,14 @@ byte-identical.
   or a page footer that repeats with different text, and up to two one-line notes may sit
   above the next page's table. More small print above a table is its title block, and the
   table is new.
+- **Join page tables in the output** with `pdftomarkdown --join-page-tables`. Compatible
+  tables are joined at the first part, with a repeated header removed and every form-feed
+  page slot retained. The report's `joinedTables` lists each `{startPage, endPage, rows}`
+  (including the header). A join ends at the window limit (16 pages without a window) or
+  when the table shapes, page geometry, or column types disagree. Body text between parts
+  prevents a join. HTML tables with explicit spans stay separate. The option is independent of
+  `--page-markers` and cannot be combined with `--markers` or `--images-dir`. Convert
+  complete documents to join across all their page boundaries.
 - **Paragraphs across pages.** `<!-- doppler:paragraph-continued -->` above a paragraph that
   goes on, in lowercase, from a last paragraph with no end of sentence. Join with a space, or
   without one after a hyphen.

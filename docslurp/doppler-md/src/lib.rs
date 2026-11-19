@@ -25,6 +25,8 @@ pub mod prose;
 pub mod pyc;
 mod rotation;
 mod stitch;
+mod table_join;
+pub use table_join::JoinedTable;
 pub mod tables;
 mod unicode_tables;
 mod vector;
@@ -358,6 +360,10 @@ pub struct Report {
     pub images_timing: Option<extract::Timing>,
     /// the PDF page number of each page written, in order (only with [`Options::page_markers`])
     pub page_numbers: Option<Vec<u32>>,
+    /// Page spans and row counts for opt-in table joining.
+    pub joined_tables: Vec<JoinedTable>,
+    /// Additional joined tables beyond the report's cap.
+    pub joined_tables_dropped: usize,
 }
 
 /// The most uncertain math regions a report lists for a document.
@@ -605,6 +611,25 @@ impl Report {
                         })
                         .collect();
                     format!(",\"page_info\":[{}]", v.join(","))
+                }
+                + &if self.joined_tables.is_empty() {
+                    String::new()
+                } else {
+                    let records: Vec<_> = self
+                        .joined_tables
+                        .iter()
+                        .map(|table| {
+                            format!(
+                                "{{\"startPage\":{},\"endPage\":{},\"rows\":{}}}",
+                                table.start_page, table.end_page, table.rows
+                            )
+                        })
+                        .collect();
+                    format!(
+                        ",\"joinedTables\":[{}],\"joinedTablesDropped\":{}",
+                        records.join(","),
+                        self.joined_tables_dropped
+                    )
                 }
         )
     }
@@ -873,6 +898,7 @@ pub struct Converter<'p> {
     report: Report,
     /// what the page just written left open, for the next to continue (only with markers)
     carry: stitch::Carry,
+    join_tables: Option<table_join::TableJoiner>,
     /// `carry` may differ from a whole-document run's (a range whose context does not reach
     /// back to the start of a table that runs on)
     carry_unsure: bool,
@@ -926,6 +952,7 @@ impl<'p> Converter<'p> {
             spent: 0,
             report: Report::default(),
             carry: stitch::Carry::default(),
+            join_tables: None,
             carry_unsure,
             carry_unsure_at_first: false,
             context_lines: 0,
@@ -1017,10 +1044,39 @@ impl<'p> Converter<'p> {
         self.linker = extract::layout::Linker::new(style);
     }
 
+    /// Join compatible tables across adjoining pages without removing page slots.
+    /// Call before reading input. Image/continuation marker mode keeps tables page-local.
+    pub fn enable_page_table_joining(&mut self) -> bool {
+        if self.o.markers || self.received != 0 {
+            return false;
+        }
+        self.join_tables = Some(table_join::TableJoiner::new(self.win.furniture.unwrap_or(16).clamp(1, 64)));
+        true
+    }
+
+    fn emit_joined_pages(&mut self, pages: Vec<table_join::JoinPage>, out: &mut dyn FnMut(usize, String)) {
+        for page in pages {
+            let body = page.layout.markdown(self.o.tables, self.o.math);
+            let body = with_scan_marker(page.scan_marker, body);
+            out(page.index, self.written_with_notes(page.number, page.notes, body));
+        }
+    }
+
+    fn flush_joined_pages(&mut self, out: &mut dyn FnMut(usize, String)) {
+        if let Some(joiner) = &mut self.join_tables {
+            let pages = joiner.flush();
+            self.emit_joined_pages(pages, out);
+        }
+    }
+
     /// A page's Markdown as written: its page marker, then (with markers or page markers)
     /// neutralised PDF text and the converter's markers expanded (see [`images::unseal`]). The
     /// notes of the page (from `first_note`) get their links.
     fn written(&mut self, number: u32, first_note: usize, md: String) -> String {
+        self.written_with_notes(number, first_note..self.report.images.len(), md)
+    }
+
+    fn written_with_notes(&mut self, number: u32, notes: std::ops::Range<usize>, md: String) -> String {
         let md = if self.o.page_markers {
             self.report.page_numbers.get_or_insert_with(Vec::new).push(number);
             let m = format!("<!-- doppler{}:page {number} -->", self.seal);
@@ -1031,9 +1087,9 @@ impl<'p> Converter<'p> {
         if !self.o.markers && !self.o.page_markers {
             return md;
         }
-        let first = first_note.min(self.report.images.len());
-        self.linker.assign(&mut self.report.images[first..]);
-        let notes = &self.report.images[first..];
+        let len = self.report.images.len();
+        let notes = &mut self.report.images[notes.start.min(len)..notes.end.min(len)];
+        self.linker.assign(notes);
         let links: std::collections::HashMap<&str, &str> =
             notes.iter().filter_map(|n| Some((n.id.as_str(), n.link.as_deref()?))).collect();
         let linker = &self.linker;
@@ -1104,6 +1160,10 @@ impl<'p> Converter<'p> {
         self.decide_headings(true);
         while !self.ahead.is_empty() {
             self.write_next(out);
+        }
+        self.flush_joined_pages(out);
+        if let Some(joiner) = self.join_tables.take() {
+            (self.report.joined_tables, self.report.joined_tables_dropped) = joiner.reports();
         }
         // the parse report covers the written pages only
         let context = self.received - (self.next_emitted());
@@ -1289,6 +1349,7 @@ impl<'p> Converter<'p> {
             self.carry = stitch::Carry::default();
             let md = plain_lines(&page, &drop);
             let first = self.report.images.len();
+            self.flush_joined_pages(out);
             out(pi, self.written(marked, first, md));
             return;
         }
@@ -1356,7 +1417,8 @@ impl<'p> Converter<'p> {
         self.spent += placing.used;
         let doc_left = doc_left - placing.used as f64;
         let mut budget = Budget::new(pyc::pmin(p.max_page_work, doc_left));
-        let md = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures) {
+        let layout = match PageLayout::within(&page, &drop, body, &body_color, p, self.o.tables, &mut budget, &figures)
+        {
             Some(mut layout) => {
                 if let Some(table) = &mut self.headings {
                     layout.relevel(table, p, &mut budget);
@@ -1364,7 +1426,7 @@ impl<'p> Converter<'p> {
                 if self.o.markers {
                     self.carry = layout.stitch(&self.carry, page.height, p, &self.seal);
                 }
-                layout.markdown(self.o.tables, self.o.math)
+                Ok(layout)
             }
             None => {
                 let why = if p.max_page_work <= doc_left { Degraded::PageWork } else { Degraded::DocWork };
@@ -1385,20 +1447,47 @@ impl<'p> Converter<'p> {
                         n.degraded = true;
                     }
                 }
-                md
+                Err(md)
             }
         };
         if self.report.images.len() > MAX_DOC_IMAGES {
             self.report.images_notes_dropped += self.report.images.len() - MAX_DOC_IMAGES;
             self.report.images.truncate(MAX_DOC_IMAGES);
         }
+        let body = match (layout, &mut self.join_tables) {
+            (Ok(layout), Some(joiner)) => {
+                let notes = first_note..self.report.images.len();
+                let pending = table_join::JoinPage {
+                    index: pi,
+                    number: marked,
+                    width: page.width,
+                    height: page.height,
+                    layout,
+                    notes,
+                    scan_marker,
+                };
+                let ready = joiner.push(pending, &mut budget);
+                self.emit_joined_pages(ready, out);
+                None
+            }
+            (Ok(layout), None) => Some(with_scan_marker(scan_marker, layout.markdown(self.o.tables, self.o.math))),
+            (Err(md), _) => {
+                self.flush_joined_pages(out);
+                Some(with_scan_marker(scan_marker, md))
+            }
+        };
         self.spent += budget.used;
         self.report.page_work_max = self.report.page_work_max.max(budget.used);
-        let md = match scan_marker {
-            Some(m) if md.is_empty() => m,
-            Some(m) => format!("{m}\n\n{md}"),
-            None => md,
-        };
-        out(pi, self.written(marked, first_note, md));
+        if let Some(md) = body {
+            out(pi, self.written(marked, first_note, md));
+        }
+    }
+}
+
+fn with_scan_marker(marker: Option<String>, md: String) -> String {
+    match marker {
+        Some(m) if md.is_empty() => m,
+        Some(m) => format!("{m}\n\n{md}"),
+        None => md,
     }
 }

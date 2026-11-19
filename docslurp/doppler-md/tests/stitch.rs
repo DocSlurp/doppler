@@ -196,3 +196,109 @@ fn a_title_block_of_small_print_above_the_next_table_starts_a_new_table() {
     let out = convert_with(&xhtml, true);
     assert!(!out[1].contains("table-continued"), "{}", out[1]);
 }
+
+fn join(xhtml: &str, window: Option<usize>) -> (Vec<String>, doppler_md::Report) {
+    use doppler_md::model::Parser;
+    let params = Params::default();
+    let mut converter = doppler_md::Converter::new(&params, Options::default(), window);
+    assert!(converter.enable_page_table_joining());
+    let mut parser = Parser::new();
+    let mut pages = Vec::new();
+    {
+        let mut convert = |page| {
+            converter.push(page, &mut |n, md| {
+                assert_eq!(n, pages.len());
+                pages.push(md);
+            })
+        };
+        parser.push(xhtml, &mut convert);
+    }
+    let parse = parser.finish(&mut |page| {
+        converter.push(page, &mut |n, md| {
+            assert_eq!(n, pages.len());
+            pages.push(md);
+        })
+    });
+    let report = converter.finish(parse, &mut |n, md| {
+        assert_eq!(n, pages.len());
+        pages.push(md);
+    });
+    (pages, report)
+}
+
+#[test]
+fn joined_table_keeps_page_slots_and_reports_span() {
+    let first = page(&table(560.0, Some(HEADER), 1));
+    for header in [Some(HEADER), None] {
+        let second = page(&(text(60.0, "Table 2 (continued)") + &table(90.0, header, 9)));
+        let source = first.clone() + &second;
+        let (pages, report) = join(&source, None);
+        assert_eq!(pages.len(), 2);
+        assert!(pages[1].is_empty(), "{pages:#?}");
+        assert_eq!(pages[0].matches("| Name | Quantity | Price |").count(), 1);
+        assert!(pages[0].contains("| Item16 |"), "{pages:#?}");
+        assert_eq!(report.joined_tables, [doppler_md::JoinedTable { start_page: 1, end_page: 2, rows: 17 }]);
+        let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        assert_eq!(json["joinedTables"][0]["endPage"], 2);
+        let (streamed, _) = join(&source, Some(4));
+        assert_eq!(streamed, pages);
+    }
+}
+
+#[test]
+fn page_table_join_respects_body_barriers_and_bound() {
+    let first = page(&table(560.0, Some(HEADER), 1));
+    let second = page(&table(60.0, Some(HEADER), 9));
+    let source = first.clone() + &second;
+    let (pages, report) = join(&source, Some(1));
+    assert_eq!(pages, convert(&source, false));
+    assert!(report.joined_tables.is_empty());
+
+    let blocked = page(
+        &(text(60.0, "A new paragraph begins and makes this a completely different table.")
+            + &table(190.0, Some(HEADER), 9)),
+    );
+    let source = first + &blocked;
+    let (pages, report) = join(&source, None);
+    assert_eq!(pages, convert(&source, false));
+    assert!(report.joined_tables.is_empty());
+}
+
+fn long_ruled_table(first: usize, rows: usize, top: f64) -> String {
+    let size = 16.0;
+    let bottom = top + size * (rows + 1) as f64;
+    let mut content = row(top + 2.0, HEADER);
+    for n in 0..rows {
+        let i = first + n;
+        content += &row(
+            top + size * (n + 1) as f64 + 2.0,
+            [&format!("Item{i}"), &format!("{}", 10 + i), &format!("{}.50", 3 + i)],
+        );
+    }
+    for i in 0..=rows + 1 {
+        let y = top + size * i as f64;
+        content += &format!(r##"<rule xMin="65" xMax="455" yMin="{y}" yMax="{y}" color="#000000"/>"##);
+    }
+    for x in [65, 205, 355, 455] {
+        content += &format!(r##"<rule xMin="{x}" xMax="{x}" yMin="{top}" yMax="{bottom}" color="#000000"/>"##);
+    }
+    content
+}
+
+#[test]
+fn ruled_chain_groups_pages_and_flushes_at_the_window_limit() {
+    let first = page(&long_ruled_table(1, 8, 590.0));
+    let middle = page(&long_ruled_table(9, 28, 60.0));
+    let last = page(&long_ruled_table(37, 8, 60.0));
+    let source = first + &middle + &last;
+    let (pages, report) = join(&source, None);
+    assert_eq!(pages.len(), 3);
+    assert!(pages[1].is_empty() && pages[2].is_empty(), "{pages:#?}");
+    assert_eq!(report.joined_tables, [doppler_md::JoinedTable { start_page: 1, end_page: 3, rows: 45 }]);
+    assert_eq!(join(&source, Some(4)).0, pages);
+
+    let (bounded, report) = join(&source, Some(2));
+    assert!(bounded[1].is_empty());
+    assert!(bounded[2].contains("| Item37 |"));
+    assert_eq!(report.joined_tables, [doppler_md::JoinedTable { start_page: 1, end_page: 2, rows: 37 }]);
+}

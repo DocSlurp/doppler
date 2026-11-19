@@ -69,6 +69,11 @@ impl<'p> Run<'p> {
         self.conv.set_link_style(style);
     }
 
+    #[allow(dead_code)] // pdftomarkdown only
+    pub fn enable_page_table_joining(&mut self) -> bool {
+        self.conv.enable_page_table_joining()
+    }
+
     /// Converts everything `input` yields. Stops early, with `Ok`, once stdout fails (the error
     /// is reported by [`Run::finish`]).
     pub fn read_from(&mut self, input: &mut dyn Read) -> std::io::Result<()> {
