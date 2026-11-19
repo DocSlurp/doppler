@@ -1653,7 +1653,7 @@ pub fn ruled_tables(
     let gap = p.rule_row_gap * body;
     // the lines between two rules (middles strictly between, centres inside x0..x1) are table
     // rows: some split into cells, none is a long line of prose
-    let body_rows = |a: f64, b: f64, x0: f64, x1: f64| {
+    let body_rows = |a: f64, b: f64, x0: f64, x1: f64, budget: &mut Budget| {
         let lo = by_mid.partition_point(|&(m, _)| m <= a);
         let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
         if hi - lo > 400 {
@@ -1662,6 +1662,9 @@ pub fn ruled_tables(
         let (mut cells, mut any) = (false, false);
         for &(_, i) in &by_mid[lo..hi] {
             let l = &lines[i];
+            if !budget.spend(1 + l.words.len()) {
+                return false;
+            }
             let mx = (l.x0 + l.x1) / 2.0;
             if mx < x0 - 2.0 || mx > x1 + 2.0 {
                 continue;
@@ -1684,11 +1687,11 @@ pub fn ruled_tables(
     // whether the lines between two rules are one row of cells whose first cell wraps (one
     // baseline with several cells, the other lines starting where that row starts), and how
     // many rows of cells they hold
-    let one_row_band = |a: f64, b: f64, x0: f64, x1: f64| {
+    let one_row_band = |a: f64, b: f64, x0: f64, x1: f64, budget: &mut Budget| {
         let lo = by_mid.partition_point(|&(m, _)| m <= a);
         let hi = by_mid.partition_point(|&(m, _)| m < b).max(lo);
         if hi - lo > 200 {
-            return (false, usize::MAX);
+            return Some((false, usize::MAX));
         }
         let ids: Vec<usize> = by_mid[lo..hi]
             .iter()
@@ -1698,6 +1701,12 @@ pub fn ruled_tables(
                 x0 - 2.0 <= mx && mx <= x1 + 2.0
             })
             .collect();
+        // Segment counts are inspected up to five times per candidate.
+        for &i in &ids {
+            if !budget.spend(5 * lines[i].words.len()) {
+                return None;
+            }
+        }
         // (base, several cells) of each line, by base: each test below is a binary search
         let mut by_base: Vec<(f64, bool)> =
             ids.iter().map(|&i| (lines[i].base(), segment_count(&lines[i], p) >= 2)).collect();
@@ -1730,7 +1739,7 @@ pub fn ruled_tables(
         let size = ids.iter().map(|&i| lines[i].size()).fold(1.0, pmax);
         let fills = top - a <= 0.8 * size && b - bottom <= 0.8 * size;
         let wrapped = ids.iter().any(|&i| !in_row(i));
-        (!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows)
+        Some((!ids.is_empty() && ids.len() <= 12 && rows == 1 && wraps_first && wrapped && fills, rows))
     };
     // the joined horizontal rules, kept for the booktabs test below (thin stroked rules only:
     // a rule drawn as a filled bar gives two edges, and such groups split as they always did)
@@ -1744,12 +1753,12 @@ pub fn ruled_tables(
         // a horizontal-only (booktabs) table: its top, middle and bottom rules span the table
         // and can be far apart around a tall body; a rule of the group's width takes a longer
         // gap when the lines between are short table cells, never prose
-        let long_gap = |g: &Group, l: f64| {
+        let mut long_gap = |g: &Group, l: f64| {
             let w = g.x1 - g.x0;
             (x0 - g.x0).abs() <= 0.05 * w + 2.0
                 && (x1 - g.x1).abs() <= 0.05 * w + 2.0
                 && y - l <= 4.0 * gap
-                && body_rows(l, y, g.x0, g.x1)
+                && body_rows(l, y, g.x0, g.x1, budget)
         };
         open.retain(|&gi| {
             let g = &groups[gi];
@@ -1764,6 +1773,9 @@ pub fn ruled_tables(
             }
             true
         });
+        if !budget.spend(0) {
+            return None;
+        }
         match hit.map(|gi| &mut groups[gi]) {
             Some(g) => {
                 g.ys.push(y);
@@ -1854,14 +1866,19 @@ pub fn ruled_tables(
             if !budget.spend(ys.len() + 2 * (hi - lo)) {
                 return None;
             }
-            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1)).collect()
+            ys.windows(2).map(|w| one_row_band(w[0], w[1], g.x0, g.x1, budget)).collect::<Option<_>>()?
         } else {
             Vec::new()
         };
         let multi_bands = bands.iter().filter(|b| b.1 > 1).count();
         // a rule under every row: no band between two rules holds two rows of cells
         // (thin stroked rules across the whole group, no vertical rule, each band one row)
-        let full_rule = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
+        if !budget.scan(hs.len()) {
+            return None;
+        }
+        let min_full_width = 0.9 * (g.x1 - g.x0);
+        let full_ys: Vec<f64> = hs.iter().filter(|r| r.1 - r.0 >= min_full_width).map(|r| r.2).collect();
+        let full_rule = |y: f64| near_any(&full_ys, y, 1.5);
         let every_row_ruled = v.is_empty()
             && ys.len() >= 4
             && !bands.is_empty()
@@ -1872,15 +1889,17 @@ pub fn ruled_tables(
             let (a, b) = (w[0], w[1]);
             // (a booktabs body between a middle and a bottom rule that both span the table is
             // no jump; column underlines of an accounting table are not such rules)
-            let full = |y: f64| hs.iter().any(|r| (r.2 - y).abs() <= 1.5 && r.1 - r.0 >= 0.9 * (g.x1 - g.x0));
             // (not in a group ruled row by row: when every other band holds one row at most,
             // a tall band of several rows is the gap between two stacked tables)
             let band = bands.get(k).copied().unwrap_or((false, usize::MAX));
             let row_ruled = ys.len() >= 5 && !bands.is_empty() && multi_bands - (band.1 > 1) as usize == 0;
-            let booktabs_body = v.is_empty() && !row_ruled && full(a) && full(b) && body_rows(a, b, g.x0, g.x1);
+            let booktabs_body = v.is_empty() && !row_ruled && full_rule(a) && full_rule(b) && body_rows(a, b, g.x0, g.x1, budget);
             // (nor is a band that holds one row whose cell wraps to several lines: a rule after
             // every row, one row taller than the rest)
             let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body && !(band.0 && every_row_ruled);
+            if !budget.spend(0) {
+                return None;
+            }
             if jump || caption_band(a, b, budget)? {
                 split.push(Group { x0: g.x0, x1: g.x1, ys: std::mem::take(&mut cur) });
             }
