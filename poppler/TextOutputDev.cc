@@ -6157,7 +6157,8 @@ void TextOutputDev::endPage()
         }
     }
     text->endPage();
-    if (facts) {
+    // finishPage reports a page failure without derived facts if the device did not finish it.
+    if (facts && !getContentTruncated()) {
         facts->endPage(*text);
     }
     if (wordsOnly) {

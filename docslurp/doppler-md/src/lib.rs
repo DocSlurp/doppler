@@ -310,6 +310,8 @@ impl Degraded {
 /// What a conversion skipped, lost or simplified, alongside its Markdown.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
+    /// At least one page read from the producer was incomplete, even if context-only.
+    pub content_truncated: bool,
     pub parse: ParseReport,
     /// (0-based page index, reason) of every page read as plain lines
     pub degraded: Vec<(usize, Degraded)>,
@@ -943,6 +945,10 @@ impl<'p> Converter<'p> {
         self.body.as_ref().map(|(s, c)| (*s, c.as_str()))
     }
 
+    pub fn content_truncated(&self) -> bool {
+        self.report.content_truncated
+    }
+
     /// Whether the page read at local index `i` is written (not context).
     fn emitted(&self, i: usize) -> bool {
         i >= self.win.skip && self.win.emit.is_none_or(|e| i - self.win.skip < e)
@@ -1039,6 +1045,7 @@ impl<'p> Converter<'p> {
     /// Adds the next page; passes (page index, Markdown) to `out` for each page whose window
     /// is now complete. Page indices count the written pages only (context pages are not).
     pub fn push(&mut self, mut page: Page, out: &mut dyn FnMut(usize, String)) {
+        self.report.content_truncated |= page.content_truncated;
         let local = self.received;
         let emitted = self.emitted(local);
         if !emitted {

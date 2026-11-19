@@ -1302,7 +1302,7 @@ int EmbedStream::getUnfilteredChar()
 int EmbedStream::lookChar()
 {
     if (budget && budget->remaining() == 0) {
-        budget->truncated = true;
+        budget->refuse();
         return EOF;
     }
     if (replay) {
@@ -1326,7 +1326,7 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
     if (budget) {
         nChars = std::min<uint64_t>(nChars, budget->remaining());
         if (nChars == 0) {
-            budget->truncated = true;
+            budget->refuse();
             return 0;
         }
     }
@@ -1335,7 +1335,7 @@ int EmbedStream::getChars(int nChars, unsigned char *buffer)
         if (budget && len > 0) {
             budget->spend(len);
             if (budget->remaining() == 0 && len < requested) {
-                budget->truncated = true;
+                budget->refuse();
             }
         }
     };

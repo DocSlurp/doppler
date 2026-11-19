@@ -704,7 +704,7 @@ fn convert(
         Some(mut out) => run.read_from(&mut out),
         None => Ok(()),
     };
-    if estimate && read.is_ok() && run.body_known() {
+    if estimate && read.is_ok() && run.body_known() && !run.content_truncated() {
         // the sample is complete: the rest of the document is not needed
         let _ = child.kill();
         let _ = child.wait();
@@ -767,12 +767,17 @@ fn convert(
             Some(6) => eprintln!(
                 "pdftomarkdown: pdftotext ran past its time limit (status 6; see --text-timeout); no Markdown"
             ),
+            Some(7) => eprintln!("pdftomarkdown: pdftotext exhausted its decoded content byte budget (status 7); output is incomplete"),
             Some(n) => eprintln!("pdftomarkdown: {} exited with status {n}", exe.display()),
             None => eprintln!("pdftomarkdown: {} {}", exe.display(), status),
         }
         return ExitCode::FAILURE;
     }
     let (mut report, written) = run.finish_report();
+    if report.content_truncated {
+        eprintln!("pdftomarkdown: decoded content byte budget exhausted; output is incomplete");
+        return ExitCode::FAILURE;
+    }
     if estimate {
         // every page read is context here (none is written): the estimate stands when any was
         // read. The sample ended with the input (a short document or range, or no window)

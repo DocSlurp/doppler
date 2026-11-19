@@ -1089,6 +1089,7 @@ public:
     const std::vector<TextRule> &getRules() const;
     bool getRulesTruncated() const;
     bool getContentTruncated() const { return contentReadBudget.truncated; }
+    bool contentWasTruncated() const { return contentReadBudget.hadTruncated; }
     void enableContentReadBudget() { contentReadBudgetEnabled = true; }
     ContentReadBudget *getContentReadBudget() override { return contentReadBudgetEnabled ? &contentReadBudget : nullptr; }
 

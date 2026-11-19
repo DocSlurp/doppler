@@ -19,10 +19,16 @@ struct ContentReadBudget
 
     uint64_t remaining() const { return std::min(pageRemaining, runRemaining); }
 
+    void refuse()
+    {
+        truncated = true;
+        hadTruncated = true;
+    }
+
     bool spend(uint64_t bytes = 1)
     {
         if (bytes > remaining()) {
-            truncated = true;
+            refuse();
             return false;
         }
         pageRemaining -= bytes;
@@ -34,6 +40,7 @@ struct ContentReadBudget
     uint64_t runRemaining = runLimit;
     bool truncated = false;
     bool warned = false;
+    bool hadTruncated = false;
 };
 
 #endif

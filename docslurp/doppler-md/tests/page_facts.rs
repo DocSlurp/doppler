@@ -423,6 +423,35 @@ fn a_closed_facts_reader_keeps_the_markdown() {
 }
 
 #[test]
+fn incomplete_content_prevents_image_plan_and_body_estimate() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Scratch::new("incomplete-content");
+    let pdf = s.0.join("doc.pdf");
+    std::fs::write(&pdf, make_pdf()).unwrap();
+    let producer = s.0.join("text.sh");
+    let plan = s.0.join("image-plan.json");
+    for status in [0, 7] {
+        std::fs::write(
+            &producer,
+            format!("#!/bin/sh\nprintf '%s\\n' '<doc><page contentTruncated=\"1\"></page></doc>'\nexit {status}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&producer, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let output = md(&producer, &["--markers", "--images-plan-out", plan.to_str().unwrap()], &pdf);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("output is incomplete"));
+        assert!(std::fs::read(&plan).unwrap_or_default().is_empty());
+        let _ = std::fs::remove_file(&plan);
+
+        let output = md(&producer, &["--estimate-body"], &pdf);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
 fn facts_file_appears_before_image_extraction() {
     let Some((pdftotext, _)) = tools() else { return };
     let s = Scratch::new("early");

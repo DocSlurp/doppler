@@ -378,6 +378,10 @@ int main(int argc, char *argv[])
         if (!writeOut(facts.finishPage(page, millisecondsSince(pageStart)))) {
             return fail(exitOpenError, "cannot write output");
         }
+        if (textOut.getContentTruncated()) {
+            // Leave the facts stream without a completion record.
+            return fail(exitLimit, "decoded content byte budget exhausted");
+        }
     }
     if (!writeOut(facts.runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), stop))) {
         return fail(exitOpenError, "cannot write output");

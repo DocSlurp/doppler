@@ -59,6 +59,10 @@ impl<'p> Run<'p> {
         self.conv.body().is_some()
     }
 
+    pub fn content_truncated(&self) -> bool {
+        self.conv.content_truncated()
+    }
+
     /// The links of marked images (see [`doppler_md::extract::layout`]); before any input.
     #[allow(dead_code)] // pdftomarkdown only
     pub fn set_link_style(&mut self, style: doppler_md::extract::layout::LinkStyle) {
@@ -78,7 +82,7 @@ impl<'p> Run<'p> {
             };
             self.decode(&buf[..n], false);
             self.feed();
-            if self.stop_at_body && self.conv.body().is_some() {
+            if self.stop_at_body && self.conv.body().is_some() && !self.content_truncated() {
                 return Ok(());
             }
         }
@@ -145,6 +149,10 @@ pub fn conclude(
 ) -> ExitCode {
     if want_report {
         eprintln!("{}", report.to_json());
+    }
+    if report.content_truncated {
+        eprintln!("{prog}: decoded content byte budget exhausted; output is incomplete");
+        return ExitCode::FAILURE;
     }
     if !report.page_found() {
         eprintln!("{prog}: {no_page}");

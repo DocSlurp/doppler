@@ -33,16 +33,25 @@ int main(int argc, char **argv)
         return 2;
     }
     BudgetedTextOutputDev text;
-    auto draw = [&] { doc.displayPage(&text, 1, 72, 72, 0, true, false, false); };
+    PageFacts facts(PageFacts::AllFamilies);
+    text.setPageFacts(&facts);
+    auto draw = [&] {
+        facts.beginPage(1);
+        doc.displayPage(&text, 1, 72, 72, 0, true, false, false);
+        return facts.finishPage(1, 0);
+    };
     auto *budget = text.getContentReadBudget();
 
-    draw();
+    const auto incomplete = draw();
+    if (incomplete.find("\"error\":\"failed\"") == std::string::npos || incomplete.find("\"geometry\"") != std::string::npos) {
+        return 1;
+    }
     if (!budget->truncated || budget->pageRemaining != 0 || budget->runRemaining != ContentReadBudget::runLimit - 1) {
         return 1;
     }
     text.lowerPageLimit = false;
     draw();
-    if (budget->truncated) {
+    if (budget->truncated || !text.contentWasTruncated()) {
         return 1;
     }
 

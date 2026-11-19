@@ -1339,6 +1339,7 @@ int main(int argc, char *argv[])
     }
 
     // write text file
+    bool contentTruncated = false;
     if (htmlMeta && bbox) { // htmlMeta && is superfluous but makes gcc happier
         TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
         textOut.enableContentReadBudget();
@@ -1361,6 +1362,7 @@ int main(int argc, char *argv[])
                 printWordBBox(f, doc.get(), &textOut, firstPage, lastPage);
             }
         }
+        contentTruncated = textOut.contentWasTruncated();
         if (f != stdout) {
             fclose(f);
         }
@@ -1379,6 +1381,7 @@ int main(int argc, char *argv[])
                 }
             }
             printTSVBBox(f, doc.get(), &textOut, firstPage, lastPage);
+            contentTruncated = textOut.contentWasTruncated();
             if (f != stdout) {
                 fclose(f);
             }
@@ -1406,10 +1409,11 @@ int main(int argc, char *argv[])
             } else {
                 return 2;
             }
+            contentTruncated = textOut.contentWasTruncated();
         }
     }
 
-    if (pageFacts) {
+    if (pageFacts && !contentTruncated) {
         writeFactsLine(pageFacts->runLine(PACKAGE_VERSION, DOPPLER_COMMIT, millisecondsSince(runStart), nullptr));
     }
 
@@ -1433,6 +1437,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A distinct status also covers quiet or plain-text paths without an XHTML marker.
+    if (contentTruncated) {
+        return 7;
+    }
     if (pageFactsWriteFailed) {
         // the text output is complete: its own exit code, so a caller can keep it
         error(errIO, -1, "Couldn't write the page facts");
