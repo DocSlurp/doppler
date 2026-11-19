@@ -2465,6 +2465,7 @@ std::vector<RuleTable> ruleTables(const std::vector<TextRule> &rules, const std:
             }
             i = j;
         }
+        *truncated = *truncated || i < bands.size();
     }
     std::ranges::sort(out, [](const RuleTable &a, const RuleTable &b) { return a.y0 < b.y0 || (a.y0 == b.y0 && a.x0 < b.x0); });
     return out;
@@ -2564,7 +2565,8 @@ std::vector<RuleTable> whitespaceTables(const std::vector<AWord> &words, double 
                     b = { std::min(b.x0, w->x0), std::min(b.y0, w->y0), std::max(b.x1, w->x1), std::max(b.y1, w->y1) };
                 }
                 out.push_back({ b.x0, b.y0, b.x1, b.y1, c.rows, c.gutters + 1, 0, false, c.words ? double(c.mathWords) / double(c.words) : 0.0 });
-                if (out.size() >= maxRuleTables) {
+                if (out.size() >= maxRuleTables && j < rows.size()) {
+                    budget.hit = true;
                     return out;
                 }
             }
@@ -2798,7 +2800,7 @@ size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<Flow
     };
     // each row against the next two (text on the math axis, "= ad - bc", can lie between two
     // matrix rows), when within 1.8 heights
-    for (size_t pr = 0; pr + 1 < 2 * rows.size() && found < maxRegions; ++pr) {
+    for (size_t pr = 0; pr + 1 < 2 * rows.size(); ++pr) {
         const size_t r = pr / 2, r2 = r + 1 + pr % 2;
         if (r2 >= rows.size()) {
             continue;
@@ -2917,6 +2919,10 @@ size_t delimitedMatrices(const std::vector<AWord> &words, const std::vector<Flow
                     }
                 }
                 if (clear && side(g, true) && side(g, false)) {
+                    if (found == maxRegions) {
+                        budget.hit = true;
+                        return found;
+                    }
                     ++found;
                     boxes->push_back({ g.x0, std::min(g.y0, ay0), g.x1, std::max(g.y1, by1) });
                 }
@@ -3023,7 +3029,8 @@ struct PageFacts::State
     const TextFontInfo *mathLastInfo = nullptr;
     MathFont mathLast {};
     uint64_t markedActual = 0, markedActualTex = 0; // marked-content /ActualText spans
-    bool markedTexUnknown = false; // a span longer than the scanned prefix with no TeX in it
+    size_t actualTextBudget = size_t(1) << 20;
+    bool markedTexUnknown = false; // at least one span could not be classified
 
     void reset(int num)
     {
@@ -3733,6 +3740,15 @@ void PageFacts::onActualText(const std::string &text)
 {
     if (wants(MathTables) && st->begun) {
         ++st->markedActual;
+        // Charge the maximum scanned prefix and a unit for visiting even empty spans.
+        const size_t cost = 1 + std::min(text.size(), 2 + 2 * maxTexScan);
+        if (cost > std::min(st->actualTextBudget, actualTextBudget)) {
+            st->actualTextBudget = 0;
+            st->markedTexUnknown = true;
+            return;
+        }
+        st->actualTextBudget -= cost;
+        actualTextBudget -= cost;
         const TexVerdict v = texLike(text);
         st->markedActualTex += v == texYes;
         st->markedTexUnknown = st->markedTexUnknown || v == texUnknown;

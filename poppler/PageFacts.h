@@ -234,6 +234,9 @@ private:
     static constexpr size_t maxBarComparisons = size_t(1) << 28;
     size_t barBudget = maxBarComparisons;
 
+    // Bytes and per-span overhead remaining for ActualText detection across the run.
+    size_t actualTextBudget = size_t(1) << 26;
+
     // the current page
     struct State;
     State *st;
