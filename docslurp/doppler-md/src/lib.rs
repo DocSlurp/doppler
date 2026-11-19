@@ -426,7 +426,7 @@ impl Report {
                 let (x0, y0, x1, y1) = r.bbox;
                 items.push(format!(
                     "{{\"page\":{},\"bbox\":[{:.2},{:.2},{:.2},{:.2}],\"reason\":\"{}\"}}",
-                    i + 1,
+                    m.document_page.map_or(i + 1, |page| page as usize),
                     coord(x0),
                     coord(y0),
                     coord(x1),
@@ -456,7 +456,7 @@ impl Report {
                     .iter()
                     .enumerate()
                     .filter(|(_, m)| f(m))
-                    .map(|(i, _)| (i + 1).to_string())
+                    .map(|(i, m)| m.document_page.map_or(i + 1, |page| page as usize).to_string())
                     .collect::<Vec<_>>()
                     .join(",")
             };
@@ -1053,7 +1053,7 @@ impl<'p> Converter<'p> {
             }
         }
         if self.o.math {
-            let (lines, stats) = math::rewrite_page_with(&page, &math::MathOptions::default(), Some(self.p));
+            let (lines, mut stats) = math::rewrite_page_with(&page, &math::MathOptions::default(), Some(self.p));
             page.lines = lines;
             if emitted {
                 let pi = local - self.win.skip;
@@ -1062,6 +1062,8 @@ impl<'p> Converter<'p> {
                 } else if stats.unreadable {
                     self.report.degraded.push((pi, Degraded::UnreadableText));
                 }
+                let first_page = self.o.first_page.unwrap_or(self.win.first_page);
+                stats.document_page = Some(page.number.unwrap_or(first_page.saturating_add(local as u32)));
                 self.report.math.push(stats);
             }
         }

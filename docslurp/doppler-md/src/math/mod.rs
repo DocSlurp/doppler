@@ -60,6 +60,8 @@ impl Default for MathOptions {
 /// What the math reader did on one page.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageMath {
+    /// Document page number when collected by the converter.
+    pub document_page: Option<u32>,
     pub inline: usize,
     pub display: usize,
     /// formulas taken from ActualText LaTeX
