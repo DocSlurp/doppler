@@ -392,6 +392,7 @@ pub(crate) fn group_within(
                     text: Rc::from(""),
                     bold: false,
                     italic: false,
+                    math_font: false,
                     size: line.size(),
                     base: line.base(),
                     space: true,

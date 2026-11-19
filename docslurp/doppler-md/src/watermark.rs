@@ -436,6 +436,7 @@ mod tests {
             text: Rc::from(text),
             bold: false,
             italic: false,
+            math_font: false,
             size,
             base: y + 0.8 * size,
             space: true,

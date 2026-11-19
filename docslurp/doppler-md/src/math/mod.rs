@@ -2004,6 +2004,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     text: Rc::from(text),
                     bold: false,
                     italic: false,
+                    math_font: false,
                     size: if *fsize > 0.0 { *fsize } else { first.size },
                     base: first.base,
                     space: if ends_word { last.space } else { false },

@@ -18,6 +18,7 @@ fn word(x0: f64, x1: f64, y: f64, text: &str) -> Word {
         text: Rc::from(text),
         bold: false,
         italic: false,
+        math_font: false,
         size: 10.0,
         base: y + 8.0,
         space: true,
@@ -237,6 +238,76 @@ fn table_grid_from_gutters() {
     );
     // the kept column intervals travel with the rows (for header lines above the table)
     assert_eq!(grid.cols, cols);
+}
+
+#[test]
+fn booktabs_wrapped_word_does_not_create_a_column() {
+    let mut source = String::from(
+        r##"<doc><page width="600" height="620">
+        <rule xMin="40" yMin="175" xMax="385" yMax="175" color="#000000"/>
+        <rule xMin="40" yMin="204" xMax="385" yMax="204" color="#000000"/>
+        <rule xMin="40" yMin="340" xMax="385" yMax="340" color="#000000"/>
+        <flow><block>"##,
+    );
+    let rows = [
+        (194., &[(60., "Name"), (150., "Note"), (310., "Score")][..]),
+        (225., &[(60., "A"), (150., "Alpha"), (310., "12")][..]),
+        (261., &[(60., "B"), (150., "Beta and"), (310., "32")][..]),
+        (276., &[(150., "|"), (241., "Gamma")][..]),
+        (311., &[(60., "C"), (150., "Delta"), (310., "42")][..]),
+    ];
+    for (baseline, cells) in rows {
+        source.push_str("<line>");
+        for &(x, word) in cells {
+            source.push_str(&format!(
+                "<word xMin=\"{x}\" xMax=\"{}\" yMin=\"{}\" yMax=\"{}\" fontName=\"Helvetica\" fontSize=\"12\" baseline=\"{baseline}\">{word}</word>",
+                x + word.len() as f64 * 6., baseline - 8., baseline + 3.,
+            ));
+        }
+        source.push_str("</line>");
+    }
+    source.push_str("</block></flow></page></doc>");
+    let markdown = to_markdown(&source, &Params::default()).join("\n");
+    assert!(markdown.contains("| Name | Note | Score |"), "{markdown}");
+    assert!(markdown.contains(r"| B | Beta and \| Gamma | 32 |"), "{markdown}");
+}
+
+#[test]
+fn stacked_math_numerals_do_not_split_a_table_row() {
+    use doppler_md::model::parse;
+    use doppler_md::tables::visual_rows;
+
+    let params = Params::default();
+    let cols = [(10., 70.), (100., 170.), (200., 270.)];
+    let data = [
+        (20., &[(10., "Formula"), (100., "Ratio"), (200., "Limit")][..]),
+        (45., &[(10., "A"), (100., "12"), (200., "9")][..]),
+        (52., &[(100., "4"), (200., "2")][..]),
+        (75., &[(10., "B"), (100., "34"), (200., "7")][..]),
+    ];
+    for (font, expected) in [("ABCDEF+CMMI10", 3), ("Helvetica", 4)] {
+        let mut source = String::from("<doc><page width=\"300\" height=\"300\"><flow><block>");
+        for (baseline, words) in data {
+            source.push_str("<line>");
+            for &(x, word) in words {
+                let name = if baseline == 52. { font } else { "Helvetica" };
+                source.push_str(&format!(
+                    "<word xMin=\"{x}\" xMax=\"{}\" yMin=\"{}\" yMax=\"{}\" fontName=\"{name}\" fontSize=\"10\" baseline=\"{baseline}\">{word}</word>",
+                    x + 20., baseline - 8., baseline + 2.,
+                ));
+            }
+            source.push_str("</line>");
+        }
+        source.push_str("</block></flow></page></doc>");
+        let pages = parse(&source);
+        let page = &pages[0];
+        let rows = visual_rows(page, &(0..page.lines.len()).collect::<Vec<_>>(), &params);
+        let grid = build_grid(&rows, &cols, &params);
+        assert_eq!(grid.rows.len(), expected, "{font}: {:?}", grid.rows);
+        if expected == 3 {
+            assert_eq!(grid.rows[1], ["A", "12 4", "9 2"]);
+        }
+    }
 }
 
 #[test]

@@ -46,6 +46,8 @@ pub struct Word {
     pub text: Rc<str>,
     pub bold: bool,
     pub italic: bool,
+    /// The producer identified the word's font as a math or symbol font.
+    pub math_font: bool,
     pub size: f64,
     pub base: f64,
     pub space: bool,
@@ -1133,7 +1135,7 @@ impl ParseState {
         let mut a = Attrs([None; KEYS.len()]);
         let mut scan = Scan::new();
         // font names repeat word after word: cache the last style
-        let mut last_font: Option<(&str, (bool, bool))> = None;
+        let mut last_font: Option<(&str, (bool, bool, bool))> = None;
         let mut pos = 0;
         while let Some(off) = memchr(b'<', &b[pos..]) {
             let lt = pos + off;
@@ -1491,12 +1493,19 @@ impl ParseState {
                         continue;
                     };
                     let font = a.0[FONT_NAME].unwrap_or("");
-                    let (bold, italic) = match last_font {
+                    let (bold, italic, math_font) = match last_font {
                         Some((f, style)) if f == font => style,
                         _ => {
-                            let style = Word::font_style(font);
-                            last_font = Some((font, style));
-                            style
+                            let (bold, italic) = Word::font_style(font);
+                            let name = match font.split_once('+') {
+                                Some((tag, name)) if tag.len() == 6 && tag.bytes().all(|c| c.is_ascii_uppercase()) => {
+                                    name
+                                }
+                                _ => font,
+                            };
+                            let flags = (bold, italic, crate::math::symbols::font_role(name).is_math());
+                            last_font = Some((font, flags));
+                            flags
                         }
                     };
                     if let Some(info) = report.page_info.last_mut() {
@@ -1511,6 +1520,7 @@ impl ParseState {
                         text: word_text(text),
                         bold,
                         italic,
+                        math_font,
                         size,
                         base,
                         space: a.0[SPACE_AFTER].unwrap_or("1") != "0",
