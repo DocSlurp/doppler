@@ -1062,8 +1062,11 @@ impl<'p> Converter<'p> {
                 } else if stats.unreadable {
                     self.report.degraded.push((pi, Degraded::UnreadableText));
                 }
-                let first_page = self.o.first_page.unwrap_or(self.win.first_page);
-                stats.document_page = Some(page.number.unwrap_or(first_page.saturating_add(local as u32)));
+                let fallback = self.o.first_page.map_or_else(
+                    || self.win.first_page.saturating_add(local as u32),
+                    |first_page| first_page.saturating_add(pi as u32),
+                );
+                stats.document_page = Some(page.number.unwrap_or(fallback));
                 self.report.math.push(stats);
             }
         }

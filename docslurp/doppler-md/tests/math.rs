@@ -6,7 +6,8 @@
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use doppler_md::{Options, Params, TableFormat, to_markdown_report_with};
+use doppler_md::model::Parser;
+use doppler_md::{Converter, Options, Params, TableFormat, Window, to_markdown_report_with};
 
 const MATH: Options =
     Options { tables: TableFormat::Gfm, math: true, markers: false, page_markers: false, first_page: None };
@@ -211,6 +212,20 @@ fn unknown_glyph_stays_text_and_is_reported() {
 
     let source = source.replace("<page ", "<page number=\"5\" ");
     let (_, report) = convert(&source, &MATH);
+    let ranged: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(ranged["mathUncertainPages"], serde_json::json!([5]));
+    assert_eq!(ranged["mathUncertainRegions"][0]["page"], 5);
+
+    let context = page(&[prose(150.0)], &[]).replace("</doc>", "");
+    let unnumbered = source.replace("<doc>", "").replace(" number=\"5\"", "");
+    let mut parser = Parser::with_glyphs(true);
+    let params = Params::default();
+    let window = Window { skip: 1, emit: Some(1), first_page: 4, ..Window::default() };
+    let mut converter = Converter::with(&params, Options { first_page: Some(5), ..MATH }, window);
+    let mut out = |_, _: String| {};
+    parser.push(&(context + &unnumbered), &mut |page| converter.push(page, &mut out));
+    let parse = parser.finish(&mut |page| converter.push(page, &mut out));
+    let report = converter.finish(parse, &mut out);
     let ranged: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
     assert_eq!(ranged["mathUncertainPages"], serde_json::json!([5]));
     assert_eq!(ranged["mathUncertainRegions"][0]["page"], 5);
