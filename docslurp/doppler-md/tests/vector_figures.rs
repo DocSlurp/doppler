@@ -475,7 +475,7 @@ fn scaled_data_bars_with_crossings_preserve_table_and_separate_figure() {
     let (_, table) = md.split_once("<table>").unwrap_or_else(|| panic!("missing table: {md}"));
     let (table, _) = table.split_once("</table>").expect("complete HTML table");
     for (name, value, status) in [("North", "18", "Ready"), ("South", "29", "Planned"), ("West", "37", "Active")] {
-        let row = format!("<tr><td>{name}</td><td>{value}</td><td>{status}</td></tr>");
+        let row = format!("<tr><td>{name}</td><td>{value}</td><td></td><td></td><td>{status}</td></tr>");
         assert!(table.contains(&row), "{row} missing from {table}");
     }
 }
