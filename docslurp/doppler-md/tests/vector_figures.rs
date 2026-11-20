@@ -439,3 +439,43 @@ fn many_boxes_stay_bounded() {
     assert!(found.len() <= 4);
     assert!(started.elapsed().as_secs() < 20);
 }
+
+#[test]
+fn scaled_data_bars_with_crossings_preserve_table_and_separate_figure() {
+    // The column edge acts as an axis, the numbers below act as a scale, and
+    // both interior rules cross all three bars. The values still belong to table rows.
+    let mut body =
+        rule(180.0, 145.0, 180.5, 285.0) + &rule(225.0, 150.0, 225.5, 270.0) + &rule(255.0, 150.0, 255.5, 270.0);
+    for (x, label) in [(180.0, "0"), (225.0, "50"), (255.0, "100")] {
+        body += &line_at(x, 291.0, label);
+    }
+    for y in [145.0, 185.0, 225.0, 265.0, 285.0] {
+        body += &rule(75.0, y, 510.0, y + 0.5);
+    }
+    for x in [75.0, 385.0, 510.0] {
+        body += &rule(x, 145.0, x + 0.5, 285.0);
+    }
+    for (y, end, name, value, status) in [
+        (156.0, 275.0, "North", "18", "Ready"),
+        (196.0, 330.0, "South", "29", "Planned"),
+        (236.0, 365.0, "West", "37", "Active"),
+    ] {
+        body += &bx(180.5, y, end, y + 19.0, "#7b61ff");
+        body += &line_at(90.0, y + 4.0, name);
+        body += &line_at(190.0, y + 4.0, value);
+        body += &line_at(410.0, y + 4.0, status);
+    }
+    body += &graphic(115.0, 455.0, 365.0, 600.0, 3, 160, 40, 6);
+
+    let options = Options { markers: true, tables: doppler_md::TableFormat::Html, ..Options::default() };
+    let (pages, report) = to_markdown_report_with(&page(2, &body), &Params::default(), &options);
+    let md = &pages[0];
+    assert_eq!(vector_fates(&report), [("p2.g1".to_string(), "block")], "{md}");
+    assert_eq!(md.matches("](images/page-").count(), 1, "{md}");
+    let (_, table) = md.split_once("<table>").unwrap_or_else(|| panic!("missing table: {md}"));
+    let (table, _) = table.split_once("</table>").expect("complete HTML table");
+    for (name, value, status) in [("North", "18", "Ready"), ("South", "29", "Planned"), ("West", "37", "Active")] {
+        let row = format!("<tr><td>{name}</td><td>{value}</td><td>{status}</td></tr>");
+        assert!(table.contains(&row), "{row} missing from {table}");
+    }
+}
