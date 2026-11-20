@@ -69,7 +69,25 @@ def chart(*, vertical=False, labels=True, grid="behind", values=(180, 70, 130, 2
     return "".join(parts)
 
 
+def edge_column_table():
+    parts = [chart(labels=False), "0 G 0.5 w\n"]
+    parts.extend(f"140 {y} m 560 {y} l S\n" for y in (330, 367, 402, 437, 475))
+    parts.extend(f"{x} 330 m {x} 475 l S\n" for x in (140, 350, 453, 560))
+    for i, y in enumerate((346, 381, 416, 451)):
+        parts.append(f"BT /F1 9 Tf 370 {y} Td (Quarter {i+1}) Tj 105 0 Td ({20+10*i}) Tj ET\n")
+    return "".join(parts)
+
+
+def one_sided_labels():
+    return chart(dividers=True) + "".join(
+        f"BT /F1 9 Tf 94 {y} Td (Lane {i+1}) Tj ET\n"
+        for i, y in enumerate((346, 381, 416, 451))
+    )
+
+
 CASES = {
+    "data-bars-in-edge-column": (False, edge_column_table()),
+    "chart-with-one-sided-labels": (True, one_sided_labels()),
     "labeled-crossings-behind": (True, chart()),
     "labeled-crossings-front": (True, chart(grid="front")),
     "vertical-labeled": (True, chart(vertical=True)),

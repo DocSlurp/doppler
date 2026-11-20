@@ -1666,6 +1666,7 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
     };
     const auto byPosition = [](const BarLine &line, double at) { return line.at < at; };
     int dividedGaps = 0;
+    double dividerLo = -INFINITY, dividerHi = INFINITY;
     for (size_t i = 1; i < run.size() && dividedGaps < 2; ++i) {
         const double lo = laneSpan(run[i - 1]).second, hi = laneSpan(run[i]).first;
         if (hi - lo < 2.0) {
@@ -1679,21 +1680,24 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
                 break;
             }
             if (std::min(it->hi, valueHi) - std::max(it->lo, valueLo) >= 0.8 * (valueHi - valueLo)) {
+                dividerLo = std::max(dividerLo, it->lo);
+                dividerHi = std::min(dividerHi, it->hi);
                 ++dividedGaps;
                 break;
             }
         }
     }
-    if (dividedGaps >= 2) {
+    // A missing result means the scan exhausted its budget.
+    auto populatedPair = [&](double leftLo, double leftHi, double rightLo, double rightHi) -> std::optional<bool> {
         int occupiedLanes = 0;
         for (const auto &bar : run) {
             const auto [start, end] = laneSpan(bar);
-            bool before = false, after = false;
-            const double xLo = vertical ? start : valueLo - 100.0, xHi = vertical ? end : valueHi + 100.0;
+            const double xLo = vertical ? start : leftLo, xHi = vertical ? end : rightHi;
             const auto from = std::lower_bound(words.begin(), words.end(), xLo, [](const WordCentre &word, double x) { return word.x < x; });
+            bool first = false, second = false;
             for (auto word = from; word != words.end(); ++word) {
                 if (!spend(budget, 1, limitHit)) {
-                    return false;
+                    return std::nullopt;
                 }
                 if (word->x > xHi) {
                     break;
@@ -1702,14 +1706,51 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
                 if (lane < start || lane > end) {
                     continue;
                 }
-                before |= value < valueLo - 2.0 && value >= valueLo - 100.0;
-                after |= value > valueHi + 2.0 && value <= valueHi + 100.0;
-                if (before && after) {
+                first |= leftLo < value && value < leftHi;
+                second |= rightLo < value && value < rightHi;
+                if (first && second) {
                     ++occupiedLanes;
                     break;
                 }
             }
             if (occupiedLanes == 2) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (dividedGaps >= 2) {
+        if (populatedPair(valueLo - 100.0, valueLo - 2.0, valueHi + 2.0, valueHi + 100.0).value_or(true)) {
+            return false;
+        }
+        // Edge-column data bars can have all the populated cells on one side.
+        // Require the same lane separators to run through the adjoining cells.
+        for (const auto &[outerLo, outerHi] : { std::pair { dividerLo, valueLo }, std::pair { valueHi, dividerHi } }) {
+            if (outerHi - outerLo < 24.0) {
+                continue;
+            }
+            std::array<double, 3> edges {};
+            size_t count = 0;
+            for (auto it = std::lower_bound(grid.begin(), grid.end(), outerLo - 1.0, byPosition); it != grid.end(); ++it) {
+                if (!spend(budget, 1, limitHit)) {
+                    return false;
+                }
+                if (it->at > outerHi + 1.0) {
+                    break;
+                }
+                if (std::min(it->hi, laneHi) - std::max(it->lo, laneLo) < 0.8 * (laneHi - laneLo)
+                    || (count > 0 && it->at - edges[count - 1] < 12.0)) {
+                    continue;
+                }
+                edges[count++] = it->at;
+                if (count == edges.size()) {
+                    break;
+                }
+            }
+            if (count != edges.size()) {
+                continue;
+            }
+            if (populatedPair(edges[0], edges[1], edges[1], edges[2]).value_or(true)) {
                 return false;
             }
         }

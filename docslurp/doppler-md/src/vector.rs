@@ -639,6 +639,7 @@ fn bar_grid_evidence(
     let lane_span = |b: &Bbox| if vertical { (b.0, b.2) } else { (b.1, b.3) };
     let value_span = value_hi - value_lo;
     let mut divided_gaps = 0;
+    let (mut divider_lo, mut divider_hi) = (f64::NEG_INFINITY, f64::INFINITY);
     'gaps: for gap in run.windows(2) {
         let (_, lo) = lane_span(&gap[0]);
         let (hi, _) = lane_span(&gap[1]);
@@ -654,6 +655,8 @@ fn bar_grid_evidence(
                 break;
             }
             if line.hi.min(value_hi) - line.lo.max(value_lo) >= 0.8 * value_span {
+                divider_lo = divider_lo.max(line.lo);
+                divider_hi = divider_hi.min(line.hi);
                 divided_gaps += 1;
                 if divided_gaps == 2 {
                     break 'gaps;
@@ -662,13 +665,13 @@ fn bar_grid_evidence(
             }
         }
     }
-    if divided_gaps >= 2 {
+    let populated_pair = |left: (f64, f64), right: (f64, f64), budget: &mut Budget| -> Option<bool> {
         let mut occupied_lanes = 0;
         for bar in run {
             let (start, end) = lane_span(bar);
-            let (mut before, mut after) = (false, false);
-            let (x_lo, x_hi) = if vertical { (start, end) } else { (value_lo - 100.0, value_hi + 100.0) };
+            let (x_lo, x_hi) = if vertical { (start, end) } else { (left.0, right.1) };
             let from = c.words.partition_point(|word| word.0 < x_lo);
+            let (mut first, mut second) = (false, false);
             for &(x, y) in &c.words[from..] {
                 if !budget.spend(1) {
                     return None;
@@ -677,17 +680,58 @@ fn bar_grid_evidence(
                     break;
                 }
                 let (value, lane) = if vertical { (y, x) } else { (x, y) };
-                if lane < start || lane > end {
+                if !(start..=end).contains(&lane) {
                     continue;
                 }
-                before |= value < value_lo - 2.0 && value >= value_lo - 100.0;
-                after |= value > value_hi + 2.0 && value <= value_hi + 100.0;
-                if before && after {
+                first |= left.0 < value && value < left.1;
+                second |= right.0 < value && value < right.1;
+                if first && second {
                     occupied_lanes += 1;
                     break;
                 }
             }
             if occupied_lanes == 2 {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    if divided_gaps >= 2 {
+        if populated_pair((value_lo - 100.0, value_lo - 2.0), (value_hi + 2.0, value_hi + 100.0), budget)? {
+            return Some(false);
+        }
+        // A run in the first or last table column may have no words on one side.
+        // The same lane separators must continue across two populated columns,
+        // closed by rules spanning the run. A free-standing legend does not qualify.
+        for (outer_lo, outer_hi) in [(divider_lo, value_lo), (value_hi, divider_hi)] {
+            if outer_hi - outer_lo < 24.0 {
+                continue;
+            }
+            let mut edges = [0.0; 3];
+            let mut count = 0;
+            let from = grid.partition_point(|line| line.at < outer_lo - 1.0);
+            for line in &grid[from..] {
+                if !budget.spend(1) {
+                    return None;
+                }
+                if line.at > outer_hi + 1.0 {
+                    break;
+                }
+                if line.hi.min(lane_hi) - line.lo.max(lane_lo) < 0.8 * (lane_hi - lane_lo)
+                    || (count > 0 && line.at - edges[count - 1] < 12.0)
+                {
+                    continue;
+                }
+                edges[count] = line.at;
+                count += 1;
+                if count == edges.len() {
+                    break;
+                }
+            }
+            if count != edges.len() {
+                continue;
+            }
+            if populated_pair((edges[0], edges[1]), (edges[1], edges[2]), budget)? {
                 return Some(false);
             }
         }

@@ -13,3 +13,18 @@ Replay the same PDF bytes on private Doppler 2ecc25b and each variant. Compare c
 | Cost and parity | Pathological rule/word counts, both native paths | Preserve existing work budgets and test parity |
 
 Original fixtures are generated from geometric parameters. Replay real PDFs separately in a credential-free VM. Keep any pre-existing held-out documents out of tuning. Treat a small real sample as a smoke test, with no population-level accuracy claim.
+
+## Run another arm
+
+Use the same C++ producer build and Rust checker for each arm, with both set to the intended revision. Build the private C++ tools with the options in Doppler's build documentation and build `pdftomarkdown` with Cargo. Generate the original PDFs with `python3 test/docslurp/page-facts/bar_geometry_fixtures.py <input-dir>`. The persistent experiment directory contains `experiments/replay.py`.
+
+```sh
+python3 experiments/replay.py \
+  --inputs synthetic-v2 --output replay/new-arm \
+  --markdown /path/to/pdftomarkdown --text /path/to/pdftotext \
+  --facts /path/to/pdfpagefacts
+```
+
+Label each new case before the run. For a table, record the rows, cells, and expected table bounds. For a chart, record the plot bounds and whether labels, axes, and legends should be included. Compare the emitted boxes, normalized table cells, and duplicates. Use exact output equality as a preservation check for unrelated real pages. The current Markdown output places chart figures and neighboring tables separately. Keep representative ambiguous cases where vector geometry lacks enough evidence.
+
+For endpoint calibration, predeclare the tolerances in PDF points and the minimum independent matching endpoints. Include rounded, abbreviated, and negative values, nonzero baselines, log scales, and chart-like data-bar tables. For stroke reconstruction, compare one uninterrupted gridline, fragments matching fill occlusion, and unrelated strokes with the same coordinates. Replay any winning arm in both native paths before promoting it.

@@ -635,6 +635,8 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         ("vertical-labeled", true, false),
         ("rounded-staircase", true, false),
         ("chart-with-category-dividers", true, false),
+        ("data-bars-in-edge-column", false, true),
+        ("chart-with-one-sided-labels", true, false),
         ("scale-contaminated", true, false),
         ("mixed-separate-table", true, true),
         ("unlabeled-in-cell-bars", false, true),
