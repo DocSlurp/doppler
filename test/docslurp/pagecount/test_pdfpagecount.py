@@ -143,7 +143,7 @@ def compressed_page_with_auxiliary_arrays():
 
     xref.append(append_object(1, b"<< /Type /Catalog /Pages 2 0 R >>"))
     xref.append(append_object(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"))
-    members = [page_body(2).encode()] + [b"[" + b"1 " * 131072 + b"]"] * (n_streams - 1)
+    members = [page_body(2).encode(), b"4"] + [b"[" + b"1 " * 131072 + b"]"] * (n_streams - 2)
     for i in range(n_streams):
         xref.append((2, 3 + n_streams + i, 0))
     for i, body in enumerate(members):
@@ -151,6 +151,9 @@ def compressed_page_with_auxiliary_arrays():
         stream = t.stream("/Type /ObjStm /N 1 /First %d" % len(header), header + body, compress=True)
         xref.append(append_object(3 + n_streams + i, stream))
 
+    # The trailing stream's indirect /Length replays an evicted member
+    # through a nested fetch. The page is separately replayed by the walk.
+    xref.append(append_object(len(xref), b"<< /Length 4 0 R >>\nstream\nABCD\nendstream"))
     xref_offset = len(out)
     xref.append((1, xref_offset, 0))
     xref_data = b"".join(struct.pack(">BIH", *entry) for entry in xref)

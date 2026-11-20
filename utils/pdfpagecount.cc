@@ -420,6 +420,9 @@ int main(int argc, char *argv[])
     if (xref->objectStreamMemberBudgetExceeded()) {
         return fail(exitLimit, "document exceeds the object stream member budget");
     }
+    if (xref->pageCountObjectStreamReplayFailed()) {
+        return fail(exitMalformed, "cannot replay an evicted object stream");
+    }
     reconstructed = false;
     Result result = countPages(xref, static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
     if (reconstructed) {
@@ -432,6 +435,9 @@ int main(int argc, char *argv[])
 
     if (xref->objectStreamMemberBudgetExceeded()) {
         return fail(exitLimit, "document exceeds the object stream member budget");
+    }
+    if (xref->pageCountObjectStreamReplayFailed()) {
+        return fail(exitMalformed, "cannot replay an evicted object stream");
     }
 
     switch (result.walk) {

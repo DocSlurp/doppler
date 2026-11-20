@@ -147,6 +147,7 @@ public:
     // ordinary object streams decoded during this scan.
     void prefetchForPageCount();
     bool objectStreamMemberBudgetExceeded() const { return objStrBudgetExceeded; }
+    bool pageCountObjectStreamReplayFailed() const { return pageCountReplayFailed; }
 
     bool isOk() const { return ok; }
 
@@ -418,6 +419,8 @@ private:
     long long objStrMembersLeft = 2000000; // takeObjectStreamMembers
     bool objStrBudgetExceeded = false;
     std::deque<Goffset> *pageCountEvictableStreams = nullptr;
+    std::unordered_set<Goffset> pageCountEvictedStreams;
+    bool pageCountReplayFailed = false;
     unsigned long long pageCountFetches = 0;
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
