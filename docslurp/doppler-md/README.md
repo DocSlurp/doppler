@@ -955,8 +955,8 @@ to stdout.
 |---|---|
 | `--page-facts FILE` | FILE must not exist and its folder is reached without following symbolic links; it is written mode 0600 under a temporary name and appears as soon as pdftotext has finished, before image extraction (also when the conversion failed: its lines say what was read; a FILE without a run line is incomplete). It holds whole lines only: an unterminated last line (pdftotext stopped mid-write at its time limit) is dropped with a warning, and a FILE with no whole line is not created |
 | `--page-facts-fd N` | write them to descriptor N (3 or more), open for writing and inherited from the caller; pdfregions closes it (and every descriptor above 2) at start. Written unchanged: the reader must drop an unterminated last line (pdftotext stopped mid-write at its time limit) |
-| `--page-facts-level basic\|full` | `basic` (default) or every family |
-| `--page-facts-include LIST` | families added to basic: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure` |
+| `--page-facts-level basic\|full` | `basic` (default) or all standard families |
+| `--page-facts-include LIST` | families added to the selected level: `fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure,mathtables,scan-regions` |
 | `--page-facts-timing` | add `factsMs`, `totalMs`, `peakRssKiB` (not deterministic) |
 | `--scan-min-coverage F`, `--scan-max-words N`, `--scan-layer-overlap F` | the scan test's thresholds ([Page scans](#page-scans)); a changed one is recorded on the doc line (`scanThresholds`), so the lines stay byte-identical to `pdfpagefacts` given the same `-scan-...` options |
 

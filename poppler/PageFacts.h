@@ -117,7 +117,7 @@ struct CoverageGrid
 class POPPLER_PRIVATE_EXPORT PageFacts
 {
 public:
-    // Families added to the basic level (-page-facts-include); full is all of them.
+    // Families added to the basic level (-page-facts-include); full includes the standard families.
     enum Family : unsigned
     {
         Fonts = 1u << 0,
@@ -131,14 +131,15 @@ public:
         // math and table encodings: the packed mathBits, tableBits and encodingCounts words on
         // every page, and (with the other families) their readable fields; see the README
         MathTables = 1u << 8,
-        AllFamilies = (1u << 9) - 1
+        AllFamilies = (1u << 9) - 1,
+        ScanRegions = 1u << 9
     };
     static constexpr const char *schemaName = "doppler-page-facts/1";
 
     // Parses "basic" or "full" into families (0 or AllFamilies).
     static bool parseLevel(const char *text, unsigned *families);
     // Parses a comma-separated list of family names (fonts,oddtext,images-detail,vectors,forms,
-    // annots,ocg,structure,mathtables) into a mask; false for an unknown name.
+    // annots,ocg,structure,mathtables,scan-regions) into a mask; false for an unknown name.
     static bool parseInclude(const char *text, unsigned *families);
 
     explicit PageFacts(unsigned families);
@@ -233,6 +234,8 @@ private:
     // at most this many comparisons (council r2 L1), so a long hostile document cannot make every page pay the page cap
     static constexpr size_t maxBarComparisons = size_t(1) << 28;
     size_t barBudget = maxBarComparisons;
+    // Retained word boxes and comparison work available to scan-region evidence over a run.
+    size_t scanRegionBudget = size_t(1) << 23;
 
     // Bytes and per-span overhead remaining for ActualText detection across the run.
     size_t actualTextBudget = size_t(1) << 26;

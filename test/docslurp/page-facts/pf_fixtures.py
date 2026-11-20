@@ -801,6 +801,50 @@ def image_words_pdf():
     )
 
 
+def scan_regions_pdf(*, run_budget=False):
+    """Mixed-page inset, matched negative controls, and partial placement evidence."""
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Image {0} 0 R /Masked {1} 0 R >> >>"
+    header = words(3, y=740)
+    inset = "q 420 0 0 240 54 300 cm /Image Do Q\n"
+    hidden = "q\n" + words(6, y=470, invisible=True) + "Q\n"
+    logo = "q 20 0 0 20 530 700 cm /Image Do Q\n"
+
+    if run_budget:
+        dense_header = "".join(words(10, y=565 + n % 12 * 12) for n in range(810))
+        content = inset + logo * 31 + header + hidden + dense_header
+        return doc([{"content": content, "resources": res}] * 33, extras=[image(), image()])
+
+    def partial_word(first, second):
+        return "".join(
+            f"q BT /F1 10 Tf 72 {y} Td {first} Tr (in) Tj {second} Tr (set) Tj ET Q\n"
+            for y in (440, 425, 410)
+        )
+
+    return doc(
+        [
+            {"content": logo + inset + header + hidden, "resources": res},
+            {"content": inset + header, "resources": res},
+            {"content": inset + header + hidden + words(3, y=300), "resources": res},
+            {"content": inset + header + "q\n" + words(6, y=650, invisible=True) + "Q\n", "resources": res},
+            {"content": "q 420 0 0 60 54 420 cm /Image Do Q\n" + header + hidden, "resources": res},
+            {"content": inset + hidden, "resources": res},
+            {"content": "q 612 0 0 792 0 0 cm /Image Do Q\n" + header + hidden, "resources": res},
+            {"content": inset.replace("/Image", "/Masked") + header + hidden, "resources": res},
+            {"content": inset + header + hidden + logo * 32, "resources": res},
+            {"content": inset + header + hidden + logo * 2000, "resources": res},
+            {"content": inset + inset + header + hidden, "resources": res},
+            {"content": inset + "q 380 0 0 200 62 325 cm /Image Do Q\n" + header + hidden, "resources": res},
+            *({"content": inset + header + hidden + partial_word(first, second), "resources": res}
+              for first, second in ((3, 0), (0, 3), (7, 0), (0, 7))),
+            {"content": inset + header + hidden + "".join(words(10, y=565 + n % 12 * 12) for n in range(820)), "resources": res},
+            {"content": inset + header + hidden, "resources": res},
+            {"content": "q 230 0 0 240 54 300 cm /Image Do Q\nq 230 0 0 240 320 300 cm /Image Do Q\n"
+                        + header + hidden + "q 1 0 0 1 266 0 cm\n" + hidden + "Q\n", "resources": res},
+        ],
+        extras=[image(), image(extra="/Mask [0 0 0 0 0 0]")],
+    )
+
+
 def _raw_image(length_entry, data, w=100, h=50):
     """An image XObject body with a /Length entry as given (or none) over <data>."""
     return "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode %s >>\nstream\n" % (w, h, length_entry) + data.decode("latin-1") + "\nendstream"

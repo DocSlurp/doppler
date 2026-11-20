@@ -253,6 +253,57 @@ with t.TempDir() as d:
     caps = [page(ls, n)["vectors"] for n in range(1, 5)]
     t.check(all("hRules" in x for x in caps[0]["grids"] + caps[1]["grids"]), "a body size outside the bins: the counts stand (they do not use the body size)", repr(caps[0]["grids"]))
 
+    # --- C opt-in mixed-page scan region evidence ----------------------------------------
+    regions_path = d.write("scan-regions.pdf", fx.scan_regions_pdf())
+    rc, out, err = facts(regions_path, "-include", "scan-regions")
+    t.check(rc == 0, "scan regions requested on its own", err)
+    check_schema(out, "scan regions")
+    regions = lines(out)
+    actual = [page(regions, n)["images"]["scanRegions"] for n in range(1, 20)]
+    expected = [
+        {"truncated": n in (9, 10, 17), "imageIndices": {1: [2], 18: [1], 19: [1, 2]}.get(n, []),
+         "ambiguousImageIndices": [1, 2] if n in (11, 12) else []}
+        for n in range(1, 20)
+    ]
+    t.check(actual == expected, "scan regions: qualify insets, withhold duplicate and nested placements, and flag caps", repr(actual))
+    inset = page(regions, 1)["images"]["items"][1]
+    t.check(inset["bbox"] == [54, 252, 474, 492] and inset["coverage"] >= 0.20
+            and inset["invisibleWordsInside"] == 6 and inset["visibleWordsCentredInside"] == 0,
+            "scan region links to exact inset geometry and local word evidence", repr(inset))
+    edge = page(regions, 3)["images"]["items"][0]
+    t.check(edge["visibleWordsInside"] == 0 and edge["visibleWordsCentredInside"] == 3,
+            "straddling visible words veto an otherwise qualifying inset", repr(edge))
+    for n in (13, 14, 15, 16):
+        partial = page(regions, n)["images"]["items"][0]
+        t.check((partial["visibleWordsInside"], partial["invisibleWordsInside"]) == (3, 6),
+                "scan regions: a partially painted word vetoes the inset in either glyph order", repr(partial))
+    for n in (9, 10, 17):
+        item = page(regions, n)["images"]["items"][0]
+        t.check("invisibleWordsInside" not in item and "visibleWordsCentredInside" not in item,
+                "scan-only truncated evidence omits per-image word counts", repr(item))
+    t.check(page(regions, 17)["text"]["wordCount"] > 8192, "scan regions: fixture exceeds the retained word cap")
+    for opts in ([], ["-include", "images-detail"], ["-level", "full"]):
+        ordinary = lines(facts(regions_path, *opts)[1])
+        t.check("scanRegions" not in page(ordinary, 1)["images"], "scan regions absent without explicit opt-in", repr(opts))
+    full = lines(facts(regions_path, "-level", "full", "-include", "scan-regions")[1])
+    full_page = page(full, 1)
+    t.check(doc_line(full)["level"] == "full" and doc_line(full)["include"] == ["scan-regions"]
+            and full_page["images"].pop("scanRegions") == expected[0], "scan regions compose with full facts")
+    t.check(full_page == page(ordinary, 1), "scan regions preserve existing full page fields")
+    rc, xhtml, sidecar = pdftotext_facts(regions_path, "-page-facts-include", "scan-regions", images=True)
+    t.check(rc == 0 and sidecar == out and xhtml == pdftotext_plain(regions_path, images=True),
+            "scan region sidecar matches standalone facts and preserves XHTML")
+    budget_path = d.write("scan-region-run-budget.pdf", fx.scan_regions_pdf(run_budget=True))
+    rc, budget_out, err = facts(budget_path, "-include", "scan-regions")
+    t.check(rc == 0, "scan region run budget fixture exits successfully", err)
+    budget_pages = lines(budget_out)
+    t.check(page(budget_pages, 31)["images"]["scanRegions"] == expected[17]
+            and page(budget_pages, 32)["images"]["scanRegions"] == expected[16]
+            and page(budget_pages, 33)["images"]["scanRegions"] == expected[16],
+            "scan region run budget withholds remaining nominations when exhausted")
+    selected = lines(facts(budget_path, "-include", "scan-regions", "-f", "32", "-l", "32")[1])
+    t.check(page(selected, 32)["images"]["scanRegions"] == expected[17], "scan region budget applies to the selected run")
+
     # --- C words inside images and bytes per pixel (issue 40) ------------------------------------------------
     ls = lines(facts(paths["image_words"], "-level", "full")[1])
     w1, w2, w3, w4, w5 = (page(ls, n) for n in range(1, 6))

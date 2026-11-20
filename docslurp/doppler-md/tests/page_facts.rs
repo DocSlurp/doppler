@@ -46,7 +46,7 @@ impl Drop for Scratch {
 }
 
 /// Four pages: text, a full-page picture under an invisible text layer (a scan), a ruled
-/// table, a rotated page with a picture.
+/// table, and a rotated page with an invisible text layer in an inset under a visible heading.
 fn make_pdf() -> Vec<u8> {
     let text = |y: i32, mode: &str| {
         (0..5)
@@ -65,7 +65,7 @@ fn make_pdf() -> Vec<u8> {
         text(700, ""),
         format!("q 612 0 0 792 0 0 cm /Im1 Do Q\n{}", text(700, "3 Tr ")),
         format!("{grid}{}", text(300, "")),
-        format!("q 200 0 0 150 72 420 cm /Im1 Do Q\n{}", text(300, "")),
+        format!("q 420 0 0 240 54 300 cm /Im1 Do Q\n{}q\n{}Q\n", text(710, ""), text(500, "3 Tr ")),
     ];
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
@@ -167,6 +167,7 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
         ("full", vec![]),
         ("basic", vec!["--page-facts-include", "vectors,forms"]),
         ("basic", vec!["--page-facts-include", "mathtables"]),
+        ("full", vec!["--page-facts-include", "scan-regions"]),
     ] {
         for range in [vec![], vec!["-f", "2", "-l", "3"]] {
             for mode in [vec!["--stream", "--markers"], vec![]] {
@@ -203,6 +204,10 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
                 let pages: Vec<u64> =
                     lines.iter().filter(|l| l["type"] == "page").map(|l| l["page"].as_u64().unwrap()).collect();
                 assert_eq!(pages, if range.is_empty() { vec![1, 2, 3, 4] } else { vec![2, 3] });
+                if extra.last() == Some(&"scan-regions") && range.is_empty() {
+                    assert_eq!(lines[4]["images"]["scanRegions"]["imageIndices"], serde_json::json!([1]));
+                    assert_eq!(lines[4]["images"]["scanRegions"]["truncated"], false);
+                }
                 use std::os::unix::fs::PermissionsExt;
                 assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
             }

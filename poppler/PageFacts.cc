@@ -21,6 +21,7 @@
 #include <map>
 #include <numeric>
 #include <set>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #ifndef _WIN32
@@ -379,6 +380,7 @@ constexpr double hugePagePt = 14400; // 200 inches: the PDF 1.x page size limit
 constexpr double rotatedContentShare = 0.2;
 constexpr uint64_t rotatedContentMinChars = 10;
 constexpr size_t maxItems = 32; // images and figure clusters listed per page
+constexpr size_t maxScanRegionWords = 8192;
 constexpr size_t maxGrids = 64; // ruled grids listed per page
 constexpr size_t maxGridRules = 4096; // horizontal (and vertical) rules a page's grid search takes
 constexpr size_t maxGridWork = size_t(1) << 20; // group and column-rule visits of a page's grid search
@@ -2982,6 +2984,7 @@ struct PageFacts::State
     {
         double x0, y0, x1, y1;
         bool visible;
+        bool scanVisible; // any glyph paints inside the clip bounds, irrespective of the starting render mode
         bool math = false; // mathtables: most of its characters drawn by math-class fonts
         bool mono = false; // mathtables: most of its characters drawn by fixed-pitch fonts
         uint8_t delim = 0; // mathtables: 1 a full delimiter, 2 a delimiter piece, 3 a bar, in a math-class font
@@ -3069,7 +3072,7 @@ struct PageFacts::State
     }
 };
 
-PageFacts::PageFacts(unsigned families) : fams(families & AllFamilies), needTally((families & (Vectors | Annots | Forms | Ocg)) != 0), st(new State) { }
+PageFacts::PageFacts(unsigned families) : fams(families & (AllFamilies | ScanRegions)), needTally((families & (Vectors | Annots | Forms | Ocg)) != 0), st(new State) { }
 
 PageFacts::~PageFacts()
 {
@@ -3098,7 +3101,7 @@ bool PageFacts::parseInclude(const char *text, unsigned *families)
     {
         const char *name;
         unsigned family;
-    } names[] = { { "fonts", Fonts }, { "oddtext", OddText }, { "images-detail", ImagesDetail }, { "vectors", Vectors }, { "forms", Forms }, { "annots", Annots }, { "ocg", Ocg }, { "structure", Structure }, { "mathtables", MathTables } };
+    } names[] = { { "fonts", Fonts }, { "oddtext", OddText }, { "images-detail", ImagesDetail }, { "vectors", Vectors }, { "forms", Forms }, { "annots", Annots }, { "ocg", Ocg }, { "structure", Structure }, { "mathtables", MathTables }, { "scan-regions", ScanRegions } };
     unsigned out = 0;
     std::string_view rest(text);
     while (!rest.empty()) {
@@ -3133,11 +3136,15 @@ void writeHeader(Json &j, const char *type)
 
 void writeLevel(Json &j, unsigned fams)
 {
-    j.kenum("level", fams == PageFacts::AllFamilies ? "full" : "basic");
-    if (fams != PageFacts::AllFamilies && fams != 0) {
-        static const char *const names[] = { "fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure", "mathtables" };
+    const bool full = (fams & PageFacts::AllFamilies) == PageFacts::AllFamilies;
+    j.kenum("level", full ? "full" : "basic");
+    if (full) {
+        fams &= ~PageFacts::AllFamilies;
+    }
+    if (fams != 0) {
+        static const char *const names[] = { "fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure", "mathtables", "scan-regions" };
         j.kopen("include", '[');
-        for (int i = 0; i < 9; ++i) {
+        for (size_t i = 0; i < std::size(names); ++i) {
             if (fams & (1u << i)) {
                 j.enumItem(names[i]);
             }
@@ -3670,8 +3677,7 @@ void PageFacts::onWord(const TextWord *word)
     word->getBBox(&x0, &y0, &x1, &y1);
     State &s = *st;
     s.textGrid.mark(x0, y0, x1, y1, s.pageW, s.pageH);
-    if (wants(ImagesDetail | MathTables)) {
-        // visible as TextPage counts it (getInvisibleWordCount)
+    if (wants(ImagesDetail | MathTables) || (wants(ScanRegions) && s.wordBoxes.size() < std::min(maxScanRegionWords, scanRegionBudget))) {
         bool math = false, mono = false;
         uint8_t delim = 0;
         if (wants(MathTables)) {
@@ -3693,7 +3699,7 @@ void PageFacts::onWord(const TextWord *word)
                 delim = bars > 0 ? 3 : pieces > 0 ? 2 : 1;
             }
         }
-        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), math, mono, delim, word->getFontSize() });
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), word->isShown(), math, mono, delim, word->getFontSize() });
     }
     if (wants(Vectors | MathTables) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
         if (s.wordCentres.size() < kMaxBarWords) {
@@ -3978,6 +3984,7 @@ void PageFacts::endPage(const TextPage &text)
     }
     State &s = *st;
     s.ended = true;
+    const bool pageWalkLimited = (s.warnings & (1u << wLimit)) != 0;
     Json j;
     j.warnings = &s.warnings;
     unsigned features = 0;
@@ -4062,7 +4069,7 @@ void PageFacts::endPage(const TextPage &text)
     // mathtables: the page's math and table encodings, before any output (several families'
     // readable fields and the packed words use them)
     const bool mt = wants(MathTables);
-    const bool full = fams == AllFamilies;
+    const bool full = (fams & AllFamilies) == AllFamilies;
     Budget budget;
     std::vector<AWord> aw;
     std::vector<uint8_t> imgStrip(images.size(), 0), imgFlow(images.size(), 0);
@@ -4430,7 +4437,7 @@ void PageFacts::endPage(const TextPage &text)
             features |= 1u << fLayeredScan;
         }
     }
-    if (wants(ImagesDetail)) {
+    if (wants(ImagesDetail | ScanRegions)) {
         uint64_t masks = 0, inlines = 0;
         for (const TextImage &im : images) {
             masks += im.stencil;
@@ -4439,29 +4446,53 @@ void PageFacts::endPage(const TextPage &text)
         // words whose box lies inside each listed image's box (within wordInsideSlack points),
         // and words whose box centre does (issue 43), [visible, invisible]
         const size_t listed = std::min(images.size(), maxItems);
+        const bool nominateRegions = wants(ScanRegions);
+        bool regionsTruncated = pageWalkLimited || images.size() > listed || text.getImagesPageTruncated() || words > maxScanRegionWords || s.wordBoxes.size() != words;
+        if (nominateRegions) {
+            scanRegionBudget -= std::min({ scanRegionBudget, s.wordBoxes.size(), maxScanRegionWords });
+            if (!regionsTruncated) {
+                const size_t work = listed * s.wordBoxes.size() + listed * listed / 2; // word/image pairs and an upper bound on image pairs
+                regionsTruncated = work > scanRegionBudget;
+                scanRegionBudget -= std::min(scanRegionBudget, work);
+            }
+        }
+        const bool countImageWords = wants(ImagesDetail) || (nominateRegions && !regionsTruncated);
         std::array<std::array<uint64_t, 2>, maxItems> wordsInside {}, centredInside {};
-        for (const State::WordBox &w : s.wordBoxes) {
+        const auto wordBoxes = countImageWords ? std::span(s.wordBoxes) : std::span<State::WordBox>();
+        for (const State::WordBox &w : wordBoxes) {
+            const size_t visibility = (nominateRegions ? w.scanVisible : w.visible) ? 0 : 1;
             const double cx = 0.5 * w.x0 + 0.5 * w.x1, cy = 0.5 * w.y0 + 0.5 * w.y1; // NaN fails every test
             for (size_t i = 0; i < listed; ++i) {
                 const TextImage &im = images[i];
                 const double ix0 = im.xMin - wordInsideSlack, iy0 = im.yMin - wordInsideSlack, ix1 = im.xMax + wordInsideSlack, iy1 = im.yMax + wordInsideSlack;
                 if (w.x0 >= ix0 && w.y0 >= iy0 && w.x1 <= ix1 && w.y1 <= iy1) {
-                    ++wordsInside[i][w.visible ? 0 : 1];
+                    ++wordsInside[i][visibility];
                 }
                 if (cx >= ix0 && cy >= iy0 && cx <= ix1 && cy <= iy1) {
-                    ++centredInside[i][w.visible ? 0 : 1];
+                    ++centredInside[i][visibility];
                 }
             }
         }
         j.kint("maskCount", masks);
         j.kint("inlineCount", inlines);
         j.kopen("items", '[');
-        for (size_t i = 0; i < images.size() && i < maxItems; ++i) {
+        std::array<size_t, maxItems> scanRegionIndices;
+        size_t scanRegionCount = 0;
+        constexpr uint64_t minInvisibleRegionWords = 3;
+        const bool mixedPage = nominateRegions && !regionsTruncated && !scan.fullPageImage && std::ranges::any_of(wordBoxes, &State::WordBox::scanVisible);
+        for (size_t i = 0; i < listed; ++i) {
             const TextImage &im = images[i];
+            const double coverage = area > 0 ? (im.xMax - im.xMin) * (im.yMax - im.yMin) / area : 0.0;
+            // Conservative placement evidence. A visible word centred on the image vetoes
+            // nomination even when its box straddles the edge.
+            if (mixedPage && coverage >= 0.10 && coverage < 0.85 && !im.stencil && !im.info.mask && !im.info.softMask
+                && wordsInside[i][1] >= minInvisibleRegionWords && centredInside[i][0] == 0) {
+                scanRegionIndices[scanRegionCount++] = i;
+            }
             j.open();
             j.kint("index", i + 1);
             j.kbox("bbox", im.xMin, im.yMin, im.xMax, im.yMax);
-            j.kratio("coverage", area > 0 ? (im.xMax - im.xMin) * (im.yMax - im.yMin) / area : 0.0);
+            j.kratio("coverage", coverage);
             j.kopen("px", '[');
             j.integer(static_cast<uint64_t>(std::max(im.pixelWidth, 0)));
             j.integer(static_cast<uint64_t>(std::max(im.pixelHeight, 0)));
@@ -4484,10 +4515,12 @@ void PageFacts::endPage(const TextPage &text)
                 j.kint("obj", static_cast<uint64_t>(im.ref.num));
             }
             j.kenum("copy", imageCopyName(im.info.copy));
-            j.kint("visibleWordsInside", wordsInside[i][0]);
-            j.kint("invisibleWordsInside", wordsInside[i][1]);
-            j.kint("visibleWordsCentredInside", centredInside[i][0]);
-            j.kint("invisibleWordsCentredInside", centredInside[i][1]);
+            if (countImageWords) {
+                j.kint("visibleWordsInside", wordsInside[i][0]);
+                j.kint("invisibleWordsInside", wordsInside[i][1]);
+                j.kint("visibleWordsCentredInside", centredInside[i][0]);
+                j.kint("invisibleWordsCentredInside", centredInside[i][1]);
+            }
             // encoded bytes over samples, from the stream's length (never decoded)
             const double samples = double(std::max(im.pixelWidth, 0)) * double(std::max(im.pixelHeight, 0));
             if (!im.info.inlineImg && im.info.encodedBytes >= 0 && samples > 0) {
@@ -4500,7 +4533,39 @@ void PageFacts::endPage(const TextPage &text)
             j.close();
         }
         j.close(']');
-        j.kbool("itemsTruncated", images.size() > maxItems);
+        j.kbool("itemsTruncated", images.size() > listed);
+        if (nominateRegions) {
+            // Intersect the same slack-expanded boxes used by the word test. Qualifying
+            // placements may share evidence there, so withhold both from the crop hints.
+            std::array<bool, maxItems> ambiguous {};
+            constexpr double overlapSlack = 2 * wordInsideSlack;
+            for (size_t i = 0; i < scanRegionCount; ++i) {
+                const TextImage &a = images[scanRegionIndices[i]];
+                for (size_t k = i + 1; k < scanRegionCount; ++k) {
+                    const TextImage &b = images[scanRegionIndices[k]];
+                    if (a.xMin <= b.xMax + overlapSlack && b.xMin <= a.xMax + overlapSlack && a.yMin <= b.yMax + overlapSlack && b.yMin <= a.yMax + overlapSlack) {
+                        ambiguous[i] = ambiguous[k] = true;
+                    }
+                }
+            }
+            j.kopen("scanRegions");
+            j.kbool("truncated", regionsTruncated);
+            j.kopen("imageIndices", '[');
+            for (size_t i = 0; i < scanRegionCount; ++i) {
+                if (!ambiguous[i]) {
+                    j.integer(scanRegionIndices[i] + 1);
+                }
+            }
+            j.close(']');
+            j.kopen("ambiguousImageIndices", '[');
+            for (size_t i = 0; i < scanRegionCount; ++i) {
+                if (ambiguous[i]) {
+                    j.integer(scanRegionIndices[i] + 1);
+                }
+            }
+            j.close(']');
+            j.close();
+        }
         if (mt) {
             j.kint("mathStrips", mathStrips);
         }
