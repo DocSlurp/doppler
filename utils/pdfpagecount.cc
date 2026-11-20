@@ -332,21 +332,6 @@ struct Result
     const char *message;
 };
 
-// Fetches every in-use object so that a damaged entry rebuilds the xref now,
-// as it would later when a util reads page content, and the walk sees the
-// table the utils end up using.
-void fetchAllObjects(XRef *xref)
-{
-    for (int num = 1; num < xref->getNumObjects(); ++num) {
-        const XRefEntry *entry = xref->getEntry(num, false);
-        if (entry->type == xrefEntryUncompressed) {
-            xref->fetch(num, entry->gen);
-        } else if (entry->type == xrefEntryCompressed) {
-            xref->fetch(num, 0);
-        }
-    }
-}
-
 Result countPages(XRef *xref, uint64_t maxPages, int maxDepth)
 {
     Object catalog = xref->getCatalog();
@@ -430,15 +415,23 @@ int main(int argc, char *argv[])
         return fail(exitOpenError, "cannot open document");
     }
 
-    fetchAllObjects(doc->getXRef());
+    XRef *xref = doc->getXRef();
+    xref->prefetchForPageCount();
+    if (xref->objectStreamMemberBudgetExceeded()) {
+        return fail(exitLimit, "document exceeds the object stream member budget");
+    }
     reconstructed = false;
-    Result result = countPages(doc->getXRef(), static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
+    Result result = countPages(xref, static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
     if (reconstructed) {
         reconstructed = false;
-        result = countPages(doc->getXRef(), static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
+        result = countPages(xref, static_cast<uint64_t>(maxPages), static_cast<int>(maxDepth));
         if (reconstructed) {
             return fail(exitMalformed, "malformed page tree: xref changed during the walk");
         }
+    }
+
+    if (xref->objectStreamMemberBudgetExceeded()) {
+        return fail(exitLimit, "document exceeds the object stream member budget");
     }
 
     switch (result.walk) {

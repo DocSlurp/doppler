@@ -1154,6 +1154,9 @@ bool XRef::constructXRef(bool *wasReconstructed, bool needCatalogDict)
     prevXRefOffset = 0;
     chainResumeOffset = 0;
     objStrs.clear();
+    if (pageCountEvictableStreams) {
+        pageCountEvictableStreams->clear();
+    }
     objStrsFailed.clear();
     objStrsGuarded.clear();
     for (auto &kept : objStrsByKind) {
@@ -1590,6 +1593,31 @@ Object XRef::getCatalog()
     return catalog;
 }
 
+void XRef::prefetchForPageCount()
+{
+    xrefLocker();
+    // Keep a few recent streams so adjacent members do not reparse their
+    // stream. Release only after a top-level fetch and its result are gone.
+    constexpr size_t retainedStreams = 8;
+    std::deque<Goffset> evictable;
+    pageCountEvictableStreams = &evictable;
+
+    for (int num = 1; num < getNumObjects() && !objStrBudgetExceeded; ++num) {
+        const XRefEntry *entry = getEntry(num, false);
+        if (entry->type == xrefEntryUncompressed) {
+            fetch(num, entry->gen);
+        } else if (entry->type == xrefEntryCompressed) {
+            fetch(num, 0);
+        }
+        while (evictable.size() > retainedStreams) {
+            objStrs.erase(evictable.front());
+            evictable.pop_front();
+        }
+    }
+
+    pageCountEvictableStreams = nullptr;
+}
+
 Object XRef::fetch(const Ref ref, int recursion)
 {
     return fetch(ref.num, ref.gen, recursion);
@@ -1621,6 +1649,9 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
 
     xrefLocker();
 
+    if (pageCountEvictableStreams) {
+        ++pageCountFetches;
+    }
     const Ref ref = { .num = num, .gen = gen };
 
     if (!refsBeingFetched.insert(ref)) {
@@ -1776,6 +1807,8 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
             if (objStrsFailed.count(failedAt)) {
                 goto err;
             }
+            const auto fetchesBefore = pageCountFetches;
+            const auto depthBefore = Parser::depthLimitHits();
             objStr = new ObjectStream(this, static_cast<int>(e->offset), recursion + 1);
             if (!objStr->isOk()) {
                 delete objStr;
@@ -1790,6 +1823,11 @@ Object XRef::fetch(int num, int gen, int recursion, Goffset *endPos)
                     // this happens when indeed the xref was reconstructed, and the reconstuction ended up adding an ObjectStream
                     // for that offset, so fetch the good objStr because the one we had was just deleted by emplace failing
                     objStr = objStrs.find(e->offset)->second.get();
+                } else if (pageCountEvictableStreams && !xrefReconstructed && recursion == 0 && pageCountFetches - fetchesBefore == 1 && Parser::depthLimitHits() == depthBefore) {
+                    // The one fetch loads the stream itself. A parse needing
+                    // other refs, or affected by recursion depth, may depend
+                    // on the fetching context and must stay cached.
+                    pageCountEvictableStreams->push_back(e->offset);
                 }
             }
         }
