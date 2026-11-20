@@ -6497,6 +6497,13 @@ GfxState::GfxState(double hDPIA, double vDPIA, const PDFRectangle &pageBox, int 
 #endif
 }
 
+bool GfxState::textRenderModeDoesNotPaint() const
+{
+    // Keep the legacy mode 3 classification. Type 3 charprocs control their own
+    // painting, so do not infer clip-only visibility from mode 7 for those fonts.
+    return textRenderMode == 3 || (textRenderMode == 7 && (!font || font->getType() != fontType3));
+}
+
 GfxState::~GfxState()
 {
     delete path;
@@ -6561,6 +6568,7 @@ GfxState::GfxState(const GfxState *state, bool copyPath)
     leading = state->leading;
     rise = state->rise;
     render = state->render;
+    textRenderMode = state->textRenderMode;
 
     path = state->path;
     if (copyPath) {

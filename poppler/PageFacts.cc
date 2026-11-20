@@ -3555,7 +3555,7 @@ GlyphVisibility glyphVisibility(const GfxState *state, double x, double y, doubl
     double clipX0, clipY0, clipX1, clipY1;
     state->getClipBBox(&clipX0, &clipY0, &clipX1, &clipY1);
     GlyphVisibility v;
-    v.invisible = state->getRender() == 3;
+    v.invisible = state->textRenderModeDoesNotPaint();
     v.clipped = !(cx >= clipX0 && cx <= clipX1 && cy >= clipY0 && cy <= clipY1);
     v.cx = cx;
     v.cy = cy;
@@ -3693,7 +3693,7 @@ void PageFacts::onWord(const TextWord *word)
                 delim = bars > 0 ? 3 : pieces > 0 ? 2 : 1;
             }
         }
-        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), math, mono, delim, word->getFontSize() });
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown(), math, mono, delim, word->getFontSize() });
     }
     if (wants(Vectors | MathTables) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
         if (s.wordCentres.size() < kMaxBarWords) {
