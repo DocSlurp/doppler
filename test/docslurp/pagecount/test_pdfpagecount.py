@@ -8,6 +8,7 @@ distinct exit code and an empty stdout instead of a wrong number.
 import hashlib
 import os
 import re
+import struct
 import sys
 
 sys.path.insert(0, os.environ.get("DOCSLURP_TESTLIB_DIR", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -127,6 +128,39 @@ def encrypted_pdf(user_pw, owner_pw=b"owner", n=4):
     objs.set(root, "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in kids), n))
     enc = objs.add("<< /Filter /Standard /V 1 /R 2 /O <%s> /U <%s> /P %d >>" % (o_value.hex(), u_value.hex(), perms))
     return objs.pdf(trailer_extra="/Encrypt %d 0 R /ID [<%s> <%s>]" % (enc, file_id.hex(), file_id.hex()))
+
+
+def compressed_page_with_auxiliary_arrays():
+    """Place one page and unrelated arrays in separately compressed object streams."""
+    n_streams = 64
+    out = bytearray(b"%PDF-1.7\n")
+    xref = [(0, 0, 65535)]
+
+    def append_object(num, body):
+        offset = len(out)
+        out.extend(b"%d 0 obj\n%s\nendobj\n" % (num, body))
+        return 1, offset, 0
+
+    xref.append(append_object(1, b"<< /Type /Catalog /Pages 2 0 R >>"))
+    xref.append(append_object(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"))
+    members = [page_body(2).encode(), b"4"] + [b"[" + b"1 " * 131072 + b"]"] * (n_streams - 2)
+    for i in range(n_streams):
+        xref.append((2, 3 + n_streams + i, 0))
+    for i, body in enumerate(members):
+        header = b"%d 0 " % (3 + i)
+        stream = t.stream("/Type /ObjStm /N 1 /First %d" % len(header), header + body, compress=True)
+        xref.append(append_object(3 + n_streams + i, stream))
+
+    # The trailing stream's indirect /Length replays an evicted member
+    # through a nested fetch. The page is separately replayed by the walk.
+    xref.append(append_object(len(xref), b"<< /Length 4 0 R >>\nstream\nABCD\nendstream"))
+    xref_offset = len(out)
+    xref.append((1, xref_offset, 0))
+    xref_data = b"".join(struct.pack(">BIH", *entry) for entry in xref)
+    stream = t.stream("/Type /XRef /Root 1 0 R /Size %d /W [1 4 2]" % len(xref), xref_data)
+    append_object(len(xref) - 1, stream)
+    out.extend(b"startxref\n%d\n%%%%EOF\n" % xref_offset)
+    return bytes(out)
 
 
 with t.TempDir() as d:
@@ -401,6 +435,10 @@ with t.TempDir() as d:
         pdf += b"%d 0 obj\n%s\nendobj\n" % (70 + i, page_body(nine).encode())
     path = expect(d, "rebuild-from-contents.pdf", pdf, OK, b"6\n")
     t.check(poppler_rendered_pages(path) == 6, "rebuild-from-contents: matches pages pdftotext renders")
+
+    # The scan visits each auxiliary stream, then the walk revisits the first
+    # compressed page. It must still count correctly within a memory ceiling.
+    expect(d, "compressed-page-and-arrays.pdf", compressed_page_with_auxiliary_arrays(), OK, b"1\n", args=("-max-memory", 96))
 
     # --- encryption ---------------------------------------------------------
     path = expect(d, "encrypted-empty-user.pdf", encrypted_pdf(b""), OK, b"4\n")

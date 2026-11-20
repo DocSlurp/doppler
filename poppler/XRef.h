@@ -39,6 +39,7 @@
 #define XREF_H
 
 #include <array>
+#include <deque>
 #include <unordered_set>
 #include <functional>
 #include <unordered_map>
@@ -129,17 +130,24 @@ public:
     std::unique_ptr<XRef> copy() const;
 
     // Is xref table valid?
-    // Object streams keep every member for the life of the document (about 50 bytes each); a file may
-    // have this many in all, so thousands of streams that each declare a million empty members cannot
+    // Ordinary reads can keep every member for the life of the document (about 50 bytes each); cap
+    // the total number of members parsed, so thousands of streams that each declare a million empty members cannot
     // take gigabytes from a few kilobytes. Returns false, taking nothing, past the budget.
     bool takeObjectStreamMembers(int n)
     {
         if (n < 0 || n > objStrMembersLeft) {
+            objStrBudgetExceeded = true;
             return false;
         }
         objStrMembersLeft -= n;
         return true;
     }
+
+    // Trigger any needed repair before counting, with bounded retention for
+    // ordinary object streams decoded during this scan.
+    void prefetchForPageCount();
+    bool objectStreamMemberBudgetExceeded() const { return objStrBudgetExceeded; }
+    bool pageCountObjectStreamReplayFailed() const { return pageCountReplayFailed; }
 
     bool isOk() const { return ok; }
 
@@ -409,6 +417,11 @@ private:
     bool chainStreamFiltersOk(Dict *dict);
     long long rebuildMembersLeft = 0; // constructXRef sets it: object-stream members left for this rebuild's header reads
     long long objStrMembersLeft = 2000000; // takeObjectStreamMembers
+    bool objStrBudgetExceeded = false;
+    std::deque<Goffset> *pageCountEvictableStreams = nullptr;
+    std::unordered_set<Goffset> pageCountEvictedStreams;
+    bool pageCountReplayFailed = false;
+    unsigned long long pageCountFetches = 0;
     bool readXRefStream(Stream *xrefStr, Goffset *pos);
     bool constructXRef(bool *wasReconstructed, bool needCatalogDict = false);
     bool parseEntry(Goffset offset, XRefEntry *entry);
