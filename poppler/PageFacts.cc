@@ -1467,7 +1467,8 @@ struct FormCache
 // - a run is at least kMinBars boxes whose bases (the bottom edge of vertical bars, the left edge of horizontal ones) are
 //   within kBarBaseTolerance points, with gaps of at most kMaxBarGap times the widest bar so far;
 // - its lengths differ (kMinBarSpread: shaded rows and zebra stripes are one length);
-// - few hold a word's centre (kMaxBarTextShare: shaded cells and highlights hold them);
+// - labeled bars need stable thickness, interior grid crossings, and aligned tick labels;
+// - repeated lane separators with populated adjoining cells indicate a table;
 // - a stroked axis lies along the baseline (within kBarAxisReach points) and spans kBarAxisSpan of the run: a box's own
 //   outline or a cell border beside one box is not an axis (form fields);
 // - a scale: at least kBarScaleMin numbers beside the run, increasing along its value axis (redactions and blank form
@@ -1584,10 +1585,13 @@ bool barFillExcluded(double r, double g, double b)
 
 // Whether a run (its union `u`) has a scale: kBarScaleMin numbers beside it increasing along its value axis (up for vertical
 // bars, from labels left or right of the plot; right for horizontal bars, from labels below or above it). As doppler-md
-// `bar_scale`; every number looked at is charged.
-bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, size_t *budget, bool *hit)
+// `bar_scale`; text-heavy runs require a sequence in one typographic row or column. Every number looked at is charged.
+bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, bool aligned, size_t *budget, bool *hit)
 {
-    std::vector<std::pair<double, double>> seq;
+    struct Tick {
+        double position, value, cross;
+    };
+    std::vector<Tick> seq;
     for (int side = 0; side < 2; ++side) {
         seq.clear();
         for (const ScaleNumber &n : nums) {
@@ -1604,16 +1608,38 @@ bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nu
                         && (side == 0 ? (n.y0 >= u.y1 - 4 && n.y0 <= u.y1 + kBarScaleAcross) : (n.y1 <= u.y0 + 4 && n.y1 >= u.y0 - kBarScaleAcross));
             }
             if (keep) {
-                seq.push_back({ vertical ? -cy : cx, n.v });
+                seq.push_back({ vertical ? -cy : cx, n.v, vertical ? (side == 0 ? n.x1 : n.x0) : cy });
             }
         }
         if (seq.size() < kBarScaleMin) {
             continue;
         }
-        std::stable_sort(seq.begin(), seq.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        std::stable_sort(seq.begin(), seq.end(), [](const auto &a, const auto &b) { return a.position < b.position; });
+        if (aligned) {
+            for (const auto &anchor : seq) {
+                const Tick *previous = nullptr;
+                size_t count = 0;
+                for (const auto &tick : seq) {
+                    if (!spend(budget, 1, hit)) {
+                        return false;
+                    }
+                    if (tick.cross < anchor.cross || tick.cross > anchor.cross + 4.0) {
+                        continue;
+                    }
+                    if (previous && (tick.position <= previous->position + 1.0 || tick.value <= previous->value)) {
+                        count = 0;
+                    }
+                    previous = &tick;
+                    if (++count == kBarScaleMin) {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
         bool increasing = true;
         for (size_t k = 1; k < seq.size() && increasing; ++k) {
-            increasing = seq[k].second > seq[k - 1].second;
+            increasing = seq[k].value > seq[k - 1].value;
         }
         if (increasing) {
             return true;
@@ -1627,7 +1653,116 @@ BarBox barUnion(const BarBox &a, const BarBox &b)
     return { std::min(a.x0, b.x0), std::min(a.y0, b.y0), std::max(a.x1, b.x1), std::max(a.y1, b.y1) };
 }
 
-// `words` sorted by x. Returns clusters to add; joins into `drawings` (getGraphics' clusters) any it overlaps.
+// Keep this geometry and its budget charging in step with vector.rs bar_grid_evidence.
+bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool vertical, const std::vector<BarLine> &across,
+                     const std::vector<BarLine> &down, const std::vector<WordCentre> &words, bool needsGrid, size_t *budget, bool *limitHit)
+{
+    const auto &separators = vertical ? down : across;
+    const auto &grid = vertical ? across : down;
+    const double valueLo = vertical ? r.y0 : r.x0, valueHi = vertical ? r.y1 : r.x1;
+    const double laneLo = vertical ? r.x0 : r.y0, laneHi = vertical ? r.x1 : r.y1;
+    const auto laneSpan = [vertical](const BarBox &b) {
+        return vertical ? std::pair { b.x0, b.x1 } : std::pair { b.y0, b.y1 };
+    };
+    const auto byPosition = [](const BarLine &line, double at) { return line.at < at; };
+    int dividedGaps = 0;
+    for (size_t i = 1; i < run.size() && dividedGaps < 2; ++i) {
+        const double lo = laneSpan(run[i - 1]).second, hi = laneSpan(run[i]).first;
+        if (hi - lo < 2.0) {
+            continue;
+        }
+        for (auto it = std::lower_bound(separators.begin(), separators.end(), lo + 0.5, byPosition); it != separators.end(); ++it) {
+            if (!spend(budget, 1, limitHit)) {
+                return false;
+            }
+            if (it->at > hi - 0.5) {
+                break;
+            }
+            if (std::min(it->hi, valueHi) - std::max(it->lo, valueLo) >= 0.8 * (valueHi - valueLo)) {
+                ++dividedGaps;
+                break;
+            }
+        }
+    }
+    if (dividedGaps >= 2) {
+        int occupiedLanes = 0;
+        for (const auto &bar : run) {
+            const auto [start, end] = laneSpan(bar);
+            bool before = false, after = false;
+            const double xLo = vertical ? start : valueLo - 100.0, xHi = vertical ? end : valueHi + 100.0;
+            const auto from = std::lower_bound(words.begin(), words.end(), xLo, [](const WordCentre &word, double x) { return word.x < x; });
+            for (auto word = from; word != words.end(); ++word) {
+                if (!spend(budget, 1, limitHit)) {
+                    return false;
+                }
+                if (word->x > xHi) {
+                    break;
+                }
+                const double value = vertical ? word->y : word->x, lane = vertical ? word->x : word->y;
+                if (lane < start || lane > end) {
+                    continue;
+                }
+                before |= value < valueLo - 2.0 && value >= valueLo - 100.0;
+                after |= value > valueHi + 2.0 && value <= valueHi + 100.0;
+                if (before && after) {
+                    ++occupiedLanes;
+                    break;
+                }
+            }
+            if (occupiedLanes == 2) {
+                return false;
+            }
+        }
+    }
+    if (!needsGrid) {
+        return true;
+    }
+    if (!spend(budget, run.size(), limitHit)) {
+        return false;
+    }
+    double minThickness = INFINITY, maxThickness = 0;
+    for (const auto &bar : run) {
+        const auto [lo, hi] = laneSpan(bar);
+        minThickness = std::min(minThickness, hi - lo);
+        maxThickness = std::max(maxThickness, hi - lo);
+    }
+    if (minThickness < 0.8 * maxThickness) {
+        return false;
+    }
+    double previous = -INFINITY;
+    int crossings = 0;
+    auto it = std::upper_bound(grid.begin(), grid.end(), valueLo + 1.0, [](double at, const BarLine &line) { return at < line.at; });
+    for (; it != grid.end(); ++it) {
+        if (!spend(budget, 1, limitHit)) {
+            return false;
+        }
+        if (it->at >= valueHi - 1.0) {
+            break;
+        }
+        if (it->at - previous < 2.0 || std::min(it->hi, laneHi) - std::max(it->lo, laneLo) < 0.8 * (laneHi - laneLo)) {
+            continue;
+        }
+        int barsCrossed = 0;
+        for (const auto &bar : run) {
+            if (!spend(budget, 1, limitHit)) {
+                return false;
+            }
+            const double lo = vertical ? bar.y0 : bar.x0, hi = vertical ? bar.y1 : bar.x1;
+            const auto [start, end] = laneSpan(bar);
+            if (lo + 1.0 < it->at && it->at < hi - 1.0 && it->lo <= start + 1.0 && it->hi >= end - 1.0 && ++barsCrossed == 2) {
+                previous = it->at;
+                ++crossings;
+                break;
+            }
+        }
+        if (crossings == 2) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Words are sorted by x. Merge bar regions into intersecting drawings, returning the other clusters.
 std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, const std::vector<ScaleNumber> &nums, double pageW, double pageH,
                                      std::vector<TextGraphic> &drawings, size_t *runBudget, bool *limitHit)
 {
@@ -1719,7 +1854,7 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
                 }
             }
             if (held && ++withText > limit) {
-                return;
+                break;
             }
         }
         const std::vector<BarLine> &lines = vertical ? across : down;
@@ -1730,7 +1865,10 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
                 return;
             }
             if (std::min(it->hi, to) - std::max(it->lo, from) >= kBarAxisSpan * (to - from)) {
-                if (!barScale(u, vertical, nums, budget, limitHit)) {
+                const bool labeled = withText > limit;
+                if ((labeled && !barGridEvidence(run, u, vertical, across, down, words, true, budget, limitHit))
+                    || !barScale(u, vertical, nums, labeled, budget, limitHit)
+                    || (!labeled && !barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit))) {
                     return;
                 }
                 found.push_back({ u, vertical });
