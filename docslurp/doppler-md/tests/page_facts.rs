@@ -613,3 +613,112 @@ fn math_table_facts_reach_the_page_lines() {
     assert_eq!(packed["encodingCounts"], page["encodingCounts"]);
     assert!(packed.get("vectors").is_none() && packed.get("tableFlags").is_none(), "{packed}");
 }
+
+#[test]
+fn bar_geometry_agrees_in_markdown_and_page_facts() {
+    let Some((pdftotext, facts)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("bar-geometry");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let output = Command::new("python3").arg(generator).arg(&scratch.0).output();
+    let Ok(output) = output else {
+        toolchain::skip("bar_geometry", "python3 for the vector PDF fixtures");
+        return;
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    for (name, chart, table) in [
+        ("labeled-crossings-behind", true, false),
+        ("gridless-horizontal-endpoints", true, false),
+        ("gridless-vertical-endpoints", true, false),
+        ("gridless-off-scale-endpoints", false, false),
+        ("table-with-calibrated-endpoints", false, true),
+        ("labeled-crossings-front", true, false),
+        ("vertical-labeled", true, false),
+        ("rounded-staircase", true, false),
+        ("chart-with-category-dividers", true, false),
+        ("data-bars-in-edge-column", false, true),
+        ("chart-with-one-sided-labels", true, false),
+        ("scale-contaminated", true, false),
+        ("mixed-separate-table", true, true),
+        ("unlabeled-in-cell-bars", false, true),
+        ("in-cell-bars-with-crossings", false, true),
+        ("shaded-cell-boundaries", false, true),
+        ("off-axis-numeric-decoration", false, false),
+        ("thin-mark-decoration", false, false),
+        ("rule-fragment-decoration", false, false),
+    ] {
+        let pdf = scratch.0.join(format!("{name}.pdf"));
+        let result = Command::new(PDFTOMARKDOWN)
+            .args(["--markers", "--html"])
+            .arg(&pdf)
+            .env("PDFTOTEXT", &pdftotext)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let markdown = String::from_utf8(result.stdout).unwrap();
+        assert_eq!(markdown.matches("/figure-").count(), usize::from(chart), "{name}: {markdown}");
+        assert_eq!(markdown.matches("<table>").count(), usize::from(table), "{name}: {markdown}");
+        if name == "mixed-separate-table" {
+            assert!(markdown.contains("<td>Sensor 1</td><td>30</td>"), "{markdown}");
+            assert!(markdown.contains("<td>Sensor 5</td><td>34</td>"), "{markdown}");
+        }
+        if name == "in-cell-bars-with-crossings" {
+            assert!(markdown.contains("<td>North</td><td>Alder</td>"), "{markdown}");
+            assert!(markdown.contains("<td>40</td>"), "{markdown}");
+        }
+        let result = Command::new(&facts).args(["-level", "full"]).arg(&pdf).output().unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let json = String::from_utf8(result.stdout).unwrap();
+        assert!(json.contains(&format!("\"figureClusters\":{}", usize::from(chart))), "{name}: {json}");
+    }
+}
+
+#[test]
+fn endpoint_crops_include_trailing_ticks_and_shared_legend() {
+    let Some((pdftotext, facts)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("bar-axis-crop");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let Ok(output) = Command::new("python3").arg(generator).arg(&scratch.0).output() else {
+        toolchain::skip("bar_axis_crop", "python3 for the vector PDF fixtures");
+        return;
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    for (name, count) in [("shared-legend-panels", 1), ("independent-legend-panels", 2)] {
+        let pdf = scratch.0.join(format!("{name}.pdf"));
+        let result = Command::new(PDFTOMARKDOWN)
+            .args(["--markers", "--report"])
+            .arg(&pdf)
+            .env("PDFTOTEXT", &pdftotext)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        let report: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+        let crops: Vec<_> = report["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|image| image["kind"] == "vector" && image["placed"] == "block")
+            .map(|image| &image["bbox"])
+            .collect();
+        assert_eq!(crops.len(), count, "{name}: {report}");
+        for (i, crop) in crops.iter().enumerate() {
+            let edge = |j: usize| crop[j].as_f64().unwrap();
+            assert!(edge(0) <= 133.0 + 305.0 * i as f64, "{name}: {crop}");
+            let far_tick = if count == 1 || i == 1 { 650.0 } else { 345.0 };
+            assert!(edge(2) >= far_tick, "{name}: {crop}");
+            assert!((524.0..555.0).contains(&edge(3)), "{name}: {crop}");
+        }
+        let collected = pdfpagefacts(&facts, &["-level", "full"], &pdf);
+        let record: serde_json::Value =
+            serde_json::from_str(String::from_utf8(collected).unwrap().lines().nth(1).unwrap()).unwrap();
+        assert_eq!(record["vectors"]["figureClusters"], 2, "{name}: {record}");
+    }
+}
