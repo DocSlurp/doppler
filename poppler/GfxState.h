@@ -1613,6 +1613,7 @@ public:
     double getLeading() const { return leading; }
     double getRise() const { return rise; }
     int getRender() const { return render; }
+    bool textRenderModeDoesNotPaint() const;
     const char *getRenderingIntent() const { return renderingIntent; }
     const GfxPath *getPath() const { return path; }
     double getCurX() const { return curX; }
@@ -1701,7 +1702,9 @@ public:
     void setHorizScaling(double scale) { horizScaling = 0.01 * scale; }
     void setLeading(double leadingA) { leading = leadingA; }
     void setRise(double riseA) { rise = riseA; }
-    void setRender(int renderA) { render = renderA; }
+    void setRender(int renderA) { render = textRenderMode = renderA; }
+    // Pattern fills use an intermediate render mode to obtain the glyph clip.
+    void setRenderForPatternText(int renderA) { render = renderA; }
     void setRenderingIntent(const char *intent) { strncpy(renderingIntent, intent, 31); }
 
 #if USE_CMS
@@ -1824,7 +1827,8 @@ private:
     double horizScaling; // horizontal scaling
     double leading; // text leading
     double rise; // text rise
-    int render; // text rendering mode
+    int render; // text rendering mode used by the renderer
+    int textRenderMode = 0; // original PDF text rendering mode
 
     GfxPath *path; // array of path elements
     // Ideally we would not have curX and curTextX, but there are broken PDF producers that mix operators incorrectly

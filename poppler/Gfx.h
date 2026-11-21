@@ -78,6 +78,7 @@ class AnnotBorder;
 class AnnotColor;
 class Catalog;
 struct MarkedContentStack;
+class TaggedTextEvidence;
 class ScanCopyAudit;
 
 //------------------------------------------------------------------------
@@ -193,7 +194,7 @@ public:
         Type3Font,
         Form
     };
-    void display(Object *obj, DisplayType displayType = DisplayType::TopLevel);
+    void display(Object *obj, DisplayType displayType = DisplayType::TopLevel, Ref taggedForm = Ref::INVALID());
 
     // Display an annotation, given its appearance (a Form XObject),
     // border style, and bounding box (in default user space).
@@ -218,7 +219,7 @@ public:
 
     // if softMask is true backdropColor must not be null
     void drawForm(Object *str, Dict *resDict, const std::array<double, 6> &matrix, const std::array<double, 4> &bbox, bool transpGroup = false, bool softMask = false, GfxColorSpace *blendingColorSpace = nullptr, bool isolated = false,
-                  bool knockout = false, bool alpha = false, Function *transferFunc = nullptr, const GfxColor *backdropColor = nullptr);
+                  bool knockout = false, bool alpha = false, Function *transferFunc = nullptr, const GfxColor *backdropColor = nullptr, Ref taggedForm = Ref::INVALID());
 
     void pushResources(Dict *resDict);
     void popResources();
@@ -258,6 +259,7 @@ private:
                   //   disabled
 
     MarkedContentStack *mcStack; // current BMC/EMC stack
+    TaggedTextEvidence *taggedText = nullptr;
     int mcDepth = 0; // DocSlurp: entries on mcStack
     int mcOverflow = 0; // DocSlurp: open sections past maxMarkedContentDepth (not on mcStack)
     bool mcDepthWarned = false; // DocSlurp: the nesting warning was given on this page
@@ -406,7 +408,7 @@ private:
     // nothing (its data is never read; the audit counts it where it would be drawn)
     void doImage(Object *ref, Stream *str, bool inlineImg, bool auditOnly = false);
     void reportImageGeometry(Dict *dict, Stream *str, Ref ref);
-    void doForm(Object *str);
+    void doForm(Object *str, Ref ref);
 
     // in-line image operators
     void opBeginImage(Object args[], int numArgs);

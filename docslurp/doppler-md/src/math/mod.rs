@@ -976,7 +976,7 @@ pub fn rewrite_page_with(
     // an OCR layer (invisible text over a scan) and an unreadable text layer go to OCR or a
     // vision model instead
     let words: Vec<&Word> = page.lines.iter().flat_map(|l| l.words.iter()).collect();
-    let invisible = words.iter().filter(|w| w.invisible).count();
+    let invisible = words.iter().filter(|w| w.shown.map_or(w.invisible, |shown| !shown)).count();
     if !words.is_empty() && invisible * 2 > words.len() {
         stats.ocr_layer = true;
         stats.whole_page(page, "ocrLayer");
@@ -1777,7 +1777,8 @@ fn table_lines(page: &Page, lines: &[LineMath], facts: &FontFacts, p: &crate::pa
     // (member lines, column count)
     let mut found: Vec<(Vec<usize>, usize)> = Vec::new();
     if p.rules && p.tables {
-        if let Some(ruled) = crate::tables::ruled_tables(page, &ids, body, p, crate::TableFormat::Gfm, &mut budget) {
+        if let Some(ruled) = crate::tables::ruled_tables(page, &ids, &[], body, p, crate::TableFormat::Gfm, &mut budget)
+        {
             found.extend(ruled.into_iter().map(|(m, t, _)| (m, t.rows.first().map_or(0, Vec::len))));
         }
     }
@@ -2011,6 +2012,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     color: first.color.clone(),
                     glyphs: Default::default(),
                     invisible: false,
+                    shown: None,
                     rot: first.rot,
                 });
             }

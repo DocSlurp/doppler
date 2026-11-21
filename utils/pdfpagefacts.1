@@ -67,15 +67,15 @@ Last page (default the last page).
 .TP
 .BI \-level " basic|full"
 basic (the default): geometry, text counts, layer and coverage, image totals and scan
-detection, parse warnings and features; full: every family, mathtables included (about 7%
+detection, parse warnings and features; full: the standard families, mathtables included (about 7%
 more CPU than full without it on textbook pages).
 .TP
 .BI \-include " list"
-Families added to basic, comma-separated: fonts, oddtext, images-detail (per-image items,
+Families added to the selected level, comma-separated: fonts, oddtext, images-detail (per-image items,
 words inside and centred inside, bytes per pixel), vectors (including ruled grids and their
 thin-rule counts), forms, annots, ocg,
 structure, mathtables (the packed math and table words below; with the other families, their
-readable fields). Basic alone does not include mathtables;
+readable fields), scan-regions (explicit opt-in at either level; includes images-detail and mixed-page placement nominations). Basic alone does not include mathtables;
 .B "\-include mathtables"
 at basic adds only three integers a page.
 .TP

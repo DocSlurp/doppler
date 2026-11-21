@@ -439,3 +439,40 @@ fn many_boxes_stay_bounded() {
     assert!(found.len() <= 4);
     assert!(started.elapsed().as_secs() < 20);
 }
+
+#[test]
+fn aligned_ruled_panels_do_not_claim_a_shared_borderless_table() {
+    let mut panels = String::new();
+    for x in [48.0, 320.0] {
+        for y in [180.0, 200.0, 220.0, 240.0] {
+            panels += &rule(x, y, x + 160.0, y + 0.5);
+        }
+        for dx in [0.0, 80.0, 160.0] {
+            panels += &rule(x + dx, 180.0, x + dx + 0.5, 240.0);
+        }
+        for (i, y) in [185.0, 205.0, 225.0].into_iter().enumerate() {
+            panels += &line_at(x + 8.0, y, &format!("Rack {i}"));
+            panels += &line_at(x + 88.0, y, &format!("{} kW", i + 3));
+        }
+    }
+    // Repeated labels under different panels are prose. Different values spanning the
+    // same panels, or two columns under one panel, can belong to a real table.
+    for (right, matching) in [(328.0, true), (328.0, false), (138.0, true)] {
+        let mut body = panels.clone();
+        for (i, y) in [258.0, 275.0, 292.0, 309.0].into_iter().enumerate() {
+            body += &line_at(56.0, y, &format!("speed{}", 750 + i * 25));
+            let value = if matching { 750 + i * 25 } else { 900 + i * 25 };
+            body += &line_at(right, y, &format!("speed{value}"));
+        }
+        let (md, _) = convert(&page(1, &body), false);
+        let repeated_labels = right == 328.0 && matching;
+        let tables = md.lines().filter(|line| line.starts_with("| ---")).count();
+        assert_eq!(tables, if repeated_labels { 2 } else { 3 }, "{md}");
+        if repeated_labels {
+            assert_eq!(md.matches("speed750").count(), 2, "{md}");
+        } else {
+            let value = if matching { 750 } else { 900 };
+            assert!(md.contains(&format!("| speed750 | speed{value} |")), "{md}");
+        }
+    }
+}

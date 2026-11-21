@@ -1376,10 +1376,6 @@ void PostScriptFunction::resizeCode(int newSize)
 
 void PostScriptFunction::exec(PSStack *stack, int codePtr) const
 {
-    int i1, i2;
-    double r1, r2;
-    bool b1, b2;
-
     while (true) {
         switch (code[codePtr].type) {
         case psInt:
@@ -1392,36 +1388,46 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
             switch (code[codePtr++].op) {
             case psOpAbs:
                 if (stack->topIsInt()) {
-                    stack->pushInt(abs(stack->popInt()));
+                    const int i1 = stack->popInt();
+                    if (unlikely(i1 == std::numeric_limits<decltype(i1)>::min())) {
+                        stack->pushReal(fabs(static_cast<double>(i1)));
+                    } else {
+                        stack->pushInt(abs(i1));
+                    }
                 } else {
                     stack->pushReal(fabs(stack->popNum()));
                 }
                 break;
             case psOpAdd:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
-                    stack->pushInt(i1 + i2);
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
+                    int sum;
+                    if (unlikely(checkedAdd(i1, i2, &sum))) {
+                        stack->pushReal(static_cast<double>(i1) + i2);
+                    } else {
+                        stack->pushInt(sum);
+                    }
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushReal(r1 + r2);
                 }
                 break;
             case psOpAnd:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushInt(i1 & i2);
                 } else {
-                    b2 = stack->popBool();
-                    b1 = stack->popBool();
+                    const bool b2 = stack->popBool();
+                    const bool b1 = stack->popBool();
                     stack->pushBool(b1 && b2);
                 }
                 break;
             case psOpAtan: {
-                r2 = stack->popNum();
-                r1 = stack->popNum();
+                const double r2 = stack->popNum();
+                const double r1 = stack->popNum();
                 double result = atan2(r1, r2) * 180.0 / std::numbers::pi;
                 if (result < 0) {
                     result += 360.0;
@@ -1429,17 +1435,22 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 stack->pushReal(result);
                 break;
             }
-            case psOpBitshift:
-                i2 = stack->popInt();
-                i1 = stack->popInt();
-                if (i2 > 0) {
-                    stack->pushInt(i1 << i2);
+            case psOpBitshift: {
+                const int i2 = stack->popInt();
+                const int i1 = stack->popInt();
+                constexpr int maxShift = std::numeric_limits<unsigned int>::digits;
+                if (i2 >= maxShift || i2 <= -maxShift) {
+                    error(errSyntaxError, -1, "PostScriptFunction::exec: undefined bitshift behaviour: {0:d} {1:d}", i1, i2);
+                    stack->pushInt(0);
+                } else if (i2 > 0) {
+                    stack->pushInt(static_cast<int>(static_cast<unsigned int>(i1) << i2));
                 } else if (i2 < 0) {
                     stack->pushInt(static_cast<int>(static_cast<unsigned int>(i1) >> -i2));
                 } else {
                     stack->pushInt(i1);
                 }
                 break;
+            }
             case psOpCeiling:
                 if (!stack->topIsInt()) {
                     stack->pushReal(ceil(stack->popNum()));
@@ -1461,37 +1472,39 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                     stack->pushReal(stack->popNum());
                 }
                 break;
-            case psOpDiv:
-                r2 = stack->popNum();
-                r1 = stack->popNum();
+            case psOpDiv: {
+                const double r2 = stack->popNum();
+                const double r1 = stack->popNum();
                 stack->pushReal(r1 / r2);
                 break;
+            }
             case psOpDup:
                 stack->copy(1);
                 break;
             case psOpEq:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 == i2);
                 } else if (stack->topTwoAreNums()) {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 == r2);
                 } else {
-                    b2 = stack->popBool();
-                    b1 = stack->popBool();
+                    const bool b2 = stack->popBool();
+                    const bool b1 = stack->popBool();
                     stack->pushBool(b1 == b2);
                 }
                 break;
             case psOpExch:
                 stack->roll(2, 1);
                 break;
-            case psOpExp:
-                r2 = stack->popNum();
-                r1 = stack->popNum();
+            case psOpExp: {
+                const double r2 = stack->popNum();
+                const double r1 = stack->popNum();
                 stack->pushReal(pow(r1, r2));
                 break;
+            }
             case psOpFalse:
                 stack->pushBool(false);
                 break;
@@ -1502,44 +1515,45 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 break;
             case psOpGe:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 >= i2);
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 >= r2);
                 }
                 break;
             case psOpGt:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 > i2);
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 > r2);
                 }
                 break;
-            case psOpIdiv:
-                i2 = stack->popInt();
-                i1 = stack->popInt();
+            case psOpIdiv: {
+                const int i2 = stack->popInt();
+                const int i1 = stack->popInt();
                 if (likely((i2 != 0) && (i2 != -1 || i1 != INT_MIN))) {
                     stack->pushInt(i1 / i2);
                 }
                 break;
+            }
             case psOpIndex:
                 stack->index(stack->popInt());
                 break;
             case psOpLe:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 <= i2);
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 <= r2);
                 }
                 break;
@@ -1551,27 +1565,33 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 break;
             case psOpLt:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 < i2);
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 < r2);
                 }
                 break;
-            case psOpMod:
-                i2 = stack->popInt();
-                i1 = stack->popInt();
+            case psOpMod: {
+                const int i2 = stack->popInt();
+                const int i1 = stack->popInt();
                 if (likely(i2 != 0)) {
-                    stack->pushInt(i1 % i2);
+                    if (unlikely(i2 == -1 && i1 == std::numeric_limits<decltype(i1)>::min())) {
+                        error(errSyntaxError, -1, "PostScriptFunction::exec: undefined mod behaviour: {0:d} {1:d}", i1, i2);
+                        stack->pushInt(0);
+                    } else {
+                        stack->pushInt(i1 % i2);
+                    }
                 }
                 break;
+            }
             case psOpMul:
                 if (stack->topTwoAreInts()) {
                     int result;
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     //~ should push a real instead?
                     if (checkedMultiply(i1, i2, &result)) {
                         error(errSyntaxError, -1, "PostScriptFunction::exec: Multiplication of two integers overflows: {0:d} {1:d}", i1, i2);
@@ -1580,29 +1600,34 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                         stack->pushInt(result);
                     }
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushReal(r1 * r2);
                 }
                 break;
             case psOpNe:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushBool(i1 != i2);
                 } else if (stack->topTwoAreNums()) {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushBool(r1 != r2);
                 } else {
-                    b2 = stack->popBool();
-                    b1 = stack->popBool();
+                    const bool b2 = stack->popBool();
+                    const bool b1 = stack->popBool();
                     stack->pushBool(b1 != b2);
                 }
                 break;
             case psOpNeg:
                 if (stack->topIsInt()) {
-                    stack->pushInt(-stack->popInt());
+                    const int i1 = stack->popInt();
+                    if (unlikely(i1 == std::numeric_limits<decltype(i1)>::min())) {
+                        stack->pushReal(-static_cast<double>(i1));
+                    } else {
+                        stack->pushInt(-i1);
+                    }
                 } else {
                     stack->pushReal(-stack->popNum());
                 }
@@ -1616,26 +1641,27 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 break;
             case psOpOr:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushInt(i1 | i2);
                 } else {
-                    b2 = stack->popBool();
-                    b1 = stack->popBool();
+                    const bool b2 = stack->popBool();
+                    const bool b1 = stack->popBool();
                     stack->pushBool(b1 || b2);
                 }
                 break;
             case psOpPop:
                 stack->pop();
                 break;
-            case psOpRoll:
-                i2 = stack->popInt();
-                i1 = stack->popInt();
+            case psOpRoll: {
+                const int i2 = stack->popInt();
+                const int i1 = stack->popInt();
                 stack->roll(i1, i2);
                 break;
+            }
             case psOpRound:
                 if (!stack->topIsInt()) {
-                    r1 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushReal((r1 >= 0) ? floor(r1 + 0.5) : ceil(r1 - 0.5));
                 }
                 break;
@@ -1647,12 +1673,18 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 break;
             case psOpSub:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
-                    stack->pushInt(i1 - i2);
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
+
+                    int result;
+                    if (unlikely(checkedSubtraction(i1, i2, &result))) {
+                        stack->pushReal(static_cast<double>(i1) - i2);
+                    } else {
+                        stack->pushInt(result);
+                    }
                 } else {
-                    r2 = stack->popNum();
-                    r1 = stack->popNum();
+                    const double r2 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushReal(r1 - r2);
                 }
                 break;
@@ -1661,30 +1693,31 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 break;
             case psOpTruncate:
                 if (!stack->topIsInt()) {
-                    r1 = stack->popNum();
+                    const double r1 = stack->popNum();
                     stack->pushReal((r1 >= 0) ? floor(r1) : ceil(r1));
                 }
                 break;
             case psOpXor:
                 if (stack->topTwoAreInts()) {
-                    i2 = stack->popInt();
-                    i1 = stack->popInt();
+                    const int i2 = stack->popInt();
+                    const int i1 = stack->popInt();
                     stack->pushInt(i1 ^ i2);
                 } else {
-                    b2 = stack->popBool();
-                    b1 = stack->popBool();
+                    const bool b2 = stack->popBool();
+                    const bool b1 = stack->popBool();
                     stack->pushBool(b1 ^ b2);
                 }
                 break;
-            case psOpIf:
-                b1 = stack->popBool();
+            case psOpIf: {
+                const bool b1 = stack->popBool();
                 if (b1) {
                     exec(stack, codePtr + 2);
                 }
                 codePtr = code[codePtr + 1].blk;
                 break;
-            case psOpIfelse:
-                b1 = stack->popBool();
+            }
+            case psOpIfelse: {
+                const bool b1 = stack->popBool();
                 if (b1) {
                     exec(stack, codePtr + 2);
                 } else {
@@ -1692,6 +1725,7 @@ void PostScriptFunction::exec(PSStack *stack, int codePtr) const
                 }
                 codePtr = code[codePtr + 1].blk;
                 break;
+            }
             case psOpReturn:
                 return;
             }

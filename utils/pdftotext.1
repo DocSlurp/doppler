@@ -126,6 +126,38 @@ separators U+0085, U+2028 and U+2029 is replaced by a single space, so each
 word is exactly one row of twelve tab-separated columns.
 No quoting or backslash escaping is used.
 .TP
+.B \-tagged-span-evidence
+With \-bbox-layout, add explicit marked-content evidence to words during the same
+page walk. A word wholly inside pagination artifact content gets
+.BR artifact="pagination" .
+A word with one unambiguous marked-content ID gets
+.BR mcid
+and
+.BR mcScope :
+scope 0 is the page contents, and a positive scope identifies a Form XObject
+invocation within that page.
+.B mcForm
+gives the Form object's number and generation.
+.B mcPage
+gives the PDF page number, including when extracting a page range.
+These attributes describe content-stream evidence. They do not validate the
+logical structure tree or change the extracted text, order, or bounds.
+Mixed words, replacement text, and ambiguous overlaps may have no evidence.
+If marked content is unbalanced or nested too deeply, a scope repeats an MCID, or the 16,384-event
+per-page budget for marked-content opens, Form scopes, and evidenced glyphs is
+exhausted, the page has
+.B taggedSpansUnavailable="1"
+and its words carry no evidence.
+Skipped or aborted stream traversal also invalidates evidence for that page.
+The document budget is 65,536 events, including one event per page, which
+bounds the added attributes to 8 MiB. After exhaustion the output ends with
+.B taggedSpansRunLimit
+whose
+.B firstPage
+identifies the first page affected by the run limit.
+These document-supplied tags are advisory. Malformed Forms can still affect
+ordinary extraction through Gfx's inherited marked-content handling.
+.TP
 .B \-wordmeta
 Used together with \-bbox, \-bbox-layout or \-tsv: output additional metadata for
 every word. Without this option the output is unchanged.
@@ -157,8 +189,8 @@ is 0 to 3 (multiples of 90 degrees, as for the text direction).
 .I spaceAfter
 is 1 if a space follows the word on its line, otherwise 0.
 .I invisible
-is 1 for invisible text (text render mode 3), such as the hidden text layer of
-OCRed documents, otherwise 0.
+is 1 when the word starts in render mode 3 or clip-only mode 7 (except mode 7
+with a Type 3 font), otherwise 0. It does not test the clip or later glyphs.
 .I color
 is the colour the word is painted with, as #rrggbb (the stroke colour for
 stroke-only text render modes).
@@ -171,6 +203,10 @@ bounding boxes.
 Used together with \-bbox-layout and \-wordmeta: also output glyph-level records,
 for reading typeset math. Without this option the output is unchanged, and a reader
 that does not know the records can skip them (they are separate elements).
+With this option, each word also has a
+.I shown
+attribute: 1 when at least one glyph paints and has its centre inside the clip,
+otherwise 0.
 Each <page> starts with a font table: one
 .B <font>
 element per font used on the page with
@@ -343,10 +379,10 @@ are also counted per page (by category) while facts are written.
 Page facts level (default basic).
 .TP
 .BI \-page\-facts\-include " list"
-Page facts families added to basic: fonts, oddtext, images-detail (per-image items, words
+Page facts families added to the selected level: fonts, oddtext, images-detail (per-image items, words
 inside and centred inside, bytes per pixel), vectors (including ruled grids and their
-thin-rule counts), forms, annots, ocg, structure
-(comma-separated).
+thin-rule counts), forms, annots, ocg, structure, mathtables, scan-regions
+(comma-separated). Scan-regions requires explicit opt-in at either level.
 .TP
 .B \-page\-facts\-timing
 Add factsMs to page lines, totalMs and peakRssKiB to the run line (not deterministic).

@@ -46,7 +46,7 @@ struct TextImage;
 
 // Scan detection, shared by page facts and pdftotext -images (scan= on <page>): the page's
 // images cover at least scanCover of it (a 64x64 occupancy grid of their visible boxes) and at
-// most maxWords words are visible (some glyph not render mode 3 and inside the clip).
+// most maxWords words are visible (some glyph in a painting mode and inside the clip).
 //  Single   one image covers at least scanCover of the page by itself;
 //  Tiled    several images do together (strips, tiles);
 //  Layered  Single, but the covering image has a /SMask or /Mask, or another image (a stencil
@@ -68,7 +68,7 @@ struct ScanVerdict
     bool fullPageImage = false; // the geometric half of the test, whatever the words
 };
 
-// How a glyph the text pass adds is drawn: in render mode 3 (invisible), and whether its centre
+// How a glyph the text pass adds is drawn: whether its rendering mode paints and whether its centre
 // (half its advance along the baseline, 0.3 of the font size up) lies outside the clip. A word
 // is invisible when none of its glyphs is visible (TextPage::getInvisibleWordCount).
 struct GlyphVisibility
@@ -117,7 +117,7 @@ struct CoverageGrid
 class POPPLER_PRIVATE_EXPORT PageFacts
 {
 public:
-    // Families added to the basic level (-page-facts-include); full is all of them.
+    // Families added to the basic level (-page-facts-include); full includes the standard families.
     enum Family : unsigned
     {
         Fonts = 1u << 0,
@@ -131,14 +131,15 @@ public:
         // math and table encodings: the packed mathBits, tableBits and encodingCounts words on
         // every page, and (with the other families) their readable fields; see the README
         MathTables = 1u << 8,
-        AllFamilies = (1u << 9) - 1
+        AllFamilies = (1u << 9) - 1,
+        ScanRegions = 1u << 9
     };
     static constexpr const char *schemaName = "doppler-page-facts/1";
 
     // Parses "basic" or "full" into families (0 or AllFamilies).
     static bool parseLevel(const char *text, unsigned *families);
     // Parses a comma-separated list of family names (fonts,oddtext,images-detail,vectors,forms,
-    // annots,ocg,structure,mathtables) into a mask; false for an unknown name.
+    // annots,ocg,structure,mathtables,scan-regions) into a mask; false for an unknown name.
     static bool parseInclude(const char *text, unsigned *families);
 
     explicit PageFacts(unsigned families);
@@ -186,7 +187,7 @@ public:
     void onActualText(const std::string &text);
     void beginAnnot(Annot *annot);
     void endAnnot(Annot *annot);
-    void endPage(const TextPage &text);
+    void endPage(const TextPage &text, bool displayDepthExceeded);
     bool wantsRules() const { return wants(Vectors | MathTables); }
     bool wantsGraphics() const { return wants(Vectors | MathTables); }
     bool wantsPaths() const { return wants(Vectors); }
@@ -233,6 +234,8 @@ private:
     // at most this many comparisons (council r2 L1), so a long hostile document cannot make every page pay the page cap
     static constexpr size_t maxBarComparisons = size_t(1) << 28;
     size_t barBudget = maxBarComparisons;
+    // Retained word boxes and comparison work available to scan-region evidence over a run.
+    size_t scanRegionBudget = size_t(1) << 23;
 
     // Bytes and per-span overhead remaining for ActualText detection across the run.
     size_t actualTextBudget = size_t(1) << 26;

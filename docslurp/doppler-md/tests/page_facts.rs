@@ -20,8 +20,11 @@ fn tools() -> Option<(PathBuf, PathBuf)> {
         .map(PathBuf::from)
         .or_else(|| pdftotext.parent().map(|d| d.join("pdfpagefacts")))
         .unwrap_or(build.join("pdfpagefacts"));
-    let usage = Command::new(&pdftotext).arg("-h").output().ok()?;
-    if !String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd") || !facts.is_file() {
+    let supported = Command::new(&pdftotext)
+        .arg("-h")
+        .output()
+        .is_ok_and(|usage| String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd"));
+    if !supported || !facts.is_file() {
         toolchain::skip("page_facts", "the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
         return None;
     }
@@ -46,7 +49,7 @@ impl Drop for Scratch {
 }
 
 /// Four pages: text, a full-page picture under an invisible text layer (a scan), a ruled
-/// table, a rotated page with a picture.
+/// table, and a rotated page with an invisible text layer in an inset under a visible heading.
 fn make_pdf() -> Vec<u8> {
     let text = |y: i32, mode: &str| {
         (0..5)
@@ -65,7 +68,7 @@ fn make_pdf() -> Vec<u8> {
         text(700, ""),
         format!("q 612 0 0 792 0 0 cm /Im1 Do Q\n{}", text(700, "3 Tr ")),
         format!("{grid}{}", text(300, "")),
-        format!("q 200 0 0 150 72 420 cm /Im1 Do Q\n{}", text(300, "")),
+        format!("q 420 0 0 240 54 300 cm /Im1 Do Q\n{}q\n{}Q\n", text(710, ""), text(500, "3 Tr ")),
     ];
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
@@ -87,6 +90,10 @@ fn make_pdf() -> Vec<u8> {
     for c in &contents {
         objects.push(format!("<< /Length {} >>\nstream\n{c}endstream", c.len()));
     }
+    encode_pdf(&objects)
+}
+
+fn encode_pdf(objects: &[String]) -> Vec<u8> {
     let mut pdf: Vec<u8> = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::new();
     for (i, o) in objects.iter().enumerate() {
@@ -104,6 +111,141 @@ fn make_pdf() -> Vec<u8> {
     tail += &format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1);
     pdf.extend(tail.bytes());
     pdf
+}
+
+#[test]
+fn text_render_modes_in_page_facts_and_page_info() {
+    let Some((pdftotext, facts_exe)) = tools() else { return };
+    let scratch = Scratch::new("render-modes");
+    let pdf = scratch.0.join("render-modes.pdf");
+    let cases = [
+        ("Tr 3", "/F1 12 Tf 3 Tr", "", "", "(WWWW) Tj", 4u64, 1),
+        ("Tr 7 with subsequent paint through the clip", "/F1 12 Tf 7 Tr", "", "0 0 612 792 re f", "(WWWW) Tj", 4, 1),
+        ("Tr 0", "/F1 12 Tf 0 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Tr 1", "/F1 12 Tf 1 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Tr 2", "/F1 12 Tf 2 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Tr 4", "/F1 12 Tf 4 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Tr 5", "/F1 12 Tf 5 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Tr 6", "/F1 12 Tf 6 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("pattern-filled Tr 0", "/F1 12 Tf 0 Tr", "/Pattern cs /P1 scn", "", "(WWWW) Tj", 0, 0),
+        ("clip-only Tr 7 with a pattern selected", "/F1 12 Tf 7 Tr", "/Pattern cs /P1 scn", "", "(WWWW) Tj", 4, 1),
+        ("Type 3 Tr 7", "/T3 12 Tf 7 Tr", "", "", "(WWWW) Tj", 0, 0),
+        ("Type 3 Tr 3 (legacy classification)", "/T3 12 Tf 3 Tr", "", "", "(WWWW) Tj", 4, 1),
+        ("Tr 7 then Tr 0", "/F1 12 Tf 7 Tr", "", "", "(WW) Tj 0 Tr (WW) Tj", 2, 1),
+        ("Tr 0 then Tr 7", "/F1 12 Tf 0 Tr", "", "", "(WW) Tj 7 Tr (WW) Tj", 2, 0),
+        ("Tr 3 then Tr 0", "/F1 12 Tf 3 Tr", "", "", "(WW) Tj 0 Tr (WW) Tj", 2, 1),
+        ("Tr 0 then Tr 3", "/F1 12 Tf 0 Tr", "", "", "(WW) Tj 3 Tr (WW) Tj", 2, 0),
+        ("q/Q restores painting", "/F1 12 Tf", "0 Tr q 7 Tr Q", "", "(WWWW) Tj", 0, 0),
+        ("Form restores painting", "/F1 12 Tf", "0 Tr /Fm Do", "", "(WWWW) Tj", 0, 0),
+    ];
+    let kids = (9..9 + 2 * cases.len()).step_by(2).map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
+    let stream =
+        |dict: &str, content: &str| format!("<< {dict} /Length {} >>\nstream\n{content}endstream", content.len());
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", cases.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        stream(
+            "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 /Resources << >>",
+            "0 g 0 0 3 4 re f\n",
+        ),
+        "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /W 6 0 R >> /Encoding /WinAnsiEncoding /FirstChar 87 /LastChar 87 /Widths [600] /Resources << >> >>".to_string(),
+        stream("", "600 0 0 0 600 700 d1 0 0 500 650 re f\n"),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode",
+            "41>\n",
+        ),
+        stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << >>", "BT 7 Tr ET\n"),
+    ];
+    for (_, text_state, before, after, shows, _, _) in cases {
+        let stream_id = objects.len() + 2;
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /T3 5 0 R >> /Pattern << /P1 4 0 R >> /XObject << /Im 7 0 R /Fm 8 0 R >> >> /Contents {stream_id} 0 R >>"
+        ));
+        objects.push(stream(
+            "",
+            &format!("q 612 0 0 792 0 0 cm /Im Do Q q {before} BT {text_state} 72 700 Td {shows} ET {after} Q\n"),
+        ));
+    }
+    std::fs::write(&pdf, encode_pdf(&objects)).unwrap();
+
+    let facts_file = scratch.0.join("facts.jsonl");
+    let out = md(
+        &pdftotext,
+        &["--page-info", "--report", "--page-facts", facts_file.to_str().unwrap(), "--scan-max-words", "0"],
+        &pdf,
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let facts = pdfpagefacts(&facts_exe, &["-scan-max-words", "0"], &pdf);
+    assert_eq!(std::fs::read(facts_file).unwrap(), facts);
+    let pages: Vec<serde_json::Value> = std::str::from_utf8(&facts)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|line| line["type"] == "page")
+        .collect();
+    let stderr = std::str::from_utf8(&out.stderr).unwrap();
+    let report: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+    let info = report["page_info"].as_array().unwrap();
+
+    let math_out = md(&pdftotext, &["--math", "--page-info", "--report"], &pdf);
+    assert!(math_out.status.success(), "{}", String::from_utf8_lossy(&math_out.stderr));
+    let math_stderr = std::str::from_utf8(&math_out.stderr).unwrap();
+    let math_report: serde_json::Value = serde_json::from_str(math_stderr.lines().last().unwrap()).unwrap();
+    assert_eq!(math_report["page_info"], report["page_info"]);
+    let ocr_pages: Vec<_> = math_report["degraded"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|region| region["reason"] == "ocr_text_layer")
+        .map(|region| region["page"].as_u64().unwrap())
+        .collect();
+    let expected_ocr: Vec<_> =
+        cases.iter().enumerate().filter(|(_, case)| case.5 == 4).map(|(i, _)| i as u64 + 1).collect();
+    assert_eq!(ocr_pages, expected_ocr);
+
+    for (glyphs, compact) in [(false, false), (true, false), (true, true)] {
+        let mut command = Command::new(&pdftotext);
+        command.args(["-bbox-layout", "-wordmeta"]);
+        if glyphs {
+            command.arg("-glyphs");
+        }
+        if compact {
+            command.arg("-compact-layout");
+        }
+        let raw = command.arg(&pdf).arg("-").output().unwrap();
+        assert!(raw.status.success(), "{}", String::from_utf8_lossy(&raw.stderr));
+        let xml = std::str::from_utf8(&raw.stdout).unwrap();
+        let words: Vec<_> = xml.lines().filter(|line| line.trim_start().starts_with("<word ")).collect();
+        assert_eq!(words.len(), cases.len());
+        for (word, (label, _, _, _, _, hidden_chars, starts_hidden)) in words.iter().zip(cases) {
+            assert!(word.contains(&format!(r#" invisible="{starts_hidden}""#)), "{label}: {word}");
+            if glyphs {
+                let shown = u8::from(hidden_chars < 4);
+                assert!(word.contains(&format!(r#" shown="{shown}""#)), "{label}: {word}");
+            } else {
+                assert!(!word.contains(" shown="), "{label}: {word}");
+            }
+        }
+    }
+
+    assert_eq!(pages.len(), cases.len());
+    assert_eq!(info.len(), cases.len());
+    for ((page, info), (label, _, _, _, _, hidden_chars, starts_hidden)) in pages.iter().zip(info).zip(cases) {
+        let hidden_word = u64::from(hidden_chars == 4);
+        let text = &page["text"];
+        assert_eq!(text["visibleCharCount"], 4 - hidden_chars, "{label}");
+        assert_eq!(text["invisibleCharCount"], hidden_chars, "{label}");
+        assert_eq!(text["visibleWordCount"], 1 - hidden_word, "{label}");
+        assert_eq!(text["invisibleWordCount"], hidden_word, "{label}");
+        assert_eq!(text["textLayer"], if hidden_word == 1 { "invisible" } else { "visible" }, "{label}");
+        assert_eq!(page["images"]["scan"], if hidden_word == 1 { "single" } else { "none" }, "{label}");
+        assert_eq!(page["images"]["fullPageImage"], true, "{label}");
+        // Page info reports the word metadata, which tracks the starting render mode.
+        assert_eq!(info["words"], 1, "{label}");
+        assert_eq!(info["invisible"], starts_hidden, "{label}");
+        assert_eq!(info["text"], if starts_hidden == 1 { "invisible" } else { "visible" }, "{label}");
+    }
 }
 
 /// One page: prose, a booktabs table (heavier top and bottom rules, three columns, a header and
@@ -167,6 +309,7 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
         ("full", vec![]),
         ("basic", vec!["--page-facts-include", "vectors,forms"]),
         ("basic", vec!["--page-facts-include", "mathtables"]),
+        ("full", vec!["--page-facts-include", "scan-regions"]),
     ] {
         for range in [vec![], vec!["-f", "2", "-l", "3"]] {
             for mode in [vec!["--stream", "--markers"], vec![]] {
@@ -203,6 +346,10 @@ fn facts_file_equals_pdfpagefacts_and_markdown_is_unchanged() {
                 let pages: Vec<u64> =
                     lines.iter().filter(|l| l["type"] == "page").map(|l| l["page"].as_u64().unwrap()).collect();
                 assert_eq!(pages, if range.is_empty() { vec![1, 2, 3, 4] } else { vec![2, 3] });
+                if extra.last() == Some(&"scan-regions") && range.is_empty() {
+                    assert_eq!(lines[4]["images"]["scanRegions"]["imageIndices"], serde_json::json!([1]));
+                    assert_eq!(lines[4]["images"]["scanRegions"]["truncated"], false);
+                }
                 use std::os::unix::fs::PermissionsExt;
                 assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
             }
@@ -612,4 +759,182 @@ fn math_table_facts_reach_the_page_lines() {
     assert_eq!(packed["tableBits"], page["tableBits"]);
     assert_eq!(packed["encodingCounts"], page["encodingCounts"]);
     assert!(packed.get("vectors").is_none() && packed.get("tableFlags").is_none(), "{packed}");
+}
+
+#[test]
+fn bar_geometry_agrees_in_markdown_and_page_facts() {
+    let Some((pdftotext, facts)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("bar-geometry");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let output = Command::new("python3").arg(generator).arg(&scratch.0).output();
+    let Ok(output) = output else {
+        toolchain::skip("bar_geometry", "python3 for the vector PDF fixtures");
+        return;
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    for (name, chart, table) in [
+        ("labeled-crossings-behind", true, false),
+        ("gridless-horizontal-endpoints", true, false),
+        ("gridless-vertical-endpoints", true, false),
+        ("gridless-off-scale-endpoints", false, false),
+        ("table-with-calibrated-endpoints", false, true),
+        ("labeled-crossings-front", true, false),
+        ("vertical-labeled", true, false),
+        ("one-crossing", true, false),
+        ("varying-thickness", true, false),
+        ("vertical-single-crossing", true, false),
+        ("vertical-uneven-bars", true, false),
+        ("one-crossing-off-axis", false, false),
+        ("uneven-bars-single-crossing", false, false),
+        ("single-rule-forms", false, true),
+        ("rounded-staircase", true, false),
+        ("chart-with-category-dividers", true, false),
+        ("data-bars-in-edge-column", false, true),
+        ("chart-with-one-sided-labels", true, false),
+        ("scale-contaminated", true, false),
+        ("mixed-separate-table", true, true),
+        ("unlabeled-in-cell-bars", false, true),
+        ("in-cell-bars-with-crossings", false, true),
+        ("shaded-cell-boundaries", false, true),
+        ("off-axis-numeric-decoration", false, false),
+        ("thin-mark-decoration", false, false),
+        ("rule-fragment-decoration", false, false),
+    ] {
+        let pdf = scratch.0.join(format!("{name}.pdf"));
+        let result = Command::new(PDFTOMARKDOWN)
+            .args(["--markers", "--html", "--report"])
+            .arg(&pdf)
+            .env("PDFTOTEXT", &pdftotext)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let markdown = String::from_utf8(result.stdout).unwrap();
+        assert_eq!(markdown.matches("/figure-").count(), usize::from(chart), "{name}: {markdown}");
+        assert_eq!(markdown.matches("<table>").count(), usize::from(table), "{name}: {markdown}");
+        if name == "mixed-separate-table" {
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=5).rev().map(|i| format!("<tr><td>Sensor {i}</td><td>{}</td></tr>", 29 + i)).collect::<Vec<_>>()
+            );
+            let diagnostics = String::from_utf8(result.stderr).unwrap();
+            let report: serde_json::Value = serde_json::from_str(diagnostics.lines().last().unwrap()).unwrap();
+            let figures: Vec<_> = report["images"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|image| {
+                    image["kind"] == "vector" && matches!(image["placed"].as_str(), Some("block" | "inline"))
+                })
+                .collect();
+            assert_eq!(figures.len(), 1, "{report}");
+            let bbox = figures[0]["bbox"].as_array().unwrap();
+            let left = bbox[0].as_f64().unwrap();
+            let right = bbox[2].as_f64().unwrap();
+            assert!(130.0 < left && left < 160.0 && 330.0 < right && right < 370.0, "{report}");
+        }
+        if name == "data-bars-in-edge-column" {
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=4)
+                    .rev()
+                    .map(|i| format!("<tr><td>Quarter {i}</td><td>{}</td></tr>", (i + 1) * 10))
+                    .collect::<Vec<_>>()
+            );
+        }
+        if name == "in-cell-bars-with-crossings" {
+            assert!(markdown.contains("<td>North</td><td>Alder</td>"), "{markdown}");
+            assert!(markdown.contains("<td>40</td>"), "{markdown}");
+        }
+        let result = Command::new(&facts).args(["-level", "full"]).arg(&pdf).output().unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let json = String::from_utf8(result.stdout).unwrap();
+        assert!(json.contains(&format!("\"figureClusters\":{}", usize::from(chart))), "{name}: {json}");
+    }
+}
+
+#[test]
+fn endpoint_crops_include_trailing_ticks_and_shared_legend() {
+    let Some((pdftotext, facts)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("bar-axis-crop");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let Ok(output) = Command::new("python3").arg(generator).arg(&scratch.0).output() else {
+        toolchain::skip("bar_axis_crop", "python3 for the vector PDF fixtures");
+        return;
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    for (name, count) in [("shared-legend-panels", 1), ("independent-legend-panels", 2)] {
+        let pdf = scratch.0.join(format!("{name}.pdf"));
+        let result = Command::new(PDFTOMARKDOWN)
+            .args(["--markers", "--report"])
+            .arg(&pdf)
+            .env("PDFTOTEXT", &pdftotext)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        let report: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+        let crops: Vec<_> = report["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|image| image["kind"] == "vector" && image["placed"] == "block")
+            .map(|image| &image["bbox"])
+            .collect();
+        assert_eq!(crops.len(), count, "{name}: {report}");
+        for (i, crop) in crops.iter().enumerate() {
+            let edge = |j: usize| crop[j].as_f64().unwrap();
+            assert!(edge(0) <= 133.0 + 305.0 * i as f64, "{name}: {crop}");
+            let far_tick = if count == 1 || i == 1 { 650.0 } else { 345.0 };
+            assert!(edge(2) >= far_tick, "{name}: {crop}");
+            assert!((524.0..555.0).contains(&edge(3)), "{name}: {crop}");
+        }
+        let collected = pdfpagefacts(&facts, &["-level", "full"], &pdf);
+        let record: serde_json::Value =
+            serde_json::from_str(String::from_utf8(collected).unwrap().lines().nth(1).unwrap()).unwrap();
+        assert_eq!(record["vectors"]["figureClusters"], 2, "{name}: {record}");
+    }
+}
+
+#[test]
+fn closed_components_keep_semantic_cells_and_exclude_outside_text() {
+    let Some((pdftotext, _)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("closed-components");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let generator = Command::new("python3").arg(generator).arg(&scratch.0).output().unwrap();
+    assert!(generator.status.success(), "{}", String::from_utf8_lossy(&generator.stderr));
+
+    let result = Command::new(PDFTOMARKDOWN)
+        .args(["--stream", "--markers", "--page-markers", "--html"])
+        .arg(scratch.0.join("closed-components.pdf"))
+        .env("PDFTOTEXT", pdftotext)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let markdown = String::from_utf8(result.stdout).unwrap();
+    let expected = concat!(
+        "<table>\n<tbody>\n",
+        "<tr><td>Range name</td><td></td><td>Net total</td></tr>\n",
+        "<tr><td>Ash</td><td></td><td>11</td></tr>\n",
+        "<tr><td>Fir</td><td></td><td>24</td></tr>\n",
+        "<tr><td>Yew</td><td></td><td>52</td></tr>\n",
+        "</tbody>\n</table>",
+    );
+    assert_eq!(markdown.matches(expected).count(), 12, "{markdown}");
+    let text: Vec<_> = markdown.split(expected).collect();
+    assert!(text.iter().any(|part| part.contains("10") && part.contains("30")), "{markdown}");
+    assert_eq!(markdown.matches("<table>").count(), 12, "{markdown}");
+    assert!(!markdown.contains("/figure-"), "{markdown}");
 }
