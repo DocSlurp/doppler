@@ -1693,10 +1693,19 @@ pub fn ruled_tables(
         for edge in [left, right] {
             let start = v.partition_point(|r| r.0 < edge - 1.0);
             let end = v.partition_point(|r| r.0 <= edge + 1.0);
-            if !budget.scan(end - start) {
+            if !budget.scan(2 * (end - start)) {
                 return None;
             }
-            if !v[start..end].iter().any(|&(_, a, b)| a <= top + 1.0 && (b - bottom).abs() <= 1.0) {
+            let mut ends_here = false;
+            for &(_, a, b) in &v[start..end] {
+                // Cell-by-cell sides can resume just past a horizontal seam.
+                // Treat the stroke width as part of the join tolerance.
+                if a <= bottom + 1.0 && b > bottom + 1.0 {
+                    return Some(false);
+                }
+                ends_here |= a <= top + 1.0 && (b - bottom).abs() <= 1.0;
+            }
+            if !ends_here {
                 return Some(false);
             }
         }
