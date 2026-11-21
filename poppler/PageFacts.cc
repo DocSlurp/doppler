@@ -1586,38 +1586,49 @@ bool barFillExcluded(double r, double g, double b)
 // Whether a run (its union `u`) has a scale: kBarScaleMin numbers beside it increasing along its value axis (up for vertical
 // bars, from labels left or right of the plot; right for horizontal bars, from labels below or above it). As doppler-md
 // `bar_scale`; text-heavy runs require a sequence in one typographic row or column. Every number looked at is charged.
+struct BarTick
+{
+    double position, value, cross;
+};
+
+std::optional<std::vector<BarTick>> barTicks(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, int side, size_t *budget, bool *hit)
+{
+    std::vector<BarTick> seq;
+    for (const ScaleNumber &n : nums) {
+        if (!spend(budget, 1, hit)) {
+            return std::nullopt;
+        }
+        const double cx = (n.x0 + n.x1) / 2, cy = (n.y0 + n.y1) / 2;
+        bool keep;
+        if (vertical) {
+            keep = cy >= u.y0 - kBarScaleAlong && cy <= u.y1 + 12
+                    && (side == 0 ? (n.x1 <= u.x0 + 4 && n.x1 >= u.x0 - kBarScaleAcross) : (n.x0 >= u.x1 - 4 && n.x0 <= u.x1 + kBarScaleAcross));
+        } else {
+            keep = cx >= u.x0 - 12 && cx <= u.x1 + kBarScaleAlong
+                    && (side == 0 ? (n.y0 >= u.y1 - 4 && n.y0 <= u.y1 + kBarScaleAcross) : (n.y1 <= u.y0 + 4 && n.y1 >= u.y0 - kBarScaleAcross));
+        }
+        if (keep) {
+            seq.push_back({ vertical ? -cy : cx, n.v, vertical ? (side == 0 ? n.x1 : n.x0) : cy });
+        }
+    }
+    return seq;
+}
+
 bool barScale(const BarBox &u, bool vertical, const std::vector<ScaleNumber> &nums, bool aligned, size_t *budget, bool *hit)
 {
-    struct Tick {
-        double position, value, cross;
-    };
-    std::vector<Tick> seq;
     for (int side = 0; side < 2; ++side) {
-        seq.clear();
-        for (const ScaleNumber &n : nums) {
-            if (!spend(budget, 1, hit)) {
-                return false;
-            }
-            const double cx = (n.x0 + n.x1) / 2, cy = (n.y0 + n.y1) / 2;
-            bool keep;
-            if (vertical) {
-                keep = cy >= u.y0 - kBarScaleAlong && cy <= u.y1 + 12
-                        && (side == 0 ? (n.x1 <= u.x0 + 4 && n.x1 >= u.x0 - kBarScaleAcross) : (n.x0 >= u.x1 - 4 && n.x0 <= u.x1 + kBarScaleAcross));
-            } else {
-                keep = cx >= u.x0 - 12 && cx <= u.x1 + kBarScaleAlong
-                        && (side == 0 ? (n.y0 >= u.y1 - 4 && n.y0 <= u.y1 + kBarScaleAcross) : (n.y1 <= u.y0 + 4 && n.y1 >= u.y0 - kBarScaleAcross));
-            }
-            if (keep) {
-                seq.push_back({ vertical ? -cy : cx, n.v, vertical ? (side == 0 ? n.x1 : n.x0) : cy });
-            }
+        auto ticks = barTicks(u, vertical, nums, side, budget, hit);
+        if (!ticks) {
+            return false;
         }
+        auto &seq = *ticks;
         if (seq.size() < kBarScaleMin) {
             continue;
         }
         std::stable_sort(seq.begin(), seq.end(), [](const auto &a, const auto &b) { return a.position < b.position; });
         if (aligned) {
             for (const auto &anchor : seq) {
-                const Tick *previous = nullptr;
+                const BarTick *previous = nullptr;
                 size_t count = 0;
                 for (const auto &tick : seq) {
                     if (!spend(budget, 1, hit)) {
@@ -1803,6 +1814,102 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
     return false;
 }
 
+// Mirror vector.rs bar_endpoint_values. Ticks are outside the run, labels
+// are selected independently at bar tips within their respective lanes.
+bool barEndpointValues(const std::vector<BarBox> &run, const BarBox &r, bool vertical,
+                       const std::vector<ScaleNumber> &nums, size_t *budget, bool *hit)
+{
+    auto laneStart = [vertical](const BarBox &bar) { return vertical ? bar.x0 : bar.y0; };
+    auto laneEnd = [vertical](const BarBox &bar) { return vertical ? bar.x1 : bar.y1; };
+    auto tipAt = [vertical](const BarBox &bar) { return vertical ? -bar.y0 : bar.x1; };
+    if (!spend(budget, run.size(), hit)) {
+        return false;
+    }
+    double minThickness = INFINITY, maxThickness = 0;
+    for (const auto &bar : run) {
+        const double t = laneEnd(bar) - laneStart(bar);
+        minThickness = std::min(minThickness, t);
+        maxThickness = std::max(maxThickness, t);
+    }
+    if (minThickness < 0.8 * maxThickness) {
+        return false;
+    }
+    std::vector<std::pair<double, double>> closest(run.size(), { INFINITY, 0 });
+    for (const auto &n : nums) {
+        if (!spend(budget, 1, hit)) {
+            return false;
+        }
+        const double cx = (n.x0 + n.x1) / 2, cy = (n.y0 + n.y1) / 2;
+        const double position = vertical ? -cy : cx, lane = vertical ? cx : cy;
+        auto it = std::upper_bound(run.begin(), run.end(), lane, [&](double at, const BarBox &bar) { return at < laneStart(bar); });
+        if (it == run.begin() || lane > laneEnd(*--it)) {
+            continue;
+        }
+        const double length = vertical ? it->y1 - it->y0 : it->x1 - it->x0;
+        const double offset = position - tipAt(*it);
+        auto &label = closest[it - run.begin()];
+        if (offset >= -std::min(30.0, 0.6 * length) && offset <= 18 && std::abs(offset) < label.first) {
+            label = { std::abs(offset), n.v };
+        }
+    }
+    std::vector<std::pair<double, double>> labels;
+    for (size_t i = 0; i < run.size(); ++i) {
+        if (std::isfinite(closest[i].first)) {
+            labels.emplace_back(tipAt(run[i]), closest[i].second);
+        }
+    }
+    const size_t required = std::max<size_t>(3, (2 * run.size() + 2) / 3);
+    if (labels.size() < required) {
+        return false;
+    }
+    for (int side = 0; side < 2; ++side) {
+        auto ticks = barTicks(r, vertical, nums, side, budget, hit);
+        if (!ticks) {
+            return false;
+        }
+        if (ticks->size() < 3 || ticks->size() > 24) {
+            continue;
+        }
+        for (const auto &a : *ticks) {
+            for (const auto &b : *ticks) {
+                if (!spend(budget, 1, hit)) {
+                    return false;
+                }
+                if (b.position - a.position < 20 || b.value <= a.value || std::abs(b.cross - a.cross) > 4) {
+                    continue;
+                }
+                const double unitsPerPoint = (b.value - a.value) / (b.position - a.position);
+                auto positionAt = [&](double v) { return a.position + (v - a.value) / unitsPerPoint; };
+                bool third = false;
+                for (const auto &t : *ticks) {
+                    if (!spend(budget, 1, hit)) {
+                        return false;
+                    }
+                    if (std::abs(t.position - a.position) > 5 && std::abs(t.position - b.position) > 5 && std::abs(t.cross - a.cross) <= 4
+                        && std::abs(positionAt(t.value) - t.position) <= 3) {
+                        third = true;
+                        break;
+                    }
+                }
+                if (!third) {
+                    continue;
+                }
+                size_t matching = 0;
+                for (const auto &[tip, value] : labels) {
+                    if (!spend(budget, 1, hit)) {
+                        return false;
+                    }
+                    matching += std::abs(positionAt(value) - tip) <= 4;
+                }
+                if (matching >= required) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // Words are sorted by x. Merge bar regions into intersecting drawings, returning the other clusters.
 std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const std::vector<WordCentre> &words, const std::vector<ScaleNumber> &nums, double pageW, double pageH,
                                      std::vector<TextGraphic> &drawings, size_t *runBudget, bool *limitHit)
@@ -1901,23 +2008,26 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
         const std::vector<BarLine> &lines = vertical ? across : down;
         const double at = vertical ? u.y1 : u.x0, from = vertical ? u.x0 : u.y0, to = vertical ? u.x1 : u.y1;
         auto first = std::lower_bound(lines.begin(), lines.end(), at - kBarAxisReach, [](const BarLine &l, double v) { return l.at < v; });
+        bool hasAxis = false;
         for (auto it = first; it != lines.end() && it->at <= at + kBarAxisReach; ++it) {
             if (!spend(budget, 1, limitHit)) {
                 return;
             }
             if (std::min(it->hi, to) - std::max(it->lo, from) >= kBarAxisSpan * (to - from)) {
-                const bool labeled = withText > limit;
-                if ((labeled && !barGridEvidence(run, u, vertical, across, down, words, true, budget, limitHit))
-                    || !barScale(u, vertical, nums, labeled, budget, limitHit)
-                    || (!labeled && !barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit))) {
-                    return;
-                }
-                found.push_back({ u, vertical });
-                if (found.size() >= kMaxBarRuns) {
-                    full = true;
-                    *limitHit = true;
-                }
-                return;
+                hasAxis = true;
+                break;
+            }
+        }
+        const bool labeled = withText > limit;
+        const bool original = hasAxis && (!labeled || barGridEvidence(run, u, vertical, across, down, words, true, budget, limitHit))
+                && barScale(u, vertical, nums, labeled, budget, limitHit)
+                && (labeled || barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit));
+        if (original || (hasAxis && barEndpointValues(run, u, vertical, nums, budget, limitHit)
+                         && barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit))) {
+            found.push_back({ u, vertical });
+            if (found.size() >= kMaxBarRuns) {
+                full = true;
+                *limitHit = true;
             }
         }
     };

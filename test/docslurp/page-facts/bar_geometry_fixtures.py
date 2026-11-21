@@ -85,7 +85,23 @@ def one_sided_labels():
     )
 
 
+def endpoint_chart(*, vertical=False, bias=0, table=False):
+    lengths = (180, 70, 130, 200)
+    content = chart(vertical=vertical, grid="none", labels=False, table=table, values=lengths)
+    for length, lane in zip(lengths, (10, 45, 80, 115)):
+        if vertical:
+            x, y = 140 + lane + 3, 330 + length - 13
+        else:
+            x, y = 140 + length - 16, 330 + lane + 6
+        content += f"BT /F1 9 Tf {x} {y} Td ({length // 2 + bias}) Tj ET\n"
+    return content
+
+
 CASES = {
+    "gridless-horizontal-endpoints": (True, endpoint_chart()),
+    "gridless-vertical-endpoints": (True, endpoint_chart(vertical=True)),
+    "gridless-off-scale-endpoints": (False, endpoint_chart(bias=15)),
+    "table-with-calibrated-endpoints": (False, endpoint_chart(table=True)),
     "data-bars-in-edge-column": (False, edge_column_table()),
     "chart-with-one-sided-labels": (True, one_sided_labels()),
     "labeled-crossings-behind": (True, chart()),

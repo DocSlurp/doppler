@@ -631,6 +631,10 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
 
     for (name, chart, table) in [
         ("labeled-crossings-behind", true, false),
+        ("gridless-horizontal-endpoints", true, false),
+        ("gridless-vertical-endpoints", true, false),
+        ("gridless-off-scale-endpoints", false, false),
+        ("table-with-calibrated-endpoints", false, true),
         ("labeled-crossings-front", true, false),
         ("vertical-labeled", true, false),
         ("rounded-staircase", true, false),

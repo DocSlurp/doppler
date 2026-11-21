@@ -363,42 +363,47 @@ struct Num {
     v: f64,
 }
 
+// Candidates alongside the value axis, with coordinates increasing in the value direction.
+fn bar_ticks(r: Bbox, vertical: bool, nums: &[Num], side: usize, budget: &mut Budget) -> Option<Vec<(f64, f64, f64)>> {
+    let mut seq: Vec<(f64, f64, f64)> = Vec::new();
+    for n in nums {
+        if !budget.spend(1) {
+            return None;
+        }
+        let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+        let keep = if vertical {
+            let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
+            along
+                && if side == 0 {
+                    n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS
+                } else {
+                    n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS
+                }
+        } else {
+            let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
+            along
+                && if side == 0 {
+                    n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS
+                } else {
+                    n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS
+                }
+        };
+        if keep {
+            // up is a smaller y on the page
+            let cross = if vertical { if side == 0 { n.x1 } else { n.x0 } } else { cy };
+            seq.push((if vertical { -cy } else { cx }, n.v, cross));
+        }
+    }
+    Some(seq)
+}
+
 /// Whether the run has a scale (council r2 M1/M2: redactions and blank form fields have none): at
 /// least BAR_SCALE_MIN numbers beside it whose values increase along the value axis, which for
 /// vertical bars is up (tick labels left or right of the plot), for horizontal bars right (below or
 /// above it). Every number looked at is charged.
 fn bar_scale(r: Bbox, vertical: bool, nums: &[Num], aligned: bool, budget: &mut Budget) -> bool {
-    // the scale's bands: (keep, position along the value axis, sign so that "increasing" is the value direction)
     for side in 0..2 {
-        let mut seq: Vec<(f64, f64, f64)> = Vec::new();
-        for n in nums {
-            if !budget.spend(1) {
-                return false;
-            }
-            let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
-            let keep = if vertical {
-                let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
-                along
-                    && if side == 0 {
-                        n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS
-                    } else {
-                        n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS
-                    }
-            } else {
-                let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
-                along
-                    && if side == 0 {
-                        n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS
-                    } else {
-                        n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS
-                    }
-            };
-            if keep {
-                // up is a smaller y on the page
-                let cross = if vertical { if side == 0 { n.x1 } else { n.x0 } } else { cy };
-                seq.push((if vertical { -cy } else { cx }, n.v, cross));
-            }
-        }
+        let Some(mut seq) = bar_ticks(r, vertical, nums, side, budget) else { return false };
         if seq.len() < BAR_SCALE_MIN {
             continue;
         }
@@ -788,6 +793,97 @@ fn bar_grid_evidence(
     Some(false)
 }
 
+// A scale fit and printed values are independent evidence: the words used as
+// ticks are outside the bar lanes, and endpoint words lie within their lanes.
+fn bar_endpoint_values(run: &[Bbox], r: Bbox, vertical: bool, nums: &[Num], budget: &mut Budget) -> Option<bool> {
+    // Runs arrive in lane order. Assign each numeric word to at most one lane.
+    let lane_start = |b: &Bbox| if vertical { b.0 } else { b.1 };
+    let lane_end = |b: &Bbox| if vertical { b.2 } else { b.3 };
+    let tip_at = |b: &Bbox| if vertical { -b.1 } else { b.2 };
+    if !budget.spend(run.len()) {
+        return None;
+    }
+    let thickness = run.iter().map(|b| lane_end(b) - lane_start(b));
+    let (lo, hi) = thickness.fold((f64::INFINITY, 0.0_f64), |(lo, hi), t| (lo.min(t), hi.max(t)));
+    if lo < 0.8 * hi {
+        return Some(false);
+    }
+    let mut closest: Vec<Option<(f64, f64)>> = vec![None; run.len()];
+    for n in nums {
+        if !budget.spend(1) {
+            return None;
+        }
+        let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+        let (position, lane) = if vertical { (-cy, cx) } else { (cx, cy) };
+        let i = run.partition_point(|b| lane_start(b) <= lane);
+        if i == 0 || lane > lane_end(&run[i - 1]) {
+            continue;
+        }
+        let b = &run[i - 1];
+        let length = if vertical { b.3 - b.1 } else { b.2 - b.0 };
+        let offset = position - tip_at(b);
+        if offset >= -30.0_f64.min(0.6 * length)
+            && offset <= 18.0
+            && closest[i - 1].is_none_or(|(distance, _)| offset.abs() < distance)
+        {
+            closest[i - 1] = Some((offset.abs(), n.v));
+        }
+    }
+    let labels: Vec<_> = run.iter().zip(closest).filter_map(|(b, label)| Some((tip_at(b), label?.1))).collect();
+    let required = (2 * run.len()).div_ceil(3).max(3);
+    if labels.len() < required {
+        return Some(false);
+    }
+    // Each line is determined by two ticks and needs a third independent tick
+    // on the same row or column. Consider only small local tick populations.
+    for side in 0..2 {
+        let ticks = bar_ticks(r, vertical, nums, side, budget)?;
+        if !(3..=24).contains(&ticks.len()) {
+            continue;
+        }
+        for &(p0, v0, c0) in &ticks {
+            for &(p1, v1, c1) in &ticks {
+                if !budget.spend(1) {
+                    return None;
+                }
+                if p1 - p0 < 20.0 || v1 <= v0 || (c1 - c0).abs() > 4.0 {
+                    continue;
+                }
+                let units_per_point = (v1 - v0) / (p1 - p0);
+                let position_at = |value| p0 + (value - v0) / units_per_point;
+                let mut third = false;
+                for &(p, v, cross) in &ticks {
+                    if !budget.spend(1) {
+                        return None;
+                    }
+                    if (p - p0).abs() > 5.0
+                        && (p - p1).abs() > 5.0
+                        && (cross - c0).abs() <= 4.0
+                        && (position_at(v) - p).abs() <= 3.0
+                    {
+                        third = true;
+                        break;
+                    }
+                }
+                if !third {
+                    continue;
+                }
+                let mut matching = 0;
+                for &(tip, value) in &labels {
+                    if !budget.spend(1) {
+                        return None;
+                    }
+                    matching += usize::from((position_at(value) - tip).abs() <= 4.0);
+                }
+                if matching >= required {
+                    return Some(true);
+                }
+            }
+        }
+    }
+    Some(false)
+}
+
 /// A run of boxes on one baseline as a bar chart's region, or None (see bar_regions). Every
 /// comparison is charged: the spread first (cheapest), then words, then the axis.
 fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) -> Option<Bbox> {
@@ -828,22 +924,28 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
     // the axis: a stroked line along the baseline, within BAR_AXIS_REACH of it, spanning most of the run
     let (lines, at, lo, hi) = if vertical { (c.across, r.3, r.0, r.2) } else { (c.down, r.0, r.1, r.3) };
     let need = BAR_AXIS_SPAN * (hi - lo);
+    let mut has_axis = false;
     for l in lines_near(lines, at, BAR_AXIS_REACH) {
         if !budget.spend(1) {
             return None;
         }
         if pmin(l.hi, hi) - pmax(l.lo, lo) >= need {
-            let labeled = with_text > limit;
-            if labeled && !bar_grid_evidence(run, r, vertical, c, true, budget)? {
-                return None;
-            }
-            if !bar_scale(r, vertical, c.nums, labeled, budget) {
-                return None;
-            }
-            return (labeled || bar_grid_evidence(run, r, vertical, c, false, budget)?).then_some(r);
+            has_axis = true;
+            break;
         }
     }
-    None
+    let labeled = with_text > limit;
+    if has_axis
+        && (!labeled || bar_grid_evidence(run, r, vertical, c, true, budget)?)
+        && bar_scale(r, vertical, c.nums, labeled, budget)
+        && (labeled || bar_grid_evidence(run, r, vertical, c, false, budget)?)
+    {
+        return Some(r);
+    }
+    (has_axis
+        && bar_endpoint_values(run, r, vertical, c.nums, budget)?
+        && bar_grid_evidence(run, r, vertical, c, false, budget)?)
+    .then_some(r)
 }
 
 /// The rules that touch `b` (1 point of slack), then those touching the box grown by them, at
