@@ -655,7 +655,7 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
     ] {
         let pdf = scratch.0.join(format!("{name}.pdf"));
         let result = Command::new(PDFTOMARKDOWN)
-            .args(["--markers", "--html"])
+            .args(["--markers", "--html", "--report"])
             .arg(&pdf)
             .env("PDFTOTEXT", &pdftotext)
             .output()
@@ -665,8 +665,36 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         assert_eq!(markdown.matches("/figure-").count(), usize::from(chart), "{name}: {markdown}");
         assert_eq!(markdown.matches("<table>").count(), usize::from(table), "{name}: {markdown}");
         if name == "mixed-separate-table" {
-            assert!(markdown.contains("<td>Sensor 1</td><td>30</td>"), "{markdown}");
-            assert!(markdown.contains("<td>Sensor 5</td><td>34</td>"), "{markdown}");
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=5).rev().map(|i| format!("<tr><td>Sensor {i}</td><td>{}</td></tr>", 29 + i)).collect::<Vec<_>>()
+            );
+            let diagnostics = String::from_utf8(result.stderr).unwrap();
+            let report: serde_json::Value = serde_json::from_str(diagnostics.lines().last().unwrap()).unwrap();
+            let figures: Vec<_> = report["images"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|image| {
+                    image["kind"] == "vector" && matches!(image["placed"].as_str(), Some("block" | "inline"))
+                })
+                .collect();
+            assert_eq!(figures.len(), 1, "{report}");
+            let bbox = figures[0]["bbox"].as_array().unwrap();
+            let left = bbox[0].as_f64().unwrap();
+            let right = bbox[2].as_f64().unwrap();
+            assert!(130.0 < left && left < 160.0 && 330.0 < right && right < 370.0, "{report}");
+        }
+        if name == "data-bars-in-edge-column" {
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=4)
+                    .rev()
+                    .map(|i| format!("<tr><td>Quarter {i}</td><td>{}</td></tr>", (i + 1) * 10))
+                    .collect::<Vec<_>>()
+            );
         }
         if name == "in-cell-bars-with-crossings" {
             assert!(markdown.contains("<td>North</td><td>Alder</td>"), "{markdown}");
