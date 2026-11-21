@@ -675,3 +675,50 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         assert!(json.contains(&format!("\"figureClusters\":{}", usize::from(chart))), "{name}: {json}");
     }
 }
+
+#[test]
+fn endpoint_crops_include_trailing_ticks_and_shared_legend() {
+    let Some((pdftotext, facts)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("bar-axis-crop");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let Ok(output) = Command::new("python3").arg(generator).arg(&scratch.0).output() else {
+        toolchain::skip("bar_axis_crop", "python3 for the vector PDF fixtures");
+        return;
+    };
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    for (name, count) in [("shared-legend-panels", 1), ("independent-legend-panels", 2)] {
+        let pdf = scratch.0.join(format!("{name}.pdf"));
+        let result = Command::new(PDFTOMARKDOWN)
+            .args(["--markers", "--report"])
+            .arg(&pdf)
+            .env("PDFTOTEXT", &pdftotext)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{name}: {}", String::from_utf8_lossy(&result.stderr));
+        let stderr = String::from_utf8(result.stderr).unwrap();
+        let report: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
+        let crops: Vec<_> = report["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|image| image["kind"] == "vector" && image["placed"] == "block")
+            .map(|image| &image["bbox"])
+            .collect();
+        assert_eq!(crops.len(), count, "{name}: {report}");
+        for (i, crop) in crops.iter().enumerate() {
+            let edge = |j: usize| crop[j].as_f64().unwrap();
+            assert!(edge(0) <= 133.0 + 305.0 * i as f64, "{name}: {crop}");
+            let far_tick = if count == 1 || i == 1 { 650.0 } else { 345.0 };
+            assert!(edge(2) >= far_tick, "{name}: {crop}");
+            assert!((524.0..555.0).contains(&edge(3)), "{name}: {crop}");
+        }
+        let collected = pdfpagefacts(&facts, &["-level", "full"], &pdf);
+        let record: serde_json::Value =
+            serde_json::from_str(String::from_utf8(collected).unwrap().lines().nth(1).unwrap()).unwrap();
+        assert_eq!(record["vectors"]["figureClusters"], 2, "{name}: {record}");
+    }
+}

@@ -138,9 +138,26 @@ CASES = {
 }
 
 
+def endpoint_panels(shared_legend):
+    lengths = (62, 78, 106, 90)
+    panel = chart(grid="none", labels=False, values=lengths)
+    panel += "".join(
+        f"BT /F1 9 Tf {124+length} {336+lane} Td ({length // 2}) Tj ET\n"
+        for length, lane in zip(lengths, (10, 45, 80, 115))
+    )
+    panel += "BT /F1 10 Tf 205 289 Td (Measured share) Tj ET\n"
+    legend = "0.20 0.55 0.70 rg 133 268 9 9 re f 0 g BT /F1 9 Tf 147 269 Td (Recorded results) Tj ET\n"
+    right = panel if shared_legend else panel + legend
+    content = panel + legend + "q 1 0 0 1 305 0 cm\n" + right + "Q\n"
+    content += "BT /F1 10 Tf 65 225 Td (Unrelated footer) Tj ET\n"
+    return doc([{"content": content, "mediabox": (0, 0, 720, 792)}])
+
+
 if __name__ == "__main__":
     output = Path(sys.argv[1])
     output.mkdir(parents=True, exist_ok=True)
     for name, (_, content) in CASES.items():
         (output / f"{name}.pdf").write_bytes(doc([{"content": content}]))
     (output / "manifest.json").write_text(json.dumps({name: expected for name, (expected, _) in CASES.items()}, indent=2) + "\n")
+    (output / "shared-legend-panels.pdf").write_bytes(endpoint_panels(True))
+    (output / "independent-legend-panels.pdf").write_bytes(endpoint_panels(False))
