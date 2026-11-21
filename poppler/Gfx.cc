@@ -769,6 +769,9 @@ void Gfx::go(DisplayType displayType)
             args[numArgs++] = std::move(obj);
             // too many arguments - something is wrong
         } else {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             error(errSyntaxError, getPos(), "Too many args in content stream");
             if (printCommands) {
                 printf("throwing away arg: ");
@@ -838,6 +841,9 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
             return;
         }
         if (numArgs > op->numArgs) {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             argPtr += numArgs - op->numArgs;
             numArgs = op->numArgs;
         }

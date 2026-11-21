@@ -1696,18 +1696,16 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         if ((collectImages || collectRules) && xrefRebuilt) {
             glyphAttrs += " xrefRebuilt=\"1\"";
         }
-        const auto *taggedSpans = textOut->getTaggedTextEvidence();
-        if (taggedSpans && !taggedSpans->wasStartedFor(page)) {
-            glyphAttrs += " taggedSpansUnavailable=\"1\"";
-            taggedSpans = nullptr;
-        }
+        auto *taggedSpans = textOut->getTaggedTextEvidence();
         if (taggedSpans) {
+            const bool started = taggedSpans->wasStartedFor(page);
+            const bool admitted = started ? taggedSpans->isPageAdmitted() : taggedSpans->admitUnavailablePage();
             if (taggedSpans->isRunLimitHit() && taggedRunLimitPage == 0) {
                 taggedRunLimitPage = page;
             }
-            if (!taggedSpans->isPageAdmitted()) {
+            if (!admitted) {
                 taggedSpans = nullptr;
-            } else if (!taggedSpans->isValid() || textOut->getContentTruncated()) {
+            } else if (!started || !taggedSpans->isValid() || textOut->getContentTruncated()) {
                 glyphAttrs += " taggedSpansUnavailable=\"1\"";
                 taggedSpans = nullptr;
             } else {

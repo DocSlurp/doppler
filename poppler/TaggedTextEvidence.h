@@ -140,6 +140,7 @@ public:
     bool isValid() const { return !failed; }
     bool isPageAdmitted() const { return pageAdmitted; }
     bool wasStartedFor(int page) const { return startedPage == page; }
+    bool admitUnavailablePage() { return chargeRun(); }
     bool isRunLimitHit() const { return runLimitHit; }
 
 private:
