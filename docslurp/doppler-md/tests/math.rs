@@ -824,6 +824,17 @@ fn ocr_layers_and_unreadable_pages_are_flagged() {
     let (md, report) = convert(&x, &MATH);
     assert!(!md.contains('$'), "{md}");
     assert!(report.to_json().contains("\"reason\":\"ocr_text_layer\""), "{}", report.to_json());
+
+    let mixed = x.replace(r#"invisible="1""#, r#"invisible="1" shown="1""#);
+    let (md, report) = convert(&mixed, &MATH);
+    assert!(!formulas(&md).is_empty(), "{md}");
+    assert!(!report.to_json().contains("ocr_text_layer"));
+
+    let clipped = x.replace(r#"invisible="1""#, r#"invisible="0" shown="0""#);
+    let (md, report) = convert(&clipped, &MATH);
+    assert!(!md.contains('$'), "{md}");
+    assert!(report.to_json().contains("ocr_text_layer"));
+
     // a page whose characters are mostly controls and private-use values is unreadable
     let junk: Vec<W> = (0..12)
         .map(|i| {

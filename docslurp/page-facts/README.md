@@ -143,9 +143,9 @@ out lines, write the same values.
 | field | meaning |
 |---|---|
 | `charCount` | characters |
-| `visibleCharCount`, `invisibleCharCount` | invisible: render mode 3 (no paint), or the glyph's centre outside the clip. White-on-white is not detected |
-| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when none of its glyphs is visible (render mode 3, or centre outside the clip), as for characters |
-| `textLayer` | `none` (no words), `invisible` (all invisible: an OCR layer), `visible`, `mixed` (the issue's three values plus `mixed`, as `pdftomarkdown --page-info` reports) |
+| `visibleCharCount`, `invisibleCharCount` | invisible: render mode 3, clip-only mode 7 for non-Type 3 fonts, or the glyph's centre outside the clip. White-on-white is not detected |
+| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when none of its glyphs is visible using the same test as for characters |
+| `textLayer` | `none` (no words), `invisible` (all words invisible), `visible`, `mixed` (a mixture of visible and invisible words) |
 | `textCoverage` | grid union of word boxes |
 | `clippedCharCount` | characters whose centre is outside the clip (included in `invisibleCharCount`) |
 | `controlCharRatio` | C0/C1 control characters (U+0000-001F, U+007F-009F) per character |
@@ -156,6 +156,12 @@ out lines, write the same values.
 | `rotatedTextRatio` | characters not upright on the page as displayed (rotated by a multiple of 90 degrees, or diagonal); vertical writing counts as upright. Text of a `/Rotate 90` page that is upright in the page's own coordinates is rotated as displayed |
 | `textOverImageRatio` | characters whose centre lies in an image grid cell |
 | `invisibleOverFullPageImage` | the page has a full-page image and at least half of its invisible characters lie over images (an OCR layer over a scan) |
+
+An invisible text layer describes glyph visibility. OCR can produce such a layer, and PDF
+authors can also use mode 7 to create a glyph-shaped clip for later paint. That later paint
+does not count as glyph paint. Modes 4–6 both paint and clip. Text filled with a pattern
+uses the original PDF rendering mode for classification. Markdown `--page-info` counts the
+`-wordmeta` flag, which records each word's starting render mode and does not test the clip.
 
 ### `fonts` (`fonts`)
 
