@@ -1777,7 +1777,8 @@ fn table_lines(page: &Page, lines: &[LineMath], facts: &FontFacts, p: &crate::pa
     // (member lines, column count)
     let mut found: Vec<(Vec<usize>, usize)> = Vec::new();
     if p.rules && p.tables {
-        if let Some(ruled) = crate::tables::ruled_tables(page, &ids, body, p, crate::TableFormat::Gfm, &mut budget) {
+        if let Some(ruled) = crate::tables::ruled_tables(page, &ids, &[], body, p, crate::TableFormat::Gfm, &mut budget)
+        {
             found.extend(ruled.into_iter().map(|(m, t, _)| (m, t.rows.first().map_or(0, Vec::len))));
         }
     }

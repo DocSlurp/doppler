@@ -153,6 +153,27 @@ def endpoint_panels(shared_legend):
     return doc([{"content": content, "mediabox": (0, 0, 720, 792)}])
 
 
+def table_components():
+    """Ruled components in rows and columns, with repeated multiword headers."""
+    parts = []
+    for x, dy in ((40, 0), (320, 0), (40, -195), (320, -195)):
+        edges = (x, x + 78, x + 111, x + 215)
+        for edge in edges:
+            parts.append(f"0 G 0.5 w {edge} {593+dy} m {edge} {733+dy} l S\n")
+        for y in (593, 628, 663, 698, 733):
+            parts.append(f"0 G 0.5 w {x} {y+dy} m {edges[-1]} {y+dy} l S\n")
+        for k, (label, amount) in enumerate((("Range name", "Net total"), ("Ash", "11"),
+                                              ("Fir", "24"), ("Yew", "52"))):
+            y = 709 + dy - 35 * k
+            # Interior fills would each introduce two spurious row boundaries.
+            if k:
+                parts.append(f"0.2 0.5 0.7 rg {x} {y-2} {20+12*k} 14 re f\n")
+            parts.append(f"0 g BT /F1 10 Tf {x+5} {y} Td ({label}) Tj 111 0 Td ({amount}) Tj ET\n")
+        # Aligned tick-like text close enough for the open-table continuation.
+        parts.append(f"0 g BT /F1 9 Tf {x+5} {575+dy} Td (10) Tj 111 0 Td (30) Tj ET\n")
+    return "".join(parts)
+
+
 if __name__ == "__main__":
     output = Path(sys.argv[1])
     output.mkdir(parents=True, exist_ok=True)
@@ -161,3 +182,11 @@ if __name__ == "__main__":
     (output / "manifest.json").write_text(json.dumps({name: expected for name, (expected, _) in CASES.items()}, indent=2) + "\n")
     (output / "shared-legend-panels.pdf").write_bytes(endpoint_panels(True))
     (output / "independent-legend-panels.pdf").write_bytes(endpoint_panels(False))
+    for name, content in {
+        "vertical-single-crossing": chart(vertical=True, values=(30, 36, 41, 191)),
+        "vertical-uneven-bars": chart(vertical=True, widths=(16, 25, 13, 34)),
+        "one-crossing-off-axis": chart(values=(30, 36, 41, 191), displaced_ticks=True),
+        "uneven-bars-single-crossing": chart(values=(30, 36, 41, 191), widths=(16, 25, 13, 34)),
+    }.items():
+        (output / f"{name}.pdf").write_bytes(doc([{"content": content}]))
+    (output / "closed-components.pdf").write_bytes(doc([{"content": table_components()}] * 3))

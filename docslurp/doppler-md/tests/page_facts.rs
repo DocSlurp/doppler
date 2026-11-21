@@ -784,6 +784,13 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         ("table-with-calibrated-endpoints", false, true),
         ("labeled-crossings-front", true, false),
         ("vertical-labeled", true, false),
+        ("one-crossing", true, false),
+        ("varying-thickness", true, false),
+        ("vertical-single-crossing", true, false),
+        ("vertical-uneven-bars", true, false),
+        ("one-crossing-off-axis", false, false),
+        ("uneven-bars-single-crossing", false, false),
+        ("single-rule-forms", false, true),
         ("rounded-staircase", true, false),
         ("chart-with-category-dividers", true, false),
         ("data-bars-in-edge-column", false, true),
@@ -799,7 +806,7 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
     ] {
         let pdf = scratch.0.join(format!("{name}.pdf"));
         let result = Command::new(PDFTOMARKDOWN)
-            .args(["--markers", "--html"])
+            .args(["--markers", "--html", "--report"])
             .arg(&pdf)
             .env("PDFTOTEXT", &pdftotext)
             .output()
@@ -809,8 +816,36 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         assert_eq!(markdown.matches("/figure-").count(), usize::from(chart), "{name}: {markdown}");
         assert_eq!(markdown.matches("<table>").count(), usize::from(table), "{name}: {markdown}");
         if name == "mixed-separate-table" {
-            assert!(markdown.contains("<td>Sensor 1</td><td>30</td>"), "{markdown}");
-            assert!(markdown.contains("<td>Sensor 5</td><td>34</td>"), "{markdown}");
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=5).rev().map(|i| format!("<tr><td>Sensor {i}</td><td>{}</td></tr>", 29 + i)).collect::<Vec<_>>()
+            );
+            let diagnostics = String::from_utf8(result.stderr).unwrap();
+            let report: serde_json::Value = serde_json::from_str(diagnostics.lines().last().unwrap()).unwrap();
+            let figures: Vec<_> = report["images"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|image| {
+                    image["kind"] == "vector" && matches!(image["placed"].as_str(), Some("block" | "inline"))
+                })
+                .collect();
+            assert_eq!(figures.len(), 1, "{report}");
+            let bbox = figures[0]["bbox"].as_array().unwrap();
+            let left = bbox[0].as_f64().unwrap();
+            let right = bbox[2].as_f64().unwrap();
+            assert!(130.0 < left && left < 160.0 && 330.0 < right && right < 370.0, "{report}");
+        }
+        if name == "data-bars-in-edge-column" {
+            let cells: Vec<_> = markdown.lines().filter(|line| line.starts_with("<tr>")).collect();
+            assert_eq!(
+                cells,
+                (1..=4)
+                    .rev()
+                    .map(|i| format!("<tr><td>Quarter {i}</td><td>{}</td></tr>", (i + 1) * 10))
+                    .collect::<Vec<_>>()
+            );
         }
         if name == "in-cell-bars-with-crossings" {
             assert!(markdown.contains("<td>North</td><td>Alder</td>"), "{markdown}");
@@ -868,4 +903,38 @@ fn endpoint_crops_include_trailing_ticks_and_shared_legend() {
             serde_json::from_str(String::from_utf8(collected).unwrap().lines().nth(1).unwrap()).unwrap();
         assert_eq!(record["vectors"]["figureClusters"], 2, "{name}: {record}");
     }
+}
+
+#[test]
+fn closed_components_keep_semantic_cells_and_exclude_outside_text() {
+    let Some((pdftotext, _)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("closed-components");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let generator = Command::new("python3").arg(generator).arg(&scratch.0).output().unwrap();
+    assert!(generator.status.success(), "{}", String::from_utf8_lossy(&generator.stderr));
+
+    let result = Command::new(PDFTOMARKDOWN)
+        .args(["--stream", "--markers", "--page-markers", "--html"])
+        .arg(scratch.0.join("closed-components.pdf"))
+        .env("PDFTOTEXT", pdftotext)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let markdown = String::from_utf8(result.stdout).unwrap();
+    let expected = concat!(
+        "<table>\n<tbody>\n",
+        "<tr><td>Range name</td><td></td><td>Net total</td></tr>\n",
+        "<tr><td>Ash</td><td></td><td>11</td></tr>\n",
+        "<tr><td>Fir</td><td></td><td>24</td></tr>\n",
+        "<tr><td>Yew</td><td></td><td>52</td></tr>\n",
+        "</tbody>\n</table>",
+    );
+    assert_eq!(markdown.matches(expected).count(), 12, "{markdown}");
+    let text: Vec<_> = markdown.split(expected).collect();
+    assert!(text.iter().any(|part| part.contains("10") && part.contains("30")), "{markdown}");
+    assert_eq!(markdown.matches("<table>").count(), 12, "{markdown}");
+    assert!(!markdown.contains("/figure-"), "{markdown}");
 }

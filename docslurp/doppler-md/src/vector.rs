@@ -670,6 +670,7 @@ fn bar_grid_evidence(
     vertical: bool,
     c: &BarContext,
     needs_grid: bool,
+    has_lane_labels: bool,
     budget: &mut Budget,
 ) -> Option<bool> {
     let (separators, grid, value_lo, value_hi, lane_lo, lane_hi) =
@@ -787,7 +788,8 @@ fn bar_grid_evidence(
         min_thickness = min_thickness.min(hi - lo);
         max_thickness = max_thickness.max(hi - lo);
     }
-    if min_thickness < 0.8 * max_thickness {
+    let even_thickness = min_thickness >= 0.8 * max_thickness;
+    if !even_thickness && (!has_lane_labels || min_thickness < 0.35 * max_thickness) {
         return Some(false);
     }
     let mut previous = f64::NEG_INFINITY;
@@ -812,14 +814,17 @@ fn bar_grid_evidence(
             let (start, end) = lane_span(bar);
             if lo + 1.0 < line.at && line.at < hi - 1.0 && line.lo <= start + 1.0 && line.hi >= end - 1.0 {
                 bars_crossed += 1;
-                if bars_crossed == 2 {
-                    previous = line.at;
-                    crossings += 1;
+                if bars_crossed == 2 && (!even_thickness || !has_lane_labels || crossings > 0) {
                     break;
                 }
             }
         }
-        if crossings == 2 {
+        if bars_crossed >= 2 {
+            previous = line.at;
+            crossings += 1;
+        }
+        // A solitary rule must cross every lane and the bars must be even.
+        if crossings == 2 || (even_thickness && has_lane_labels && bars_crossed == run.len()) {
             return Some(true);
         }
     }
@@ -1018,12 +1023,7 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
                 break;
             }
         }
-        if held {
-            with_text += 1;
-            if with_text > limit {
-                break;
-            }
-        }
+        with_text += usize::from(held);
     }
     let r = union(run.iter().copied());
     // the axis: a stroked line along the baseline, within BAR_AXIS_REACH of it, spanning most of the run
@@ -1041,9 +1041,9 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
     }
     let labeled = with_text > limit;
     if has_axis
-        && (!labeled || bar_grid_evidence(run, r, vertical, c, true, budget)?)
+        && (!labeled || bar_grid_evidence(run, r, vertical, c, true, with_text >= run.len() - run.len() / 4, budget)?)
         && bar_scale(r, vertical, c.nums, labeled, budget)
-        && (labeled || bar_grid_evidence(run, r, vertical, c, false, budget)?)
+        && (labeled || bar_grid_evidence(run, r, vertical, c, false, false, budget)?)
     {
         return Some((r, None));
     }
@@ -1051,7 +1051,7 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
         return None;
     }
     let axis = bar_endpoint_values(run, r, vertical, c.nums, budget)?;
-    bar_grid_evidence(run, r, vertical, c, false, budget)?.then_some((r, Some(axis)))
+    bar_grid_evidence(run, r, vertical, c, false, false, budget)?.then_some((r, Some(axis)))
 }
 
 // Attach a swatch-backed legend below a horizontal endpoint chart. Two

@@ -1668,7 +1668,7 @@ BarBox barUnion(const BarBox &a, const BarBox &b)
 
 // Keep this geometry and its budget charging in step with vector.rs bar_grid_evidence.
 bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool vertical, const std::vector<BarLine> &across,
-                     const std::vector<BarLine> &down, const std::vector<WordCentre> &words, bool needsGrid, size_t *budget, bool *limitHit)
+                     const std::vector<BarLine> &down, const std::vector<WordCentre> &words, bool needsGrid, bool hasLaneLabels, size_t *budget, bool *limitHit)
 {
     const auto &separators = vertical ? down : across;
     const auto &grid = vertical ? across : down;
@@ -1780,7 +1780,8 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
         minThickness = std::min(minThickness, hi - lo);
         maxThickness = std::max(maxThickness, hi - lo);
     }
-    if (minThickness < 0.8 * maxThickness) {
+    const bool evenThickness = minThickness >= 0.8 * maxThickness;
+    if (!evenThickness && (!hasLaneLabels || minThickness < 0.35 * maxThickness)) {
         return false;
     }
     double previous = -INFINITY;
@@ -1803,13 +1804,20 @@ bool barGridEvidence(const std::vector<BarBox> &run, const BarBox &r, bool verti
             }
             const double lo = vertical ? bar.y0 : bar.x0, hi = vertical ? bar.y1 : bar.x1;
             const auto [start, end] = laneSpan(bar);
-            if (lo + 1.0 < it->at && it->at < hi - 1.0 && it->lo <= start + 1.0 && it->hi >= end - 1.0 && ++barsCrossed == 2) {
-                previous = it->at;
-                ++crossings;
-                break;
+            if (lo + 1.0 < it->at && it->at < hi - 1.0 && it->lo <= start + 1.0 && it->hi >= end - 1.0) {
+                ++barsCrossed;
+                if (barsCrossed == 2 && (!evenThickness || !hasLaneLabels || crossings > 0)) {
+                    break;
+                }
             }
         }
-        if (crossings == 2) {
+        if (barsCrossed >= 2) {
+            previous = it->at;
+            ++crossings;
+        }
+        // One crossing needs even bars and evidence in every lane. Uneven
+        // bars still require two independent crossings.
+        if (crossings == 2 || (evenThickness && hasLaneLabels && size_t(barsCrossed) == run.size())) {
             return true;
         }
     }
@@ -2003,9 +2011,7 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
                     break;
                 }
             }
-            if (held && ++withText > limit) {
-                break;
-            }
+            withText += held;
         }
         const std::vector<BarLine> &lines = vertical ? across : down;
         const double at = vertical ? u.y1 : u.x0, from = vertical ? u.x0 : u.y0, to = vertical ? u.x1 : u.y1;
@@ -2021,11 +2027,11 @@ std::vector<TextGraphic> barClusters(const std::vector<TextRule> &rules, const s
             }
         }
         const bool labeled = withText > limit;
-        const bool original = hasAxis && (!labeled || barGridEvidence(run, u, vertical, across, down, words, true, budget, limitHit))
+        const bool original = hasAxis && (!labeled || barGridEvidence(run, u, vertical, across, down, words, true, withText >= run.size() - run.size() / 4, budget, limitHit))
                 && barScale(u, vertical, nums, labeled, budget, limitHit)
-                && (labeled || barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit));
+                && (labeled || barGridEvidence(run, u, vertical, across, down, words, false, false, budget, limitHit));
         if (original || (hasAxis && barEndpointValues(run, u, vertical, nums, budget, limitHit)
-                         && barGridEvidence(run, u, vertical, across, down, words, false, budget, limitHit))) {
+                         && barGridEvidence(run, u, vertical, across, down, words, false, false, budget, limitHit))) {
             found.push_back({ u, vertical });
             if (found.size() >= kMaxBarRuns) {
                 full = true;
