@@ -6160,7 +6160,7 @@ void TextOutputDev::endPage()
     text->endPage();
     // finishPage reports a page failure without derived facts if the device did not finish it.
     if (facts && !getContentTruncated()) {
-        facts->endPage(*text);
+        facts->endPage(*text, contentReadBudget.displayDepthExceeded);
     }
     if (wordsOnly) {
         text->discardWords();

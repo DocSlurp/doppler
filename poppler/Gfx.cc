@@ -617,12 +617,14 @@ Gfx::~Gfx()
 
 void Gfx::display(Object *obj, DisplayType displayType)
 {
+    ContentReadBudget *budget = out->getContentReadBudget();
     // check for excessive recursion
     if (displayDepth > 100) {
+        if (budget) {
+            budget->displayDepthExceeded = true;
+        }
         return;
     }
-
-    ContentReadBudget *budget = out->getContentReadBudget();
     if (budget && budget->truncated) {
         return;
     }

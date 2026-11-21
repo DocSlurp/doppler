@@ -187,7 +187,7 @@ static const ArgDesc argDesc[] = {
     { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
     { .arg = "-page-facts-fd", .kind = argInt, .val = &pageFactsFd, .size = 0, .usage = "with -bbox-layout: write page facts (JSON lines, doppler-page-facts/1) to this open file descriptor (3 or more)" },
     { .arg = "-page-facts-level", .kind = argString, .val = pageFactsLevel, .size = sizeof(pageFactsLevel), .usage = "page facts level: basic or full (default basic)" },
-    { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure,mathtables" },
+    { .arg = "-page-facts-include", .kind = argString, .val = pageFactsInclude, .size = sizeof(pageFactsInclude), .usage = "page facts families added to basic: fonts,oddtext,images-detail,vectors,forms,annots,ocg,structure,mathtables,scan-regions" },
     { .arg = "-page-facts-f", .kind = argInt, .val = &pageFactsFirst, .size = 0, .usage = "page facts: first page to write a page line for (default: the first page read)" },
     { .arg = "-page-facts-l", .kind = argInt, .val = &pageFactsLast, .size = 0, .usage = "page facts: last page to write a page line for (default: the last page read)" },
     { .arg = "-page-facts-timing", .kind = argFlag, .val = &pageFactsTiming, .size = 0, .usage = "page facts: add factsMs to page lines and totalMs, peakRssKiB to the run line (not deterministic)" },

@@ -13,7 +13,7 @@
     "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
     "points": { "type": "number", "minimum": -1000000000, "maximum": 1000000000 },
     "box": { "type": "array", "items": { "$ref": "#/$defs/points" }, "minItems": 4, "maxItems": 4 },
-    "family": { "enum": ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure", "mathtables"] },
+    "family": { "enum": ["fonts", "oddtext", "images-detail", "vectors", "forms", "annots", "ocg", "structure", "mathtables", "scan-regions"] },
     "mathFlag": {
       "description": "mathFlags vocabulary, in mathBits bit order (bit 0 first). The order is an API: names are appended, never moved. alt-tex, mathml and formula-struct are reserved (never set).",
       "enum": ["text-math", "stacked-math", "actualtext-tex", "alt-tex", "mathml", "raster-strips", "glyph-outlines", "type3-bitmap-font", "math-font-no-unicode", "plain-unicode-math", "formula-struct", "math-matrix", "analysis-truncated"]
@@ -59,7 +59,7 @@
         "schema": { "const": "doppler-page-facts/1" },
         "type": { "const": "doc" },
         "level": { "enum": ["basic", "full"] },
-        "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 9, "uniqueItems": true },
+        "include": { "type": "array", "items": { "$ref": "#/$defs/family" }, "maxItems": 10, "uniqueItems": true },
         "scanThresholds": {
           "description": "Present only when a scan threshold is not its default (minCoverage 0.85, maxVisibleWords 20, layerOverlap 0.5): the thresholds every page's scan verdict used.",
           "type": "object",
@@ -228,6 +228,27 @@
               }
             },
             "itemsTruncated": { "type": "boolean" },
+            "scanRegions": {
+              "type": "object",
+              "required": ["truncated", "imageIndices", "ambiguousImageIndices"],
+              "properties": {
+                "truncated": { "type": "boolean", "description": "The page walk or scan evidence hit a limit, so both index lists are empty." },
+                "imageIndices": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1, "maximum": 32 },
+                  "maxItems": 32,
+                  "uniqueItems": true,
+                  "description": "Nominated placements, in page order. Each index references bbox, coverage and word counts in images.items."
+                },
+                "ambiguousImageIndices": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1, "maximum": 32 },
+                  "maxItems": 32,
+                  "uniqueItems": true,
+                  "description": "Otherwise qualifying placements withheld because their evidence boxes overlap."
+                }
+              }
+            },
             "mathStrips": { "$ref": "#/$defs/count", "description": "mathtables: images (all, not only the 32 listed) that are stripLike and inTextFlow on a page with at least 10 visible characters, except table-like images (tableBits raster-table-like: at least 60 points tall, lossless, few bytes a pixel). Added within /1." },
             "truncated": { "type": "boolean" }
           }
