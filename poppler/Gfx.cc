@@ -93,6 +93,7 @@
 #include "ProfileData.h"
 #include "Catalog.h"
 #include "OptionalContent.h"
+#include "TaggedTextEvidence.h"
 #include <algorithm>
 #if ENABLE_LIBOPENJPEG
 #    include "JPEG2000Stream.h"
@@ -498,6 +499,10 @@ Gfx::Gfx(PDFDoc *docA, OutputDev *outA, int pageNum, Dict *resDict, double hDPI,
     out->startPage(pageNum, state, xref);
     opTally = out->getOpTally();
     scanAudit = out->getScanCopyAudit();
+    taggedText = out->getTaggedTextEvidence();
+    if (taggedText && !taggedText->isPageAdmitted()) {
+        taggedText = nullptr;
+    }
     out->setDefaultCTM(state->getCTM());
     out->updateAll(state);
     baseMatrix = state->getCTM();
@@ -615,13 +620,16 @@ Gfx::~Gfx()
     }
 }
 
-void Gfx::display(Object *obj, DisplayType displayType)
+void Gfx::display(Object *obj, DisplayType displayType, Ref taggedForm)
 {
     ContentReadBudget *budget = out->getContentReadBudget();
     // check for excessive recursion
     if (displayDepth > 100) {
         if (budget) {
             budget->displayDepthExceeded = true;
+        }
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
         }
         return;
     }
@@ -633,16 +641,28 @@ void Gfx::display(Object *obj, DisplayType displayType)
         for (int i = 0; i < obj->arrayGetLength(); ++i) {
             Object obj2 = obj->arrayGet(i);
             if (!obj2.isStream()) {
+                if (taggedText) [[unlikely]] {
+                    taggedText->invalidate();
+                }
                 error(errSyntaxError, -1, "Weird page contents");
                 return;
             }
         }
     } else if (!obj->isStream()) {
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         error(errSyntaxError, -1, "Weird page contents");
         return;
     }
     parser = new Parser(xref, obj, false, budget);
-    go(displayType);
+    if (taggedText) [[unlikely]] {
+        const auto saved = taggedText->enterStream(displayType == DisplayType::TopLevel, taggedForm);
+        go(displayType);
+        taggedText->leaveStream(saved);
+    } else {
+        go(displayType);
+    }
     if (budget && budget->truncated && !budget->warned) {
         budget->warned = true;
         if (ScanCopyAudit *audit = out->getScanCopyAudit()) {
@@ -717,6 +737,9 @@ void Gfx::go(DisplayType displayType)
 
             // did the command throw an exception
             if (commandAborted) {
+                if (taggedText) [[unlikely]] {
+                    taggedText->invalidate();
+                }
                 // don't propogate; recursive drawing comes from Form XObjects which
                 // should probably be drawn in a separate context anyway for caching
                 commandAborted = false;
@@ -732,6 +755,9 @@ void Gfx::go(DisplayType displayType)
             if (abortCheckCbk) {
                 if (updateLevel - lastAbortCheck > 10) {
                     if ((*abortCheckCbk)(abortCheckCbkData)) {
+                        if (taggedText) [[unlikely]] {
+                            taggedText->invalidate();
+                        }
                         break;
                     }
                     lastAbortCheck = updateLevel;
@@ -758,6 +784,9 @@ void Gfx::go(DisplayType displayType)
 
     // args at end with no command
     if (numArgs > 0 && !(budget && budget->truncated)) {
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         error(errSyntaxError, getPos(), "Leftover args in content stream");
         if (printCommands) {
             printf("%d leftovers:", numArgs);
@@ -4230,11 +4259,13 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
 
     const std::string &name = args[0].getNameString();
     Object obj1 = res->lookupXObject(name);
-    if (obj1.isNull()) {
-        return;
-    }
     if (!obj1.isStream()) {
-        error(errSyntaxError, getPos(), "XObject '{0:r}' is wrong type", &name);
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
+        if (!obj1.isNull()) {
+            error(errSyntaxError, getPos(), "XObject '{0:r}' is wrong type", &name);
+        }
         return;
     }
 
@@ -4283,6 +4314,9 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
             bool inserted;
             std::tie(drawingFormIt, inserted) = formsDrawing.insert(num);
             if (!inserted) {
+                if (taggedText) [[unlikely]] {
+                    taggedText->invalidate();
+                }
                 shouldDoForm = false;
             }
         }
@@ -4292,7 +4326,7 @@ void Gfx::opXObject(Object args[], int /*numArgs*/)
             } else {
                 Ref ref = refObj.isRef() ? refObj.getRef() : Ref::INVALID();
                 out->beginForm(&obj1, ref);
-                doForm(&obj1);
+                doForm(&obj1, ref);
                 out->endForm(&obj1, ref);
             }
         }
@@ -5394,7 +5428,7 @@ bool Gfx::checkTransparencyGroup(Dict *resDict)
     return transpGroup;
 }
 
-void Gfx::doForm(Object *str)
+void Gfx::doForm(Object *str, Ref ref)
 {
     Dict *dict;
     bool transpGroup, isolated, knockout;
@@ -5411,6 +5445,9 @@ void Gfx::doForm(Object *str)
     // check form type
     obj1 = dict->lookup("FormType");
     if (!obj1.isNull() && (!obj1.isInt() || obj1.getInt() != 1)) {
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         error(errSyntaxError, getPos(), "Unknown form type");
     }
 
@@ -5433,6 +5470,9 @@ void Gfx::doForm(Object *str)
     // get bounding box
     Object bboxObj = dict->lookup("BBox");
     if (!bboxObj.isArray()) {
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         error(errSyntaxError, getPos(), "Bad form bounding box");
         ocState = ocSaved;
         return;
@@ -5442,6 +5482,9 @@ void Gfx::doForm(Object *str)
         if (likely(obj1.isNum())) {
             bbox[i] = obj1.getNum();
         } else {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             error(errSyntaxError, getPos(), "Bad form bounding box value");
             return;
         }
@@ -5495,13 +5538,13 @@ void Gfx::doForm(Object *str)
     }
 
     // draw it
-    drawForm(str, resDict, m, bbox, transpGroup, false, blendingColorSpace.get(), isolated, knockout);
+    drawForm(str, resDict, m, bbox, transpGroup, false, blendingColorSpace.get(), isolated, knockout, false, nullptr, nullptr, ref);
 
     ocState = ocSaved;
 }
 
 void Gfx::drawForm(Object *str, Dict *resDict, const std::array<double, 6> &matrix, const std::array<double, 4> &bbox, bool transpGroup, bool softMask, GfxColorSpace *blendingColorSpace, bool isolated, bool knockout, bool alpha,
-                   Function *transferFunc, const GfxColor *backdropColor)
+                   Function *transferFunc, const GfxColor *backdropColor, Ref taggedForm)
 {
     Parser *oldParser;
     GfxState *savedState;
@@ -5557,7 +5600,7 @@ void Gfx::drawForm(Object *str, Dict *resDict, const std::array<double, 6> &matr
 
     // draw the form
     ++displayDepth;
-    display(str, DisplayType::Form);
+    display(str, DisplayType::Form, taggedForm);
     --displayDepth;
 
     if (stateBefore != state) {
@@ -5753,6 +5796,9 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
         if (scanAudit) [[unlikely]] {
             scanAudit->deny(ScanCopyAudit::Reason::Unevaluated);
         }
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         if (mcOverflow++ == 0 && !mcDepthWarned) {
             mcDepthWarned = true;
             // fixed text (no arguments): page facts classify it as limit-hit from the format string
@@ -5824,6 +5870,9 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
     }
     ocState = !contentIsHidden();
 
+    if (taggedText) [[unlikely]] {
+        taggedText->begin(name0, properties, numArgs == 2);
+    }
     // Always notify the device, so that its begin/end calls stay balanced with
     // the EMC operators, even for content without properties or with a
     // property list that was not an inline dictionary.
@@ -5833,6 +5882,9 @@ void Gfx::opBeginMarkedContent(Object args[], int numArgs)
 void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
 {
     if (!mcStack) {
+        if (taggedText) [[unlikely]] {
+            taggedText->invalidate();
+        }
         error(errSyntaxWarning, getPos(), "Mismatched EMC operator");
         return;
     }
@@ -5842,6 +5894,9 @@ void Gfx::opEndMarkedContent(Object /*args*/[], int /*numArgs*/)
         return;
     }
 
+    if (taggedText) [[unlikely]] {
+        taggedText->end();
+    }
     MarkedContentStack *mc = mcStack;
     GfxMarkedContentKind mcKind = mc->kind;
 

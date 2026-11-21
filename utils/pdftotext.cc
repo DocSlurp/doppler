@@ -64,6 +64,7 @@
 #include "PDFDoc.h"
 #include "PDFDocFactory.h"
 #include "TextOutputDev.h"
+#include "TaggedTextEvidence.h"
 #include "CharTypes.h"
 #include "UnicodeMap.h"
 #include "PDFDocEncoding.h"
@@ -109,6 +110,7 @@ static int w = 0;
 static int h = 0;
 static bool bbox = false;
 static bool bboxLayout = false;
+static bool taggedSpanEvidence = false;
 static bool physLayout = false;
 static bool useCropBox = false;
 static bool cropSizes = false;
@@ -182,6 +184,7 @@ static const ArgDesc argDesc[] = {
       .val = &collectImages,
       .size = 0,
       .usage = "with -bbox-layout: also output where each visible image and image mask lands, clusters of drawing that is not axis-aligned (charts, diagrams), and the page number (image data is never decoded)" },
+    { .arg = "-tagged-span-evidence", .kind = argFlag, .val = &taggedSpanEvidence, .size = 0, .usage = "with -bbox-layout: annotate words with same-walk pagination and scoped MCID evidence" },
     { .arg = "-bbox-layout", .kind = argFlag, .val = &bboxLayout, .size = 0, .usage = "like -bbox but with extra layout bounding box data.  Sets -htmlmeta" },
     { .arg = "-cropbox", .kind = argFlag, .val = &useCropBox, .size = 0, .usage = "use the crop box rather than media box" },
     { .arg = "-crop-sizes", .kind = argFlag, .val = &cropSizes, .size = 0, .usage = "with -bbox-layout: also output each page's crop box size as pdfinfo prints it (crop=\"W H\")" },
@@ -1056,6 +1059,10 @@ int main(int argc, char *argv[])
         error(errCommandLine, -1, "Bogus value provided for -colspacing");
         return 99;
     }
+    if (taggedSpanEvidence && !bboxLayout) {
+        error(errCommandLine, -1, "'-tagged-span-evidence' needs -bbox-layout");
+        return 99;
+    }
     if (collectRules && !bboxLayout) {
         error(errCommandLine, -1, "'-rules' needs -bbox-layout");
         return 99;
@@ -1353,6 +1360,9 @@ int main(int argc, char *argv[])
                 textOut.setTextPageBreaks(false);
             }
             if (bboxLayout) {
+                if (taggedSpanEvidence) {
+                    textOut.enableTaggedTextEvidence();
+                }
                 textOut.setPageFacts(pageFacts);
                 textOut.setCollectRules(collectRules);
                 textOut.setCollectImages(collectImages);
@@ -1512,7 +1522,26 @@ static void printInfoDate(FILE *f, Dict *infoDict, const char *key, const char *
     }
 }
 
-static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
+static std::string taggedSpanAttributes(const TextWord *word, const TaggedTextEvidence *taggedSpans)
+{
+    if (!taggedSpans) {
+        return {};
+    }
+    const TaggedTextSpan span = taggedSpans->span(word->getTaggedSpanToken());
+    if (span.pagination) {
+        return " artifact=\"pagination\"";
+    }
+    if (span.mcid < 0) {
+        return {};
+    }
+    std::string attributes = " mcid=\"" + std::to_string(span.mcid) + "\" mcScope=\"" + std::to_string(span.scope) + "\"";
+    if (span.scope > 0) {
+        attributes += " mcForm=\"" + std::to_string(span.form.num) + " " + std::to_string(span.form.gen) + "\"";
+    }
+    return attributes;
+}
+
+static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap, const TaggedTextEvidence *taggedSpans)
 {
     if (compactLayout) {
         // The converter needs geometric relationships, not six decimal places.
@@ -1551,6 +1580,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
             if (glyphContext) {
                 words += word.word->isShown() ? " shown=\"1\"" : " shown=\"0\"";
             }
+            words += taggedSpanAttributes(word.word, taggedSpans);
             words += ">";
             words += myXmlTokenReplace(word.text->c_str());
             words += "</word>\n";
@@ -1576,6 +1606,7 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
         if (glyphContext) {
             wordXML << (word.word->isShown() ? " shown=\"1\"" : " shown=\"0\"");
         }
+        wordXML << taggedSpanAttributes(word.word, taggedSpans);
         wordXML << ">" << myXmlTokenReplace(word.text->c_str()) << "</word>\n";
         if (glyphContext) {
             std::string glyphs;
@@ -1604,6 +1635,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         glyphs.emplace(doc->getXRef());
     }
     glyphContext = glyphs ? &*glyphs : nullptr;
+    int taggedRunLimitPage = 0;
     fprintf(f, "<doc>\n");
     for (int page = first; page <= last; ++page) {
         const auto pageStart = std::chrono::steady_clock::now();
@@ -1663,6 +1695,20 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
         }
         if ((collectImages || collectRules) && xrefRebuilt) {
             glyphAttrs += " xrefRebuilt=\"1\"";
+        }
+        const auto *taggedSpans = textOut->getTaggedTextEvidence();
+        if (taggedSpans) {
+            if (taggedSpans->isRunLimitHit() && taggedRunLimitPage == 0) {
+                taggedRunLimitPage = page;
+            }
+            if (!taggedSpans->isPageAdmitted()) {
+                taggedSpans = nullptr;
+            } else if (!taggedSpans->isValid() || textOut->getContentTruncated()) {
+                glyphAttrs += " taggedSpansUnavailable=\"1\"";
+                taggedSpans = nullptr;
+            } else {
+                glyphAttrs += " mcPage=\"" + std::to_string(page) + "\"";
+            }
         }
         if (collectRules) {
             fprintf(f, "  <page width=\"%f\" height=\"%f\"%s%s>\n", wid, hgt, textOut->getRulesTruncated() ? " rulesTruncated=\"1\"" : "", glyphAttrs.c_str());
@@ -1729,7 +1775,7 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
                 blk->getBBox(&xMin, &yMin, &xMax, &yMax);
                 putBoxTag(f, "      <block", xMin, yMin, xMax, yMax);
                 for (line = blk->getLines(); line; line = line->getNext()) {
-                    printLine(f, line, uMap);
+                    printLine(f, line, uMap, taggedSpans);
                 }
                 fprintf(f, "      </block>\n");
             }
@@ -1741,6 +1787,9 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
     // that has seen copyable="1" on an earlier page must not copy it
     if (collectImages && doc->getXRef()->getReconstructionCount() > 0) {
         fprintf(f, "  <xref rebuilt=\"1\"/>\n");
+    }
+    if (taggedRunLimitPage != 0) {
+        fprintf(f, "  <taggedSpansRunLimit firstPage=\"%d\"/>\n", taggedRunLimitPage);
     }
     fprintf(f, "</doc>\n");
     glyphContext = nullptr;

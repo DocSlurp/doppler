@@ -81,6 +81,7 @@
 #include "UnicodeTypeTable.h"
 #include "Link.h"
 #include "TextOutputDev.h"
+#include "TaggedTextEvidence.h"
 #include "CJKRadicals.h"
 #include "Page.h"
 #include "Annot.h"
@@ -756,6 +757,9 @@ void TextWord::merge(TextWord *word)
     }
     if (word->yMax > yMax) {
         yMax = word->yMax;
+    }
+    if (taggedSpanToken != word->taggedSpanToken) {
+        taggedSpanToken = 0;
     }
     chars.insert(chars.end(), word->chars.begin(), word->chars.end());
     shown = shown || word->shown;
@@ -1764,6 +1768,14 @@ void TextBlock::coalesce(const UnicodeMap *uMap, double fixedPitch)
                 return { 0, w1.len() };
             };
 
+            const auto compareWithDuplicate = [&](const TextWord *word) {
+                const auto keep = keepSecond(*word0, *word);
+                if ((keep.first == keep.second || keep.first != 0) && word0->taggedSpanToken != word->taggedSpanToken) {
+                    word0->taggedSpanToken = 0;
+                }
+                return keep;
+            };
+
             int maxBaseIdx = pool->getBaseIdx(word0->base + secDelta);
 
             for (int idx1 = idx0; idx1 <= maxBaseIdx; idx1++) {
@@ -1784,7 +1796,7 @@ void TextBlock::coalesce(const UnicodeMap *uMap, double fixedPitch)
                 TextWord *word1 = prevWord->next;
 
                 while (word1) {
-                    if (auto keep = keepSecond(*word0, *word1); keep.first == keep.second) {
+                    if (auto keep = compareWithDuplicate(word1); keep.first == keep.second) {
                         prevWord->next = word1->next;
                         delete word1;
                         word1 = prevWord->next;
@@ -1816,7 +1828,7 @@ void TextBlock::coalesce(const UnicodeMap *uMap, double fixedPitch)
                 if (!word1) {
                     continue;
                 }
-                if (auto keep = keepSecond(*word0, *word1); keep.first == keep.second) {
+                if (auto keep = compareWithDuplicate(word1); keep.first == keep.second) {
                     pool->setPool(idx1, word1->next);
                     delete word1;
                 } else if (keep.first != 0) {
@@ -2785,6 +2797,9 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
     mat.m[5] = y1;
 
     if (mergeCombining && curWord && uLen == 1 && curWord->addCombining(curFont, curFontSize, x1, y1, w1, h1, charPos, nBytes, c, u[0], mat)) {
+        if (taggedText && curWord->taggedSpanToken != (actualTextChars ? 0 : taggedText->glyph())) {
+            curWord->taggedSpanToken = 0;
+        }
         charPos += nBytes;
         return;
     }
@@ -2933,6 +2948,15 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
         curWord->shown = curWord->shown || (!visibility.invisible && !visibility.clipped);
         if (facts) {
             facts->onGlyph(curFont, curFontSize, u, uLen, curWord->rot, diagonal, visibility);
+        }
+        if (taggedText) [[unlikely]] {
+            // Replacement text can cover glyphs in several marked-content contexts.
+            const unsigned token = actualTextChars ? 0 : taggedText->glyph();
+            if (curWord->chars.empty()) {
+                curWord->taggedSpanToken = token;
+            } else if (curWord->taggedSpanToken != token) {
+                curWord->taggedSpanToken = 0;
+            }
         }
         // add the characters to the current word
         w1 /= uLen;
@@ -6097,6 +6121,10 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
 void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
 {
     contentReadBudget.startPage();
+    if (taggedText) {
+        taggedText->startPage();
+        text->setTaggedTextEvidence(taggedText->isPageAdmitted() ? taggedText.get() : nullptr);
+    }
     text->startPage(state);
     gsDepth = 0;
     oddClipDepth = -1;
@@ -6106,6 +6134,11 @@ void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
     if (facts) {
         facts->startPage(currentPage, text->getPageWidth(), text->getPageHeight());
     }
+}
+
+void TextOutputDev::enableTaggedTextEvidence()
+{
+    taggedText = std::make_unique<TaggedTextEvidence>();
 }
 
 void TextOutputDev::setPageFacts(PageFacts *factsA)

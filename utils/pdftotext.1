@@ -126,6 +126,38 @@ separators U+0085, U+2028 and U+2029 is replaced by a single space, so each
 word is exactly one row of twelve tab-separated columns.
 No quoting or backslash escaping is used.
 .TP
+.B \-tagged-span-evidence
+With \-bbox-layout, add explicit marked-content evidence to words during the same
+page walk. A word wholly inside pagination artifact content gets
+.BR artifact="pagination" .
+A word with one unambiguous marked-content ID gets
+.BR mcid
+and
+.BR mcScope :
+scope 0 is the page contents, and a positive scope identifies a Form XObject
+invocation within that page.
+.B mcForm
+gives the Form object's number and generation.
+.B mcPage
+gives the PDF page number, including when extracting a page range.
+These attributes describe content-stream evidence. They do not validate the
+logical structure tree or change the extracted text, order, or bounds.
+Mixed words, replacement text, and ambiguous overlaps may have no evidence.
+If marked content is unbalanced or nested too deeply, a scope repeats an MCID, or the 16,384-event
+per-page budget for marked-content opens, Form scopes, and evidenced glyphs is
+exhausted, the page has
+.B taggedSpansUnavailable="1"
+and its words carry no evidence.
+Skipped or aborted stream traversal also invalidates evidence for that page.
+The document budget is 65,536 events, including one event per page, which
+bounds the added attributes to 8 MiB. After exhaustion the output ends with
+.B taggedSpansRunLimit
+whose
+.B firstPage
+identifies the first page affected by the run limit.
+These document-supplied tags are advisory. Malformed Forms can still affect
+ordinary extraction through Gfx's inherited marked-content handling.
+.TP
 .B \-wordmeta
 Used together with \-bbox, \-bbox-layout or \-tsv: output additional metadata for
 every word. Without this option the output is unchanged.
