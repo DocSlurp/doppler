@@ -121,7 +121,8 @@ impl PageLayout {
             })
             .collect();
         if p.rules && p.tables {
-            let tables = ruled_tables(page, &ids, body, p, format, budget)?
+            let margin_ids: Vec<_> = (0..page.lines.len()).filter(|i| drop[*i] && !labelled.contains(i)).collect();
+            let tables = ruled_tables(page, &ids, &margin_ids, body, p, format, budget)?
                 .into_iter()
                 .filter(|(_, t, _)| !crate::tables::not_table_content(&t.rows))
                 .map(|(members, table, (x0, y0, x1, y1))| {

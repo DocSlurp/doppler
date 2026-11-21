@@ -633,6 +633,13 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         ("labeled-crossings-behind", true, false),
         ("labeled-crossings-front", true, false),
         ("vertical-labeled", true, false),
+        ("one-crossing", true, false),
+        ("varying-thickness", true, false),
+        ("vertical-single-crossing", true, false),
+        ("vertical-uneven-bars", true, false),
+        ("one-crossing-off-axis", false, false),
+        ("uneven-bars-single-crossing", false, false),
+        ("single-rule-forms", false, true),
         ("rounded-staircase", true, false),
         ("chart-with-category-dividers", true, false),
         ("data-bars-in-edge-column", false, true),
@@ -670,4 +677,38 @@ fn bar_geometry_agrees_in_markdown_and_page_facts() {
         let json = String::from_utf8(result.stdout).unwrap();
         assert!(json.contains(&format!("\"figureClusters\":{}", usize::from(chart))), "{name}: {json}");
     }
+}
+
+#[test]
+fn closed_components_keep_semantic_cells_and_exclude_outside_text() {
+    let Some((pdftotext, _)) = tools() else {
+        return;
+    };
+    let scratch = Scratch::new("closed-components");
+    let generator =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/docslurp/page-facts/bar_geometry_fixtures.py");
+    let generator = Command::new("python3").arg(generator).arg(&scratch.0).output().unwrap();
+    assert!(generator.status.success(), "{}", String::from_utf8_lossy(&generator.stderr));
+
+    let result = Command::new(PDFTOMARKDOWN)
+        .args(["--stream", "--markers", "--page-markers", "--html"])
+        .arg(scratch.0.join("closed-components.pdf"))
+        .env("PDFTOTEXT", pdftotext)
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let markdown = String::from_utf8(result.stdout).unwrap();
+    let expected = concat!(
+        "<table>\n<tbody>\n",
+        "<tr><td>Range name</td><td></td><td>Net total</td></tr>\n",
+        "<tr><td>Ash</td><td></td><td>11</td></tr>\n",
+        "<tr><td>Fir</td><td></td><td>24</td></tr>\n",
+        "<tr><td>Yew</td><td></td><td>52</td></tr>\n",
+        "</tbody>\n</table>",
+    );
+    assert_eq!(markdown.matches(expected).count(), 6, "{markdown}");
+    let text: Vec<_> = markdown.split(expected).collect();
+    assert!(text.iter().any(|part| part.contains("10") && part.contains("30")), "{markdown}");
+    assert_eq!(markdown.matches("<table>").count(), 6, "{markdown}");
+    assert!(!markdown.contains("/figure-"), "{markdown}");
 }

@@ -1633,6 +1633,7 @@ struct Group {
 pub fn ruled_tables(
     page: &Page,
     ids: &[usize],
+    margin_ids: &[usize],
     body: f64,
     p: &Params,
     format: TableFormat,
@@ -1656,6 +1657,7 @@ pub fn ruled_tables(
     let mut h: Vec<(f64, f64, f64)> = Vec::new();
     // the edges of rules drawn as filled bars
     let mut bar_ys: Vec<f64> = Vec::new();
+    let mut strokes = Vec::new();
     let mut v: Vec<VRule> = Vec::new();
     for r in &page.rules {
         let (w, hh) = (r.x1 - r.x0, r.y1 - r.y0);
@@ -1670,14 +1672,36 @@ pub fn ruled_tables(
         } else if luminance(&r.color) > p.rule_max_lum {
             continue;
         } else if w >= hh && w >= 0.5 * body {
-            h.push((r.x0, r.x1, (r.y0 + r.y1) / 2.0));
+            let stroke = (r.x0, r.x1, (r.y0 + r.y1) / 2.0);
+            h.push(stroke);
+            strokes.push(stroke);
         } else if hh > w && hh >= 0.8 * body {
             v.push(((r.x0 + r.x1) / 2.0, r.y0, r.y1));
         }
     }
-    // by x, so table_columns and caption_band look at the rules in an x range only (their
-    // results do not depend on the order of v)
+    // The vertical rules are indexed by x for local boundary searches.
     v.sort_by(|a, b| fcmp(a.0, b.0));
+    strokes.sort_by(|a, b| fcmp(a.2, b.2));
+    let full_stroke_at = |left: f64, right: f64, y: f64, budget: &mut Budget| -> Option<bool> {
+        let start = strokes.partition_point(|r| r.2 < y - 1.0);
+        let end = strokes.partition_point(|r| r.2 <= y + 1.0);
+        budget
+            .scan(end - start)
+            .then(|| strokes[start..end].iter().any(|&(a, b, _)| a <= left + 1.0 && b >= right - 1.0))
+    };
+    let sides_end_at = |left: f64, right: f64, top: f64, bottom: f64, budget: &mut Budget| -> Option<bool> {
+        for edge in [left, right] {
+            let start = v.partition_point(|r| r.0 < edge - 1.0);
+            let end = v.partition_point(|r| r.0 <= edge + 1.0);
+            if !budget.scan(end - start) {
+                return None;
+            }
+            if !v[start..end].iter().any(|&(_, a, b)| a <= top + 1.0 && (b - bottom).abs() <= 1.0) {
+                return Some(false);
+            }
+        }
+        Some(true)
+    };
     // join collinear segments that touch (cell borders drawn cell by cell)
     h.sort_by(|a, b| fcmp(round0(a.2), round0(b.2)).then(fcmp(a.0, b.0)));
     let mut joined: Vec<(f64, f64, f64)> = Vec::new();
@@ -1844,6 +1868,21 @@ pub fn ruled_tables(
                 ys.push(y);
             }
         }
+        if let (Some(&top), Some(&bottom)) = (ys.first(), ys.last())
+            && sides_end_at(g.x0, g.x1, top, bottom, budget)?
+        {
+            let mut stroked = Vec::new();
+            for &y in &ys {
+                if full_stroke_at(g.x0, g.x1, y, budget)? {
+                    stroked.push(y);
+                }
+            }
+            // A closed stroked grid determines its own row boundaries. Short
+            // interior fills (including data bars) do not add rows to it.
+            if stroked.len() >= 3 && stroked.first() == ys.first() && stroked.last() == ys.last() {
+                ys = stroked;
+            }
+        }
         let gaps: Vec<f64> = ys.windows(2).map(|w| w[1] - w[0]).collect();
         let limit = if gaps.is_empty() { 0.0 } else { p.rule_split * median(gaps.clone()) };
         // charges the vertical rules and the lines it visits; None once the budget runs out
@@ -1938,7 +1977,8 @@ pub fn ruled_tables(
             // a tall band of several rows is the gap between two stacked tables)
             let band = bands.get(k).copied().unwrap_or((false, usize::MAX));
             let row_ruled = ys.len() >= 5 && !bands.is_empty() && multi_bands - (band.1 > 1) as usize == 0;
-            let booktabs_body = v.is_empty() && !row_ruled && full_rule(a) && full_rule(b) && body_rows(a, b, g.x0, g.x1, budget);
+            let booktabs_body =
+                v.is_empty() && !row_ruled && full_rule(a) && full_rule(b) && body_rows(a, b, g.x0, g.x1, budget);
             // (nor is a band that holds one row whose cell wraps to several lines: a rule after
             // every row, one row taller than the rest)
             let jump = b - a > limit && gaps.len() >= 3 && !booktabs_body && !(band.0 && every_row_ruled);
@@ -1994,6 +2034,19 @@ pub fn ruled_tables(
             }
             ids.iter().copied().filter(|&i| member(i)).collect()
         };
+        let closed_bottom = sides_end_at(x0, x1, y0, y1, budget)? && full_stroke_at(x0, x1, y1, budget)?;
+        let closed_grid = closed_bottom && full_stroke_at(x0, x1, y0, budget)?;
+        if closed_grid {
+            // Repeated text in a ruled cell belongs to the table, even in
+            // the page margin where furniture detection can hide it.
+            if !budget.scan(margin_ids.len()) {
+                return None;
+            }
+            members.extend(margin_ids.iter().copied().filter(|&i| {
+                let l = &lines[i];
+                member(i) && x0 <= l.x0 && l.x1 <= x1 && y0 <= l.y0 && l.y1 <= y1
+            }));
+        }
         if members.len() < 2 {
             continue;
         }
@@ -2071,16 +2124,19 @@ pub fn ruled_tables(
         if let Some(last) = &above
             && y0 - last.base <= 1.2 * pitch
             && fits(last, &cols)
+            && (!closed_grid || last.cells.iter().any(|cell| !numeric(cell.text())))
         {
             members.extend(last.ids.iter().copied());
         }
-        let mut edge = rows[rows.len() - 1].base;
-        for r in below.by_ref().filter(|r| r.base > y1 - 1.0) {
-            if r.base - edge > 1.6 * pitch || !fits(&r, &cols) {
-                break;
+        if !closed_bottom {
+            let mut edge = rows[rows.len() - 1].base;
+            for r in below.by_ref().filter(|r| r.base > y1 - 1.0) {
+                if r.base - edge > 1.6 * pitch || !fits(&r, &cols) {
+                    break;
+                }
+                members.extend(r.ids.iter().copied());
+                edge = r.base;
             }
-            members.extend(r.ids.iter().copied());
-            edge = r.base;
         }
         drop(below);
         // the row window's walks (each row it built is a position walked)
@@ -2139,7 +2195,11 @@ pub fn ruled_tables(
                 }
                 grid.push(cells.into_iter().map(line_text).collect());
             }
-            keep_filled(grid, &cols, false)
+            if closed_grid {
+                Table { rows: grid, spans: None, cols: cols.clone(), sparse: false, header_row: false }
+            } else {
+                keep_filled(grid, &cols, false)
+            }
         } else {
             for r in rows.iter_mut() {
                 r.multi = r.cells.len() >= 2;
@@ -2233,9 +2293,12 @@ fn ruled_html(
         if q.x0 < x0 - 0.5 || q.x1 > x1 + 0.5 || q.y0 < y0 - 0.5 || q.y1 > y1 + 0.5 {
             continue;
         }
-        if (q.y1 - q.y0).abs() <= 1.0 && q.x1 > q.x0 {
+        // The producer writes bounds to hundredths of a point. Subtraction
+        // can round a one-point stroke just above 1.0.
+        const THIN_STROKE: f64 = 1.0 + 1e-9;
+        if (q.y1 - q.y0).abs() <= THIN_STROKE && q.x1 > q.x0 {
             h.push(((q.y0 + q.y1) / 2., q.x0, q.x1));
-        } else if (q.x1 - q.x0).abs() <= 1.0 && q.y1 > q.y0 {
+        } else if (q.x1 - q.x0).abs() <= THIN_STROKE && q.y1 > q.y0 {
             v.push(((q.x0 + q.x1) / 2., q.y0, q.y1));
         }
     }
@@ -2485,6 +2548,24 @@ mod span_tests {
         assert_eq!(html.matches("<tr>").count(), 3);
         assert!(html.contains("<td rowspan=\"2\" colspan=\"2\">first line second line third line</td>"), "{html}");
     }
+    #[test]
+    fn rounded_one_point_stroke_preserves_the_column_boundary() {
+        let mut page = fixture();
+        for rule in &mut page.rules {
+            if rule.x0 == 200. && rule.x1 == 200. {
+                rule.x0 = 255.98;
+                rule.x1 = 256.98;
+            } else if rule.x0 == 200. {
+                rule.x0 = 256.48;
+            }
+        }
+        let html = ruled_html(&page, &[], (0., 0., 300., 300.), &Params::default(), &mut Budget::new(100_000.))
+            .unwrap()
+            .unwrap();
+        assert_eq!(html.matches("<td").count(), 6, "{html}");
+        assert!(html.contains("rowspan=\"2\" colspan=\"2\""), "{html}");
+    }
+
     #[test]
     fn actual_work_and_exhaustion() {
         let mut page = fixture();
