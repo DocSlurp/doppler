@@ -282,17 +282,19 @@ with t.TempDir() as d:
         t.check("invisibleWordsInside" not in item and "visibleWordsCentredInside" not in item,
                 "scan-only truncated evidence omits per-image word counts", repr(item))
     t.check(page(regions, 17)["text"]["wordCount"] > 8192, "scan regions: fixture exceeds the retained word cap")
-    for opts in ([], ["-include", "images-detail"], ["-level", "full"]):
+    for opts in ([], ["-include", "images-detail"]):
         ordinary = lines(facts(regions_path, *opts)[1])
-        t.check("scanRegions" not in page(ordinary, 1)["images"], "scan regions absent without explicit opt-in", repr(opts))
+        t.check("scanRegions" not in page(ordinary, 1)["images"], "basic facts omit unrequested scan regions", repr(opts))
+    ordinary = lines(facts(regions_path, "-level", "full")[1])
     full = lines(facts(regions_path, "-level", "full", "-include", "scan-regions")[1])
+    t.check(full == ordinary, "full facts already include scan regions")
     full_page = page(full, 1)
-    t.check(doc_line(full)["level"] == "full" and doc_line(full)["include"] == ["scan-regions"]
-            and full_page["images"].pop("scanRegions") == expected[0], "scan regions compose with full facts")
+    t.check(doc_line(full)["level"] == "full" and "include" not in doc_line(full)
+            and full_page["images"]["scanRegions"] == expected[0], "scan regions compose with full facts")
     t.check(full_page == page(ordinary, 1), "scan regions preserve existing full page fields")
     for n in (13, 14, 15, 16):
         partial = page(full, n)
-        t.check(partial["images"].pop("scanRegions") == expected[n - 1]
+        t.check(partial["images"]["scanRegions"] == expected[n - 1]
                 and partial == page(ordinary, n)
                 and partial["images"]["items"][0]["visibleWordsInside"] == 3,
                 "scan regions preserve existing full fields on a mixed page with partially painted words", repr(partial))

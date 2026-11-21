@@ -3366,7 +3366,7 @@ struct PageFacts::State
     }
 };
 
-PageFacts::PageFacts(unsigned families) : fams(families & (AllFamilies | ScanRegions)), needTally((families & (Vectors | Annots | Forms | Ocg)) != 0), st(new State) { }
+PageFacts::PageFacts(unsigned families) : fams(families & AllFamilies), needTally((families & (Vectors | Annots | Forms | Ocg)) != 0), st(new State) { }
 
 PageFacts::~PageFacts()
 {

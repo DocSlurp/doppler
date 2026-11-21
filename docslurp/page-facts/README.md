@@ -63,7 +63,7 @@ than `full` without it, measured on textbook pages);
 | `fonts` | page `fonts` |
 | `oddtext` | page `text` ratios (control, private use, U+FFFD, math, vertical, rotated, text over images) |
 | `images-detail` | page `images.items` (32 per page, with words inside and bytes per pixel), mask and inline counts |
-| `scan-regions` | explicitly requested even at `full`; includes `images-detail` fields and page `images.scanRegions` |
+| `scan-regions` | included at `full`; includes `images-detail` fields and page `images.scanRegions` |
 | `vectors` | page `vectors` (paths, coverage, rules, grid score, ruled grids, shadings, patterns, clips, clusters) |
 | `forms` | page `forms`; doc `acroForm`, `needAppearances`, `xfa` |
 | `annots` | page `annots` |
@@ -180,7 +180,7 @@ Fonts that drew characters on the page (at most 256 tracked: `truncated`).
 
 ### Mixed-page scan regions (`scan-regions`)
 
-Request `pdfpagefacts -include scan-regions`, or add `scan-regions` to the
+Full facts include mixed-page scan regions. For basic facts, request `pdfpagefacts -include scan-regions` or add `scan-regions` to the
 Markdown or text CLI's page-facts include list. `images.scanRegions.imageIndices`
 lists nominated 1-based placement indices in page order. Each index refers to
 an `images.items` entry with the box, page-area fraction, and local visible and
