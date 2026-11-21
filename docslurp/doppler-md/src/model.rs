@@ -54,8 +54,10 @@ pub struct Word {
     pub color: Rc<str>,
     /// Quarter turns of the glyphs; absent or invalid rotation reads as zero.
     pub rot: u8,
-    /// Invisible text (render mode 3, such as an OCR layer over a scan); read only with glyphs.
+    /// Starting render mode does not paint, as reported by word metadata. Read only with glyphs.
     pub invisible: bool,
+    /// Any glyph paints inside the clip, when supplied by the glyph-enabled producer.
+    pub shown: Option<bool>,
     /// This word's glyph records (`pdftotext -glyphs`) as a range of [`Page::glyphs`]; empty
     /// without glyph records.
     pub glyphs: GlyphRange,
@@ -424,7 +426,7 @@ impl Page {
 }
 
 /// The attribute names the converter reads.
-const KEYS: [&str; 34] = [
+const KEYS: [&str; 35] = [
     "xMin",
     "yMin",
     "xMax",
@@ -459,6 +461,7 @@ const KEYS: [&str; 34] = [
     "xrefRebuilt",
     "rebuilt",
     "contentTruncated",
+    "shown",
 ];
 
 fn key_index(name: &str) -> Option<usize> {
@@ -498,6 +501,7 @@ fn key_index(name: &str) -> Option<usize> {
         "xrefRebuilt" => 31,
         "rebuilt" => 32,
         "contentTruncated" => 33,
+        "shown" => 34,
         _ => return None,
     })
 }
@@ -1534,6 +1538,15 @@ impl ParseState {
                         color: interned(last_color, a.0[COLOR].unwrap_or("")),
                         glyphs: GlyphRange::default(),
                         invisible: glyphs && a.0[INVISIBLE] == Some("1"),
+                        shown: if glyphs {
+                            match a.get("shown") {
+                                Some("1") => Some(true),
+                                Some("0") => Some(false),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        },
                         rot: match a.0[ROTATION] {
                             Some("1") => 1,
                             Some("2") => 2,

@@ -25,6 +25,7 @@ fn word(x0: f64, x1: f64, y: f64, text: &str) -> Word {
         color: Rc::from("#000000"),
         glyphs: Default::default(),
         invisible: false,
+        shown: None,
         rot: 0,
     }
 }

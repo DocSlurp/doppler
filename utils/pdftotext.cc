@@ -438,6 +438,7 @@ static std::string wordMetaTsvColumns(const WordMetadata &meta)
 //         the character code, the font's built-in encoding or the CID collection, a the text
 //         of an /ActualText span (that record stands for every glyph of the span)
 //   n     the glyph name from the font's encoding, only when it says more than u does
+// With glyph records, words also carry shown="0|1": whether any glyph was visible.
 // Named glyphs that extraction drops because their Unicode is whitespace or NUL (TeX
 // extension glyphs with raw codes 0x00-0x20, say) follow the font table as <xg> records with
 // x, w, b, z, f, c, s="c" and n; they belong to no word.
@@ -1547,6 +1548,9 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
                 }
                 words += previousAttributes;
             }
+            if (glyphContext) {
+                words += word.word->isShown() ? " shown=\"1\"" : " shown=\"0\"";
+            }
             words += ">";
             words += myXmlTokenReplace(word.text->c_str());
             words += "</word>\n";
@@ -1568,8 +1572,11 @@ static void printLine(FILE *f, const TextLine *line, const UnicodeMap *uMap)
 
     const TextBounds bounds = projectLine(line, uMap, wordMeta, [&](const ProjectedWord &word) {
         const TextBounds &b = word.bounds;
-        wordXML << "          <word xMin=\"" << b.xMin << "\" yMin=\"" << b.yMin << "\" xMax=\"" << b.xMax << "\" yMax=\"" << b.yMax << "\"" << (word.metadata ? wordMetaXmlAttributes(*word.metadata) : std::string()) << ">"
-                << myXmlTokenReplace(word.text->c_str()) << "</word>\n";
+        wordXML << "          <word xMin=\"" << b.xMin << "\" yMin=\"" << b.yMin << "\" xMax=\"" << b.xMax << "\" yMax=\"" << b.yMax << "\"" << (word.metadata ? wordMetaXmlAttributes(*word.metadata) : std::string());
+        if (glyphContext) {
+            wordXML << (word.word->isShown() ? " shown=\"1\"" : " shown=\"0\"");
+        }
+        wordXML << ">" << myXmlTokenReplace(word.text->c_str()) << "</word>\n";
         if (glyphContext) {
             std::string glyphs;
             glyphContext->appendWordGlyphs(glyphs, word.word);
