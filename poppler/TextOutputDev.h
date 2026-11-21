@@ -245,6 +245,7 @@ public:
     const Matrix &getTextMat(int i) const { return chars[i].textMat; }
     double getBaseline() const { return base; }
     bool hasSpaceAfter() const { return spaceAfter; }
+    unsigned getTaggedSpanToken() const { return taggedSpanToken; }
     const TextWord *nextWord() const { return next; };
     auto len() const { return chars.size(); }
 
@@ -272,6 +273,7 @@ private:
         double advance = 0; // advance along the primary axis (0 for merged combining marks)
     };
     std::vector<CharInfo> chars;
+    unsigned taggedSpanToken = 0;
     int charPosEnd = 0;
     double edgeEnd = 0;
 
@@ -757,6 +759,7 @@ public:
     // words added to this page so far (before coalescing removes duplicated text), with those
     // drawn invisibly (render mode 3).
     void setPageFacts(PageFacts *factsA) { facts = factsA; }
+    void setTaggedTextEvidence(TaggedTextEvidence *evidence) { taggedText = evidence; }
     size_t getWordCount() const { return wordsAdded; }
     size_t getInvisibleWordCount() const { return invisibleWordsAdded; }
     size_t getVisibleWordCount() const { return wordsAdded - invisibleWordsAdded; }
@@ -855,6 +858,7 @@ private:
 
     double pageWidth, pageHeight; // width and height of current page
     TextWord *curWord; // currently active string
+    TaggedTextEvidence *taggedText = nullptr;
     int charPos; // next character position (within content
                  //   stream)
     TextFontInfo *curFont; // current font
@@ -1111,6 +1115,8 @@ public:
     // must outlive the pages displayed with it. It turns on image geometry, and with vector
     // facts the rule and drawing summaries, without changing what is written for them.
     void setPageFacts(PageFacts *factsA);
+    void enableTaggedTextEvidence();
+    TaggedTextEvidence *getTaggedTextEvidence() override { return taggedText.get(); }
     // Words only: endPage skips coalescing into lines, blocks and flows (no reading order, no
     // text output); for a caller that needs only page facts and word counts.
     void setWordsOnly(bool on) { wordsOnly = on; }
@@ -1199,6 +1205,7 @@ private:
     EndOfLineHyphenMode hyphenMode = EndOfLineHyphenMode::RemoveAll;
 
     std::unique_ptr<ActualText> actualText;
+    std::unique_ptr<TaggedTextEvidence> taggedText;
 };
 
 #endif
