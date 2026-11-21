@@ -2196,7 +2196,20 @@ pub fn ruled_tables(
                 grid.push(cells.into_iter().map(line_text).collect());
             }
             if closed_grid {
-                Table { rows: grid, spans: None, cols: cols.clone(), sparse: false, header_row: false }
+                // Keep empty cells between populated columns. At the outer
+                // edges, all-empty intervals may be divisions of a drawing.
+                let filled = |i: usize| grid.iter().any(|row| !row[i].is_empty());
+                let first = (0..cols.len()).find(|&i| filled(i)).unwrap_or(0);
+                let end = (first..cols.len()).rfind(|&i| filled(i)).map_or(first, |i| i + 1);
+                let rows = grid
+                    .into_iter()
+                    .map(|mut row| {
+                        row.truncate(end);
+                        row.drain(..first);
+                        row
+                    })
+                    .collect();
+                Table { rows, spans: None, cols: cols[first..end].to_vec(), sparse: false, header_row: false }
             } else {
                 keep_filled(grid, &cols, false)
             }
