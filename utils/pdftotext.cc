@@ -1697,6 +1697,10 @@ void printDocBBox(FILE *f, PDFDoc *doc, TextOutputDev *textOut, int first, int l
             glyphAttrs += " xrefRebuilt=\"1\"";
         }
         const auto *taggedSpans = textOut->getTaggedTextEvidence();
+        if (taggedSpans && !taggedSpans->wasStartedFor(page)) {
+            glyphAttrs += " taggedSpansUnavailable=\"1\"";
+            taggedSpans = nullptr;
+        }
         if (taggedSpans) {
             if (taggedSpans->isRunLimitHit() && taggedRunLimitPage == 0) {
                 taggedRunLimitPage = page;

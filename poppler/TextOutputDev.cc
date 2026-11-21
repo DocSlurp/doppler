@@ -6118,11 +6118,11 @@ bool TextOutputDev::checkPageSlice(Page *pageA, double /*hDPI*/, double /*vDPI*/
     return true;
 }
 
-void TextOutputDev::startPage(int /*pageNum*/, GfxState *state, XRef * /*xref*/)
+void TextOutputDev::startPage(int pageNum, GfxState *state, XRef * /*xref*/)
 {
     contentReadBudget.startPage();
     if (taggedText) {
-        taggedText->startPage();
+        taggedText->startPage(pageNum);
         text->setTaggedTextEvidence(taggedText->isPageAdmitted() ? taggedText.get() : nullptr);
     }
     text->startPage(state);

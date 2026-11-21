@@ -34,8 +34,9 @@ public:
         size_t base = 0;
     };
 
-    void startPage()
+    void startPage(int page)
     {
+        startedPage = page;
         current = {};
         base = 0;
         nextScope = 0;
@@ -138,6 +139,7 @@ public:
     void invalidate() { failed = true; }
     bool isValid() const { return !failed; }
     bool isPageAdmitted() const { return pageAdmitted; }
+    bool wasStartedFor(int page) const { return startedPage == page; }
     bool isRunLimitHit() const { return runLimitHit; }
 
 private:
@@ -176,6 +178,7 @@ private:
     Frame current;
     size_t base = 0;
     int nextScope = 0;
+    int startedPage = 0;
     unsigned events = 0;
     unsigned runEvents = 0;
     bool runLimitHit = false;

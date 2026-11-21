@@ -320,7 +320,7 @@ const BAR_SCALE_ALONG: f64 = 40.0;
 /// commas and one decimal point, an optional `%`; at most 16 characters. Shared with PageFacts.cc
 /// `scaleNumber`.
 fn scale_number(text: &str) -> Option<f64> {
-    if text.chars().count() > 16 {
+    if text.chars().nth(16).is_some() {
         return None;
     }
     let t = text.strip_suffix('%').unwrap_or(text);
@@ -515,6 +515,11 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<(Bbox, Optio
     }
     across.sort_by(|a, b| a.at.total_cmp(&b.at));
     down.sort_by(|a, b| a.at.total_cmp(&b.at));
+    // Charge both word passes before allocating the centres or parsing labels.
+    let word_count: usize = page.lines.iter().map(|line| line.words.len()).sum();
+    if !budget.spend(2 * (word_count + across.len() + down.len()) + 1) {
+        return Vec::new();
+    }
     // word centres, sorted by x
     let mut words: Vec<(f64, f64)> = page
         .lines
@@ -523,9 +528,6 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<(Bbox, Optio
         .map(|w| ((w.x0 + w.x1) / 2.0, (w.y0 + w.y1) / 2.0))
         .filter(|c| c.0.is_finite() && c.1.is_finite())
         .collect();
-    if !budget.spend(2 * (words.len() + across.len() + down.len()) + 1) {
-        return Vec::new();
-    }
     words.sort_by(|a, b| a.0.total_cmp(&b.0));
     let nums: Vec<Num> = page
         .lines
@@ -1054,6 +1056,28 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
     bar_grid_evidence(run, r, vertical, c, false, false, budget)?.then_some((r, Some(axis)))
 }
 
+// Charge word coordinates and text separately before scanning either.
+fn has_legend_letters(
+    line: &crate::model::Line,
+    contains_x: impl Fn(f64) -> bool,
+    budget: &mut Budget,
+) -> Option<bool> {
+    if !budget.spend(line.words.len()) {
+        return None;
+    }
+    for word in &line.words {
+        if contains_x(word.x0) {
+            if !budget.scan(word.text.len()) {
+                return None;
+            }
+            if word.text.chars().any(char::is_alphabetic) {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
 // Attach a swatch-backed legend below a horizontal endpoint chart. Two
 // adjacent panels with the same titled scale and one legend belong to one
 // rectangular crop, while their detection regions remain separate.
@@ -1080,23 +1104,23 @@ fn include_bar_legends(
         let t = axis.ticks;
         let height = t.3 - t.1;
         let kept = |li: usize| !drop.get(li).copied().unwrap_or(true);
-        let Some(title) = page
-            .lines
-            .iter()
-            .enumerate()
-            .filter(|(li, line)| {
-                kept(*li)
-                    && line.y0 >= t.3 - 1.0
-                    && line.y0 <= t.3 + height
-                    && line.x0 >= t.0
-                    && line.x1 <= t.2
-                    && line.words.iter().any(|w| w.text.chars().any(char::is_alphabetic))
-            })
-            .map(|(_, line)| line)
-            .min_by(|a, b| a.y0.total_cmp(&b.y0))
-        else {
-            continue;
-        };
+        let mut title: Option<&crate::model::Line> = None;
+        for (li, line) in page.lines.iter().enumerate() {
+            if kept(li)
+                && line.y0 >= t.3 - 1.0
+                && line.y0 <= t.3 + height
+                && line.x0 >= t.0
+                && line.x1 <= t.2
+                && title.is_none_or(|prior| line.y0 < prior.y0)
+            {
+                match has_legend_letters(line, |_| true, budget) {
+                    Some(true) => title = Some(line),
+                    Some(false) => {}
+                    None => return,
+                }
+            }
+        }
+        let Some(title) = title else { continue };
         // Accept small raster or vector swatches immediately left of one short
         // line below the title. The swatch contributes its full painted bounds.
         let marks = page.images.iter().filter(|im| !im.mask).map(|im| (im.x0, im.y0, im.x1, im.y1)).chain(
@@ -1118,20 +1142,22 @@ fn include_bar_legends(
             if !budget.spend(page.lines.len()) {
                 return;
             }
-            if let Some(line) = page.lines.iter().enumerate().find_map(|(li, line)| {
-                (kept(li)
-                    && line.x0 >= mark.0 - 1.0
-                    && line.x1 <= t.2
-                    && line.y0 < mark.3
-                    && line.y1 > mark.1
-                    && line.words.iter().any(|w| {
-                        w.x0 >= mark.2 && w.x0 <= mark.2 + 2.0 * height && w.text.chars().any(char::is_alphabetic)
-                    }))
-                .then_some(line)
-            }) {
-                let bounds = union([mark, (line.x0, line.y0, line.x1, line.y1)]);
-                legend = Some(legend.map_or(bounds, |old| union([old, bounds])));
+            for (li, line) in page.lines.iter().enumerate() {
+                if kept(li) && line.x0 >= mark.0 - 1.0 && line.x1 <= t.2 && line.y0 < mark.3 && line.y1 > mark.1 {
+                    match has_legend_letters(line, |x| x >= mark.2 && x <= mark.2 + 2.0 * height, budget) {
+                        Some(true) => {
+                            let bounds = union([mark, (line.x0, line.y0, line.x1, line.y1)]);
+                            legend = Some(legend.map_or(bounds, |old| union([old, bounds])));
+                            break;
+                        }
+                        Some(false) => {}
+                        None => return,
+                    }
+                }
             }
+        }
+        if !budget.spend(title.words.len()) || !budget.scan(title.words.iter().map(|w| w.text.len()).sum()) {
+            return;
         }
         attachments.push((i, axis, title.text(), legend));
     }

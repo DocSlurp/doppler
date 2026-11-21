@@ -821,6 +821,9 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
     const char *name = cmd->getCmd();
     if (!(op = findOp(name))) {
         if (ignoreUndef == 0) {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             error(errSyntaxError, getPos(), "Unknown operator '{0:s}'", name);
         }
         return;
@@ -840,12 +843,18 @@ void Gfx::execOp(Object *cmd, Object args[], int numArgs)
         }
     } else {
         if (numArgs > -op->numArgs) {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             error(errSyntaxError, getPos(), "Too many ({0:d}) args to '{1:s}' operator", numArgs, name);
             return;
         }
     }
     for (i = 0; i < numArgs; ++i) {
         if (!checkArg(&argPtr[i], op->tchk[i])) {
+            if (taggedText) [[unlikely]] {
+                taggedText->invalidate();
+            }
             error(errSyntaxError, getPos(), "Arg #{0:d} to '{1:s}' operator is wrong type ({2:s})", i, name, argPtr[i].getTypeName());
             return;
         }

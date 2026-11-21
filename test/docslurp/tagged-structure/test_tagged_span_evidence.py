@@ -71,6 +71,8 @@ with t.TempDir() as d:
     for name, content in (
         ("underflow", mark(b"<</MCID 0>>", word("Kept")) + b"EMC\n"),
         ("unclosed", b"/P <</MCID 0>> BDC\n" + word("Kept")),
+        ("unknown-operator", mark(b"<</MCID 0>>", word("Kept")) + b"UnknownOperator\n"),
+        ("wrong-arg-type", mark(b"<</MCID 0>>", word("Kept")) + b"/Name /WrongType Tf\n"),
         ("depth", b"/P BMC\n" * 4096 + mark(b"<</MCID 0>>", word("Kept")) + b"EMC\n" * 4096),
         ("duplicate", mark(b"<</MCID 0>>", word("Kept")) + mark(b"<</MCID 0>>", word("Other", y=660))),
         ("budget", mark(b"<</MCID 0>>", word("Kept")) + b"/P BMC EMC\n" * 16384),
