@@ -120,14 +120,17 @@ impl PageLayout {
                 Elem { line: Some(i), table: None, x0: l.x0, x1: l.x1, y0: l.y0, y1: l.y1 }
             })
             .collect();
+        let mut ruled = Vec::new();
         if p.rules && p.tables {
             let margin_ids: Vec<_> = (0..page.lines.len()).filter(|i| drop[*i] && !labelled.contains(i)).collect();
             let tables = ruled_tables(page, &ids, &margin_ids, body, p, format, budget)?
                 .into_iter()
                 .filter(|(_, t, _)| !crate::tables::not_table_content(&t.rows))
                 .map(|(members, table, (x0, y0, x1, y1))| {
-                    let table = PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None, ruled: true };
-                    (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0, x1, y0, y1 })
+                    let table =
+                        Rc::new(PlacedTable { table: Rc::new(table), x0, x1, y0, y1, header: None, ruled: true });
+                    ruled.push(table.clone());
+                    (members, Elem { line: None, table: Some(Placed::Table(table)), x0, x1, y0, y1 })
                 });
             elements = replace_members(elements, tables);
         }
@@ -146,7 +149,7 @@ impl PageLayout {
         for region in regions_within(&elements, &page.lines, body, p, 0, budget)? {
             // A narrow gutter can place the same line in two regions. Each region assigns
             // its own copy: a table in the left region cannot consume right-region prose.
-            let seq = assign_region(page, region, body, p, budget)?;
+            let seq = assign_region(page, region, &ruled, body, p, budget)?;
             let mut items = group_within(&seq, body, body_color, p, use_blocks, budget)?;
             let interrupted = p.join_interrupted_paragraphs;
             if interrupted {
@@ -574,9 +577,46 @@ fn replace_members(
     elements
 }
 
+/// Repeated labels under aligned ruled panels can share baselines without forming a grid.
+/// Require both identical values across each row and a distinct nearby panel for each column.
+fn repeats_panel_labels(grid: &Table, top: f64, ruled: &[Rc<PlacedTable>], budget: &mut Budget) -> Option<bool> {
+    if grid.cols.len() < 2 || grid.cols.len() > ruled.len() {
+        return Some(false);
+    }
+    let mut previous: Option<&PlacedTable> = None;
+    let mut bottom: Option<f64> = None;
+    for &(left, right) in &grid.cols {
+        if !budget.spend(ruled.len()) {
+            return None;
+        }
+        let center = (left + right) * 0.5;
+        let panel =
+            ruled.iter().filter(|t| t.x0 <= center && center <= t.x1 && t.y1 <= top).max_by(|a, b| fcmp(a.y1, b.y1));
+        let Some(panel) = panel else { return Some(false) };
+        if top - panel.y1 > panel.y1 - panel.y0
+            || previous.is_some_and(|left| left.x1 > panel.x0)
+            || bottom.is_some_and(|edge| (edge - panel.y1).abs() > 1.0)
+        {
+            return Some(false);
+        }
+        bottom.get_or_insert(panel.y1);
+        previous = Some(panel);
+    }
+    for row in &grid.rows {
+        if !budget.spend(row.iter().map(String::len).sum::<usize>().saturating_add(row.len())) {
+            return None;
+        }
+        if !row.first().is_some_and(|first| !first.is_empty() && row.iter().all(|cell| cell == first)) {
+            return Some(false);
+        }
+    }
+    Some(!grid.rows.is_empty())
+}
+
 fn assign_region(
     page: &Page,
     mut region: Vec<Placement>,
+    ruled: &[Rc<PlacedTable>],
     body: f64,
     p: &Params,
     budget: &mut Budget,
@@ -591,13 +631,18 @@ fn assign_region(
             (x0, y0, x1, y1)
         };
         let found = find_tables_within(page, &ids, p, body, budget)?;
-        let tables = found.into_iter().map(|(members, grid)| {
+        let mut tables = Vec::new();
+        for (members, grid) in found {
             let (x0, y0, x1, y1) = bbox(&members);
+            if repeats_panel_labels(&grid, y0, ruled, budget)? {
+                continue;
+            }
             let table = PlacedTable { table: Rc::new(grid), x0, x1, y0, y1, header: None, ruled: false };
             // Gutter tables sort at x=0 on a tied top edge, while title tests use their
             // actual extent. These placements no longer participate in region splitting.
-            (members, Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 })
-        });
+            let placement = Elem { line: None, table: Some(Placed::Table(Rc::new(table))), x0: 0.0, x1, y0, y1: y0 };
+            tables.push((members, placement));
+        }
         region = replace_members(region, tables);
     }
     // Python's stable ordering starts with ruled tables, then gutter tables, then lines.
