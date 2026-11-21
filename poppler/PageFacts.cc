@@ -2983,8 +2983,7 @@ struct PageFacts::State
     struct WordBox
     {
         double x0, y0, x1, y1;
-        bool visible;
-        bool scanVisible; // any glyph paints inside the clip bounds, irrespective of the starting render mode
+        bool visible; // any glyph paints inside the clip bounds, irrespective of the starting render mode
         bool math = false; // mathtables: most of its characters drawn by math-class fonts
         bool mono = false; // mathtables: most of its characters drawn by fixed-pitch fonts
         uint8_t delim = 0; // mathtables: 1 a full delimiter, 2 a delimiter piece, 3 a bar, in a math-class font
@@ -3562,7 +3561,7 @@ GlyphVisibility glyphVisibility(const GfxState *state, double x, double y, doubl
     double clipX0, clipY0, clipX1, clipY1;
     state->getClipBBox(&clipX0, &clipY0, &clipX1, &clipY1);
     GlyphVisibility v;
-    v.invisible = state->getRender() == 3;
+    v.invisible = state->textRenderModeDoesNotPaint();
     v.clipped = !(cx >= clipX0 && cx <= clipX1 && cy >= clipY0 && cy <= clipY1);
     v.cx = cx;
     v.cy = cy;
@@ -3699,7 +3698,7 @@ void PageFacts::onWord(const TextWord *word)
                 delim = bars > 0 ? 3 : pieces > 0 ? 2 : 1;
             }
         }
-        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown() && !word->isInvisible(), word->isShown(), math, mono, delim, word->getFontSize() });
+        s.wordBoxes.push_back({ x0, y0, x1, y1, word->isShown(), math, mono, delim, word->getFontSize() });
     }
     if (wants(Vectors | MathTables) && std::isfinite(x0 + x1) && std::isfinite(y0 + y1)) {
         if (s.wordCentres.size() < kMaxBarWords) {
@@ -3975,7 +3974,7 @@ WidgetField widgetField(const Object &widget, FormObjects &objects)
 
 } // namespace
 
-void PageFacts::endPage(const TextPage &text)
+void PageFacts::endPage(const TextPage &text, bool displayDepthExceeded)
 {
     // issue 45: the facts' own reads (annotations, widgets, forms) cannot rebuild the table
     std::optional<XRef::RepairGuard> noRepair;
@@ -4447,7 +4446,7 @@ void PageFacts::endPage(const TextPage &text)
         // and words whose box centre does (issue 43), [visible, invisible]
         const size_t listed = std::min(images.size(), maxItems);
         const bool nominateRegions = wants(ScanRegions);
-        bool regionsTruncated = pageWalkLimited || images.size() > listed || text.getImagesPageTruncated() || words > maxScanRegionWords || s.wordBoxes.size() != words;
+        bool regionsTruncated = pageWalkLimited || displayDepthExceeded || images.size() > listed || text.getImagesPageTruncated() || words > maxScanRegionWords || s.wordBoxes.size() != words;
         if (nominateRegions) {
             scanRegionBudget -= std::min({ scanRegionBudget, s.wordBoxes.size(), maxScanRegionWords });
             if (!regionsTruncated) {
@@ -4460,7 +4459,7 @@ void PageFacts::endPage(const TextPage &text)
         std::array<std::array<uint64_t, 2>, maxItems> wordsInside {}, centredInside {};
         const auto wordBoxes = countImageWords ? std::span(s.wordBoxes) : std::span<State::WordBox>();
         for (const State::WordBox &w : wordBoxes) {
-            const size_t visibility = (nominateRegions ? w.scanVisible : w.visible) ? 0 : 1;
+            const size_t visibility = w.visible ? 0 : 1;
             const double cx = 0.5 * w.x0 + 0.5 * w.x1, cy = 0.5 * w.y0 + 0.5 * w.y1; // NaN fails every test
             for (size_t i = 0; i < listed; ++i) {
                 const TextImage &im = images[i];
@@ -4479,7 +4478,7 @@ void PageFacts::endPage(const TextPage &text)
         std::array<size_t, maxItems> scanRegionIndices;
         size_t scanRegionCount = 0;
         constexpr uint64_t minInvisibleRegionWords = 3;
-        const bool mixedPage = nominateRegions && !regionsTruncated && !scan.fullPageImage && std::ranges::any_of(wordBoxes, &State::WordBox::scanVisible);
+        const bool mixedPage = nominateRegions && !regionsTruncated && !scan.fullPageImage && std::ranges::any_of(wordBoxes, &State::WordBox::visible);
         for (size_t i = 0; i < listed; ++i) {
             const TextImage &im = images[i];
             const double coverage = area > 0 ? (im.xMax - im.xMin) * (im.yMax - im.yMin) / area : 0.0;

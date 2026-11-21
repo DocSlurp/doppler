@@ -15,6 +15,7 @@ struct ContentReadBudget
         pageRemaining = pageLimit;
         truncated = false;
         warned = false;
+        displayDepthExceeded = false;
     }
 
     uint64_t remaining() const { return std::min(pageRemaining, runRemaining); }
@@ -41,6 +42,7 @@ struct ContentReadBudget
     bool truncated = false;
     bool warned = false;
     bool hadTruncated = false;
+    bool displayDepthExceeded = false;
 };
 
 #endif

@@ -144,9 +144,9 @@ out lines, write the same values.
 | field | meaning |
 |---|---|
 | `charCount` | characters |
-| `visibleCharCount`, `invisibleCharCount` | invisible: render mode 3 (no paint), or the glyph's centre outside the clip. White-on-white is not detected |
-| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when none of its glyphs is visible (render mode 3, or centre outside the clip), as for characters |
-| `textLayer` | `none` (no words), `invisible` (all invisible: an OCR layer), `visible`, `mixed` (the issue's three values plus `mixed`, as `pdftomarkdown --page-info` reports) |
+| `visibleCharCount`, `invisibleCharCount` | invisible: render mode 3, clip-only mode 7 for non-Type 3 fonts, or the glyph's centre outside the clip. White-on-white is not detected |
+| `wordCount`, `visibleWordCount`, `invisibleWordCount` | words; a word is invisible when none of its glyphs is visible using the same test as for characters |
+| `textLayer` | `none` (no words), `invisible` (all words invisible), `visible`, `mixed` (a mixture of visible and invisible words) |
 | `textCoverage` | grid union of word boxes |
 | `clippedCharCount` | characters whose centre is outside the clip (included in `invisibleCharCount`) |
 | `controlCharRatio` | C0/C1 control characters (U+0000-001F, U+007F-009F) per character |
@@ -157,6 +157,12 @@ out lines, write the same values.
 | `rotatedTextRatio` | characters not upright on the page as displayed (rotated by a multiple of 90 degrees, or diagonal); vertical writing counts as upright. Text of a `/Rotate 90` page that is upright in the page's own coordinates is rotated as displayed |
 | `textOverImageRatio` | characters whose centre lies in an image grid cell |
 | `invisibleOverFullPageImage` | the page has a full-page image and at least half of its invisible characters lie over images (an OCR layer over a scan) |
+
+An invisible text layer describes glyph visibility. OCR can produce such a layer, and PDF
+authors can also use mode 7 to create a glyph-shaped clip for later paint. That later paint
+does not count as glyph paint. Modes 4–6 both paint and clip. Text filled with a pattern
+uses the original PDF rendering mode for classification. Markdown `--page-info` counts the
+`-wordmeta` flag, which records each word's starting render mode and does not test the clip.
 
 ### `fonts` (`fonts`)
 
@@ -183,15 +189,16 @@ invisible word counts used as evidence.
 A placement qualifies when its box covers at least 10% and less than 85% of
 the page, contains at least three invisible word boxes, and contains no visible
 word centres. The page must also have visible words and must fall outside the existing
-whole-page image coverage test. For this opt-in, an image word is visible when any glyph was observed
-painting inside the clip bounds. Stencils and masked images are excluded.
+whole-page image coverage test. Image detail and scan regions count a word
+as visible when any glyph was observed painting inside the clip bounds. Stencils
+and masked images are excluded from nominations.
 Qualifying placements whose word-test boxes overlap are withheld and listed
 in `ambiguousImageIndices`, in page order.
 
 Scan-only collection retains at most 8,192 word boxes per page and tests at most
 32 image placements. The run has 8,388,608 units of evidence work, accounting for
 retained words and bounding word/image and image/image comparisons. On a walk,
-image, word or work limit, `truncated` is true and both index lists are empty.
+display-depth, image, word or work limit, `truncated` is true and both index lists are empty.
 The work budget applies to the requested facts range, so exhaustion can depend
 on which earlier pages were included.
 Scan-only output omits the per-image word counts on truncated pages. An explicit

@@ -290,6 +290,17 @@ with t.TempDir() as d:
     t.check(doc_line(full)["level"] == "full" and doc_line(full)["include"] == ["scan-regions"]
             and full_page["images"].pop("scanRegions") == expected[0], "scan regions compose with full facts")
     t.check(full_page == page(ordinary, 1), "scan regions preserve existing full page fields")
+    for n in (13, 14, 15, 16):
+        partial = page(full, n)
+        t.check(partial["images"].pop("scanRegions") == expected[n - 1]
+                and partial == page(ordinary, n)
+                and partial["images"]["items"][0]["visibleWordsInside"] == 3,
+                "scan regions preserve existing full fields on a mixed page with partially painted words", repr(partial))
+    depth_path = d.write("scan-region-display-depth.pdf", fx.scan_region_display_depth_pdf())
+    depth_pages = lines(facts(depth_path, "-include", "scan-regions")[1])
+    t.check(page(depth_pages, 1)["images"]["scanRegions"] == expected[8]
+            and page(depth_pages, 2)["images"]["scanRegions"] == expected[17],
+            "scan regions withhold nomination after a display-depth cutoff and reset on the next page")
     rc, xhtml, sidecar = pdftotext_facts(regions_path, "-page-facts-include", "scan-regions", images=True)
     t.check(rc == 0 and sidecar == out and xhtml == pdftotext_plain(regions_path, images=True),
             "scan region sidecar matches standalone facts and preserves XHTML")

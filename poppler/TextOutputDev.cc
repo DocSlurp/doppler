@@ -427,7 +427,7 @@ TextWord::TextWord(const GfxState *state, int rotA, double fontSizeA)
     fontSize = fontSizeA;
     spaceAfter = false;
     next = nullptr;
-    invisible = state->getRender() == 3;
+    invisible = state->textRenderModeDoesNotPaint();
 
     GfxRGB rgb;
 
@@ -2927,7 +2927,7 @@ void TextPage::addChar(const GfxState *state, double x, double y, double dx, dou
             h1 = -h1;
         }
 
-        // a word whose glyphs are all hidden (render mode 3 or clipped out) is an invisible word
+        // a word whose glyphs are all hidden (non-painting render mode or clipped out) is an invisible word
         const GlyphVisibility visibility = glyphVisibility(state, x1, y1, w1, h1, curFontSize, curWord->rot);
         curWord->shown = curWord->shown || (!visibility.invisible && !visibility.clipped);
         if (facts) {
@@ -2990,7 +2990,7 @@ void TextPage::addWord(TextWord *word)
         return;
     }
     ++wordsAdded;
-    invisibleWordsAdded += (word->invisible || !word->shown) ? 1 : 0;
+    invisibleWordsAdded += word->isShown() ? 0 : 1;
     if (facts) {
         facts->onWord(word);
     }
@@ -6159,7 +6159,7 @@ void TextOutputDev::endPage()
     text->endPage();
     // finishPage reports a page failure without derived facts if the device did not finish it.
     if (facts && !getContentTruncated()) {
-        facts->endPage(*text);
+        facts->endPage(*text, contentReadBudget.displayDepthExceeded);
     }
     if (wordsOnly) {
         text->discardWords();

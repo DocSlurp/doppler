@@ -46,7 +46,7 @@ struct TextImage;
 
 // Scan detection, shared by page facts and pdftotext -images (scan= on <page>): the page's
 // images cover at least scanCover of it (a 64x64 occupancy grid of their visible boxes) and at
-// most maxWords words are visible (some glyph not render mode 3 and inside the clip).
+// most maxWords words are visible (some glyph in a painting mode and inside the clip).
 //  Single   one image covers at least scanCover of the page by itself;
 //  Tiled    several images do together (strips, tiles);
 //  Layered  Single, but the covering image has a /SMask or /Mask, or another image (a stencil
@@ -68,7 +68,7 @@ struct ScanVerdict
     bool fullPageImage = false; // the geometric half of the test, whatever the words
 };
 
-// How a glyph the text pass adds is drawn: in render mode 3 (invisible), and whether its centre
+// How a glyph the text pass adds is drawn: whether its rendering mode paints and whether its centre
 // (half its advance along the baseline, 0.3 of the font size up) lies outside the clip. A word
 // is invisible when none of its glyphs is visible (TextPage::getInvisibleWordCount).
 struct GlyphVisibility
@@ -187,7 +187,7 @@ public:
     void onActualText(const std::string &text);
     void beginAnnot(Annot *annot);
     void endAnnot(Annot *annot);
-    void endPage(const TextPage &text);
+    void endPage(const TextPage &text, bool displayDepthExceeded);
     bool wantsRules() const { return wants(Vectors | MathTables); }
     bool wantsGraphics() const { return wants(Vectors | MathTables); }
     bool wantsPaths() const { return wants(Vectors); }

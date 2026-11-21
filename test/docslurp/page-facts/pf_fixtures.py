@@ -845,6 +845,21 @@ def scan_regions_pdf(*, run_budget=False):
     )
 
 
+def scan_region_display_depth_pdf():
+    # The final form would paint text in the inset, but is beyond the display
+    # cutoff. A second page verifies that the notification is page-local.
+    res = "<< /Font << /F1 3 0 R >> /XObject << /Image {0} 0 R /Next {1} 0 R >> >>"
+    content = "q 420 0 0 240 54 300 cm /Image Do Q\n" + words(3, y=740) + "q\n" + words(6, y=470, invisible=True) + "Q\n"
+    form = "/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources "
+    chain = [
+        stream(form + "<< /XObject << /Next {" + str(i + 1) + "} 0 R >> >>", b"/Next Do")
+        for i in range(1, 101)
+    ]
+    chain.append(stream(form + "<< /Font << /F1 3 0 R >> >>", words(3, y=425).encode("ascii")))
+    return doc([{"content": content + " /Next Do", "resources": res}, {"content": content, "resources": res}],
+               extras=[image(), *chain])
+
+
 def _raw_image(length_entry, data, w=100, h=50):
     """An image XObject body with a /Length entry as given (or none) over <data>."""
     return "<< /Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode %s >>\nstream\n" % (w, h, length_entry) + data.decode("latin-1") + "\nendstream"
