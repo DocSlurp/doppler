@@ -976,7 +976,7 @@ pub fn rewrite_page_with(
     // an OCR layer (invisible text over a scan) and an unreadable text layer go to OCR or a
     // vision model instead
     let words: Vec<&Word> = page.lines.iter().flat_map(|l| l.words.iter()).collect();
-    let invisible = words.iter().filter(|w| w.invisible).count();
+    let invisible = words.iter().filter(|w| w.shown.map_or(w.invisible, |shown| !shown)).count();
     if !words.is_empty() && invisible * 2 > words.len() {
         stats.ocr_layer = true;
         stats.whole_page(page, "ocrLayer");
@@ -2011,6 +2011,7 @@ fn rebuild(line: &Line, gs: &[G], cuts: &[(usize, usize, Option<(String, f64)>)]
                     color: first.color.clone(),
                     glyphs: Default::default(),
                     invisible: false,
+                    shown: None,
                     rot: first.rot,
                 });
             }

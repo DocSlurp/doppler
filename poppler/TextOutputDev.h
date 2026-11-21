@@ -227,9 +227,9 @@ public:
     int getCharLen() const { return chars.empty() ? 0 : chars.back().charPos - chars.front().charPos; }
     bool getSpaceAfter() const { return spaceAfter; }
     bool isUnderlined() const { return underlined; }
-    // True if the word is invisible text (render mode 3), such as an OCR text layer.
+    // True if the word starts in a non-painting text rendering mode.
     bool isInvisible() const { return invisible; }
-    // a glyph of it is not render mode 3 and has its centre inside the clip
+    // At least one glyph is in a painting mode and has its centre inside the clip.
     bool isShown() const { return shown; }
     const AnnotLink *getLink() const { return link; }
     double getEdge(int i) const { return chars[i].edge; }

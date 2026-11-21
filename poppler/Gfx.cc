@@ -3991,7 +3991,7 @@ void Gfx::doShowText(const std::string &s)
         } else {
             render = 7;
         }
-        state->setRender(render);
+        state->setRenderForPatternText(render);
         out->updateRender(state);
     } else {
         patternFill = false;
