@@ -131,8 +131,8 @@ public:
         // math and table encodings: the packed mathBits, tableBits and encodingCounts words on
         // every page, and (with the other families) their readable fields; see the README
         MathTables = 1u << 8,
-        AllFamilies = (1u << 9) - 1,
-        ScanRegions = 1u << 9
+        ScanRegions = 1u << 9,
+        AllFamilies = (1u << 10) - 1
     };
     static constexpr const char *schemaName = "doppler-page-facts/1";
 
