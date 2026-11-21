@@ -20,8 +20,11 @@ fn tools() -> Option<(PathBuf, PathBuf)> {
         .map(PathBuf::from)
         .or_else(|| pdftotext.parent().map(|d| d.join("pdfpagefacts")))
         .unwrap_or(build.join("pdfpagefacts"));
-    let usage = Command::new(&pdftotext).arg("-h").output().ok()?;
-    if !String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd") || !facts.is_file() {
+    let supported = Command::new(&pdftotext)
+        .arg("-h")
+        .output()
+        .is_ok_and(|usage| String::from_utf8_lossy(&usage.stderr).contains("-page-facts-fd"));
+    if !supported || !facts.is_file() {
         toolchain::skip("page_facts", "the DocSlurp pdftotext with -page-facts-fd and pdfpagefacts");
         return None;
     }
@@ -132,8 +135,10 @@ fn text_render_modes_in_page_facts_and_page_info() {
         ("Tr 0 then Tr 7", "/F1 12 Tf 0 Tr", "", "", "(WW) Tj 7 Tr (WW) Tj", 2, 0),
         ("Tr 3 then Tr 0", "/F1 12 Tf 3 Tr", "", "", "(WW) Tj 0 Tr (WW) Tj", 2, 1),
         ("Tr 0 then Tr 3", "/F1 12 Tf 0 Tr", "", "", "(WW) Tj 3 Tr (WW) Tj", 2, 0),
+        ("q/Q restores painting", "/F1 12 Tf", "0 Tr q 7 Tr Q", "", "(WWWW) Tj", 0, 0),
+        ("Form restores painting", "/F1 12 Tf", "0 Tr /Fm Do", "", "(WWWW) Tj", 0, 0),
     ];
-    let kids = (7..7 + 2 * cases.len()).step_by(2).map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
+    let kids = (9..9 + 2 * cases.len()).step_by(2).map(|id| format!("{id} 0 R")).collect::<Vec<_>>().join(" ");
     let stream =
         |dict: &str, content: &str| format!("<< {dict} /Length {} >>\nstream\n{content}endstream", content.len());
     let mut objects = vec![
@@ -146,20 +151,32 @@ fn text_render_modes_in_page_facts_and_page_info() {
         ),
         "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /W 6 0 R >> /Encoding /WinAnsiEncoding /FirstChar 87 /LastChar 87 /Widths [600] /Resources << >> >>".to_string(),
         stream("", "600 0 0 0 600 700 d1 0 0 500 650 re f\n"),
+        stream(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode",
+            "41>\n",
+        ),
+        stream("/Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << >>", "BT 7 Tr ET\n"),
     ];
     for (_, text_state, before, after, shows, _, _) in cases {
         let stream_id = objects.len() + 2;
         objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /T3 5 0 R >> /Pattern << /P1 4 0 R >> >> /Contents {stream_id} 0 R >>"
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /T3 5 0 R >> /Pattern << /P1 4 0 R >> /XObject << /Im 7 0 R /Fm 8 0 R >> >> /Contents {stream_id} 0 R >>"
         ));
-        objects.push(stream("", &format!("q {before} BT {text_state} 72 700 Td {shows} ET {after} Q\n")));
+        objects.push(stream(
+            "",
+            &format!("q 612 0 0 792 0 0 cm /Im Do Q q {before} BT {text_state} 72 700 Td {shows} ET {after} Q\n"),
+        ));
     }
     std::fs::write(&pdf, encode_pdf(&objects)).unwrap();
 
     let facts_file = scratch.0.join("facts.jsonl");
-    let out = md(&pdftotext, &["--page-info", "--report", "--page-facts", facts_file.to_str().unwrap()], &pdf);
+    let out = md(
+        &pdftotext,
+        &["--page-info", "--report", "--page-facts", facts_file.to_str().unwrap(), "--scan-max-words", "0"],
+        &pdf,
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let facts = pdfpagefacts(&facts_exe, &[], &pdf);
+    let facts = pdfpagefacts(&facts_exe, &["-scan-max-words", "0"], &pdf);
     assert_eq!(std::fs::read(facts_file).unwrap(), facts);
     let pages: Vec<serde_json::Value> = std::str::from_utf8(&facts)
         .unwrap()
@@ -171,6 +188,47 @@ fn text_render_modes_in_page_facts_and_page_info() {
     let report: serde_json::Value = serde_json::from_str(stderr.lines().last().unwrap()).unwrap();
     let info = report["page_info"].as_array().unwrap();
 
+    let math_out = md(&pdftotext, &["--math", "--page-info", "--report"], &pdf);
+    assert!(math_out.status.success(), "{}", String::from_utf8_lossy(&math_out.stderr));
+    let math_stderr = std::str::from_utf8(&math_out.stderr).unwrap();
+    let math_report: serde_json::Value = serde_json::from_str(math_stderr.lines().last().unwrap()).unwrap();
+    assert_eq!(math_report["page_info"], report["page_info"]);
+    let ocr_pages: Vec<_> = math_report["degraded"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|region| region["reason"] == "ocr_text_layer")
+        .map(|region| region["page"].as_u64().unwrap())
+        .collect();
+    let expected_ocr: Vec<_> =
+        cases.iter().enumerate().filter(|(_, case)| case.5 == 4).map(|(i, _)| i as u64 + 1).collect();
+    assert_eq!(ocr_pages, expected_ocr);
+
+    for (glyphs, compact) in [(false, false), (true, false), (true, true)] {
+        let mut command = Command::new(&pdftotext);
+        command.args(["-bbox-layout", "-wordmeta"]);
+        if glyphs {
+            command.arg("-glyphs");
+        }
+        if compact {
+            command.arg("-compact-layout");
+        }
+        let raw = command.arg(&pdf).arg("-").output().unwrap();
+        assert!(raw.status.success(), "{}", String::from_utf8_lossy(&raw.stderr));
+        let xml = std::str::from_utf8(&raw.stdout).unwrap();
+        let words: Vec<_> = xml.lines().filter(|line| line.trim_start().starts_with("<word ")).collect();
+        assert_eq!(words.len(), cases.len());
+        for (word, (label, _, _, _, _, hidden_chars, starts_hidden)) in words.iter().zip(cases) {
+            assert!(word.contains(&format!(r#" invisible="{starts_hidden}""#)), "{label}: {word}");
+            if glyphs {
+                let shown = u8::from(hidden_chars < 4);
+                assert!(word.contains(&format!(r#" shown="{shown}""#)), "{label}: {word}");
+            } else {
+                assert!(!word.contains(" shown="), "{label}: {word}");
+            }
+        }
+    }
+
     assert_eq!(pages.len(), cases.len());
     assert_eq!(info.len(), cases.len());
     for ((page, info), (label, _, _, _, _, hidden_chars, starts_hidden)) in pages.iter().zip(info).zip(cases) {
@@ -181,6 +239,8 @@ fn text_render_modes_in_page_facts_and_page_info() {
         assert_eq!(text["visibleWordCount"], 1 - hidden_word, "{label}");
         assert_eq!(text["invisibleWordCount"], hidden_word, "{label}");
         assert_eq!(text["textLayer"], if hidden_word == 1 { "invisible" } else { "visible" }, "{label}");
+        assert_eq!(page["images"]["scan"], if hidden_word == 1 { "single" } else { "none" }, "{label}");
+        assert_eq!(page["images"]["fullPageImage"], true, "{label}");
         // Page info reports the word metadata, which tracks the starting render mode.
         assert_eq!(info["words"], 1, "{label}");
         assert_eq!(info["invisible"], starts_hidden, "{label}");

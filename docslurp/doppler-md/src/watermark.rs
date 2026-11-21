@@ -444,6 +444,7 @@ mod tests {
             color: Rc::from(color),
             rot,
             invisible: false,
+            shown: None,
             glyphs: GlyphRange::default(),
         };
         let body: Vec<Word> = (0..pale / 2 + 10)

@@ -171,6 +171,10 @@ bounding boxes.
 Used together with \-bbox-layout and \-wordmeta: also output glyph-level records,
 for reading typeset math. Without this option the output is unchanged, and a reader
 that does not know the records can skip them (they are separate elements).
+With this option, each word also has a
+.I shown
+attribute: 1 when at least one glyph paints and has its centre inside the clip,
+otherwise 0.
 Each <page> starts with a font table: one
 .B <font>
 element per font used on the page with

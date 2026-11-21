@@ -2475,6 +2475,7 @@ mod span_tests {
                 color: "#000000".into(),
                 rot: 0,
                 invisible: false,
+                shown: None,
                 glyphs: Default::default(),
             };
             page.lines.push(Rc::new(Line::new(vec![word], 0, 0)));

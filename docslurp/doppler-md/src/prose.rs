@@ -408,6 +408,7 @@ pub(crate) fn group_within(
                     color: Rc::from(""),
                     glyphs: Default::default(),
                     invisible: false,
+                    shown: None,
                     rot: 0,
                 };
                 Line::new(vec![w], line.block, line.flow)

@@ -758,6 +758,7 @@ void TextWord::merge(TextWord *word)
         yMax = word->yMax;
     }
     chars.insert(chars.end(), word->chars.begin(), word->chars.end());
+    shown = shown || word->shown;
     edgeEnd = word->edgeEnd;
     charPosEnd = word->charPosEnd;
     if (!link) {
