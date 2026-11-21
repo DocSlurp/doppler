@@ -112,7 +112,7 @@ pub fn place(
     // those keep their ids and their place as the first of any merge (council L6), and only while
     // the page has room under MAX_FIGURES (council L1). They have no `<graphic>`, so their ids
     // follow the graphics: `pN.gK` with K past the last graphic, one per run.
-    for (j, b) in bars.iter().enumerate().take(MAX_FIGURES.saturating_sub(regions.len())) {
+    for (j, (b, _)) in bars.iter().enumerate().take(MAX_FIGURES.saturating_sub(regions.len())) {
         let rep = gs.len() + j;
         regions.push((notes.len(), rep, *b, Vec::new()));
         notes.push(Note {
@@ -177,6 +177,7 @@ pub fn place(
     }
     // drawings whose regions now overlap are one figure, marked at the first of them; merging
     // can make a region reach another, so repeat until none overlap (each round removes one)
+    include_bar_legends(page, drop, gs.len(), &bars, &mut regions, budget);
     let mut merged = regions;
     'outer: loop {
         if !budget.spend(merged.len() * merged.len() / 2 + notes.len()) {
@@ -363,35 +364,78 @@ struct Num {
     v: f64,
 }
 
+// Candidates alongside the value axis, with coordinates increasing in the value direction.
+fn bar_ticks(r: Bbox, vertical: bool, nums: &[Num], side: usize, budget: &mut Budget) -> Option<Vec<(f64, f64, f64)>> {
+    let mut seq: Vec<(f64, f64, f64)> = Vec::new();
+    for n in nums {
+        if !budget.spend(1) {
+            return None;
+        }
+        let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+        let keep = if vertical {
+            let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
+            along
+                && if side == 0 {
+                    n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS
+                } else {
+                    n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS
+                }
+        } else {
+            let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
+            along
+                && if side == 0 {
+                    n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS
+                } else {
+                    n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS
+                }
+        };
+        if keep {
+            // up is a smaller y on the page
+            let cross = if vertical { if side == 0 { n.x1 } else { n.x0 } } else { cy };
+            seq.push((if vertical { -cy } else { cx }, n.v, cross));
+        }
+    }
+    Some(seq)
+}
+
 /// Whether the run has a scale (council r2 M1/M2: redactions and blank form fields have none): at
 /// least BAR_SCALE_MIN numbers beside it whose values increase along the value axis, which for
 /// vertical bars is up (tick labels left or right of the plot), for horizontal bars right (below or
 /// above it). Every number looked at is charged.
-fn bar_scale(r: Bbox, vertical: bool, nums: &[Num], budget: &mut Budget) -> bool {
-    // the scale's bands: (keep, position along the value axis, sign so that "increasing" is the value direction)
+fn bar_scale(r: Bbox, vertical: bool, nums: &[Num], aligned: bool, budget: &mut Budget) -> bool {
     for side in 0..2 {
-        let mut seq: Vec<(f64, f64)> = Vec::new();
-        for n in nums {
-            if !budget.spend(1) {
-                return false;
-            }
-            let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
-            let keep = if vertical {
-                let along = cy >= r.1 - BAR_SCALE_ALONG && cy <= r.3 + 12.0;
-                along && if side == 0 { n.x1 <= r.0 + 4.0 && n.x1 >= r.0 - BAR_SCALE_ACROSS } else { n.x0 >= r.2 - 4.0 && n.x0 <= r.2 + BAR_SCALE_ACROSS }
-            } else {
-                let along = cx >= r.0 - 12.0 && cx <= r.2 + BAR_SCALE_ALONG;
-                along && if side == 0 { n.y0 >= r.3 - 4.0 && n.y0 <= r.3 + BAR_SCALE_ACROSS } else { n.y1 <= r.1 + 4.0 && n.y1 >= r.1 - BAR_SCALE_ACROSS }
-            };
-            if keep {
-                // up is a smaller y on the page
-                seq.push((if vertical { -cy } else { cx }, n.v));
-            }
-        }
+        let Some(mut seq) = bar_ticks(r, vertical, nums, side, budget) else { return false };
         if seq.len() < BAR_SCALE_MIN {
             continue;
         }
         seq.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if aligned {
+            // A scale is one typographic row or column. An unrelated nearby
+            // number on a different row or column cannot complete or poison it.
+            for &(_, _, edge) in &seq {
+                let mut previous = None;
+                let mut count = 0;
+                for &(position, value, cross) in &seq {
+                    if !budget.spend(1) {
+                        return false;
+                    }
+                    if cross < edge || cross > edge + 4.0 {
+                        continue;
+                    }
+                    if previous.is_some_and(|(last_position, last_value)| {
+                        position <= last_position + 1.0 || value <= last_value
+                    }) {
+                        count = 0;
+                    }
+                    previous = Some((position, value));
+                    count += 1;
+                    if count == BAR_SCALE_MIN {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
         if seq.windows(2).all(|w| w[1].1 > w[0].1) {
             return true;
         }
@@ -420,7 +464,9 @@ fn lines_near(lines: &[Line], at: f64, reach: f64) -> &[Line] {
 ///   left edge of horizontal ones) are within half a point, with gaps of at most `bar_max_gap`
 ///   times the widest bar so far;
 /// - its lengths differ (`bar_min_spread`: shaded table rows and zebra stripes are one length);
-/// - few hold a word's centre (`bar_max_text_share`: shaded cells and highlights hold them);
+/// - few hold a word's centre, unless stable thickness and repeated interior grid crossings
+///   support a labeled chart. Long separators with populated lanes on both sides are
+///   cell-boundary evidence;
 /// - a stroked axis lies along the baseline and spans most of the run (`BAR_AXIS_SPAN`): a box's
 ///   own outline or a cell border beside one box is not an axis (form fields, council M2);
 /// - a scale: at least 3 numbers beside the run increasing along its value axis (bar_scale), which
@@ -430,7 +476,7 @@ fn lines_near(lines: &[Line], at: f64, reach: f64) -> &[Line] {
 /// A run then takes in the boxes stacked on it, and runs that overlap are one chart. At most
 /// MAX_BAR_BOXES boxes and MAX_BAR_RUNS runs a page; every comparison is charged to `budget`, and
 /// none is made once it runs out.
-fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
+fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<(Bbox, Option<BarAxis>)> {
     let page_area = pmax(page.width * page.height, 1.0);
     let band = p.furniture_band * page.height;
     let filled: Vec<Bbox> = page
@@ -440,7 +486,13 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         .map(|r| (r.x0, r.y0, r.x1, r.y1))
         .filter(|b| {
             let (w, h) = (b.2 - b.0, b.3 - b.1);
-            w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 && w * h < 0.25 * page_area && b.3 > band && b.1 < page.height - band
+            w.is_finite()
+                && h.is_finite()
+                && w > 0.0
+                && h > 0.0
+                && w * h < 0.25 * page_area
+                && b.3 > band
+                && b.1 < page.height - band
         })
         .take(MAX_BAR_BOXES)
         .collect();
@@ -487,7 +539,7 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         .take(MAX_SCALE_WORDS)
         .collect();
     let ctx = BarContext { p, across: &across, down: &down, words: &words, nums: &nums };
-    let mut found: Vec<(Bbox, bool)> = Vec::new();
+    let mut found = Vec::new();
     'orient: for vertical in [true, false] {
         let base = |b: &Bbox| if vertical { b.3 } else { b.0 };
         let along = |b: &Bbox| if vertical { b.0 } else { b.1 };
@@ -512,8 +564,8 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
                 if let Some(last) = run.last() {
                     let gap = if vertical { b.0 - last.2 } else { b.1 - last.3 };
                     if gap < -0.5 || gap > p.bar_max_gap * pmax(thick, t) {
-                        if let Some(r) = bar_run(&run, vertical, &ctx, budget) {
-                            found.push((r, vertical));
+                        if let Some((r, axis)) = bar_run(&run, vertical, &ctx, budget) {
+                            found.push((r, vertical, axis));
                             if found.len() >= MAX_BAR_RUNS {
                                 break 'orient;
                             }
@@ -525,8 +577,8 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
                 run.push(b);
                 thick = pmax(thick, t);
             }
-            if let Some(r) = bar_run(&run, vertical, &ctx, budget) {
-                found.push((r, vertical));
+            if let Some((r, axis)) = bar_run(&run, vertical, &ctx, budget) {
+                found.push((r, vertical, axis));
                 if found.len() >= MAX_BAR_RUNS {
                     break 'orient;
                 }
@@ -536,8 +588,8 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
     }
     // a run takes in the boxes stacked on it (along its own orientation, until nothing changes;
     // council L3), and runs that now overlap are one chart
-    let mut out: Vec<Bbox> = Vec::new();
-    for (mut r, vertical) in found {
+    let mut out: Vec<(Bbox, Option<BarAxis>)> = Vec::new();
+    for (mut r, vertical, axis) in found {
         for _ in 0..BAR_STACK_ROUNDS {
             if !budget.spend(filled.len() + 1) {
                 return out;
@@ -560,10 +612,42 @@ fn bar_regions(page: &Page, p: &Params, budget: &mut Budget) -> Vec<Bbox> {
         if !budget.spend(out.len() + 1) {
             return out;
         }
-        if let Some(o) = out.iter_mut().find(|o| overlap(**o, r) > 0.0) {
-            *o = union([*o, r]);
+        if let Some((box_, saved_axis)) = out.iter_mut().find(|(box_, _)| overlap(*box_, r) > 0.0) {
+            *box_ = union([*box_, r]);
+            *saved_axis = saved_axis.or(axis);
         } else {
-            out.push(r);
+            out.push((r, axis));
+        }
+    }
+    for (box_, axis) in &mut out {
+        if let Some(axis) = axis {
+            let bars = *box_;
+            *box_ = union([bars, axis.ticks]);
+            let (rules, tick_lo, tick_hi, lane_lo, lane_hi) = if axis.vertical {
+                (&across, axis.ticks.1, axis.ticks.3, bars.0, bars.2)
+            } else {
+                (&down, axis.ticks.0, axis.ticks.2, bars.1, bars.3)
+            };
+            // Keep the full painted value grid, including the short margin
+            // between the outermost bars and the ends of the grid strokes.
+            let from = rules.partition_point(|line| line.at < tick_lo);
+            for line in &rules[from..] {
+                if !budget.spend(1) || line.at > tick_hi {
+                    break;
+                }
+                if line.lo >= lane_lo - 12.0
+                    && line.lo <= lane_lo + 12.0
+                    && line.hi >= lane_hi - 12.0
+                    && line.hi <= lane_hi + 12.0
+                {
+                    let stroke = if axis.vertical {
+                        (line.lo, line.at, line.hi, line.at)
+                    } else {
+                        (line.at, line.lo, line.at, line.hi)
+                    };
+                    *box_ = union([*box_, stroke]);
+                }
+            }
         }
     }
     out
@@ -577,9 +661,337 @@ struct BarContext<'a> {
     nums: &'a [Num],
 }
 
+// The two tests use different directions. Cell separators run along the value axis in
+// repeated gaps between bars. Plot gridlines run across the lanes and cross bar interiors.
+// Return None on budget exhaustion so a partial scan cannot approve a candidate.
+fn bar_grid_evidence(
+    run: &[Bbox],
+    r: Bbox,
+    vertical: bool,
+    c: &BarContext,
+    needs_grid: bool,
+    budget: &mut Budget,
+) -> Option<bool> {
+    let (separators, grid, value_lo, value_hi, lane_lo, lane_hi) =
+        if vertical { (c.down, c.across, r.1, r.3, r.0, r.2) } else { (c.across, c.down, r.0, r.2, r.1, r.3) };
+    let lane_span = |b: &Bbox| if vertical { (b.0, b.2) } else { (b.1, b.3) };
+    let value_span = value_hi - value_lo;
+    let mut divided_gaps = 0;
+    let (mut divider_lo, mut divider_hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    'gaps: for gap in run.windows(2) {
+        let (_, lo) = lane_span(&gap[0]);
+        let (hi, _) = lane_span(&gap[1]);
+        if hi - lo < 2.0 {
+            continue;
+        }
+        let from = separators.partition_point(|line| line.at < lo + 0.5);
+        for line in &separators[from..] {
+            if !budget.spend(1) {
+                return None;
+            }
+            if line.at > hi - 0.5 {
+                break;
+            }
+            if line.hi.min(value_hi) - line.lo.max(value_lo) >= 0.8 * value_span {
+                divider_lo = divider_lo.max(line.lo);
+                divider_hi = divider_hi.min(line.hi);
+                divided_gaps += 1;
+                if divided_gaps == 2 {
+                    break 'gaps;
+                }
+                break;
+            }
+        }
+    }
+    let populated_pair = |left: (f64, f64), right: (f64, f64), budget: &mut Budget| -> Option<bool> {
+        let mut occupied_lanes = 0;
+        for bar in run {
+            let (start, end) = lane_span(bar);
+            let (x_lo, x_hi) = if vertical { (start, end) } else { (left.0, right.1) };
+            let from = c.words.partition_point(|word| word.0 < x_lo);
+            let (mut first, mut second) = (false, false);
+            for &(x, y) in &c.words[from..] {
+                if !budget.spend(1) {
+                    return None;
+                }
+                if x > x_hi {
+                    break;
+                }
+                let (value, lane) = if vertical { (y, x) } else { (x, y) };
+                if !(start..=end).contains(&lane) {
+                    continue;
+                }
+                first |= left.0 < value && value < left.1;
+                second |= right.0 < value && value < right.1;
+                if first && second {
+                    occupied_lanes += 1;
+                    break;
+                }
+            }
+            if occupied_lanes == 2 {
+                return Some(true);
+            }
+        }
+        Some(false)
+    };
+    if divided_gaps >= 2 {
+        if populated_pair((value_lo - 100.0, value_lo - 2.0), (value_hi + 2.0, value_hi + 100.0), budget)? {
+            return Some(false);
+        }
+        // A run in the first or last table column may have no words on one side.
+        // The same lane separators must continue across two populated columns,
+        // closed by rules spanning the run. A free-standing legend does not qualify.
+        for (outer_lo, outer_hi) in [(divider_lo, value_lo), (value_hi, divider_hi)] {
+            if outer_hi - outer_lo < 24.0 {
+                continue;
+            }
+            let mut edges = [0.0; 3];
+            let mut count = 0;
+            let from = grid.partition_point(|line| line.at < outer_lo - 1.0);
+            for line in &grid[from..] {
+                if !budget.spend(1) {
+                    return None;
+                }
+                if line.at > outer_hi + 1.0 {
+                    break;
+                }
+                if line.hi.min(lane_hi) - line.lo.max(lane_lo) < 0.8 * (lane_hi - lane_lo)
+                    || (count > 0 && line.at - edges[count - 1] < 12.0)
+                {
+                    continue;
+                }
+                edges[count] = line.at;
+                count += 1;
+                if count == edges.len() {
+                    break;
+                }
+            }
+            if count != edges.len() {
+                continue;
+            }
+            if populated_pair((edges[0], edges[1]), (edges[1], edges[2]), budget)? {
+                return Some(false);
+            }
+        }
+    }
+    if !needs_grid {
+        return Some(true);
+    }
+
+    if !budget.spend(run.len()) {
+        return None;
+    }
+    let (mut min_thickness, mut max_thickness) = (f64::INFINITY, 0.0_f64);
+    for bar in run {
+        let (lo, hi) = lane_span(bar);
+        min_thickness = min_thickness.min(hi - lo);
+        max_thickness = max_thickness.max(hi - lo);
+    }
+    if min_thickness < 0.8 * max_thickness {
+        return Some(false);
+    }
+    let mut previous = f64::NEG_INFINITY;
+    let mut crossings = 0;
+    let from = grid.partition_point(|line| line.at <= value_lo + 1.0);
+    for line in &grid[from..] {
+        if !budget.spend(1) {
+            return None;
+        }
+        if line.at >= value_hi - 1.0 {
+            break;
+        }
+        if line.at - previous < 2.0 || line.hi.min(lane_hi) - line.lo.max(lane_lo) < 0.8 * (lane_hi - lane_lo) {
+            continue;
+        }
+        let mut bars_crossed = 0;
+        for bar in run {
+            if !budget.spend(1) {
+                return None;
+            }
+            let (lo, hi) = if vertical { (bar.1, bar.3) } else { (bar.0, bar.2) };
+            let (start, end) = lane_span(bar);
+            if lo + 1.0 < line.at && line.at < hi - 1.0 && line.lo <= start + 1.0 && line.hi >= end - 1.0 {
+                bars_crossed += 1;
+                if bars_crossed == 2 {
+                    previous = line.at;
+                    crossings += 1;
+                    break;
+                }
+            }
+        }
+        if crossings == 2 {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+#[derive(Clone, Copy)]
+struct BarAxis {
+    ticks: Bbox,
+    first: f64,
+    last: f64,
+    vertical: bool,
+    side: usize,
+}
+
+struct ScaleFit {
+    position: f64,
+    value: f64,
+    cross: f64,
+    units_per_point: f64,
+    step: f64,
+}
+
+// Follow one uninterrupted cadence on the fitted row or column. Distant
+// numbers and the next panel's reset scale cannot lengthen this series.
+fn bar_axis_extent(fit: ScaleFit, vertical: bool, side: usize, nums: &[Num], budget: &mut Budget) -> Option<BarAxis> {
+    const ANCHOR: usize = 16;
+    let mut ticks: [Option<Bbox>; 48] = [None; 48];
+    for n in nums {
+        if !budget.spend(1) {
+            return None;
+        }
+        let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+        let position = if vertical { -cy } else { cx };
+        let cross = if vertical { if side == 0 { n.x1 } else { n.x0 } } else { cy };
+        let step = (n.v - fit.value) / fit.step;
+        let slot = step.round() + ANCHOR as f64;
+        if (cross - fit.cross).abs() <= 4.0
+            && (position - fit.position - (n.v - fit.value) / fit.units_per_point).abs() <= 3.0
+            && (step.round() - step).abs() < 0.03
+            && (0.0..ticks.len() as f64).contains(&slot)
+        {
+            ticks[slot as usize].get_or_insert((n.x0, n.y0, n.x1, n.y1));
+        }
+    }
+    ticks[ANCHOR]?;
+    let mut first = ANCHOR;
+    let mut last = ANCHOR;
+    while first > 0 && ticks[first - 1].is_some() {
+        first -= 1;
+    }
+    while last + 1 < ticks.len() && ticks[last + 1].is_some() {
+        last += 1;
+    }
+    Some(BarAxis {
+        ticks: union(ticks[first..=last].iter().flatten().copied()),
+        first: fit.value + (first as f64 - ANCHOR as f64) * fit.step,
+        last: fit.value + (last as f64 - ANCHOR as f64) * fit.step,
+        vertical,
+        side,
+    })
+}
+
+// A scale fit and printed values are independent evidence: the words used as
+// ticks are outside the bar lanes, and endpoint words lie within their lanes.
+fn bar_endpoint_values(run: &[Bbox], r: Bbox, vertical: bool, nums: &[Num], budget: &mut Budget) -> Option<BarAxis> {
+    // Runs arrive in lane order. Assign each numeric word to at most one lane.
+    let lane_start = |b: &Bbox| if vertical { b.0 } else { b.1 };
+    let lane_end = |b: &Bbox| if vertical { b.2 } else { b.3 };
+    let tip_at = |b: &Bbox| if vertical { -b.1 } else { b.2 };
+    if !budget.spend(run.len()) {
+        return None;
+    }
+    let thickness = run.iter().map(|b| lane_end(b) - lane_start(b));
+    let (lo, hi) = thickness.fold((f64::INFINITY, 0.0_f64), |(lo, hi), t| (lo.min(t), hi.max(t)));
+    if lo < 0.8 * hi {
+        return None;
+    }
+    let mut closest: Vec<Option<(f64, f64)>> = vec![None; run.len()];
+    for n in nums {
+        if !budget.spend(1) {
+            return None;
+        }
+        let (cx, cy) = ((n.x0 + n.x1) / 2.0, (n.y0 + n.y1) / 2.0);
+        let (position, lane) = if vertical { (-cy, cx) } else { (cx, cy) };
+        let i = run.partition_point(|b| lane_start(b) <= lane);
+        if i == 0 || lane > lane_end(&run[i - 1]) {
+            continue;
+        }
+        let b = &run[i - 1];
+        let length = if vertical { b.3 - b.1 } else { b.2 - b.0 };
+        let offset = position - tip_at(b);
+        if offset >= -30.0_f64.min(0.6 * length)
+            && offset <= 18.0
+            && closest[i - 1].is_none_or(|(distance, _)| offset.abs() < distance)
+        {
+            closest[i - 1] = Some((offset.abs(), n.v));
+        }
+    }
+    let labels: Vec<_> = run.iter().zip(closest).filter_map(|(b, label)| Some((tip_at(b), label?.1))).collect();
+    let required = (2 * run.len()).div_ceil(3).max(3);
+    if labels.len() < required {
+        return None;
+    }
+    // Each line is determined by two ticks and needs a third independent tick
+    // on the same row or column. Consider only small local tick populations.
+    for side in 0..2 {
+        let ticks = bar_ticks(r, vertical, nums, side, budget)?;
+        if !(3..=24).contains(&ticks.len()) {
+            continue;
+        }
+        for &(p0, v0, c0) in &ticks {
+            for &(p1, v1, c1) in &ticks {
+                if !budget.spend(1) {
+                    return None;
+                }
+                if p1 - p0 < 20.0 || v1 <= v0 || (c1 - c0).abs() > 4.0 {
+                    continue;
+                }
+                let units_per_point = (v1 - v0) / (p1 - p0);
+                let position_at = |value| p0 + (value - v0) / units_per_point;
+                let mut third = None;
+                for &(p, v, cross) in &ticks {
+                    if !budget.spend(1) {
+                        return None;
+                    }
+                    if (p - p0).abs() > 5.0
+                        && (p - p1).abs() > 5.0
+                        && (cross - c0).abs() <= 4.0
+                        && (position_at(v) - p).abs() <= 3.0
+                    {
+                        third = Some((p, v));
+                        break;
+                    }
+                }
+                let Some((p2, v2)) = third else { continue };
+                let step = (v1 - v0).abs().min((v2 - v0).abs()).min((v2 - v1).abs());
+                let mut matching = 0;
+                for &(tip, value) in &labels {
+                    if !budget.spend(1) {
+                        return None;
+                    }
+                    matching += usize::from((position_at(value) - tip).abs() <= 4.0);
+                }
+                if matching >= required {
+                    // Use the widest pair among all three corroborating ticks
+                    // to limit drift from short or unequal-width tick labels.
+                    let (start, end) = if p2 < p0 {
+                        ((p2, v2), (p1, v1))
+                    } else if p2 > p1 {
+                        ((p0, v0), (p2, v2))
+                    } else {
+                        ((p0, v0), (p1, v1))
+                    };
+                    let units_per_point = (end.1 - start.1) / (end.0 - start.0);
+                    return bar_axis_extent(
+                        ScaleFit { position: start.0, value: start.1, cross: c0, units_per_point, step },
+                        vertical,
+                        side,
+                        nums,
+                        budget,
+                    );
+                }
+            }
+        }
+    }
+    None
+}
+
 /// A run of boxes on one baseline as a bar chart's region, or None (see bar_regions). Every
 /// comparison is charged: the spread first (cheapest), then words, then the axis.
-fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) -> Option<Bbox> {
+fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) -> Option<(Bbox, Option<BarAxis>)> {
     if (run.len() as f64) < c.p.bar_min_count || !budget.spend(run.len()) {
         return None;
     }
@@ -609,7 +1021,7 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
         if held {
             with_text += 1;
             if with_text > limit {
-                return None;
+                break;
             }
         }
     }
@@ -617,15 +1029,167 @@ fn bar_run(run: &[Bbox], vertical: bool, c: &BarContext, budget: &mut Budget) ->
     // the axis: a stroked line along the baseline, within BAR_AXIS_REACH of it, spanning most of the run
     let (lines, at, lo, hi) = if vertical { (c.across, r.3, r.0, r.2) } else { (c.down, r.0, r.1, r.3) };
     let need = BAR_AXIS_SPAN * (hi - lo);
+    let mut has_axis = false;
     for l in lines_near(lines, at, BAR_AXIS_REACH) {
         if !budget.spend(1) {
             return None;
         }
         if pmin(l.hi, hi) - pmax(l.lo, lo) >= need {
-            return bar_scale(r, vertical, c.nums, budget).then_some(r);
+            has_axis = true;
+            break;
         }
     }
-    None
+    let labeled = with_text > limit;
+    if has_axis
+        && (!labeled || bar_grid_evidence(run, r, vertical, c, true, budget)?)
+        && bar_scale(r, vertical, c.nums, labeled, budget)
+        && (labeled || bar_grid_evidence(run, r, vertical, c, false, budget)?)
+    {
+        return Some((r, None));
+    }
+    if !has_axis {
+        return None;
+    }
+    let axis = bar_endpoint_values(run, r, vertical, c.nums, budget)?;
+    bar_grid_evidence(run, r, vertical, c, false, budget)?.then_some((r, Some(axis)))
+}
+
+// Attach a swatch-backed legend below a horizontal endpoint chart. Two
+// adjacent panels with the same titled scale and one legend belong to one
+// rectangular crop, while their detection regions remain separate.
+fn include_bar_legends(
+    page: &Page,
+    drop: &[bool],
+    graphic_count: usize,
+    bars: &[(Bbox, Option<BarAxis>)],
+    regions: &mut [(usize, usize, Bbox, Vec<usize>)],
+    budget: &mut Budget,
+) {
+    let mut attachments = Vec::new();
+    for (i, region) in regions.iter().enumerate() {
+        let Some(axis) = region.1.checked_sub(graphic_count).and_then(|j| bars.get(j)).and_then(|b| b.1) else {
+            continue;
+        };
+        if axis.vertical
+            || axis.side != 0
+            || axis.last <= axis.first
+            || !budget.spend(2 * page.lines.len() + page.images.len() + page.rules.len())
+        {
+            continue;
+        }
+        let t = axis.ticks;
+        let height = t.3 - t.1;
+        let kept = |li: usize| !drop.get(li).copied().unwrap_or(true);
+        let Some(title) = page
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(li, line)| {
+                kept(*li)
+                    && line.y0 >= t.3 - 1.0
+                    && line.y0 <= t.3 + height
+                    && line.x0 >= t.0
+                    && line.x1 <= t.2
+                    && line.words.iter().any(|w| w.text.chars().any(char::is_alphabetic))
+            })
+            .map(|(_, line)| line)
+            .min_by(|a, b| a.y0.total_cmp(&b.y0))
+        else {
+            continue;
+        };
+        // Accept small raster or vector swatches immediately left of one short
+        // line below the title. The swatch contributes its full painted bounds.
+        let marks = page.images.iter().filter(|im| !im.mask).map(|im| (im.x0, im.y0, im.x1, im.y1)).chain(
+            page.rules.iter().filter(|r| r.boxed && !bar_fill_excluded(&r.color)).map(|r| (r.x0, r.y0, r.x1, r.y1)),
+        );
+        let mut legend = None;
+        for mark in marks {
+            let w = mark.2 - mark.0;
+            let h = mark.3 - mark.1;
+            if !(0.35 * height..=2.0 * height).contains(&w)
+                || !(0.35 * height..=2.0 * height).contains(&h)
+                || mark.0 < region.2.0 - 2.0 * height
+                || mark.2 >= t.2
+                || mark.1 <= title.y1
+                || mark.1 > title.y1 + 2.5 * height
+            {
+                continue;
+            }
+            if !budget.spend(page.lines.len()) {
+                return;
+            }
+            if let Some(line) = page.lines.iter().enumerate().find_map(|(li, line)| {
+                (kept(li)
+                    && line.x0 >= mark.0 - 1.0
+                    && line.x1 <= t.2
+                    && line.y0 < mark.3
+                    && line.y1 > mark.1
+                    && line.words.iter().any(|w| {
+                        w.x0 >= mark.2 && w.x0 <= mark.2 + 2.0 * height && w.text.chars().any(char::is_alphabetic)
+                    }))
+                .then_some(line)
+            }) {
+                let bounds = union([mark, (line.x0, line.y0, line.x1, line.y1)]);
+                legend = Some(legend.map_or(bounds, |old| union([old, bounds])));
+            }
+        }
+        attachments.push((i, axis, title.text(), legend));
+    }
+    for &(i, _, _, legend) in &attachments {
+        if let Some(b) = legend {
+            regions[i].2 = union([regions[i].2, b]);
+        }
+    }
+    if !budget.spend(attachments.len() * regions.len() * attachments.len().max(1)) {
+        return;
+    }
+    for pair in attachments.windows(2) {
+        let [(i, a, title_a, legend_a), (j, b, title_b, legend_b)] = pair else { continue };
+        if legend_a.is_some() == legend_b.is_some() || title_a != title_b || a.first != b.first || a.last != b.last {
+            continue;
+        }
+        let left = regions[*i].2;
+        let right = regions[*j].2;
+        let (gap, span) =
+            (left.0.max(right.0) - left.2.min(right.2), (a.ticks.2 - a.ticks.0).min(b.ticks.2 - b.ticks.0));
+        if left.2.min(right.2) > left.0.max(right.0)
+            || gap > 0.5 * span
+            || (a.ticks.3 - b.ticks.3).abs() > (a.ticks.3 - a.ticks.1)
+            || (left.1 - right.1).abs() > 3.0 * (a.ticks.3 - a.ticks.1)
+        {
+            continue;
+        }
+        let mut combined = union([left, right]);
+        if let Some(legend) = legend_a.or(*legend_b) {
+            // Complete any note that shares the legend's row rather than
+            // slicing its descenders or the end of its last word.
+            let h = legend.3 - legend.1;
+            if !budget.spend(page.lines.len()) {
+                return;
+            }
+            let row = page.lines.iter().enumerate().filter_map(|(li, line)| {
+                (!drop.get(li).copied().unwrap_or(true)
+                    && line.y0 >= legend.1 - 0.5 * h
+                    && line.y1 <= legend.3 + 0.5 * h
+                    && line.x0 >= combined.0
+                    && line.x0 < combined.2
+                    && line.x1 <= combined.2 + 3.0 * h)
+                    .then_some((line.x0, line.y0, line.x1, line.y1))
+            });
+            combined = union(std::iter::once(combined).chain(row));
+        }
+        let padding = 2.0;
+        combined = (
+            (combined.0 - padding).max(0.0),
+            (combined.1 - padding).max(0.0),
+            (combined.2 + padding).min(page.width),
+            (combined.3 + padding).min(page.height),
+        );
+        if regions.iter().enumerate().any(|(k, r)| k != *i && k != *j && overlap(combined, r.2) > 0.0) {
+            continue;
+        }
+        regions[*i].2 = combined;
+    }
 }
 
 /// The rules that touch `b` (1 point of slack), then those touching the box grown by them, at
