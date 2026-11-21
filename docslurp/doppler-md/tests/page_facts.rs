@@ -734,9 +734,9 @@ fn closed_components_keep_semantic_cells_and_exclude_outside_text() {
         "<tr><td>Yew</td><td></td><td>52</td></tr>\n",
         "</tbody>\n</table>",
     );
-    assert_eq!(markdown.matches(expected).count(), 6, "{markdown}");
+    assert_eq!(markdown.matches(expected).count(), 12, "{markdown}");
     let text: Vec<_> = markdown.split(expected).collect();
     assert!(text.iter().any(|part| part.contains("10") && part.contains("30")), "{markdown}");
-    assert_eq!(markdown.matches("<table>").count(), 6, "{markdown}");
+    assert_eq!(markdown.matches("<table>").count(), 12, "{markdown}");
     assert!(!markdown.contains("/figure-"), "{markdown}");
 }

@@ -124,23 +124,23 @@ CASES = {
 
 
 def table_components():
-    """Two ruled components near the page margin, with repeated multiword headers."""
+    """Ruled components in rows and columns, with repeated multiword headers."""
     parts = []
-    for x in (40, 320):
+    for x, dy in ((40, 0), (320, 0), (40, -195), (320, -195)):
         edges = (x, x + 78, x + 111, x + 215)
         for edge in edges:
-            parts.append(f"0 G 0.5 w {edge} 593 m {edge} 733 l S\n")
+            parts.append(f"0 G 0.5 w {edge} {593+dy} m {edge} {733+dy} l S\n")
         for y in (593, 628, 663, 698, 733):
-            parts.append(f"0 G 0.5 w {x} {y} m {edges[-1]} {y} l S\n")
+            parts.append(f"0 G 0.5 w {x} {y+dy} m {edges[-1]} {y+dy} l S\n")
         for k, (label, amount) in enumerate((("Range name", "Net total"), ("Ash", "11"),
                                               ("Fir", "24"), ("Yew", "52"))):
-            y = 709 - 35 * k
+            y = 709 + dy - 35 * k
             # Interior fills would each introduce two spurious row boundaries.
             if k:
                 parts.append(f"0.2 0.5 0.7 rg {x} {y-2} {20+12*k} 14 re f\n")
             parts.append(f"0 g BT /F1 10 Tf {x+5} {y} Td ({label}) Tj 111 0 Td ({amount}) Tj ET\n")
         # Aligned tick-like text close enough for the open-table continuation.
-        parts.append(f"0 g BT /F1 9 Tf {x+5} 575 Td (10) Tj 111 0 Td (30) Tj ET\n")
+        parts.append(f"0 g BT /F1 9 Tf {x+5} {575+dy} Td (10) Tj 111 0 Td (30) Tj ET\n")
     return "".join(parts)
 
 

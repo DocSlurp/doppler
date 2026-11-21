@@ -1850,6 +1850,15 @@ pub fn ruled_tables(
                 g.ys.push(y);
                 g.x0 = pmin(g.x0, x0);
                 g.x1 = pmax(g.x1, x1);
+                // A complete bottom stroke ends this component even when
+                // aligned rules from a second grid follow within the row gap.
+                if y > g.ys[0] + 1.0
+                    && sides_end_at(g.x0, g.x1, g.ys[0], y, budget)?
+                    && full_stroke_at(g.x0, g.x1, y, budget)?
+                    && let Some(index) = hit
+                {
+                    open.retain(|&i| i != index);
+                }
             }
             None => {
                 open.push(groups.len());
