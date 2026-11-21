@@ -51,10 +51,10 @@ dropped (`0.5`, `612`).
 
 ## Levels and families
 
-`-level basic` (the default) computes the basic fields; `-level full` adds every family,
+`-level basic` (the default) computes the basic fields; `-level full` adds the standard families,
 `mathtables` included (its structure, font-class and table analysis costs about 7% more CPU
 than `full` without it, measured on textbook pages);
-`-include LIST` adds the named families to basic (`pdfpagefacts -include`,
+`-include LIST` adds the named families to the selected level (`pdfpagefacts -include`,
 `pdftotext -page-facts-include`, `pdftomarkdown --page-facts-include`):
 
 | family | adds |
@@ -63,6 +63,7 @@ than `full` without it, measured on textbook pages);
 | `fonts` | page `fonts` |
 | `oddtext` | page `text` ratios (control, private use, U+FFFD, math, vertical, rotated, text over images) |
 | `images-detail` | page `images.items` (32 per page, with words inside and bytes per pixel), mask and inline counts |
+| `scan-regions` | explicitly requested even at `full`; includes `images-detail` fields and page `images.scanRegions` |
 | `vectors` | page `vectors` (paths, coverage, rules, grid score, ruled grids, shadings, patterns, clips, clusters) |
 | `forms` | page `forms`; doc `acroForm`, `needAppearances`, `xfa` |
 | `annots` | page `annots` |
@@ -176,6 +177,37 @@ Fonts that drew characters on the page (at most 256 tracked: `truncated`).
 | `unmappedGlyphRatio` | glyphs that mapped to no Unicode at all |
 | `ocrFontHint` | a font named like an OCR tool's invisible font (`GlyphLessFont`) |
 | `truncated` | more than 256 fonts |
+
+### Mixed-page scan regions (`scan-regions`)
+
+Request `pdfpagefacts -include scan-regions`, or add `scan-regions` to the
+Markdown or text CLI's page-facts include list. `images.scanRegions.imageIndices`
+lists nominated 1-based placement indices in page order. Each index refers to
+an `images.items` entry with the box, page-area fraction, and local visible and
+invisible word counts used as evidence.
+
+A placement qualifies when its box covers at least 10% and less than 85% of
+the page, contains at least three invisible word boxes, and contains no visible
+word centres. The page must also have visible words and must fall outside the existing
+whole-page image coverage test. Image detail and scan regions count a word
+as visible when any glyph was observed painting inside the clip bounds. Stencils
+and masked images are excluded from nominations.
+Qualifying placements whose word-test boxes overlap are withheld and listed
+in `ambiguousImageIndices`, in page order.
+
+Scan-only collection retains at most 8,192 word boxes per page and tests at most
+32 image placements. The run has 8,388,608 units of evidence work, accounting for
+retained words and bounding word/image and image/image comparisons. On a walk,
+display-depth, image, word or work limit, `truncated` is true and both index lists are empty.
+The work budget applies to the requested facts range, so exhaustion can depend
+on which earlier pages were included.
+Scan-only output omits the per-image word counts on truncated pages. An explicit
+`images-detail` request or the `full` preset still computes its existing detail counts.
+
+Nominations are advisory geometry derived from document-controlled input.
+A candidate alone must never authorize an image read, crop, OCR, or a change to
+extracted text or citations. Word counts can precede text deduplication and do
+not establish OCR provenance, quality, or alignment to painted pixels.
 
 ### `images` (basic; `items`, `maskCount`, `inlineCount` with `images-detail`)
 
