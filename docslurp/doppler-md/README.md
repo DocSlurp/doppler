@@ -16,7 +16,7 @@ Pages are written to stdout joined by form feeds. `--params` overrides the tunin
 right-to-left tables) instead of GFM pipe tables; prose stays Markdown. The library takes the
 same choice as `Options` in `to_markdown_report_with`.
 
-For embedded Identity-CID TrueType fonts without a Unicode map, `pdftomarkdown --recover-fonts` checks a locally installed face with the same PostScript name. It can recover characters when glyph IDs, unscaled outlines and advances agree. Recovery depends on the available system fonts and can be partial. The option uses the matching Doppler `pdftotext` executable.
+For embedded Identity-CID and unencoded symbolic TrueType subsets without a Unicode map, `pdftomarkdown --recover-fonts` checks a locally installed face with the same PostScript name. It can recover characters when unscaled outlines and advances agree. For compact subsets with renumbered glyphs, the outline must uniquely identify the character. Recovery depends on the available system fonts and can be partial. The option uses the matching Doppler `pdftotext` executable.
 
 ## pdftomarkdown
 
