@@ -49,3 +49,11 @@ fn keep_punctuation_before_text_and_inside_decimals() {
     let numeric = to_markdown_report_with(&sample(12), &Params::default(), &html).0.join("");
     assert_eq!(numeric.matches("45.6").count(), 6, "{numeric}");
 }
+
+#[test]
+fn a_single_dotted_word_keeps_its_column_extent() {
+    let page = sample(1).replace(">.<", ">......<");
+    let options = Options { tables: TableFormat::Html, ..Options::default() };
+    let md = to_markdown_report_with(&page, &Params::default(), &options).0.join("");
+    assert_eq!(md.matches("......").count(), 6, "{md}");
+}

@@ -147,7 +147,13 @@ fn leader_range(lines: &[Rc<Line>], ids: &[usize]) -> Option<std::ops::Range<usi
             dots += w.text.len();
             right = w.x1;
         } else {
-            if dots >= 5 && w.x0 >= right - 1.0 && (numeric(&w.text) || matches!(&*w.text, "$" | "€" | "£" | "¥")) {
+            // A dotted token has no internal word gaps to seed false columns.
+            // Its width can anchor a genuine text column.
+            if dots >= 5
+                && i - start >= 2
+                && w.x0 >= right - 1.0
+                && (numeric(&w.text) || matches!(&*w.text, "$" | "€" | "£" | "¥"))
+            {
                 return Some(start..i);
             }
             dots = 0;
