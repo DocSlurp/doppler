@@ -25,6 +25,7 @@ private:
         Unicode unicode;
     };
     std::map<std::pair<std::string, int>, std::map<uint64_t, Candidate>> cffOutlines;
+    std::map<std::pair<std::string, int>, std::map<unsigned, Candidate>> cffCharacters;
     size_t mapSlotsLeft = 64 * 65536; // Keep the previous maximum number of cached Unicode entries.
     size_t bytesLeft = 32 * 1024 * 1024;
     unsigned glyphsLeft = 200000;

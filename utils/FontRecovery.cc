@@ -4,6 +4,8 @@
 #include "GfxState.h"
 #include "GlobalParams.h"
 #include "XRef.h"
+#include "UnicodeTypeTable.h"
+#include "goo/gmem.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_CID_H
@@ -94,12 +96,30 @@ Unicode namedCharacter(FT_Face embedded, unsigned gid)
     return u >= 32 && u <= 0x10ffff && !(u >= 0xd800 && u <= 0xdfff) ? u : 0;
 }
 
+// A CJK compatibility character and its unified ideograph may share a CID.
+Unicode unifiedIdeograph(Unicode u)
+{
+    if (!(u >= 0x2e80 && u <= 0x2fdf) && !(u >= 0xf900 && u <= 0xfaff) && !(u >= 0x2f800 && u <= 0x2fa1f))
+        return u;
+    int count = 0;
+    Unicode *normalized = unicodeNormalizeNFKC(&u, 1, &count, nullptr);
+    if (count == 1)
+        u = normalized[0];
+    gfree(normalized);
+    return u;
+}
+
 constexpr Unicode ambiguous = 0xffffffff;
 
 }
 
 std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
 {
+    if (font.getType() == fontType1C) {
+        const auto &encoding = static_cast<const Gfx8BitFont &>(font).getEncoding();
+        if (std::none_of(encoding.begin(), encoding.end(), [](const char *glyph) { return glyph && std::string_view(glyph).starts_with("cid"); }))
+            return {};
+    }
     Ref ref;
     if (!font.getEmbeddedFontID(&ref) || bytesLeft == 0)
         return {};
@@ -143,6 +163,52 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
     if (!name || font.getNameWithoutSubsetTag() != name || FT_Select_Charmap(f.installed, FT_ENCODING_UNICODE) || f.embedded->units_per_EM != f.installed->units_per_EM)
         return named;
     std::vector<Unicode> mapping(f.embedded->num_glyphs);
+    if (font.getType() == fontType1C) {
+        // Simple CFF subsets can retain original CIDs as PostScript glyph names.
+        // A byte selects a name via the PDF encoding, not via its numeric value.
+        const auto &simple = static_cast<const Gfx8BitFont &>(font);
+        if (!FT_HAS_GLYPH_NAMES(f.embedded) || mapping.size() > 256)
+            return {};
+        const auto key = std::make_pair(*path, faceIndex);
+        auto found = cffCharacters.find(key);
+        if (found == cffCharacters.end()) {
+            FT_Bool keyed = false;
+            if (FT_Get_CID_Is_Internally_CID_Keyed(f.installed, &keyed) || !keyed)
+                return {};
+            std::map<unsigned, Candidate> index;
+            FT_UInt gid;
+            for (FT_ULong c = FT_Get_First_Char(f.installed, &gid); gid; c = FT_Get_Next_Char(f.installed, c, &gid)) {
+                if (!glyphsLeft)
+                    return {};
+                --glyphsLeft;
+                FT_UInt cid;
+                if (c < 32 || c > 0x10ffff || FT_Get_CID_From_Glyph_Index(f.installed, gid, &cid))
+                    continue;
+                auto [it, inserted] = index.emplace(cid, Candidate { gid, static_cast<Unicode>(c) });
+                if (!inserted) {
+                    const Unicode unified = unifiedIdeograph(c);
+                    it->second.unicode = it->second.gid == gid && unifiedIdeograph(it->second.unicode) == unified ? unified : 0;
+                }
+            }
+            found = cffCharacters.emplace(key, std::move(index)).first;
+        }
+        std::vector<Unicode> codes(256);
+        for (unsigned code = 0; code < codes.size(); ++code) {
+            const char *glyph = simple.getCharName(code);
+            if (!glyph || !std::string_view(glyph).starts_with("cid"))
+                continue;
+            std::string_view digits(glyph + 3);
+            unsigned cid;
+            const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), cid);
+            if (parsed.ec != std::errc() || parsed.ptr != digits.data() + digits.size())
+                continue;
+            const auto it = found->second.find(cid);
+            unsigned embedded = FT_Get_Name_Index(f.embedded, glyph);
+            if (embedded && it != found->second.end() && it->second.unicode && sameGlyph(f, embedded, it->second.gid, it->second.unicode))
+                codes[code] = it->second.unicode;
+        }
+        return codes;
+    }
     if (font.getType() == fontCIDType0C) {
         // For raw CID-keyed CFF, FreeType loads outlines by CID. Only accept
         // compact identity charsets here; sparse charsets need a separate map.
@@ -266,7 +332,7 @@ void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, doub
                 cid = &candidate;
         }
         const bool simple = font->getType() == fontTrueType && font->isSymbolic() && font->isSubset() && !static_cast<const Gfx8BitFont &>(*font).getHasEncoding();
-        if (cid || simple) {
+        if (cid || simple || (font->getType() == fontType1C && font->isSubset())) {
             auto it = maps.find(*font->getID());
             if (it == maps.end() && maps.size() < 1024 && mapSlotsLeft) {
                 auto mapping = recover(*font);
