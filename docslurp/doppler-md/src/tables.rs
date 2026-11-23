@@ -1629,6 +1629,116 @@ struct Group {
     ys: Vec<f64>,
 }
 
+/// Column edges that physically continue from a header separator to the next
+/// bottom rule. PDF writers sometimes stroke each divider once per body row.
+fn body_columns(v: &[VRule], x0: f64, x1: f64, top: f64, bottom: f64, budget: &mut Budget) -> Option<Vec<(f64, f64)>> {
+    let start = v.partition_point(|r| r.0 <= x0 + 2.0);
+    let end = v.partition_point(|r| r.0 < x1 - 2.0);
+    let dividers = &v[start..end.max(start)];
+    if !budget.spend(dividers.len()) {
+        return None;
+    }
+    let mut edges = vec![x0];
+    let mut rest = dividers;
+    while let Some(&(x, _, _)) = rest.first() {
+        let n = rest.partition_point(|r| r.0 <= x + 0.5);
+        let mut segments: Vec<_> = rest[..n].iter().filter(|r| r.2 > top && r.1 < bottom).collect();
+        segments.sort_by(|a, b| fcmp(a.1, b.1));
+        let mut reach = top;
+        for segment in segments {
+            if segment.1 > reach + 1.0 {
+                break;
+            }
+            reach = reach.max(segment.2);
+        }
+        if reach >= bottom - 1.0 {
+            edges.push(x);
+        }
+        rest = &rest[n..];
+    }
+    edges.push(x1);
+    Some(edges.windows(2).map(|w| (w[0], w[1])).collect())
+}
+
+struct RuledBody {
+    members: Vec<usize>,
+    cols: Vec<(f64, f64)>,
+    bottom: f64,
+}
+
+/// A stacked header can end at a separator well above the table's bottom.
+/// Continue only across physical column dividers with repeated numeric rows.
+#[allow(clippy::too_many_arguments)]
+fn ruled_body_below(
+    page: &Page,
+    header: &Group,
+    strokes: &[(f64, f64, f64)],
+    vertical: &[VRule],
+    by_mid: &[(f64, usize)],
+    used: &[bool],
+    body: f64,
+    p: &Params,
+    budget: &mut Budget,
+) -> Option<Option<RuledBody>> {
+    if header.ys.len() < 3 || page.rules_truncated == Some(true) {
+        return Some(None);
+    }
+    let top = *header.ys.last()?;
+    let (x0, x1) = (header.x0, header.x1);
+    let start = strokes.partition_point(|r| r.2 <= top + 1.0);
+    let Some(&(left, right, bottom)) = strokes.get(start) else { return Some(None) };
+    if (left - x0).abs() > 2.0 || (right - x1).abs() > 2.0 || bottom - top < 2.0 * body {
+        return Some(None);
+    }
+    let cols = body_columns(vertical, x0, x1, top, bottom, budget)?;
+    if !(3..=64).contains(&cols.len()) {
+        return Some(None);
+    }
+    let lo = by_mid.partition_point(|&(m, _)| m <= top + 1.0);
+    let hi = by_mid.partition_point(|&(m, _)| m < bottom);
+    if hi <= lo {
+        return Some(None);
+    }
+    if !budget.scan(hi - lo) {
+        return None;
+    }
+    let mut members = Vec::new();
+    for &(_, i) in &by_mid[lo..hi] {
+        let l = &page.lines[i];
+        let mid = (l.x0 + l.x1) * 0.5;
+        if mid < x0 - 2.0 || mid > x1 + 2.0 {
+            continue;
+        }
+        if used[i] || l.x0 < x0 - 2.0 || l.x1 > x1 + 2.0 {
+            return Some(None);
+        }
+        members.push(i);
+    }
+    if !budget.spend(lines_work(&page.lines, &members)) {
+        return None;
+    }
+    let rows = visual_rows(page, &members, p);
+    let lookup = ColumnLookup::new(&cols);
+    let mut numeric_rows = 0;
+    for row in &rows {
+        let mut numeric_cols = 0u64;
+        for word in row.all_words() {
+            let col = lookup.column((word.x0 + word.x1) * 0.5);
+            if word.x0 < cols[col].0 - 2.0 || word.x1 > cols[col].1 + 2.0 {
+                return Some(None);
+            }
+            if word.text.bytes().any(|b| b.is_ascii_digit()) {
+                numeric_cols |= 1 << col;
+            }
+        }
+        numeric_rows += usize::from(numeric_cols.count_ones() >= 2);
+    }
+    if numeric_rows < 2 || numeric_rows * 2 < rows.len() {
+        return Some(None);
+    }
+    Some(Some(RuledBody { members, cols, bottom }))
+}
+
 /// Tables outlined by vector rules (doppler -rules): [(members, grid, bbox)].
 pub fn ruled_tables(
     page: &Page,
@@ -2071,10 +2181,24 @@ pub fn ruled_tables(
         if !budget.spend(lines_work(lines, &members)) {
             return None;
         }
+        let mut recovered = None;
+        let mut body_end = y1;
+        if !closed_bottom && let Some(body) = ruled_body_below(page, g, &hs, &v, &by_mid, &used, body, p, budget)? {
+            members.extend(body.members);
+            body_end = body.bottom;
+            recovered = Some(body.cols);
+        }
         let mut rows = visual_rows(page, &members, p);
         // (no vertical rule inside: booktabs, whose columns come from the gutters)
         let crossing_v = v.iter().any(|&(x, ya, yb)| x0 + 2.0 < x && x < x1 - 2.0 && yb > y0 && ya < y1);
-        let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
+        let extended = recovered.is_some();
+        let cols = match recovered {
+            Some(cols) => cols,
+            None => {
+                let Some(cols) = table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? else { continue };
+                cols
+            }
+        };
         if cols.len() < 2 {
             continue;
         }
@@ -2146,7 +2270,7 @@ pub fn ruled_tables(
         {
             members.extend(last.ids.iter().copied());
         }
-        if !closed_bottom {
+        if !closed_bottom && !extended {
             let mut edge = rows[rows.len() - 1].base;
             for r in below.by_ref().filter(|r| r.base > y1 - 1.0) {
                 if r.base - edge > 1.6 * pitch || !fits(&r, &cols) {
@@ -2168,12 +2292,13 @@ pub fn ruled_tables(
             return None;
         }
         let mut rows = visual_rows(page, &members, p);
-        let cols = match table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)? {
-            Some(c) if !c.is_empty() => c,
-            _ => cols,
+        let cols = if extended {
+            cols
+        } else {
+            table_columns(&mut rows, &v, x0, x1, y0, y1, p, budget)?.filter(|c| !c.is_empty()).unwrap_or(cols)
         };
         let bands: Vec<(f64, f64)> = ys.windows(2).map(|w| (w[0], w[1])).collect();
-        let mut grid = if bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2 {
+        let mut grid = if extended || (bands.len() as f64 >= p.band_rows * rows.len() as f64 && bands.len() >= 2) {
             let mut grid: Grid = Vec::new();
             // rows outside the ruled span (a header above, unruled rows below) are rows of their own
             let head = rows.iter().filter(|r| r.base < ys[0] - 1.0).map(|r| (r.base - 0.5, r.base + 0.5));
@@ -2266,13 +2391,13 @@ pub fn ruled_tables(
         if grid.rows.len() < 2 || grid.rows[0].len() < 2 || numbered_list(&grid.rows, p) {
             continue;
         }
-        if format == TableFormat::Html {
+        if format == TableFormat::Html && !extended {
             grid.spans = ruled_html(page, &members, (x0, y0, x1, y1), p, budget).ok()?;
         }
         for &i in &members {
             used[i] = true;
         }
-        out.push((members, grid, (x0, y0, x1, y1)));
+        out.push((members, grid, (x0, y0, x1, body_end)));
     }
     Some(out)
 }
