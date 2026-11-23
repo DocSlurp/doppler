@@ -5,7 +5,7 @@ byte-for-byte port of `doppler_md.py` (DocSlurp app, `performance/doppler-2026-1
 
 ```sh
 doppler-md [--html] [--math] [--markers] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C] [--heading-levels size|rank] [--params JSON] [--report] [FILE|-]
-pdftomarkdown [--html] [--join-page-tables] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
+pdftomarkdown [--recover-fonts] [--html] [--join-page-tables] [--math] [--markers] [--page-markers] [--strict] [--stream | --window N] [--body-pages N] [--body-size PT] [--body-color C]
               [--heading-levels size|rank] [--report] [--params JSON] [-f N] [-l N] [--context N] [--estimate-body] [--opw PW] [--upw PW]
               [--text-timeout S] [--text-timeout-per-page P] [--text-timeout-max M] [--images-dir DIR ...] [--] FILE.pdf
 ```
@@ -15,6 +15,8 @@ Pages are written to stdout joined by form feeds. `--params` overrides the tunin
 `<table>` blocks (escaped cells, `<thead>` only for a detected header row, `dir="rtl"` for
 right-to-left tables) instead of GFM pipe tables; prose stays Markdown. The library takes the
 same choice as `Options` in `to_markdown_report_with`.
+
+For embedded Identity-CID TrueType fonts without a Unicode map, `pdftomarkdown --recover-fonts` checks a locally installed face with the same PostScript name. It can recover characters when glyph IDs, unscaled outlines and advances agree. Recovery depends on the available system fonts and can be partial. The option uses the matching Doppler `pdftotext` executable.
 
 ## pdftomarkdown
 

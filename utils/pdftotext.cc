@@ -55,6 +55,7 @@
 #include "parseargs.h"
 #include "printencodings.h"
 #include "goo/GooString.h"
+#include "FontRecovery.h"
 #include "GlobalParams.h"
 #include "Object.h"
 #include "Dict.h"
@@ -130,6 +131,7 @@ static bool printVersion = false;
 static bool printHelp = false;
 static bool printEnc = false;
 static bool tsvMode = false;
+static bool recoverFonts = false;
 static bool wordMeta = false;
 static bool collectRules = false;
 static bool collectImages = false;
@@ -169,6 +171,7 @@ static const ArgDesc argDesc[] = {
     { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
     { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
     { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
+    { .arg = "-recover-fonts", .kind = argFlag, .val = &recoverFonts, .size = 0, .usage = "recover missing Identity-CID mappings from verified installed font outlines" },
     { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
     { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
     { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
@@ -1349,7 +1352,8 @@ int main(int argc, char *argv[])
     // write text file
     bool contentTruncated = false;
     if (htmlMeta && bbox) { // htmlMeta && is superfluous but makes gcc happier
-        TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+        RecoveringTextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+        if (recoverFonts) textOut.enableFontRecovery(doc->getXRef());
         textOut.enableContentReadBudget();
 
         if (textOut.isOk()) {
@@ -1380,7 +1384,8 @@ int main(int argc, char *argv[])
     } else {
 
         if (tsvMode) {
-            TextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            RecoveringTextOutputDev textOut(nullptr, physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            if (recoverFonts) textOut.enableFontRecovery(doc->getXRef());
             textOut.enableContentReadBudget();
             textOut.setEndOfLineHyphenMode(hyphenMode);
             if (textFileName->toStr() == "-") {
@@ -1397,7 +1402,8 @@ int main(int argc, char *argv[])
                 fclose(f);
             }
         } else {
-            TextOutputDev textOut(textFileName->c_str(), physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            RecoveringTextOutputDev textOut(textFileName->c_str(), physLayout, fixedPitch, rawOrder, htmlMeta, discardDiag);
+            if (recoverFonts) textOut.enableFontRecovery(doc->getXRef());
             textOut.enableContentReadBudget();
             if (textOut.isOk()) {
                 textOut.setTextEOL(textEOL);
