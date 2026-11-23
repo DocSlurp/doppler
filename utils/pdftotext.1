@@ -158,6 +158,11 @@ identifies the first page affected by the run limit.
 These document-supplied tags are advisory. Malformed Forms can still affect
 ordinary extraction through Gfx's inherited marked-content handling.
 .TP
+.B \-recover-fonts
+For embedded Identity-CID TrueType fonts without ToUnicode, recover characters from
+a locally installed face when the glyph outlines, IDs and advances agree. Existing
+Unicode mappings take precedence. Unmatched glyphs retain the usual extraction.
+.TP
 .B \-wordmeta
 Used together with \-bbox, \-bbox-layout or \-tsv: output additional metadata for
 every word. Without this option the output is unchanged.
