@@ -6,6 +6,8 @@
 #include "XRef.h"
 #include <ft2build.h>
 #include FT_FREETYPE_H
+#include FT_CID_H
+#include <charconv>
 #include <algorithm>
 #include <array>
 
@@ -67,6 +69,31 @@ uint64_t outlineKey(FT_Face face, unsigned gid)
     return key;
 }
 
+// Read the embedded post table using Adobe glyph names and Unicode scalar names.
+Unicode namedCharacter(FT_Face embedded, unsigned gid)
+{
+    std::array<char, 128> buffer {};
+    if (FT_Get_Glyph_Name(embedded, gid, buffer.data(), buffer.size()))
+        return 0;
+    std::string name(buffer.data());
+    if (auto suffix = name.find('.'); suffix != std::string::npos)
+        name.resize(suffix);
+    Unicode u = globalParams->mapNameToUnicodeText(name.c_str());
+    if (!u) {
+        std::string_view hex(name);
+        if (hex.starts_with("uni") && hex.size() == 7)
+            hex.remove_prefix(3);
+        else if (hex.starts_with("u") && hex.size() >= 5 && hex.size() <= 7)
+            hex.remove_prefix(1);
+        else
+            return 0;
+        auto result = std::from_chars(hex.data(), hex.data() + hex.size(), u, 16);
+        if (result.ec != std::errc() || result.ptr != hex.data() + hex.size())
+            return 0;
+    }
+    return u >= 32 && u <= 0x10ffff && !(u >= 0xd800 && u <= 0xdfff) ? u : 0;
+}
+
 constexpr Unicode ambiguous = 0xffffffff;
 
 }
@@ -74,21 +101,12 @@ constexpr Unicode ambiguous = 0xffffffff;
 std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
 {
     Ref ref;
-    if (!font.getEmbeddedFontID(&ref) || bytesLeft == 0 || glyphsLeft == 0)
-        return {};
-    int faceIndex = 0;
-    SysFontType type;
-    auto path = globalParams->findSystemFontFile(font, &type, &faceIndex);
-    if (!path)
+    if (!font.getEmbeddedFontID(&ref) || bytesLeft == 0)
         return {};
     std::vector<unsigned char> bytes; // Must outlive the FreeType memory face.
     Faces f;
-    if (FT_Init_FreeType(&f.library) || FT_New_Face(f.library, path->c_str(), faceIndex, &f.installed))
+    if (FT_Init_FreeType(&f.library))
         return {};
-    const char *name = FT_Get_Postscript_Name(f.installed);
-    if (!name || font.getNameWithoutSubsetTag() != name || FT_Select_Charmap(f.installed, FT_ENCODING_UNICODE))
-        return {};
-
     const XRef::RepairGuard guard(recoveryXRef);
     Object stream = recoveryXRef->fetch(ref);
     if (!stream.isStream() || !stream.getStream()->rewind())
@@ -106,10 +124,61 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
     bytesLeft -= bytes.size();
     if (!complete || bytes.empty() || FT_New_Memory_Face(f.library, bytes.data(), bytes.size(), 0, &f.embedded))
         return {};
-    if (f.embedded->units_per_EM != f.installed->units_per_EM || f.embedded->num_glyphs > 65536 || f.embedded->num_glyphs < 2) {
+    if (f.embedded->num_glyphs > 65536 || f.embedded->num_glyphs < 2)
         return {};
+    std::vector<Unicode> named;
+    if (font.getType() == fontCIDType2 && font.isSubset() && f.embedded->num_glyphs <= 1024 && FT_HAS_GLYPH_NAMES(f.embedded)) {
+        named.resize(f.embedded->num_glyphs);
+        for (unsigned i = 1; i < named.size(); ++i)
+            named[i] = namedCharacter(f.embedded, i);
+        if (std::all_of(named.begin() + 1, named.end(), [](Unicode u) { return u != 0; }))
+            return named;
     }
+    int faceIndex = 0;
+    SysFontType type;
+    auto path = globalParams->findSystemFontFile(font, &type, &faceIndex);
+    if (!path || FT_New_Face(f.library, path->c_str(), faceIndex, &f.installed))
+        return named;
+    const char *name = FT_Get_Postscript_Name(f.installed);
+    if (!name || font.getNameWithoutSubsetTag() != name || FT_Select_Charmap(f.installed, FT_ENCODING_UNICODE) || f.embedded->units_per_EM != f.installed->units_per_EM)
+        return named;
     std::vector<Unicode> mapping(f.embedded->num_glyphs);
+    if (font.getType() == fontCIDType0C) {
+        // For raw CID-keyed CFF, FreeType loads outlines by CID. Only accept
+        // compact identity charsets here; sparse charsets need a separate map.
+        if (!font.isSubset() || mapping.size() > 1024)
+            return {};
+        for (unsigned i = 0; i < mapping.size(); ++i) {
+            FT_UInt cid = 0;
+            if (FT_Get_CID_From_Glyph_Index(f.embedded, i, &cid) || cid != i)
+                return {};
+        }
+        const auto key = std::make_pair(*path, faceIndex);
+        auto found = cffOutlines.find(key);
+        if (found == cffOutlines.end()) {
+            std::map<uint64_t, Candidate> index;
+            FT_UInt gid;
+            for (FT_ULong c = FT_Get_First_Char(f.installed, &gid); gid; c = FT_Get_Next_Char(f.installed, c, &gid)) {
+                if (!glyphsLeft)
+                    return {};
+                --glyphsLeft;
+                if (c < 32 || c > 0x10ffff)
+                    continue;
+                if (auto hash = outlineKey(f.installed, gid)) {
+                    auto [it, inserted] = index.emplace(hash, Candidate { gid, static_cast<Unicode>(c) });
+                    if (!inserted)
+                        it->second.unicode = 0;
+                }
+            }
+            found = cffOutlines.emplace(key, std::move(index)).first;
+        }
+        for (unsigned i = 1; i < mapping.size(); ++i) {
+            const auto it = found->second.find(outlineKey(f.embedded, i));
+            if (it != found->second.end() && it->second.unicode && sameGlyph(f, i, it->second.gid, it->second.unicode))
+                mapping[i] = it->second.unicode;
+        }
+        return mapping;
+    }
     const bool simple = !font.isCIDFont();
     if (simple && FT_Select_Charmap(f.embedded, FT_ENCODING_MS_SYMBOL))
         return {};
@@ -131,7 +200,7 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
     unsigned matches = 0;
     for (FT_ULong c = FT_Get_First_Char(f.installed, &gid); gid; c = FT_Get_Next_Char(f.installed, c, &gid)) {
         if (glyphsLeft == 0) {
-            return {};
+            return named;
         }
         --glyphsLeft;
         if (c < 32 || c > 0x10ffff)
@@ -160,7 +229,11 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
         }
     }
     if (matches < 3)
-        return {};
+        return named;
+    for (unsigned i = 1; i < named.size(); ++i) {
+        if ((!mapping[i] || mapping[i] == ambiguous) && named[i])
+            mapping[i] = named[i];
+    }
     if (simple) {
         std::vector<Unicode> codes(256);
         for (unsigned code = 0; code < codes.size(); ++code) {
@@ -178,9 +251,16 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
 void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, double dx, double dy, double ox, double oy, CharCode c, int n, const Unicode *u, int len)
 {
     const auto &font = state->getFont();
-    if (recoveryXRef && font && !font->hasToUnicodeCMap()) {
+    Unicode recovered = 0;
+    if (recoveryXRef && font && !font->hasToUnicodeCMap() && font->getType() == fontType3) {
+        recovered = type3.lookup(static_cast<Gfx8BitFont &>(*font), c, recoveryXRef);
+        if (recovered) {
+            u = &recovered;
+            len = 1;
+        }
+    } else if (recoveryXRef && font && !font->hasToUnicodeCMap()) {
         const GfxCIDFont *cid = nullptr;
-        if (font->getType() == fontCIDType2 && (font->getEncodingName() == "Identity-H" || font->getEncodingName() == "Identity-V")) {
+        if ((font->getType() == fontCIDType2 || font->getType() == fontCIDType0C) && (font->getEncodingName() == "Identity-H" || font->getEncodingName() == "Identity-V")) {
             const auto &candidate = static_cast<const GfxCIDFont &>(*font);
             if (candidate.getCollection() && candidate.getCollection()->toStr() == "Adobe-Identity")
                 cid = &candidate;
@@ -188,8 +268,13 @@ void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, doub
         const bool simple = font->getType() == fontTrueType && font->isSymbolic() && font->isSubset() && !static_cast<const Gfx8BitFont &>(*font).getHasEncoding();
         if (cid || simple) {
             auto it = maps.find(*font->getID());
-            if (it == maps.end() && maps.size() < 64)
-                it = maps.emplace(*font->getID(), recover(*font)).first;
+            if (it == maps.end() && maps.size() < 1024 && mapSlotsLeft) {
+                auto mapping = recover(*font);
+                if (mapping.size() > mapSlotsLeft)
+                    mapping.clear();
+                mapSlotsLeft -= mapping.size();
+                it = maps.emplace(*font->getID(), std::move(mapping)).first;
+            }
             size_t index = c;
             if (cid && !cid->getCIDToGID().empty()) {
                 const auto &cidMap = cid->getCIDToGID();
