@@ -13,6 +13,7 @@ try:
     from fontTools import subset
     from fontTools.ttLib import TTFont
     from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+    from fontTools.ttLib.tables._g_l_y_f import Glyph
 except ImportError:
     sys.exit(77)
 
@@ -25,7 +26,9 @@ name, path = subprocess.check_output(
 ).split("\n", 1)
 if name != "DejaVuSerif":
     sys.exit(77)
-def sample(letters, extra=""):
+
+
+def sample(letters, extra="", preserve_records=False):
     font = TTFont(path)
     chars = list(dict.fromkeys(letters))
     glyph_names = [font.getBestCmap()[ord(c)] for c in chars]
@@ -33,6 +36,15 @@ def sample(letters, extra=""):
     subsetter = subset.Subsetter()
     subsetter.populate(text=letters)
     subsetter.subset(font)
+    if preserve_records:
+        font.recalcBBoxes = False
+        # Copy simple records as a subsetter can do without rewriting glyph IDs.
+        original = TTFont(path)
+        offsets = original["loca"].locations
+        outlines = original.reader["glyf"]
+        for glyph, gid in zip(glyph_names, original_ids):
+            if original["glyf"][glyph].numberOfContours > 0:
+                font["glyf"][glyph] = Glyph(outlines[offsets[gid]:offsets[gid + 1]])
     assert original_ids != [font.getGlyphID(g) for g in glyph_names]
     symbol = CmapSubtable.newSubtable(4)
     symbol.platformID, symbol.platEncID, symbol.language = 3, 0, 0
@@ -68,3 +80,6 @@ with t.TempDir() as tmp:
     pdf = tmp.write("mixed.pdf", sample("true fret ψξ"))
     mixed = utils.run("pdftotext", "-recover-fonts", pdf, "-")
     assert "ξ" in mixed and "true" not in mixed, repr(mixed)
+    pdf = tmp.write("preserved-records.pdf", sample("true fret ψξ", preserve_records=True))
+    recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
+    assert "true fret" in recovered and "ξ" in recovered, repr(recovered)

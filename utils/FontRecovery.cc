@@ -9,6 +9,9 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_CID_H
+#include FT_TRUETYPE_TABLES_H
+#include FT_TRUETYPE_TAGS_H
+#include <utility>
 #include <charconv>
 #include <algorithm>
 #include <array>
@@ -49,6 +52,43 @@ bool sameGlyph(const Faces &f, unsigned embeddedGid, unsigned installedGid, Unic
             return false;
     }
     return std::equal(x.contours, x.contours + x.n_contours, y.contours);
+}
+
+// Subsetters can renumber glyph IDs while copying the simple glyf records
+// verbatim. A composite alias can render the same outline as a simple glyph.
+std::vector<unsigned char> glyphRecord(FT_Face face, unsigned gid, size_t &bytesLeft)
+{
+    const auto *head = static_cast<const TT_Header *>(FT_Get_Sfnt_Table(face, FT_SFNT_HEAD));
+    if (!head || (head->Index_To_Loc_Format != 0 && head->Index_To_Loc_Format != 1))
+        return {};
+    const unsigned width = head->Index_To_Loc_Format ? 4 : 2;
+    std::array<unsigned char, 8> offsets {};
+    FT_ULong size = 2 * width;
+    if (FT_Load_Sfnt_Table(face, TTAG_loca, gid * width, offsets.data(), &size) || size != 2 * width)
+        return {};
+    auto offset = [&](unsigned pos) {
+        uint32_t value = 0;
+        for (unsigned i = 0; i < width; ++i)
+            value = (value << 8) | offsets[pos + i];
+        return width == 2 ? value * 2 : value;
+    };
+    const auto start = offset(0), end = offset(width);
+    if (end <= start || end - start > 16384 || end - start > bytesLeft || !std::in_range<FT_Long>(start))
+        return {};
+    size = end - start;
+    bytesLeft -= size;
+    std::vector<unsigned char> record(size);
+    if (FT_Load_Sfnt_Table(face, TTAG_glyf, start, record.data(), &size) || size != record.size())
+        return {};
+    return record;
+}
+
+bool sameRecord(const std::vector<unsigned char> &a, const std::vector<unsigned char> &b)
+{
+    // TrueType permits different zero padding at the end of the record.
+    const auto common = std::min(a.size(), b.size());
+    const auto &longer = a.size() > b.size() ? a : b;
+    return common && longer.size() - common <= 3 && std::equal(a.begin(), a.begin() + common, b.begin()) && std::all_of(longer.begin() + common, longer.end(), [](unsigned char c) { return c == 0; });
 }
 
 // A fingerprint selects a candidate. sameGlyph verifies every coordinate and tag.
@@ -308,14 +348,39 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
             const auto it = found->second.find(outlineKey(f.embedded, gid, true));
             if (it == found->second.end() || it->second.size() > 32)
                 continue;
+            std::vector<Candidate> matches;
             for (const auto &candidate : it->second) {
                 if (!comparisonsLeft)
                     return {};
                 --comparisonsLeft;
                 if (sameGlyph(f, gid, candidate.gid, candidate.unicode)) {
                     entry->second.push_back(candidate.unicode);
+                    matches.push_back(candidate);
                 }
             }
+            if (matches.size() < 2)
+                continue;
+            const auto embedded = glyphRecord(f.embedded, gid, recordBytesLeft);
+            // Positive contour count. Composite records contain face-local IDs.
+            if (embedded.size() < 12 || embedded[0] >= 0x80 || !(embedded[0] || embedded[1]))
+                continue;
+            Unicode exact = 0;
+            for (const auto &match : matches) {
+                const auto record = glyphRecord(f.installed, match.gid, recordBytesLeft);
+                if (record.empty()) {
+                    exact = 0;
+                    break;
+                }
+                if (sameRecord(embedded, record)) {
+                    if (exact) {
+                        exact = 0;
+                        break;
+                    }
+                    exact = match.unicode;
+                }
+            }
+            if (exact)
+                entry->second.assign(1, exact);
         }
         Alphabet script = Alphabet::Common;
         unsigned letters = 0, matches = 0;

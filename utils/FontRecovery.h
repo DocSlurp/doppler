@@ -30,6 +30,7 @@ private:
     std::map<std::pair<std::string, int>, std::map<uint64_t, std::vector<Candidate>>> symbolOutlines;
     size_t mapSlotsLeft = 64 * 65536; // Keep the previous maximum number of cached Unicode entries.
     size_t bytesLeft = 32 * 1024 * 1024;
+    size_t recordBytesLeft = 32 * 1024 * 1024;
     unsigned comparisonsLeft = 200000;
     unsigned glyphsLeft = 200000;
     std::vector<Unicode> recover(const GfxFont &font);
