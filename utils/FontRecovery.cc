@@ -12,6 +12,7 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_TRUETYPE_TAGS_H
 #include <utility>
+#include <cmath>
 #include <charconv>
 #include <algorithm>
 #include <array>
@@ -167,13 +168,21 @@ Alphabet alphabet(Unicode c)
         return Alphabet::Latin;
     if (c >= 0x391 && c <= 0x3ff)
         return Alphabet::Greek;
-    if (c >= 0x400 && c <= 0x481)
+    if ((c >= 0x400 && c <= 0x481) || (c >= 0x48a && c <= 0x52f))
         return Alphabet::Cyrillic;
-    if (c < 0xc0 || (c >= 0x2000 && c <= 0x206f))
+    if (c < 0xc0 || (c >= 0x2000 && c <= 0x206f) || (c >= 0x20a0 && c <= 0x20cf) || (c >= 0x2200 && c <= 0x22ff))
         return Alphabet::Common;
     if (c >= 0xfb00 && c <= 0xfb06)
         return Alphabet::Latin;
     return Alphabet::Other;
+}
+
+// Contextual candidate, outside the Unicode scalar range. A low single quote
+// and a comma may have identical records, even in the original face.
+constexpr Unicode commaOrLowQuote = 0x110000;
+bool asciiDigit(Unicode c)
+{
+    return c >= '0' && c <= '9';
 }
 
 constexpr Unicode ambiguous = 0xffffffff;
@@ -420,6 +429,10 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
                 mapping[gid] = selected;
             }
         }
+        for (const auto &[gid, values] : choices) {
+            if (values.size() == 2 && values[0] == ',' && values[1] == 0x201a)
+                mapping[gid] = commaOrLowQuote;
+        }
         std::vector<Unicode> codes(256);
         for (unsigned code = 0; code < slots.size(); ++code)
             codes[code] = mapping[slots[code]];
@@ -491,8 +504,37 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
     return mapping;
 }
 
+void RecoveringTextOutputDev::emitPendingComma(GfxState *state, bool betweenDigits)
+{
+    const auto &p = *pendingComma;
+    const Unicode value = betweenDigits ? ',' : p.fallback;
+    TextOutputDev::drawChar(state, p.x, p.y, p.dx, p.dy, p.ox, p.oy, p.code, 1, &value, betweenDigits ? 1 : p.length);
+    pendingComma.reset();
+}
+
+void RecoveringTextOutputDev::endStringOp(GfxState *state)
+{
+    if (pendingComma)
+        emitPendingComma(state, false);
+    previousDigit = false;
+    inTextOp = false;
+}
+
+void RecoveringTextOutputDev::updateTextShift(GfxState *state, double shift)
+{
+    // Small adjustments in a TJ array kern neighboring glyphs. A displacement
+    // of a quarter em or more may separate columns or words.
+    if (std::abs(shift) >= 250) {
+        if (pendingComma)
+            emitPendingComma(state, false);
+        previousDigit = false;
+    }
+}
+
 void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, double dx, double dy, double ox, double oy, CharCode c, int n, const Unicode *u, int len)
 {
+    const bool afterDigit = previousDigit;
+    previousDigit = false;
     const auto &font = state->getFont();
     Unicode recovered = 0;
     if (recoveryXRef && font && !font->hasToUnicodeCMap() && font->getType() == fontType3) {
@@ -525,12 +567,21 @@ void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, doub
             }
             if (it != maps.end() && index < it->second.size()) {
                 const auto &mapped = it->second[index];
+                if (mapped == commaOrLowQuote && afterDigit && inTextOp && state->getRender() == 0 && n == 1 && (len == 0 || (len == 1 && u))) {
+                    // A TJ array can split a number into separately kerned
+                    // strings. Wait for the following glyph in this operator.
+                    pendingComma = PendingComma { x, y, dx, dy, ox, oy, c, len ? *u : 0, len };
+                    return;
+                }
                 if (mapped && mapped <= 0x10ffff) {
+                    previousDigit = simple && asciiDigit(mapped);
                     u = &mapped;
                     len = 1;
                 }
             }
         }
     }
+    if (pendingComma)
+        emitPendingComma(state, previousDigit);
     TextOutputDev::drawChar(state, x, y, dx, dy, ox, oy, c, n, u, len);
 }
