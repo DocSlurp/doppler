@@ -111,6 +111,10 @@ pub fn visual_rows(page: &Page, ids: &[usize], p: &Params) -> Vec<Row> {
 
 /// [`visual_rows`] of page lines given as a slice.
 pub fn visual_rows_of(lines: &[Rc<Line>], ids: &[usize], p: &Params) -> Vec<Row> {
+    grouped_rows(lines, ids, p, false)
+}
+
+fn grouped_rows(lines: &[Rc<Line>], ids: &[usize], p: &Params, infer_gutters: bool) -> Vec<Row> {
     let mut sorted: Vec<usize> = ids.to_vec();
     sorted.sort_by(|&a, &b| fcmp(lines[a].base(), lines[b].base()));
     let mut groups: Vec<(f64, Vec<usize>)> = Vec::new();
@@ -121,13 +125,70 @@ pub fn visual_rows_of(lines: &[Rc<Line>], ids: &[usize], p: &Params) -> Vec<Row>
             _ => groups.push((line.base(), vec![i])),
         }
     }
-    groups.into_iter().map(|(base, ids)| make_row(lines, base, ids, p)).collect()
+    groups.into_iter().map(|(base, ids)| make_row(lines, base, ids, p, infer_gutters)).collect()
+}
+
+/// Closely spaced periods between a label and an amount are printed leaders.
+/// Leaving them in the row makes their gaps look like real column gutters.
+fn leader_range(lines: &[Rc<Line>], ids: &[usize]) -> Option<std::ops::Range<usize>> {
+    if !ids.iter().flat_map(|&id| &lines[id].words).any(|w| w.text.starts_with('.')) {
+        return None;
+    }
+    let mut start = 0;
+    let mut dots = 0;
+    let mut right = 0.0;
+    let mut label = false;
+    for (i, w) in ids.iter().flat_map(|&id| &lines[id].words).enumerate() {
+        if w.text.starts_with('.') && w.text.bytes().all(|b| b == b'.') && label {
+            if dots == 0 || w.x0 < right - 1.0 || w.x0 - right > w.size.max(1.0) {
+                start = i;
+                dots = 0;
+            }
+            dots += w.text.len();
+            right = w.x1;
+        } else {
+            // A dotted token has no internal word gaps to seed false columns.
+            // Its width can anchor a genuine text column.
+            if dots >= 5
+                && i - start >= 2
+                && w.x0 >= right - 1.0
+                && (numeric(&w.text) || matches!(&*w.text, "$" | "€" | "£" | "¥"))
+            {
+                return Some(start..i);
+            }
+            dots = 0;
+            label = label || w.text.chars().any(char::is_alphabetic);
+        }
+    }
+    None
 }
 
 /// One visual row from its lines in baseline order.
-fn make_row(lines: &[Rc<Line>], base: f64, mut ids: Vec<usize>, p: &Params) -> Row {
+fn make_row(lines: &[Rc<Line>], base: f64, mut ids: Vec<usize>, p: &Params, infer_gutters: bool) -> Row {
     ids.sort_by(|&a, &b| fcmp(lines[a].x0, lines[b].x0));
-    let cells: Vec<Rc<Line>> = ids.iter().flat_map(|&i| segments_rc(&lines[i], p)).collect();
+    let cells: Vec<Rc<Line>> = if infer_gutters && let Some(leader) = leader_range(lines, &ids) {
+        let mut cells = Vec::new();
+        let mut offset = 0;
+        for &id in &ids {
+            let line = &lines[id];
+            let end = offset + line.words.len();
+            if end <= leader.start || offset >= leader.end {
+                cells.extend(segments_rc(line, p));
+            } else {
+                let before = leader.start.saturating_sub(offset);
+                let after = leader.end.saturating_sub(offset).min(line.words.len());
+                for part in [&line.words[..before], &line.words[after..]] {
+                    if !part.is_empty() {
+                        cells.extend(segments_rc(&Rc::new(Line::new(part.to_vec(), line.block, line.flow)), p));
+                    }
+                }
+            }
+            offset = end;
+        }
+        cells
+    } else {
+        ids.iter().flat_map(|&i| segments_rc(&lines[i], p)).collect()
+    };
     let size = median(cells.iter().map(|c| c.size()).collect());
     let long = cells.iter().filter(|c| c.words.len() as f64 >= p.long_cell_words).count();
     let multi = cells.len() >= 2 && long < 2;
@@ -234,7 +295,7 @@ impl<F: Fn(usize) -> bool> RowWindow<'_, F> {
             }
             *pos += 1;
         }
-        Some(make_row(self.lines, base, ids, self.p))
+        Some(make_row(self.lines, base, ids, self.p, false))
     }
 }
 
@@ -926,7 +987,7 @@ pub fn find_tables_within(
     body: f64,
     budget: &mut Budget,
 ) -> Option<Vec<(Vec<usize>, Table)>> {
-    let mut rows = visual_rows(page, ids, p);
+    let mut rows = grouped_rows(&page.lines, ids, p, true);
     if p.wrapped_rows {
         rows = fold_wraps(rows, p, budget)?;
     }
