@@ -188,10 +188,13 @@ install(FILES pdftops.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 
 # pdftotext
 set(pdftotext_SOURCES
-  pdftotext.cc FontRecovery.cc printencodings.cc
+  pdftotext.cc FontRecovery.cc Type3FontRecovery.cc printencodings.cc
 )
 add_executable(pdftotext ${pdftotext_SOURCES})
 target_link_libraries(pdftotext ${common_libs} Freetype::Freetype)
+if(TARGET Fontconfig::Fontconfig)
+  target_link_libraries(pdftotext Fontconfig::Fontconfig)
+endif()
 add_dependencies(pdftotext doppler_commit_header)
 target_include_directories(pdftotext PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 install(TARGETS pdftotext DESTINATION bin)

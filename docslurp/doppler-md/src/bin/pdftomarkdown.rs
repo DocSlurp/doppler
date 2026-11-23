@@ -215,7 +215,7 @@ a changed threshold is recorded on the facts doc line, scanThresholds):
   --scan-layer-overlap F      share of the page a second image on the scan must cover to make it
                               layered, in (0,1] (0.5)
 
---recover-fonts verifies installed font outlines to recover missing TrueType text mappings.
+--recover-fonts recovers missing text mappings from embedded glyph names and verified font outlines.
 pdftotext is $PDFTOTEXT, else pdftotext next to this executable, else pdftotext on PATH.
 It must be the DocSlurp fork (-bbox-layout -wordmeta -rules -compact-layout). pdfregions
 (image extraction) is found the same way ($PDFREGIONS).

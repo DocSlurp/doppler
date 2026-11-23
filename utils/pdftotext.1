@@ -159,10 +159,11 @@ These document-supplied tags are advisory. Malformed Forms can still affect
 ordinary extraction through Gfx's inherited marked-content handling.
 .TP
 .B \-recover-fonts
-For embedded Identity-CID fonts and unencoded symbolic TrueType subsets without
-ToUnicode, recover characters from a matching installed face using exact glyph
-outlines and advances. Compact subsets may have renumbered glyphs. Existing
-Unicode mappings take precedence. Unmatched glyphs retain the usual extraction.
+Recover missing Unicode mappings using embedded TrueType glyph names or matching
+installed outlines for Identity-CID TrueType and compact CFF subsets, symbolic
+TrueType subsets, and simple filled Type 3 paths with numeric glyph names.
+Type 3 matching uses Fontconfig's local fallback faces. Existing ToUnicode
+mappings take precedence. Unmatched glyphs retain the usual extraction.
 .TP
 .B \-wordmeta
 Used together with \-bbox, \-bbox-layout or \-tsv: output additional metadata for

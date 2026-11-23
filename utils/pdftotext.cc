@@ -171,7 +171,7 @@ static const ArgDesc argDesc[] = {
     { .arg = "-nodiag", .kind = argFlag, .val = &discardDiag, .size = 0, .usage = "discard diagonal text" },
     { .arg = "-htmlmeta", .kind = argFlag, .val = &htmlMeta, .size = 0, .usage = "generate a simple HTML file, including the meta information" },
     { .arg = "-tsv", .kind = argFlag, .val = &tsvMode, .size = 0, .usage = "generate a simple TSV file, including the meta information for bounding boxes" },
-    { .arg = "-recover-fonts", .kind = argFlag, .val = &recoverFonts, .size = 0, .usage = "recover missing TrueType text mappings from verified installed font outlines" },
+    { .arg = "-recover-fonts", .kind = argFlag, .val = &recoverFonts, .size = 0, .usage = "recover missing text mappings from glyph names and verified outlines" },
     { .arg = "-wordmeta", .kind = argFlag, .val = &wordMeta, .size = 0, .usage = "with -bbox, -bbox-layout or -tsv: also output per-word font, size, rotation, space-after, invisible, colour and baseline" },
     { .arg = "-glyphs", .kind = argFlag, .val = &glyphRecords, .size = 0, .usage = "with -bbox-layout -wordmeta: also output font tables, glyph records and (with -rules) image-mask rules" },
     { .arg = "-compact-layout", .kind = argFlag, .val = &compactLayout, .size = 0, .usage = "with -bbox-layout: fast locale-independent word coordinates at 0.001-point precision" },
