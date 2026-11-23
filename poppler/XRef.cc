@@ -1607,7 +1607,10 @@ void XRef::prefetchForPageCount()
         const XRefEntry *entry = getEntry(num, false);
         if (entry->type == xrefEntryUncompressed) {
             fetch(num, entry->gen);
-        } else if (entry->type == xrefEntryCompressed) {
+        } else if (entry->type == xrefEntryCompressed && !pageCountEvictedStreams.contains(entry->offset)) {
+            // Prefetch discards the member. An evicted stream has already decoded
+            // every member independently in this xref generation. A graph walk
+            // that actually consumes a member still replays and checks it.
             fetch(num, 0);
         }
         while (evictable.size() > retainedStreams) {
