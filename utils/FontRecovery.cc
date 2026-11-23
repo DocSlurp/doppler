@@ -52,17 +52,19 @@ bool sameGlyph(const Faces &f, unsigned embeddedGid, unsigned installedGid, Unic
 }
 
 // A fingerprint selects a candidate. sameGlyph verifies every coordinate and tag.
-uint64_t outlineKey(FT_Face face, unsigned gid)
+uint64_t outlineKey(FT_Face face, unsigned gid, bool includeEmpty = false)
 {
     if (FT_Load_Glyph(face, gid, loadFlags) || face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
         return 0;
     const auto &outline = face->glyph->outline;
-    if (outline.n_points <= 0)
+    if (outline.n_points <= 0 && !includeEmpty)
         return 0;
     uint64_t key = 14695981039346656037ULL;
     auto mix = [&](FT_Pos value) { key = (key ^ static_cast<uint64_t>(value)) * 1099511628211ULL; };
     mix(face->glyph->metrics.horiAdvance);
     mix(outline.n_points);
+    if (!outline.n_points)
+        return key;
     // Fixed work per lookup, even for a highly detailed outline.
     for (int i : { 0, outline.n_points / 2, outline.n_points - 1 }) {
         mix(outline.points[i].x);
@@ -107,6 +109,31 @@ Unicode unifiedIdeograph(Unicode u)
         u = normalized[0];
     gfree(normalized);
     return u;
+}
+
+// Only resolve cross-script lookalikes when independently identified letters
+// give a consistent script. Unknown non-ASCII ranges veto this inference.
+enum class Alphabet
+{
+    Common,
+    Latin,
+    Greek,
+    Cyrillic,
+    Other
+};
+Alphabet alphabet(Unicode c)
+{
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0xc0 && c <= 0x24f && c != 0xd7 && c != 0xf7))
+        return Alphabet::Latin;
+    if (c >= 0x391 && c <= 0x3ff)
+        return Alphabet::Greek;
+    if (c >= 0x400 && c <= 0x481)
+        return Alphabet::Cyrillic;
+    if (c < 0xc0 || (c >= 0x2000 && c <= 0x206f))
+        return Alphabet::Common;
+    if (c >= 0xfb00 && c <= 0xfb06)
+        return Alphabet::Latin;
+    return Alphabet::Other;
 }
 
 constexpr Unicode ambiguous = 0xffffffff;
@@ -248,6 +275,91 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
     const bool simple = !font.isCIDFont();
     if (simple && FT_Select_Charmap(f.embedded, FT_ENCODING_MS_SYMBOL))
         return {};
+    if (simple && mapping.size() <= 1024) {
+        const auto key = std::make_pair(*path, faceIndex);
+        auto found = symbolOutlines.find(key);
+        if (found == symbolOutlines.end()) {
+            std::map<uint64_t, std::vector<Candidate>> index;
+            FT_UInt gid;
+            for (FT_ULong c = FT_Get_First_Char(f.installed, &gid); gid; c = FT_Get_Next_Char(f.installed, c, &gid)) {
+                if (!glyphsLeft)
+                    return {};
+                --glyphsLeft;
+                if (c >= 32 && c <= 0x10ffff) {
+                    if (auto hash = outlineKey(f.installed, gid, true))
+                        index[hash].push_back({ gid, static_cast<Unicode>(c) });
+                }
+            }
+            found = symbolOutlines.emplace(key, std::move(index)).first;
+        }
+
+        std::array<unsigned, 256> slots {};
+        std::map<unsigned, std::vector<Unicode>> choices;
+        for (unsigned code = 0; code < slots.size(); ++code) {
+            unsigned gid = FT_Get_Char_Index(f.embedded, code);
+            if (!gid)
+                gid = FT_Get_Char_Index(f.embedded, 0xf000 + code);
+            if (!gid || gid >= mapping.size())
+                continue;
+            slots[code] = gid;
+            auto [entry, inserted] = choices.try_emplace(gid);
+            if (!inserted)
+                continue;
+            const auto it = found->second.find(outlineKey(f.embedded, gid, true));
+            if (it == found->second.end() || it->second.size() > 32)
+                continue;
+            for (const auto &candidate : it->second) {
+                if (!comparisonsLeft)
+                    return {};
+                --comparisonsLeft;
+                if (sameGlyph(f, gid, candidate.gid, candidate.unicode)) {
+                    entry->second.push_back(candidate.unicode);
+                }
+            }
+        }
+        Alphabet script = Alphabet::Common;
+        unsigned letters = 0, matches = 0;
+        for (const auto &[gid, values] : choices) {
+            if (values.size() != 1)
+                continue;
+            mapping[gid] = values.front();
+            if (mapping[gid] != ' ')
+                ++matches;
+            auto a = alphabet(mapping[gid]);
+            if (a != Alphabet::Common) {
+                script = (script == Alphabet::Common || script == a) ? a : Alphabet::Other;
+                ++letters;
+            }
+        }
+        if (matches < 3)
+            return {};
+        if (letters >= 3 && script != Alphabet::Common && script != Alphabet::Other) {
+            for (const auto &[gid, values] : choices) {
+                if (values.size() < 2)
+                    continue;
+                Unicode selected = 0;
+                for (Unicode c : values) {
+                    const auto a = alphabet(c);
+                    if (a == Alphabet::Other || a == Alphabet::Common) {
+                        selected = 0;
+                        break;
+                    }
+                    if (a == script) {
+                        if (selected) {
+                            selected = 0;
+                            break;
+                        }
+                        selected = c;
+                    }
+                }
+                mapping[gid] = selected;
+            }
+        }
+        std::vector<Unicode> codes(256);
+        for (unsigned code = 0; code < slots.size(); ++code)
+            codes[code] = mapping[slots[code]];
+        return codes;
+    }
     // Compact subsets may assign entirely new GIDs. Only index uniquely
     // identifiable outlines and never infer a space from an empty outline.
     std::map<uint64_t, unsigned> subset;
