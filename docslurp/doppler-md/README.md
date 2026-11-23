@@ -16,7 +16,7 @@ Pages are written to stdout joined by form feeds. `--params` overrides the tunin
 right-to-left tables) instead of GFM pipe tables; prose stays Markdown. The library takes the
 same choice as `Options` in `to_markdown_report_with`.
 
-When a font lacks a Unicode map, `pdftomarkdown --recover-fonts` can read standard glyph names in compact Identity-CID TrueType subsets, even without installed fonts. It can also verify outlines and advances against a matching local face for Identity-CID TrueType and compact CID-keyed CFF fonts and unencoded symbolic TrueType subsets. On Fontconfig systems it checks numeric glyph names in simple filled Type 3 paths against local fallback faces. Recovery can be partial and requires the matching Doppler `pdftotext` executable.
+When a font lacks a Unicode map, `pdftomarkdown --recover-fonts` can read standard glyph names in compact Identity-CID TrueType subsets, even without installed fonts. It can also verify outlines and advances against a matching local face for Identity-CID TrueType and compact CID-keyed CFF fonts, byte-encoded CFF subsets with original CID glyph names, and unencoded symbolic TrueType subsets. On Fontconfig systems it checks numeric glyph names in simple filled Type 3 paths against local fallback faces. Recovery can be partial and requires the matching Doppler `pdftotext` executable.
 
 ## pdftomarkdown
 

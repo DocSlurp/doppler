@@ -160,7 +160,8 @@ ordinary extraction through Gfx's inherited marked-content handling.
 .TP
 .B \-recover-fonts
 Recover missing Unicode mappings using embedded TrueType glyph names or matching
-installed outlines for Identity-CID TrueType and compact CFF subsets, symbolic
+installed outlines for Identity-CID TrueType and compact CFF subsets, byte-encoded CFF subsets retaining original
+CID glyph names, symbolic
 TrueType subsets, and simple filled Type 3 paths with numeric glyph names.
 Type 3 matching uses Fontconfig's local fallback faces. Existing ToUnicode
 mappings take precedence. Unmatched glyphs retain the usual extraction.
