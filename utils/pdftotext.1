@@ -159,8 +159,9 @@ These document-supplied tags are advisory. Malformed Forms can still affect
 ordinary extraction through Gfx's inherited marked-content handling.
 .TP
 .B \-recover-fonts
-For embedded Identity-CID TrueType fonts without ToUnicode, recover characters from
-a locally installed face when the glyph outlines, IDs and advances agree. Existing
+For embedded Identity-CID fonts and unencoded symbolic TrueType subsets without
+ToUnicode, recover characters from a matching installed face using exact glyph
+outlines and advances. Compact subsets may have renumbered glyphs. Existing
 Unicode mappings take precedence. Unmatched glyphs retain the usual extraction.
 .TP
 .B \-wordmeta

@@ -26,10 +26,11 @@ struct Faces
     }
 };
 
-bool sameGlyph(const Faces &f, unsigned gid, Unicode u)
+constexpr auto loadFlags = FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM;
+
+bool sameGlyph(const Faces &f, unsigned embeddedGid, unsigned installedGid, Unicode u)
 {
-    constexpr auto flags = FT_LOAD_NO_SCALE | FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP | FT_LOAD_IGNORE_TRANSFORM;
-    if (FT_Load_Glyph(f.embedded, gid, flags) || FT_Load_Glyph(f.installed, gid, flags))
+    if (FT_Load_Glyph(f.embedded, embeddedGid, loadFlags) || FT_Load_Glyph(f.installed, installedGid, loadFlags))
         return false;
     const auto a = f.embedded->glyph, b = f.installed->glyph;
     if (a->format != FT_GLYPH_FORMAT_OUTLINE || b->format != FT_GLYPH_FORMAT_OUTLINE || a->metrics.horiAdvance != b->metrics.horiAdvance)
@@ -45,6 +46,29 @@ bool sameGlyph(const Faces &f, unsigned gid, Unicode u)
     }
     return std::equal(x.contours, x.contours + x.n_contours, y.contours);
 }
+
+// A fingerprint selects a candidate. sameGlyph verifies every coordinate and tag.
+uint64_t outlineKey(FT_Face face, unsigned gid)
+{
+    if (FT_Load_Glyph(face, gid, loadFlags) || face->glyph->format != FT_GLYPH_FORMAT_OUTLINE)
+        return 0;
+    const auto &outline = face->glyph->outline;
+    if (outline.n_points <= 0)
+        return 0;
+    uint64_t key = 14695981039346656037ULL;
+    auto mix = [&](FT_Pos value) { key = (key ^ static_cast<uint64_t>(value)) * 1099511628211ULL; };
+    mix(face->glyph->metrics.horiAdvance);
+    mix(outline.n_points);
+    // Fixed work per lookup, even for a highly detailed outline.
+    for (int i : { 0, outline.n_points / 2, outline.n_points - 1 }) {
+        mix(outline.points[i].x);
+        mix(outline.points[i].y);
+    }
+    return key;
+}
+
+constexpr Unicode ambiguous = 0xffffffff;
+
 }
 
 std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
@@ -86,42 +110,93 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
         return {};
     }
     std::vector<Unicode> mapping(f.embedded->num_glyphs);
+    const bool simple = !font.isCIDFont();
+    if (simple && FT_Select_Charmap(f.embedded, FT_ENCODING_MS_SYMBOL))
+        return {};
+    // Compact subsets may assign entirely new GIDs. Only index uniquely
+    // identifiable outlines and never infer a space from an empty outline.
+    std::map<uint64_t, unsigned> subset;
+    std::vector<Unicode> renumbered;
+    if (font.isSubset() && mapping.size() <= 1024) {
+        renumbered.resize(mapping.size());
+        for (unsigned i = 1; i < mapping.size(); ++i) {
+            if (const auto key = outlineKey(f.embedded, i)) {
+                auto [it, inserted] = subset.emplace(key, i);
+                if (!inserted)
+                    it->second = 0;
+            }
+        }
+    }
     FT_UInt gid;
     unsigned matches = 0;
     for (FT_ULong c = FT_Get_First_Char(f.installed, &gid); gid; c = FT_Get_Next_Char(f.installed, c, &gid)) {
         if (glyphsLeft == 0) {
-            matches = 0;
-            break;
+            return {};
         }
         --glyphsLeft;
-        if (gid >= mapping.size() || c < 32 || c > 0x10ffff)
+        if (c < 32 || c > 0x10ffff)
+            continue;
+        if (!subset.empty()) {
+            const auto it = subset.find(outlineKey(f.installed, gid));
+            if (it != subset.end() && it->second && sameGlyph(f, it->second, gid, c)) {
+                auto &value = renumbered[it->second];
+                value = value ? ambiguous : c;
+            }
+        }
+        if (gid >= mapping.size())
             continue;
         if (mapping[gid]) {
-            mapping[gid] = 0xffffffff; // ambiguous Unicode alias
-        } else if (sameGlyph(f, gid, c)) {
+            mapping[gid] = ambiguous; // ambiguous Unicode alias
+        } else if (sameGlyph(f, gid, gid, c)) {
             mapping[gid] = c;
             if (c != ' ')
                 ++matches;
         }
     }
+    for (size_t i = 0; i < renumbered.size(); ++i) {
+        if (!mapping[i] && renumbered[i] && renumbered[i] != ambiguous) {
+            mapping[i] = renumbered[i];
+            ++matches;
+        }
+    }
     if (matches < 3)
         return {};
+    if (simple) {
+        std::vector<Unicode> codes(256);
+        for (unsigned code = 0; code < codes.size(); ++code) {
+            unsigned g = FT_Get_Char_Index(f.embedded, code);
+            if (!g)
+                g = FT_Get_Char_Index(f.embedded, 0xf000 + code);
+            if (g && g < mapping.size())
+                codes[code] = mapping[g];
+        }
+        return codes;
+    }
     return mapping;
 }
 
 void RecoveringTextOutputDev::drawChar(GfxState *state, double x, double y, double dx, double dy, double ox, double oy, CharCode c, int n, const Unicode *u, int len)
 {
     const auto &font = state->getFont();
-    if (recoveryXRef && font && font->getType() == fontCIDType2 && !font->hasToUnicodeCMap() && (font->getEncodingName() == "Identity-H" || font->getEncodingName() == "Identity-V")) {
-        const auto &cidFont = static_cast<const GfxCIDFont &>(*font);
-        if (cidFont.getCollection() && cidFont.getCollection()->toStr() == "Adobe-Identity") {
+    if (recoveryXRef && font && !font->hasToUnicodeCMap()) {
+        const GfxCIDFont *cid = nullptr;
+        if (font->getType() == fontCIDType2 && (font->getEncodingName() == "Identity-H" || font->getEncodingName() == "Identity-V")) {
+            const auto &candidate = static_cast<const GfxCIDFont &>(*font);
+            if (candidate.getCollection() && candidate.getCollection()->toStr() == "Adobe-Identity")
+                cid = &candidate;
+        }
+        const bool simple = font->getType() == fontTrueType && font->isSymbolic() && font->isSubset() && !static_cast<const Gfx8BitFont &>(*font).getHasEncoding();
+        if (cid || simple) {
             auto it = maps.find(*font->getID());
             if (it == maps.end() && maps.size() < 64)
                 it = maps.emplace(*font->getID(), recover(*font)).first;
-            const auto &cidMap = cidFont.getCIDToGID();
-            const size_t gid = cidMap.empty() ? c : c < cidMap.size() ? cidMap[c] : 0;
-            if (it != maps.end() && gid < it->second.size()) {
-                const auto &mapped = it->second[gid];
+            size_t index = c;
+            if (cid && !cid->getCIDToGID().empty()) {
+                const auto &cidMap = cid->getCIDToGID();
+                index = c < cidMap.size() ? cidMap[c] : 0;
+            }
+            if (it != maps.end() && index < it->second.size()) {
+                const auto &mapped = it->second[index];
                 if (mapped && mapped <= 0x10ffff) {
                     u = &mapped;
                     len = 1;

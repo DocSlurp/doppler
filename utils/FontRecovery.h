@@ -5,7 +5,7 @@
 #include <map>
 #include <vector>
 
-// Optional text extraction for Identity-CID subsets which have lost ToUnicode.
+// Optional text extraction for TrueType subsets which have lost ToUnicode.
 // Cache only verified GID-to-Unicode pairs; a font name alone proves nothing.
 class RecoveringTextOutputDev final : public TextOutputDev
 {
