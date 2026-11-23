@@ -130,7 +130,7 @@ def encrypted_pdf(user_pw, owner_pw=b"owner", n=4):
     return objs.pdf(trailer_extra="/Encrypt %d 0 R /ID [<%s> <%s>]" % (enc, file_id.hex(), file_id.hex()))
 
 
-def compressed_page_with_auxiliary_arrays():
+def compressed_page_with_auxiliary_arrays(members_per_stream=1):
     """Place one page and unrelated arrays in separately compressed object streams."""
     n_streams = 64
     out = bytearray(b"%PDF-1.7\n")
@@ -143,13 +143,20 @@ def compressed_page_with_auxiliary_arrays():
 
     xref.append(append_object(1, b"<< /Type /Catalog /Pages 2 0 R >>"))
     xref.append(append_object(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"))
-    members = [page_body(2).encode(), b"4"] + [b"[" + b"1 " * 131072 + b"]"] * (n_streams - 2)
-    for i in range(n_streams):
-        xref.append((2, 3 + n_streams + i, 0))
-    for i, body in enumerate(members):
-        header = b"%d 0 " % (3 + i)
-        stream = t.stream("/Type /ObjStm /N 1 /First %d" % len(header), header + body, compress=True)
-        xref.append(append_object(3 + n_streams + i, stream))
+    members = [page_body(2).encode(), b"4"] + [b"[" + b"1 " * (131072 if members_per_stream == 1 else 1) + b"]"] * (n_streams - 2)
+    first_stream = 3 + n_streams * members_per_stream
+    for member in range(members_per_stream):
+        for i in range(n_streams):
+            xref.append((2, first_stream + i, member))
+    for i, first_body in enumerate(members):
+        bodies = bytearray()
+        offsets = []
+        for member in range(members_per_stream):
+            offsets.append(b"%d %d " % (3 + i + member * n_streams, len(bodies)))
+            bodies.extend((first_body if member == 0 else b"null") + b" ")
+        header = b"".join(offsets)
+        stream = t.stream("/Type /ObjStm /N %d /First %d" % (members_per_stream, len(header)), header + bodies, compress=True)
+        xref.append(append_object(first_stream + i, stream))
 
     # The trailing stream's indirect /Length replays an evicted member
     # through a nested fetch. The page is separately replayed by the walk.
@@ -439,6 +446,9 @@ with t.TempDir() as d:
     # The scan visits each auxiliary stream, then the walk revisits the first
     # compressed page. It must still count correctly within a memory ceiling.
     expect(d, "compressed-page-and-arrays.pdf", compressed_page_with_auxiliary_arrays(), OK, b"1\n", args=("-max-memory", 96))
+
+    # Interleaved member numbers revisit more streams than the prefetch cache holds.
+    expect(d, "interleaved-stream-members.pdf", compressed_page_with_auxiliary_arrays(200), OK, b"1\n")
 
     # --- encryption ---------------------------------------------------------
     path = expect(d, "encrypted-empty-user.pdf", encrypted_pdf(b""), OK, b"4\n")
