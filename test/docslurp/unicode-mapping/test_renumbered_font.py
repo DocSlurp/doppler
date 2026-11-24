@@ -90,6 +90,11 @@ with t.TempDir() as tmp:
     recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
     assert "ä" in recovered, repr(recovered)
 
+    # Neutral currency symbols must not unlock Latin guesses for unrelated
+    # lookalikes (e.g. Latin e / Cyrillic ie) in a damaged mixed font.
+    pdf = tmp.write("neutral-symbol.pdf", sample("true fret €"))
+    assert "true fret" not in utils.run("pdftotext", "-recover-fonts", pdf, "-")
+
     # Model a face that uses the exact same glyph for comma and low quote.
     installed = TTFont(path)
     for table in installed["cmap"].tables:
@@ -113,3 +118,7 @@ with t.TempDir() as tmp:
         assert ("," in recovered) == decimal, (label, repr(recovered))
         if decimal:
             assert "7,34" in recovered, repr(recovered)
+    for amount in ("−7,34 €", "+7,34%", "$07,30"):
+        pdf = tmp.write("amount.pdf", sample(amount, source_path=face))
+        recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
+        assert amount in recovered, (amount, repr(recovered))

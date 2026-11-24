@@ -170,7 +170,7 @@ Alphabet alphabet(Unicode c)
         return Alphabet::Greek;
     if ((c >= 0x400 && c <= 0x481) || (c >= 0x48a && c <= 0x52f))
         return Alphabet::Cyrillic;
-    if (c < 0xc0 || (c >= 0x2000 && c <= 0x206f) || (c >= 0x20a0 && c <= 0x20cf) || (c >= 0x2200 && c <= 0x22ff))
+    if (c < 0xc0 || (c >= 0x2000 && c <= 0x206f))
         return Alphabet::Common;
     if (c >= 0xfb00 && c <= 0xfb06)
         return Alphabet::Latin;
@@ -393,13 +393,21 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
         }
         Alphabet script = Alphabet::Common;
         unsigned letters = 0, matches = 0;
+        bool extendedContext = false;
         for (const auto &[gid, values] : choices) {
             if (values.size() != 1)
                 continue;
             mapping[gid] = values.front();
             if (mapping[gid] != ' ')
                 ++matches;
-            auto a = alphabet(mapping[gid]);
+            const Unicode c = mapping[gid];
+            if ((c >= 0x20a0 && c <= 0x20cf) || (c >= 0x2200 && c <= 0x22ff)) {
+                extendedContext = true;
+                continue;
+            }
+            if (c >= 0x48a && c <= 0x52f)
+                extendedContext = true;
+            auto a = alphabet(c);
             if (a != Alphabet::Common) {
                 script = (script == Alphabet::Common || script == a) ? a : Alphabet::Other;
                 ++letters;
@@ -410,6 +418,10 @@ std::vector<Unicode> RecoveringTextOutputDev::recover(const GfxFont &font)
         if (letters >= 3 && script != Alphabet::Common && script != Alphabet::Other) {
             for (const auto &[gid, values] : choices) {
                 if (values.size() < 2)
+                    continue;
+                // Symbols provide no script evidence. Relax their veto only
+                // for a Latin diacritic paired with an extended Cyrillic letter.
+                if (extendedContext && !(values.size() == 2 && values[0] >= 0xc0 && alphabet(values[0]) == Alphabet::Latin && values[1] >= 0x48a && values[1] <= 0x52f))
                     continue;
                 Unicode selected = 0;
                 for (Unicode c : values) {
