@@ -1,5 +1,6 @@
 """Recover compact symbolic TrueType subsets with a byte-to-glyph symbol cmap."""
 import io
+import os
 import shutil
 import subprocess
 import sys
@@ -28,8 +29,8 @@ if name != "DejaVuSerif":
     sys.exit(77)
 
 
-def sample(letters, extra="", preserve_records=False):
-    font = TTFont(path)
+def sample(letters, extra="", preserve_records=False, source_path=path, show=None):
+    font = TTFont(source_path)
     chars = list(dict.fromkeys(letters))
     glyph_names = [font.getBestCmap()[ord(c)] for c in chars]
     original_ids = [font.getGlyphID(g) for g in glyph_names]
@@ -39,7 +40,7 @@ def sample(letters, extra="", preserve_records=False):
     if preserve_records:
         font.recalcBBoxes = False
         # Copy simple records as a subsetter can do without rewriting glyph IDs.
-        original = TTFont(path)
+        original = TTFont(source_path)
         offsets = original["loca"].locations
         outlines = original.reader["glyf"]
         for glyph, gid in zip(glyph_names, original_ids):
@@ -55,8 +56,10 @@ def sample(letters, extra="", preserve_records=False):
     data = buf.getvalue()
     encoded = bytes(chars.index(c) + 1 for c in letters).hex()
     widths = " ".join(["680"] * len(chars))
+    if show is None:
+        show = f"<{encoded}> Tj"
     return t.simple_page_pdf(
-        f"BT /F2 14 Tf 50 500 Td <{encoded}> Tj ET".encode(),
+        f"BT /F2 14 Tf 50 500 Td {show} ET".encode(),
         resources="<< /Font << /F2 6 0 R >> >>",
         extra_objects=[
             f"<< /Type /Font /Subtype /TrueType /BaseFont /AAAAAA+DejaVuSerif /FirstChar 1 /LastChar {len(chars)} /Widths [{widths}] /FontDescriptor 7 0 R {extra} >>",
@@ -83,3 +86,39 @@ with t.TempDir() as tmp:
     pdf = tmp.write("preserved-records.pdf", sample("true fret ψξ", preserve_records=True))
     recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
     assert "true fret" in recovered and "ξ" in recovered, repr(recovered)
+    pdf = tmp.write("currency.pdf", sample("turf ä €"))
+    recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
+    assert "ä" in recovered, repr(recovered)
+
+    # Neutral currency symbols must not unlock Latin guesses for unrelated
+    # lookalikes (e.g. Latin e / Cyrillic ie) in a damaged mixed font.
+    pdf = tmp.write("neutral-symbol.pdf", sample("true fret €"))
+    assert "true fret" not in utils.run("pdftotext", "-recover-fonts", pdf, "-")
+
+    # Model a face that uses the exact same glyph for comma and low quote.
+    installed = TTFont(path)
+    for table in installed["cmap"].tables:
+        if table.isUnicode() and 0x201a in table.cmap:
+            table.cmap[0x201a] = table.cmap[ord(",")]
+    buf = io.BytesIO()
+    installed.save(buf)
+    face = tmp.write("reference.ttf", buf.getvalue())
+    config = f"<fontconfig><dir>{Path(face).parent}</dir></fontconfig>"
+    os.environ["FONTCONFIG_FILE"] = str(tmp.write("fonts.conf", config.encode()))
+
+    for label, show, decimal in [
+        ("one-string", "<01020304> Tj", True),
+        ("kerned", "[<01> 2 <02> -1 <0304>] TJ", True),
+        ("separate", "<0102> Tj <0304> Tj", False),
+        ("large-gap", "[<0102> -900 <0304>] TJ", False),
+        ("trailing", "<010302> Tj", False),
+    ]:
+        pdf = tmp.write(f"{label}.pdf", sample("7,34", source_path=face, show=show))
+        recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
+        assert ("," in recovered) == decimal, (label, repr(recovered))
+        if decimal:
+            assert "7,34" in recovered, repr(recovered)
+    for amount in ("−7,34 €", "+7,34%", "$07,30"):
+        pdf = tmp.write("amount.pdf", sample(amount, source_path=face))
+        recovered = utils.run("pdftotext", "-recover-fonts", pdf, "-")
+        assert amount in recovered, (amount, repr(recovered))
